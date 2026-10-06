@@ -26,7 +26,7 @@ from rest_framework.exceptions import ValidationError
 # request, not a lookup: PostgreSQL raises rather than returning no rows.
 _MAX_BIGINT = 9_223_372_036_854_775_807
 
-BRANCH_NOT_FOUND = "No such branch in this tenant."
+BRANCH_NOT_FOUND = "There is no such branch."
 
 TENANT_NOT_FOUND = "No such tenant."
 

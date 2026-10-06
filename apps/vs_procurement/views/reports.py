@@ -21,6 +21,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_rbac.permissions import HasAnyModuleAccess, IsAuthenticatedAndActive
+from vs_finance.constants import GRIR_NAME
 from vs_finance.views import resolve_entity
 
 
@@ -157,7 +158,7 @@ class GRIRBalanceView(_ProcBase):
         as_of = _date(request.query_params.get("as_of"), "as_of")
         balance = grir_balance(entity, as_of=as_of)
         return success_response(
-            "GR/IR clearing balance retrieved.",
+            f"{GRIR_NAME} balance retrieved.",
             data={
                 "entity": entity.code,
                 "as_of": str(as_of) if as_of else None,
@@ -239,7 +240,7 @@ class GRIRAgingView(_ProcBase):
                 "invoiced_value": _kobo(r.invoiced_value),
                 "open_value": _kobo(r.open_value),
             },
-            message="GR/IR aging retrieved.",
+            message=f"{GRIR_NAME} by age retrieved.",
         )
 
 
@@ -300,7 +301,7 @@ class GRIRGrnDetailView(_ProcBase):
         entity = resolve_entity(request)
         grn_ref = request.query_params.get("grn")
         if not grn_ref or not str(grn_ref).isdigit():
-            raise ValidationError({"grn": "A numeric GRN id is required."})
+            raise ValidationError({"grn": "Give the goods received note by its number id."})
         as_of = _date(request.query_params.get("as_of"), "as_of")
         detail = grir_grn_detail(
             entity, int(grn_ref), as_of=as_of, branch_scope=_scope(request, entity),
@@ -326,7 +327,7 @@ class GRIRGrnDetailView(_ProcBase):
                 "id": vi["id"], "document_number": vi["document_number"],
                 "invoice_date": vi["invoice_date"], "net": _kobo(vi["net"]),
             },
-            message="GR/IR GRN detail retrieved.",
+            message="Goods received note detail retrieved.",
         )
 
 
@@ -362,7 +363,7 @@ class GRIRPoLinesView(_ProcBase):
                 "grir_balance": _kobo(r.grir_balance),
                 "status": r.status,
             },
-            message="GR/IR PO-line report retrieved.",
+            message=f"{GRIR_NAME} by order line retrieved.",
         )
 
 
@@ -418,7 +419,7 @@ class GRIRPoLineDetailView(_ProcBase):
                 "invoice_date": vi["invoice_date"],
                 "quantity": vi["quantity"], "net": _kobo(vi["net"]),
             },
-            message="GR/IR PO-line detail retrieved.",
+            message="Order line detail retrieved.",
         )
 
 

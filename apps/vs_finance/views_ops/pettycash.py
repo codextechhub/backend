@@ -10,6 +10,7 @@ from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 
 from core.response import success_response
 from vs_config.clock import branch_today
+from vs_config.display import format_date
 
 from ..constants import DocumentStatus, PettyCashReturnKind
 from ..money import format_naira
@@ -621,7 +622,7 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
     docstring-name: Petty cash return approval route
     """
 
-    shared_subject = "the tenant's approval routes"
+    shared_subject = "the approval routes"
 
     @property
     def rbac_permission(self):
@@ -696,7 +697,7 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
 
         entity = resolve_entity(request)
         if entity.tenant_id is None:
-            raise ValidationError({"entity": "These books belong to no tenant to route for."})
+            raise ValidationError({"entity": "These books do not belong to an organisation, so they have no approval route."})
         body = request.data or {}
         threshold = (
             _money(body.get("threshold"), "threshold")
@@ -718,7 +719,7 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
                 )
         if not created:
             return success_response(
-                "This tenant already has its own petty cash return route; it is left as configured.",
+                "Your petty cash return route is already set up; it is left as configured.",
                 data=self._payload(entity.tenant, threshold),
             )
         return success_response(
@@ -814,7 +815,8 @@ class PettyCashVoucherListCreateView(_FinanceBase):
             raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
         if fund.is_closed:
             raise ValidationError({"fund": (
-                f"Petty cash fund '{fund.name}' was closed on {fund.closed_on.isoformat()}. "
+                f"Petty cash fund '{fund.name}' was closed on "
+                f"{format_date(fund.closed_on, entity.tenant)}. "
                 f"Reopen it first."
             )})
         voucher = PettyCashVoucher.objects.create(

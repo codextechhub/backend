@@ -35,6 +35,8 @@ from django.db.models import F
 from vs_config.display import format_date
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
+    GRIR_NAME,
+    GRIR_PLAIN,
     AccountType,
     DocumentStatus,
     FinanceAuditAction,
@@ -253,7 +255,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
         )
         if line.po_line_id is not None or receipt_backed:
             if grir is None:  # Resolve GR/IR once.
-                grir = resolve_account(invoice.entity, GRIR_CLEARING_CODE, label="GR/IR clearing")
+                grir = resolve_account(invoice.entity, GRIR_CLEARING_CODE, label=GRIR_PLAIN)
             basis_unit_price = (
                 line.grn_line.unit_price if receipt_backed
                 else line.po_line.unit_price
@@ -288,7 +290,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
         line_no += 1
         JournalLine.objects.create(
             entry=entry, account=grir, debit=grir_basis_total, credit=0,
-            description="GR/IR clearing", line_no=line_no,
+            description=GRIR_NAME, line_no=line_no,
         )
     for (acc_id, cost_center_id), amount in debit_by_account.items():
         if amount == 0:  # Skip empty debit groups.
@@ -524,7 +526,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     if payment.gross_amount <= 0:  # Reject zero or negative vendor payments.
         raise PostingError("A vendor payment must have a positive gross amount to post.")
     if payment.wht_amount < 0 or payment.wht_amount > payment.gross_amount:  # WHT cannot exceed gross or go negative.
-        raise PostingError("WHT must be between 0 and the gross amount.")
+        raise PostingError("Withholding tax must be between ₦0.00 and the gross amount.")
     payment.net_amount = payment.gross_amount - payment.wht_amount  # Recompute net cash paid.
 
     # Draft allocation rows are approval instructions, not settled sub-ledger rows.

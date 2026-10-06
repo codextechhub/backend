@@ -21,7 +21,9 @@ from django.db import transaction
 from django.db.models import F, Q
 
 from vs_finance.audit import record, record_rejection
-from vs_finance.constants import DocumentStatus, FinanceAuditAction, JournalSource
+from vs_finance.constants import (
+    GRIR_NAME, GRIR_PLAIN, DocumentStatus, FinanceAuditAction, JournalSource,
+)
 from vs_finance.exceptions import FinanceError, PostingError
 from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
@@ -697,7 +699,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     if total_value <= 0:
         raise PostingError("A goods receipt must have a positive accepted value to post.")
 
-    grir = resolve_account(grn.entity, GRIR_CLEARING_CODE, label="GR/IR clearing")
+    grir = resolve_account(grn.entity, GRIR_CLEARING_CODE, label=GRIR_PLAIN)
     period = resolve_period(grn.entity, grn.received_date)
 
     entry = JournalEntry.objects.create(
@@ -718,7 +720,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     line_no += 1
     JournalLine.objects.create(
         entry=entry, account=grir, debit=0, credit=total_value,
-        description=f"GR/IR: {grn.vendor.code}", line_no=line_no,
+        description=f"{GRIR_NAME}: {grn.vendor.code}", line_no=line_no,
     )
 
     # The finance posting service validates balance and the accounting-period lock;
@@ -756,7 +758,10 @@ def _post_grn_atomic(grn, *, actor_user=None):
     record(
         entity=grn.entity, action=FinanceAuditAction.GRN_POSTED,
         actor_user=actor_user, target=grn,
-        message=f"Received goods from {grn.vendor.code} ({format_naira(total_value)} to GR/IR).",
+        message=(
+            f"Received goods from {grn.vendor.code} worth {format_naira(total_value)}, "
+            f"not yet billed."
+        ),
         journal_id=entry.pk, value=total_value,
     )
     return grn

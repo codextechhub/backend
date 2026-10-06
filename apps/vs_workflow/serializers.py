@@ -1199,13 +1199,13 @@ class WorkflowApproverGroupSerializer(serializers.ModelSerializer):
         if tenant is not None and WorkflowApproverGroup.all_objects.filter(
                 tenant=tenant, code=value).exists():
             raise serializers.ValidationError(
-                f"An approver group with code '{value}' already exists in this tenant.")
+                f"An approver group with the code '{value}' already exists.")
         return value
 
     def validate_branch(self, value):
         tenant = self.context.get("tenant")
         if value is not None and tenant is not None and value.tenant_id != tenant.pk:
-            raise serializers.ValidationError("Branch must belong to your tenant.")
+            raise serializers.ValidationError("Choose one of your own branches.")
         return value
 
 
@@ -1241,7 +1241,7 @@ class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
                 # Same message for "not found" and "other tenant" - the API must
                 # not confirm that a user id exists elsewhere.
                 raise serializers.ValidationError(
-                    {"user": "No active user with that id exists in your tenant."})
+                    {"user": "There is no active user with that id."})
             attrs["resolved_target"] = user
         elif kind == GroupMemberKind.ROLE:
             from vs_rbac.models import TenantRoleTemplate
@@ -1250,7 +1250,7 @@ class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
                 status=TenantRoleTemplate.Status.ACTIVE).first()
             if role is None:
                 raise serializers.ValidationError(
-                    {"role_key": "No active role with that key exists in your tenant."})
+                    {"role_key": "There is no active role with that key."})
             attrs["resolved_target"] = role
         else:
             # The group's tenant decides the chart, so a seat on the other
@@ -1317,7 +1317,7 @@ class WorkflowStageApproverOverrideSerializer(serializers.ModelSerializer):
                     status=TenantRoleTemplate.Status.ACTIVE).exists():
                 raise serializers.ValidationError({
                     "approver_role_key":
-                        "No active role with that key exists in your tenant."})
+                        "There is no active role with that key."})
             attrs["approver_group"] = None
         else:
             if group is None:
@@ -1325,7 +1325,7 @@ class WorkflowStageApproverOverrideSerializer(serializers.ModelSerializer):
                     "approver_group": "Required when approver_source is WORKFLOW_GROUP."})
             if group.tenant_id != tenant.pk:
                 raise serializers.ValidationError({
-                    "approver_group": "That approver group belongs to another tenant."})
+                    "approver_group": "There is no such approver group."})
             attrs["approver_role_key"] = ""
 
         # A tenant may only repoint a stage it can actually reach: one on a
@@ -1334,7 +1334,7 @@ class WorkflowStageApproverOverrideSerializer(serializers.ModelSerializer):
             owner = stage.template.tenant_id
             if owner is not None and owner != tenant.pk:
                 raise serializers.ValidationError({
-                    "stage": "That stage belongs to another tenant's template."})
+                    "stage": "There is no such stage."})
         return attrs
 
 
@@ -1394,7 +1394,7 @@ class WorkflowDynamicRoleSerializer(serializers.ModelSerializer):
         if tenant is not None and WorkflowDynamicRole.all_objects.filter(
                 tenant=tenant, code=value).exists():
             raise serializers.ValidationError(
-                f"A Dynamic Role with code '{value}' already exists in this tenant.")
+                f"A dynamic role with the code '{value}' already exists.")
         return value
 
     def validate_document_types(self, value):

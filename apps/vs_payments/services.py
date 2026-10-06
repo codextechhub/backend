@@ -832,7 +832,7 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     
     if intent.customer_id is None:  # Receipts need a customer so receivables can be posted correctly.
         raise PaymentStateError(
-            "Cannot book a receipt: the collection has no customer (AR sub-ledger).",
+            "Cannot book a receipt: the collection has no customer to credit.",
         )
     
     from vs_finance.account_mappings import resolve_mapped_account

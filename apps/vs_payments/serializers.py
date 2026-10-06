@@ -120,10 +120,13 @@ class PayoutBatchSerializer(ApprovalStateMixin, serializers.ModelSerializer):
     approval route (:class:`vs_finance.serializers.ApprovalStateMixin`): a batch
     an approver handed back reads PENDING and returned while it stays DRAFT, and
     is resumed from the approvals screen with the detail's ``workflow_instance_id``.
+    ``display_status`` is the word the batch list files it under
+    (:func:`vs_payments.approvals.payout_batch_display_status`).
     """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
+    display_status = serializers.SerializerMethodField()
     instructions = PayoutInstructionSerializer(many=True, read_only=True)
     branch = serializers.IntegerField(source="branch_id", read_only=True)
 
@@ -133,10 +136,17 @@ class PayoutBatchSerializer(ApprovalStateMixin, serializers.ModelSerializer):
             "id", "entity_code", "branch", "provider", "reference", "title", "narration", "status",
             "total_amount", "total_amount_naira", "item_count", "submitted_at",
             "created_at", "instructions", "approval_state", "approval_returned",
+            "display_status",
         ]
 
     def get_total_amount_naira(self, obj):
         return format_naira(obj.total_amount)
+
+    def get_display_status(self, obj) -> str:
+        from .approvals import payout_batch_display_status
+
+        state, returned = self._approval(obj)
+        return payout_batch_display_status(obj.status, state, returned)
 
 
 #: The ``metadata`` keys of a gateway action a reader of the log is shown.
@@ -269,22 +279,31 @@ class PaymentEventSerializer(serializers.ModelSerializer):
 class PayoutBatchSummarySerializer(ApprovalStateMixin, serializers.ModelSerializer):
     """List view - omits the (potentially large) child instruction array.
 
-    Carries ``approval_state`` and ``approval_returned``, read once per page.
+    Carries ``approval_state`` and ``approval_returned``, read once per page, and
+    ``display_status``, the word the list's status filter lists the batch under
+    (:func:`vs_payments.approvals.payout_batch_status_rules`).
     """
 
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
+    display_status = serializers.SerializerMethodField()
 
     class Meta:
         model = PayoutBatch
         fields = [
             "id", "entity_code", "provider", "reference", "title", "status",
             "total_amount", "total_amount_naira", "item_count", "submitted_at",
-            "created_at", "approval_state", "approval_returned",
+            "created_at", "approval_state", "approval_returned", "display_status",
         ]
 
     def get_total_amount_naira(self, obj):
         return format_naira(obj.total_amount)
+
+    def get_display_status(self, obj) -> str:
+        from .approvals import payout_batch_display_status
+
+        state, returned = self._approval(obj)
+        return payout_batch_display_status(obj.status, state, returned)
 
 
 class WebhookEventSerializer(serializers.ModelSerializer):

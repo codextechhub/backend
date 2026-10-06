@@ -140,6 +140,7 @@ def hide_archived(queryset, request):
 def archive_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
     """Archive a closed ``fiscal_year`` old enough to put away. Audited."""
     from vs_config.clock import tenant_today
+    from vs_config.display import format_date
 
     from .close import _lock_fiscal_year
 
@@ -155,7 +156,8 @@ def archive_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None):
     if tenant_today(entity.tenant) < earliest:
         raise PeriodCloseError(
             f"Fiscal year {fiscal_year.year} can be archived from "
-            f"{earliest.isoformat()}, {counted(min_age_years(entity.tenant), 'year')} after it ended.",
+            f"{format_date(earliest, entity.tenant)}, "
+            f"{counted(min_age_years(entity.tenant), 'year')} after it ended.",
             earliest_archive_date=earliest.isoformat(),
         )
     fiscal_year.archived_at = timezone.now()

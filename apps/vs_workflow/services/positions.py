@@ -136,7 +136,7 @@ def bind_position(code: str, tenant, *, where: str = "", active_only: bool = Tru
 
     organogram = tenant_organogram(tenant)
     if organogram is None:
-        raise refuse(f"this tenant has no organogram to name position '{code}' on.")
+        raise refuse(f"no organogram is set up here to name position '{code}' on.")
     found = organogram.find_position(code, tenant)
     if found is None:
         raise refuse(f"no active post with code '{code}' exists on this organogram.")

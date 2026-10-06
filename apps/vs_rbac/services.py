@@ -989,7 +989,7 @@ def create_role_from_suggestion(suggestion_key: str, tenant, created_by) -> Tena
 
     if TenantRoleTemplate.objects.filter(tenant=tenant, name__iexact=suggestion.name).exists():
         raise ValueError(
-            f'This tenant already has a role named "{suggestion.name}". '
+            f'You already have a role named "{suggestion.name}". '
             f'Rename the existing role before creating another with this name.'
         )
 

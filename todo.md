@@ -959,6 +959,67 @@ MUST SAY:
 Verified: tests_branch_month_checks 12 (the four resume and send refusals watched failing with the branch switched off), tests_sent_back (vs_finance) 10 and (vs_procurement) 6, tests_petty_cash_sent_back 7, tests_inter_branch_sent_back 3, tests_whole_school_close_order 5, tests_human_messages 7, vs_payments tests_payout_sent_back 1; the filter, refusal and read-shape tests watched failing with each fix switched off (21 failures, then 4, then the order display test). Existing tests changed for wording on purpose: tests_period_order (label key), tests_year_close_guard (two phrases), tests.PeriodClosedMessageTests, core test_exceptions (field names in words). vs_finance Ran 2134 (2 failures, both wording and an undated write-off, fixed and rerun: 12 OK); vs_procurement Ran 843 OK; vs_payments Ran 435 OK (after fixing a missed settlement caller the required branch argument exposed); vs_workflow Ran 557 OK; vs_config Ran 180 OK; core Ran 215 OK; full suite with --parallel 4: Ran 9812 tests, OK.
 Also (commit a2f77bae): exports and list filters agree with their rows (M19, M20, M22/M23, M07, M06, MRD). (a) Every quick export behind a Sent back list accepts approval=returned through the shared approval filter (vs_workflow.services.approval_filter.export_filter, carried by the Export Centre's screen binding for any dataset declaring it): finance.gl_postings (by the line's journal), finance.expense_claims, procurement.requisitions, procurement.purchase_orders, procurement.vendor_invoices; no other D130 list has an export dataset. (b) One word filter (core.list_filters, and approval_filter.filter_by_status_word for documents): any case, an unknown value is 400 naming the words, and no status word lists a document an approver sent back (it wears Sent back; approval=returned finds it), finance and procurement alike, so procurement Pending Approval no longer includes returned documents. Changed words: expense claims display_status DRAFT, PENDING, APPROVED (posted and unpaid only), PART_PAID (new), PAID, REJECTED; inter-branch transfers status takes the row stages REQUESTED, PENDING_APPROVAL, SENT, RECEIVED, DECLINED, NOT_SENT, VOIDED (DRAFT, POSTED, CANCELLED, REVERSED still read as stored statuses); held receipts status HELD, FORWARDING (not a forward sent back), FORWARDED, VOIDED (POSTED, REVERSED still read), plus approval=returned (the forward sent back) and forwarded_by.approval_returned on each row; credit notes DRAFT is draft only, plus PENDING_APPROVAL and REVERSED; invoices bucket, customers status and payments status refuse unknown values. Exports read the same rules: invoice tab (issued filters, partial excludes overdue, overdue at each branch's day), customer account status (Active as the list), receipts by allocation status, expense claim words, bill tabs (display_status), requisition Rejected. (c) Summaries count what their tabs list (approval_filter.word_condition) and add a sent_back count: journals/summary (by_status leaves sent-back out, new sent_back), requisitions/summary (pending_approval, approved_mtd, draft by the tab rules, new sent_back {count, amount}), vendor-invoices/summary (under_review is the Pending Approval tab without sent-back, approved, overdue, disputed by the tab rules, new sent_back {count}), purchase-orders/summary (new sent_back {count}), concessions/summary (draft_pending without sent-back, new sent_back amount), expense-claims/summary (new sent_back count), ar-adjustments kpis (new sent_back count). Refunds and write-offs "pending" KPI and the receivables dashboard count PENDING_APPROVAL only. void_held_receipt is atomic again (a helper had been inserted under its decorator), with a regression test. (d) Words: Field Access refusals name fields by their library label, or the field name in words when it has none, codes stay in error.detail; deferred income release refusals, depreciation narration, seal labels and the income statement export subtitle name months in words; "(s)" plurals replaced by counted()/agrees() across vs_finance, vs_procurement and vs_payments; a held receipt whose forward is with its approvers or sent back is told to resume or withdraw it under Workflow, My Submissions (shared refuse_while_forwarded, also used by payer payment void); close checks speak plainly ("Goods received but not yet billed", "Debits and credits balance", no sub-ledger, control, clearing or checksum); config value refusals use the console's words ("Enter a whole number of naira") and the three uncatalogued platform settings name their consumer.
 
+### D131. Tiles count what their tabs list, quick exports say which dates they cover, the Partly received tab exports, claims are part-paid safely, and messages say school words and dates (PENDING, 2026-10-06)
+Number may be renumbered at merge. Migration: vs_finance 0067_plain_account_labels (choice labels, and renames account 2150 only where it still reads the seeded "GR/IR Clearing"); renumber if another 0067 lands first.
+MODULES: M18 payments and collections (payout batch list words, batch tiles), M19 finance and accounting (expense claim tile, part-payment refusals, archive and petty cash dates, GR/IR wording in the chart and mapping), M20 adjustments and concessions (Active concessions), M22/M23 procurement and AP (order export Partly received, GR/IR wording on receipts, bills, returns and reports, withholding tax refusals), M06 configuration and capability (value refusals name the setting), M07 workflow and approval engine (approver group, dynamic role and template refusals without "tenant"), Export Centre (from-screen date window, last day kept whole), MRD (user-facing sentences never say "tenant"; dates in sentences follow the school's date format).
+MUST SAY:
+- Payout batches (M18). GET payments/payout-batches/ ?status= takes the words
+  the rows wear, any case, unknown is 400: DRAFT (not sent, or its request
+  withdrawn, cancelled or rejected), PENDING_APPROVAL (with its approvers),
+  PROCESSING (being paid, or approved and waiting for the dispatch worker),
+  COMPLETED, PARTIALLY_COMPLETED, FAILED. No word lists a batch sent back;
+  ?approval=returned lists those (new on this list). Rows and detail carry
+  display_status. payout-batches/summary/: drafts is the DRAFT word only (was
+  every stored DRAFT, including batches with the approver and sent back), new
+  pending_approval and sent_back counts.
+- Expense claims (M19). expense-claims/summary/ open counts the Draft, Awaiting
+  approval, Approved and Part-paid words, never a claim sent back (sent_back
+  counts those). Settle (POST expense-claims/<id>/settle/) takes optional
+  "amount" in integer kobo like every finance money field; left out it pays the
+  whole balance due. An amount of 0, or more than the balance due, is refused
+  422 with a sentence naming what is left (before: more than due was silently
+  trimmed); a draft, one with its approvers, one sent back and a rejected claim
+  are refused naming which; a fully paid claim says so. Reads carry
+  amount_paid and balance_due.
+- Concessions (M20). concessions/summary/ active_count is the concessions in
+  force: posted and not reversed (before: every concession in every state).
+  posted_ytd reads the school's year on its own calendar.
+- Quick exports (Export Centre). from-screen returns date_window {id, label,
+  start, end, whole_list, sentence} whenever the dataset needs a date range and
+  the screen sent none. By default the window covers every row the list
+  shows, from the earliest in the caller's reach to today (before: the last
+  365 days, unsaid); the ledger (31 days), sign-in sessions and audit events
+  (90 days) keep their windows on purpose and say so (whole_list false).
+  "sentence" is in the school's date format. A date range now keeps its last
+  day whole on instant columns (payouts, collections, tickets, audit events
+  created that afternoon were left out).
+- Order export (M22/M23). The order export has a display_status filter applying
+  the list's own status rules, so Partly received (PARTIAL) exports exactly the
+  tab, and every other status word reads the same rules; it is no longer
+  reported as unmapped.
+- Words (M07, M06, MRD, every engine module). No user-facing sentence in an
+  engine app says "tenant": approver groups ("An approver group with the code
+  'x' already exists."), dynamic roles, template stages, role and branch
+  lookups, petty cash route, bank split date, inter-branch shared cost rule,
+  statement import, tax filing shares, notification, ticket, config scope and
+  user branch refusals, the Export Centre scope label. Platform-only messages
+  (console, VIGIL, impersonation, provisioning) are unchanged. Config value
+  refusals name the setting: "Held-ledger Reconciliation Tolerance: enter a
+  whole number of naira.", "...: enter at least 0 naira.", "...: enter at most
+  1,000,000 naira." Dates in vs_finance sentences use the school's display
+  date format: archiving too early ("can be archived from 31 Dec 2028"), a
+  closed petty cash fund, opening invoices, bank account split refusals,
+  salary and structure change audit lines, a locked closing journal.
+- GR/IR wording (M19, M22/M23). Bursar text says "goods received, not yet
+  billed"; accountant screens say "GR/IR clearing (goods received, not yet
+  billed)": seeded account 2150, the account mapping role, journal line
+  descriptions on receipts, bills, credit notes and returns, and the GR/IR
+  report response messages. Receipt and return audit lines are plain. The
+  mapping's WHT role reads "WHT payable (withholding tax)"; withholding tax
+  refusals and two AR jargon messages are plain. The PAYE method label
+  "Supplied by the tenant" reads "Taken from the salary structure or roster".
+Verified: new tests watched failing on the old code first: vs_payments tests_batch_words 5, vs_finance tests_list_words ConcessionSummaryTests + open-claims test, vs_procurement tests_sent_back PartlyReceivedExportTests + translator test, vs_exports FromScreenTests (3 new) + DateRangeKeepsItsLastDayWholeTests. Also new: tests_claim_part_pay 4, tests_plain_account_words 2, approver group duplicate refusal, archive and petty cash dates, config refusals. Existing tests changed for wording on purpose: tests_bank_account_split (split date), tests_inter_branch (absorbed cost rule), tests_screen_reads (no such branch). App runs: vs_payments Ran 440 OK, vs_exports 222 OK, vs_config 183 OK, vs_workflow 558 OK, vs_procurement 855 OK, vs_rbac 997 OK, vs_tenants 87 OK, vs_notifications 231 OK, vs_tickets 125 OK, vs_user 430 OK, vs_audit 109 OK, vs_finance Ran 2167 (2 wording assertions updated, both modules rerun: 99 OK). Full suite not run. Commit PENDING.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

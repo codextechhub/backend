@@ -1912,6 +1912,41 @@ class FromScreenTests(_ExportFixture, TestCase):
         # The dataset requires a date window the screen never supplied.
         self.assertEqual([a["id"] for a in data["added"]], ["invoice_date"])
 
+    def test_with_no_dates_on_the_list_the_export_covers_every_row_it_shows(self):
+        """An invoice raised long ago is on the list, so it is in the file, and the window says so."""
+        from vs_config.display import format_date
+
+        old = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=self.today - datetime.timedelta(days=900),
+            due_date=self.today, total=5_000_00, subtotal=5_000_00,
+        )
+
+        data = self._get(f"screen=finance.invoices&entity={self.entity.code}").json()["data"]
+
+        window = data["date_window"]
+        self.assertEqual((window["id"], window["whole_list"]), ("invoice_date", True))
+        self.assertEqual((window["start"], window["end"]),
+                         (old.invoice_date.isoformat(), self.today.isoformat()))
+        self.assertIn(format_date(old.invoice_date, self.tenant), window["sentence"])
+        self.assertEqual(data["matching_rows"], 5)
+        self.assertEqual(data["added"][0]["reason"], window["sentence"])
+
+    def test_a_screen_bounded_on_purpose_returns_its_window(self):
+        data = self._get(f"screen=finance.gl_postings&entity={self.entity.code}").json()["data"]
+
+        window = data["date_window"]
+        self.assertFalse(window["whole_list"])
+        self.assertEqual(window["start"],
+                         (self.today - datetime.timedelta(days=31)).isoformat())
+        self.assertIn("the last 31 days", window["sentence"])
+
+    def test_dates_on_the_screen_need_no_window(self):
+        data = self._get(
+            f"screen=finance.gl_postings&entity={self.entity.code}"
+            f"&date_from=2026-01-01&date_to=2026-01-31").json()["data"]
+        self.assertIsNone(data["date_window"])
+
     def test_screen_filters_are_carried_into_the_export(self):
         response = self._get(
             f"screen=finance.invoices&entity={self.entity.code}"
@@ -2620,3 +2655,24 @@ class SearchFilterTests(_ExportFixture, TestCase):
                 if any(u["param"] == param for u in resolved["unmapped"]):
                     still_unmapped.append(f"{screen.key}.{param}")
         self.assertEqual(still_unmapped, [], "; ".join(still_unmapped))
+
+
+class DateRangeKeepsItsLastDayWholeTests(TestCase):
+    """A date range ends at the close of its last day, on a date column and an instant one.
+
+    A payout sent at 2:30 pm on 6 October is in a file "to 6 October". Read as
+    "at or before 6 October", an instant column would stop at that day's
+    midnight and leave the afternoon's payouts out of a file the list shows them in.
+    """
+
+    def test_the_last_day_is_read_up_to_the_next_day(self):
+        from django.db.models import Q
+
+        from vs_exports.catalogue import compile_filter
+
+        for key, filter_id in (("payments.payouts", "created_at"), (DATASET, "invoice_date")):
+            with self.subTest(dataset=key):
+                compiled = compile_filter(get_dataset(key), {
+                    "id": filter_id, "start": "2026-10-01", "end": "2026-10-06"})
+                self.assertEqual(compiled, Q(**{f"{filter_id}__gte": datetime.date(2026, 10, 1)})
+                                 & Q(**{f"{filter_id}__lt": datetime.date(2026, 10, 7)}))

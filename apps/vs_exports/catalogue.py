@@ -585,9 +585,13 @@ class ScreenBinding:
     handles: tuple = ()
     #: Extra params this screen carries that are not filters (tab ids, view modes).
     ignore: tuple = ()
-    #: When the dataset requires a date filter the screen has no equivalent for, cover
-    #: this many days back. Narrowing is safe; widening is not.
-    default_window_days: int = 365
+    #: When the dataset requires a date filter and the screen sent none, how far back
+    #: the export reaches. ``None`` (the default) covers every row the list could
+    #: show, from the earliest in the caller's reach to today, so the file matches
+    #: the table. A number of days is for a screen whose rows are too many to export
+    #: whole and whose own console reads the recent past (the ledger, sign-ins,
+    #: audit events); the window is then returned to the screen to say so.
+    default_window_days: int | None = None
 
     @property
     def dataset(self):
@@ -622,10 +626,53 @@ def all_screens() -> list[ScreenBinding]:
     return sorted(_SCREENS.values(), key=lambda s: s.key)
 
 
-def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
+def _earliest_day(dataset, spec, scope):
+    """The first day any row in ``scope`` falls on by the date filter ``spec``, or None.
+
+    Read from the dataset's own base queryset, so it is the earliest row the
+    caller could see on the list. An instant is taken by its UTC date, which is
+    never later than its local one, so the window still starts on or before it.
+    """
+    from django.db.models import Min
+
+    if scope is None:
+        return None
+    earliest = dataset.base(scope).aggregate(first=Min(spec.path))["first"]
+    if isinstance(earliest, datetime.datetime):
+        return earliest.astimezone(datetime.timezone.utc).date()
+    return earliest
+
+
+def _date_window(binding, dataset, spec, scope, end) -> dict:
+    """The window a screen export covers when the screen sent no dates: see :func:`resolve_screen`."""
+    tenant = getattr(scope, "tenant", None)
+    name = dataset.name.lower()
+    if binding.default_window_days is None:
+        start = min(_earliest_day(dataset, spec, scope) or end, end)
+        whole_list = True
+        sentence = (
+            f"Includes every one of the {name} the list shows, from "
+            f"{format_date(start, tenant)} to {format_date(end, tenant)}."
+        )
+    else:
+        start = end - datetime.timedelta(days=binding.default_window_days)
+        whole_list = False
+        sentence = (
+            f"Includes {name} from {format_date(start, tenant)} to "
+            f"{format_date(end, tenant)}, the last {binding.default_window_days} days. "
+            f"Set the dates in the builder to include earlier ones."
+        )
+    return {
+        "id": spec.id, "label": spec.label,
+        "start": start.isoformat(), "end": end.isoformat(),
+        "whole_list": whole_list, "sentence": sentence,
+    }
+
+
+def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=None) -> dict:
     """Turn one screen's query parameters into a runnable export configuration.
 
-    Returns ``{filters, carried, unmapped, added, exact}``:
+    Returns ``{filters, carried, unmapped, added, exact, date_window}``:
 
     ``unmapped``
         Screen filters that could not be expressed. Their presence means the export
@@ -636,6 +683,17 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
         is safe but still worth showing.
     ``exact``
         True only when nothing was dropped: the file will match the table.
+    ``date_window``
+        The dates the export covers when its dataset needs a date range and the
+        screen sent none, else ``None``: ``{id, label, start, end, whole_list,
+        sentence}``. A list with no date filter shows every row, so by default
+        the window runs from the first row in ``scope`` (the caller's reach) to
+        ``today`` and ``whole_list`` is true. A screen that names
+        :attr:`ScreenBinding.default_window_days` covers that many days back
+        instead, ``whole_list`` false. ``sentence`` says which in the school's
+        date format ("Includes invoices from 3 Feb 2021 to 6 Oct 2026, ..."),
+        so the screen never has to guess. Without a ``scope`` (a translation
+        checked on its own) the default window starts and ends ``today``.
 
     A parameter the dataset reads directly (:attr:`FilterDef.screen_param`) is
     carried here, before the screen's translator sees the rest, so every
@@ -676,28 +734,24 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
     reported = {u.param for u in unmapped}
     carried = sorted(param for param in meaningful if param not in reported)
 
-    # A dataset that requires a date window and did not get one from the screen gets
-    # a bounded default rather than being refused - the drawer says how far back.
+    # A required date range the screen did not send: the window is returned.
     added = []
+    date_window = None
     present = {str(f.get("id")) for f in filters}
     for filter_id in dataset.required_filter_ids:
         if filter_id in present:
             continue
         spec = dataset.filter_def(filter_id)
         if spec is not None and spec.kind == FILTER_DATE_RANGE:
-            end = today or tenant_today(None)
-            start = end - datetime.timedelta(days=binding.default_window_days)
+            end = today or tenant_today(getattr(scope, "tenant", None))
+            date_window = _date_window(binding, dataset, spec, scope, end)
             filters.append({
-                "id": filter_id, "start": start.isoformat(), "end": end.isoformat(),
+                "id": filter_id, "start": date_window["start"], "end": date_window["end"],
             })
             added.append({
                 "id": filter_id,
                 "label": spec.label,
-                "reason": (
-                    f"{dataset.name} needs a date range. The export covers the last "
-                    f"{binding.default_window_days} days; widen it in the builder if "
-                    f"you need more."
-                ),
+                "reason": date_window["sentence"],
             })
 
     return {
@@ -706,6 +760,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
         "unmapped": [u.as_dict() for u in unmapped],
         "added": added,
         "exact": not unmapped,
+        "date_window": date_window,
     }
 
 
@@ -801,12 +856,15 @@ def compile_filter(dataset: Dataset, spec: dict, scope=None) -> Q:
     path = fdef.path
 
     if fdef.kind == FILTER_DATE_RANGE:
+        # The end day is kept whole: before the next day's start, not at or before
+        # its own midnight, which would drop that day's rows from an instant column.
         start, end = spec.get("start"), spec.get("end")
         q = Q()
         if start:
             q &= Q(**{f"{path}__gte": _as_date(start, filter_id, fdef.label)})
         if end:
-            q &= Q(**{f"{path}__lte": _as_date(end, filter_id, fdef.label)})
+            following = _as_date(end, filter_id, fdef.label) + datetime.timedelta(days=1)
+            q &= Q(**{f"{path}__lt": following})
         return q
 
     if fdef.kind == FILTER_CHOICE:

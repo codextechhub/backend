@@ -34,6 +34,8 @@ from django.db.models import F, Sum
 
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
+    GRIR_NAME,
+    GRIR_PLAIN,
     DocumentStatus,
     FinanceAuditAction,
     InvoicePaymentStatus,
@@ -472,8 +474,8 @@ def _post_vendor_credit_note_atomic(note, *, actor_user=None):
         ))
     if grir_total:
         journal_lines.append((
-            resolve_account(note.entity, GRIR_CLEARING_CODE, label="GR/IR clearing"),
-            0, grir_total, None, "GR/IR clearing",
+            resolve_account(note.entity, GRIR_CLEARING_CODE, label=GRIR_PLAIN),
+            0, grir_total, None, GRIR_NAME,
         ))
     for (account_id, cost_center_id), amount in expense_by_key.items():
         if amount:
@@ -1073,8 +1075,8 @@ def _return_goods_atomic(grn, *, return_date, reason, lines=None, actor_user=Non
         created_by=actor_user,
     )
     JournalLine.objects.create(
-        entry=entry, account=resolve_account(grn.entity, GRIR_CLEARING_CODE, label="GR/IR clearing"),
-        debit=total_value, credit=0, description=f"GR/IR: {grn.vendor.code}", line_no=1,
+        entry=entry, account=resolve_account(grn.entity, GRIR_CLEARING_CODE, label=GRIR_PLAIN),
+        debit=total_value, credit=0, description=f"{GRIR_NAME}: {grn.vendor.code}", line_no=1,
     )
     for number, ((account_id, cost_center_id), amount) in enumerate(credit_by_key.items(), start=2):
         JournalLine.objects.create(
@@ -1117,7 +1119,7 @@ def _return_goods_atomic(grn, *, return_date, reason, lines=None, actor_user=Non
         actor_user=actor_user, target=goods_return,
         message=(
             f"Returned goods on {_label(grn)} to {grn.vendor.code} "
-            f"({format_naira(total_value)} out of GR/IR): {reason}"
+            f"({format_naira(total_value)} no longer waiting for a bill): {reason}"
         ),
         journal_id=entry.pk, value=total_value, grn_id=grn.pk, reason=reason,
     )

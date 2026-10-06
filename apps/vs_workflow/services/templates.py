@@ -64,7 +64,7 @@ def _resolve_role(stage_payload: dict, tenant):
     ).first()
     if role is None:
         raise TemplateInvalidError(
-            f"Stage '{label}': no active role with key '{key}' exists in this tenant.")
+            f"Stage '{label}': there is no active role with the key '{key}'.")
     return role
 
 
@@ -96,8 +96,8 @@ def _resolve_group(stage_payload: dict, tenant):
     ).first()
     if group is None:
         raise TemplateInvalidError(
-            f"Stage '{label}': no active approver group with code '{code}' "
-            "exists in this tenant.")
+            f"Stage '{label}': there is no active approver group with the code "
+            f"'{code}'.")
     return group
 
 
@@ -130,8 +130,8 @@ def _resolve_dynamic_role(stage_payload: dict, tenant, document_type: str):
     ).first()
     if dynamic_role is None:
         raise TemplateInvalidError(
-            f"Stage '{label}': no active Dynamic Role with code '{code}' exists in "
-            "this tenant.")
+            f"Stage '{label}': there is no active dynamic role with the code "
+            f"'{code}'.")
     # A role written before Dynamic Roles stopped naming document types still
     # says which it serves, and that answer stands.
     if dynamic_role.document_types and document_type not in dynamic_role.document_types:
@@ -184,7 +184,7 @@ def _parse_dynamic_rules(stage_payload: dict, tenant):
             ).first()
             if role is None:
                 raise TemplateInvalidError(
-                    f"{where}: no active role with key '{key}' exists in this tenant.")
+                    f"{where}: there is no active role with the key '{key}'.")
         condition = raw.get("condition")
         validate_condition(condition, where)
         parsed.append({

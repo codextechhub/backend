@@ -187,7 +187,7 @@ def _preview_dynamic_role(d, requester, instance, scope):
             status=TenantRoleTemplate.Status.ACTIVE).first()
         if role is None:
             raise TemplateInvalidError(
-                f"{where}: no active role with key '{key}' exists in this tenant.")
+                f"{where}: there is no active role with the key '{key}'.")
         condition = raw.get("condition")
         validate_condition(condition, where)
         hit, trace = evaluate_condition(condition, document)
@@ -387,8 +387,8 @@ class WorkflowTemplateViewSet(
                 # A mistyped role key deserves loud feedback in the builder,
                 # not a silent empty approver list.
                 return Response(
-                    {"detail": f"No active role with key '{d['approver_role_key']}' "
-                               "exists in this tenant."},
+                    {"detail": f"There is no active role with the key "
+                               f"'{d['approver_role_key']}'."},
                     status=status.HTTP_404_NOT_FOUND)
         if d["approver_source"] == ApproverSource.WORKFLOW_GROUP:
             group = WorkflowApproverGroup.all_objects.filter(
@@ -396,8 +396,8 @@ class WorkflowTemplateViewSet(
             ).first()
             if group is None:
                 return Response(
-                    {"detail": f"No active approver group with code "
-                               f"'{d['approver_group_code']}' exists in this tenant."},
+                    {"detail": f"There is no active approver group with the code "
+                               f"'{d['approver_group_code']}'."},
                     status=status.HTTP_404_NOT_FOUND)
             stage.approver_group = group
 
@@ -418,8 +418,8 @@ class WorkflowTemplateViewSet(
             ).first()
             if dynamic_role is None:
                 return Response(
-                    {"detail": f"No active Dynamic Role with code "
-                               f"'{d['dynamic_role_code']}' exists in this tenant."},
+                    {"detail": f"There is no active dynamic role with the code "
+                               f"'{d['dynamic_role_code']}'."},
                     status=status.HTTP_404_NOT_FOUND)
             branch = instance.branch if stage.approver_scope == "BRANCH" else None
             try:

@@ -37,6 +37,8 @@ from collections import defaultdict
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .audit import record, record_rejection
 from .constants import (
     AccountMappingKey,
@@ -96,7 +98,8 @@ def _refuse_closed(fund) -> None:
     """Refuse any movement on a closed fund, naming the way back."""
     if fund.is_closed:
         raise PettyCashError(
-            f"Petty cash fund '{fund.name}' was closed on {fund.closed_on.isoformat()}. "
+            f"Petty cash fund '{fund.name}' was closed on "
+            f"{format_date(fund.closed_on, fund.entity.tenant)}. "
             f"Reopen it first.",
         )
 
@@ -773,7 +776,8 @@ def _post_petty_cash_return_atomic(ret, *, actor_user=None):
             entity=ret.entity, action=FinanceAuditAction.PETTY_CASH_FUND_CLOSED,
             actor_user=actor_user, target=fund,
             message=(
-                f"Closed petty cash fund '{fund.name}' on {ret.return_date.isoformat()} "
+                f"Closed petty cash fund '{fund.name}' on "
+                f"{format_date(ret.return_date, ret.entity.tenant)} "
                 f"with return {ret.document_number}."
             ),
             return_id=ret.pk, closed_on=ret.return_date.isoformat(),
@@ -926,7 +930,10 @@ def reopen_fund(fund, *, reason, float_amount=None, actor_user=None):
     record(
         entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_FUND_REOPENED,
         actor_user=actor_user, target=fund,
-        message=f"Reopened petty cash fund '{fund.name}', closed on {closed_on.isoformat()}: {reason}",
+        message=(
+            f"Reopened petty cash fund '{fund.name}', closed on "
+            f"{format_date(closed_on, fund.entity.tenant)}: {reason}"
+        ),
         reason=reason, closed_on=closed_on.isoformat(), closed_by_id=closed_by_id,
         before={"float_amount": before_float}, after={"float_amount": fund.float_amount},
     )

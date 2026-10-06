@@ -1256,7 +1256,7 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
             )
         except (TenantRoleTemplate.DoesNotExist, ValueError, TypeError):
             return error_response(
-                message="The selected role is not active in this tenant.",
+                message="The selected role is not active.",
                 error={"role": ["Select a valid active role."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )

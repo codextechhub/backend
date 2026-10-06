@@ -182,7 +182,7 @@ class ScopedModel(models.Model):
             if self.tenant_id is None:
                 self.tenant_id = branch_tenant_id
             elif self.tenant_id != branch_tenant_id:
-                raise ValidationError({"branch": "Branch must belong to the selected tenant."})
+                raise ValidationError({"branch": "Choose a branch of the organisation being configured."})
 
     def set_scope_key(self):
         if self.branch_id:

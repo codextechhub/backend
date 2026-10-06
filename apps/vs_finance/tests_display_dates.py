@@ -43,6 +43,19 @@ class FinanceDatesFollowTheSchoolTests(_FinanceBranchFixture):
         printed = invoice_document_context(invoice)["invoice"]
         self.assertEqual((printed["invoice_date"], printed["due_date"]), ("05/01/2026", "04/02/2026"))
 
+    def test_a_closed_petty_cash_fund_names_its_closing_day_the_schools_way(self):
+        from vs_finance.exceptions import PettyCashError
+        from vs_finance.models import Account, PettyCashFund
+        from vs_finance.petty_cash import _refuse_closed
+
+        fund = PettyCashFund(
+            entity=self.books, branch=self.ikeja, name="Front desk",
+            gl_account=Account(entity=self.books, code="1099"), closed_on=JAN_5,
+        )
+        with self.assertRaises(PettyCashError) as refused:
+            _refuse_closed(fund)
+        self.assertIn("was closed on 05/01/2026.", str(refused.exception))
+
     def test_a_statement_period_names_both_ends_or_inception(self):
         from vs_finance.documents import statement_period
 

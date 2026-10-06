@@ -1145,7 +1145,7 @@ def _branch_name(branch_id):
     from vs_tenants.models import Branch
 
     if branch_id is None:
-        return "the tenant"
+        return "the organisation"
     branch = Branch.all_objects.filter(pk=branch_id).only("name").first()
     return branch.name if branch else f"branch {branch_id}"
 

@@ -553,6 +553,13 @@ class FromScreenView(_ExportBase):
     at. Silently dropping a filter is the one outcome worth designing against - the
     user asked for overdue invoices and would get all of them, with nothing on screen
     to say so.
+
+    ``date_window`` says which dates the file covers when the dataset needs a
+    date range and the screen sent none (:func:`vs_exports.catalogue.resolve_screen`):
+    by default every row the list shows, from the first in the caller's reach to
+    today, so the file matches the table, and for the few screens bounded on
+    purpose, how far back, so the screen can say "Includes ... from <date> to
+    <date>" rather than leave the reader to find out.
     """
 
     rbac_permission = ExportPermission.CATALOGUE_VIEW
@@ -584,6 +591,7 @@ class FromScreenView(_ExportBase):
         screen_readable = readable_fields(request.user, self.tenant)
         resolved = resolve_screen(
             binding, request.query_params.dict(), today=tenant_today(self.tenant),
+            scope=scope,
         )
         config = {
             "dataset_key": dataset.key,
@@ -622,6 +630,7 @@ class FromScreenView(_ExportBase):
                 "carried": resolved["carried"],
                 "unmapped": resolved["unmapped"],
                 "added": resolved["added"],
+                "date_window": resolved["date_window"],
                 "exact": resolved["exact"],
                 "warning": None if resolved["exact"] else (
                     "Some filters on this screen cannot be carried into an export, so "

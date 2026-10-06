@@ -384,6 +384,8 @@ class ArchivedYearTests(_Books):
         with mock.patch(TODAY, return_value=datetime.date(2028, 12, 30)):
             too_soon = self.archive(self.adaeze)
         self.assertEqual(too_soon.status_code, 409, too_soon.data)
+        self.assertIn("can be archived from 31 Dec 2028", too_soon.data["message"])
+        self.assertNotIn("2028-12-31", too_soon.data["message"])
         self.assertIsNone(self.year().archived_at)
 
     def test_archiving_hides_the_year_and_its_documents_until_asked(self):

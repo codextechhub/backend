@@ -187,10 +187,16 @@ def _post_expense_claim_atomic(claim, *, actor_user=None):
 
 # Public wrapper for reimbursements.
 def settle_expense_claim(claim, *, bank_account, pay_date, amount=None, actor_user=None):
-    """Reimburse a posted claim: ``Dr accrued reimbursement, Cr bank``.
+    """Reimburse a posted claim, all of it or part: ``Dr accrued reimbursement, Cr bank``.
 
-    ``amount`` defaults to the full outstanding balance; a smaller amount records a
-    partial reimbursement. Records a durable rejection audit on any FinanceError.
+    ``amount`` is integer kobo. Left out, it is the whole balance still due; a
+    smaller amount reimburses part, leaving the claim Part-paid with the rest due,
+    and a later payment can finish it. An amount of nothing, or more than the
+    balance due, is refused rather than trimmed: the bursar typed a figure, and
+    paying a different one without saying so is worse than asking again. Only an
+    approved (posted) claim is reimbursed; a draft, one with its approvers, one
+    sent back and a rejected one are refused, each named as such. Records a
+    durable rejection audit on any FinanceError.
     """
     try:  # Atomic worker performs reimbursement accounting.
         return _settle_expense_claim_atomic(  # Settle all or part of the claim.
@@ -203,6 +209,19 @@ def settle_expense_claim(claim, *, bank_account, pay_date, amount=None, actor_us
             exc=exc, actor_user=actor_user, target=claim,  # Capture error and actor context.
         )
         raise
+
+
+def _unpayable_state(claim) -> str:
+    """Where a claim that cannot be reimbursed stands, as the claims list names it."""
+    from .approvals import approval_overview
+
+    if claim.status == DocumentStatus.DRAFT:
+        _, returned = approval_overview([claim])[claim.pk]
+        return "was sent back to whoever raised it" if returned else "is still a draft"
+    return {
+        DocumentStatus.PENDING_APPROVAL: "is waiting for approval",
+        DocumentStatus.CANCELLED: "was rejected",
+    }.get(claim.status, f"is {state_word(claim)}")
 
 
 @transaction.atomic
@@ -230,8 +249,12 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
     # Locked re-read before the balance is touched. See the docstring.
     claim.refresh_from_db(from_queryset=type(claim).objects.select_for_update())
 
-    if claim.status != DocumentStatus.POSTED:  # Only posted liabilities can be settled.
-        raise ExpenseClaimError("Only a posted expense claim can be settled.")
+    if claim.status != DocumentStatus.POSTED:
+        raise ExpenseClaimError(
+            f"Expense claim {claim.document_number or claim.pk} {_unpayable_state(claim)}. "
+            f"Only an approved claim can be reimbursed.",
+            status=claim.status,
+        )
 
     # A reimbursement cannot predate the claim accrual: debiting the liability
     # earlier would leave accrued reimbursement negative until the claim date.
@@ -245,12 +268,24 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
         tenant=claim.entity.tenant,
     )
 
-    outstanding = claim.balance_due  # Amount still owed to the claimant.
-    if outstanding <= 0:  # Fully reimbursed claims cannot be settled again.
-        raise ExpenseClaimError("This claim has no outstanding balance to settle.")
-    pay = outstanding if amount is None else min(int(amount), outstanding)  # Default to full balance and cap partials.
-    if pay <= 0:  # Reject zero or negative settlement requests.
-        raise ExpenseClaimError("Settlement amount must be positive.")
+    outstanding = claim.balance_due
+    number = claim.document_number or claim.pk
+    if outstanding <= 0:
+        raise ExpenseClaimError(
+            f"Expense claim {number} is already reimbursed in full.", balance_due=0,
+        )
+    pay = outstanding if amount is None else int(amount)
+    if pay <= 0:
+        raise ExpenseClaimError(
+            "Enter an amount to reimburse greater than ₦0.00.", balance_due=outstanding,
+        )
+    if pay > outstanding:
+        raise ExpenseClaimError(
+            f"Expense claim {number} has {format_naira(outstanding)} left to reimburse, "
+            f"so {format_naira(pay)} is more than is due. Enter {format_naira(outstanding)} "
+            f"or less.",
+            balance_due=outstanding,
+        )
 
     reimbursement = claim.reimbursement_account or resolve_account(  # Use stored liability account or resolve default.
         claim.entity, ACCRUED_REIMBURSEMENT_CODE, label="accrued reimbursement",  # Resolve accrued reimbursement account.

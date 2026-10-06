@@ -93,6 +93,41 @@ _BILL_TABS = {
 }
 
 
+#: The order list's status words (:func:`vs_procurement.views.orders.purchase_order_status_rules`).
+_ORDER_WORDS = {**_DOC_STATUS, "PARTIAL": "Partly received"}
+
+
+def _order_word_compiles(spec, scope=None):
+    """The orders the list's status words list, by the list's own rules.
+
+    The list reads Partly received from each order's received and ordered
+    quantities, which are sums over its lines, so the rule runs on orders
+    carrying those two sums and the export keeps the orders it selects. Every
+    other word reads the same rules the same way, so the file holds the rows
+    the tab showed (:func:`vs_procurement.views.orders.purchase_order_status_rules`).
+    """
+    from django.db.models import Q, Sum
+
+    from vs_exports.catalogue import FilterError
+
+    from .models import PurchaseOrder
+    from .views.orders import purchase_order_status_rules
+
+    values = spec.get("values") or []
+    if not isinstance(values, list) or any(str(v) not in _ORDER_WORDS for v in values):
+        raise FilterError(f"“Status” takes {', '.join(_ORDER_WORDS)}.", filter_id="display_status")
+    if not values:
+        return Q()
+    rules = purchase_order_status_rules()
+    combined = Q(pk__in=[])
+    for value in values:
+        combined |= rules[str(value)]
+    listed = PurchaseOrder.objects.annotate(
+        ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"),
+    ).filter(combined).values("pk")
+    return Q(pk__in=listed)
+
+
 def _bill_tab_compiles(spec, scope=None):
     """The bills the list's tabs list (:func:`vs_procurement.views.receiving.vendor_invoice_display_rules`).
 
@@ -158,6 +193,9 @@ def register_datasets():
             FilterDef("order_date", "Order date", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("display_status", "Status as listed", FILTER_CHOICE,
+                      choices=_ORDER_WORDS, compiles=_order_word_compiles,
+                      description="The status each order's row shows on the orders list."),
             FilterDef("approval_state", "Approval", FILTER_CHOICE, choices=_APPROVAL_STATE),
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
             export_filter("vs_procurement.PurchaseOrder"),
@@ -310,35 +348,24 @@ def register_datasets():
 # --------------------------------------------------------------------------- #
 # Translate the purchase-order list screen's filters into export filters.
 def _translate_purchase_orders(params):
-    """The order list's filters as export filters, ``status`` in the list's own precedence.
+    """The order list's filters as export filters, ``status`` read by the list's own rules.
 
     The list's status chip is the order's display status
-    (:func:`vs_procurement.views.orders._filter_purchase_orders`): an order whose
-    approval request is open reads Pending Approval, whatever its stored status.
-    So Pending Approval exports the orders whose approval is pending, and every
-    other status leaves them out, and the file holds the rows the table showed.
+    (:func:`vs_procurement.views.orders.purchase_order_status_rules`): an order
+    whose approval request is open reads Pending Approval, an issued order part
+    received reads Partly received, and one sent back reads Sent back and no
+    status word. The export's ``display_status`` filter applies those rules,
+    with the sent-back orders left out as the list leaves them out, so the
+    file holds the rows the table showed.
     """
     from core.list_filters import word_value
     from vs_exports.catalogue import Unmapped
 
-    from .constants import ProcApprovalState
     from .views.orders import purchase_order_status_rules
 
     filters, unmapped = [], []
-    settled = [str(state) for state in ProcApprovalState.values if state != ProcApprovalState.PENDING]
     if value := word_value(params.get("status"), list(purchase_order_status_rules())):
-        if value == "PENDING_APPROVAL":
-            filters.append({"id": "approval_state", "values": [str(ProcApprovalState.PENDING)]})
-        elif value == "PARTIAL":
-            unmapped.append(Unmapped(
-                "status", value,
-                "The purchase-order export cannot filter by how much of an order has "
-                "been received, so the file is not limited by it.",
-            ))
-        else:
-            filters.append({"id": "status", "values": [value]})
-            if value not in ("CANCELLED", "REVERSED"):
-                filters.append({"id": "approval_state", "values": settled})
+        filters.append({"id": "display_status", "values": [value]})
         filters.append(not_returned_spec())
     if value := params.get("vendor"):
         filters.append({"id": "vendor", "value": value})

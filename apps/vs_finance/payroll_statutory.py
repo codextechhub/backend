@@ -42,6 +42,8 @@ from django.db import transaction
 from django.db.models import Min, Q, Sum
 from rest_framework.exceptions import ValidationError
 
+from vs_config.display import format_date
+
 from .audit import record
 from .constants import (
     EMPLOYER_PENSION_EXPENSE_CODE,
@@ -887,8 +889,6 @@ def default_effective_from(salary):
 
 def assert_effective_date_open(salary, effective_from) -> None:
     """Refuse a change dated into a payroll month the person has already been paid for."""
-    from vs_config.display import format_date
-
     end = last_paid_period_end(salary)
     if end is not None and effective_from <= end:
         tenant = salary.entity.tenant
@@ -1110,7 +1110,10 @@ def change_terms(salary, values: dict, *, effective_from=None, reason="", actor_
     record(
         entity=salary.entity, action=FinanceAuditAction.SALARY_CHANGED, actor_user=actor_user,
         target=salary, branch=owning_branch_id(salary),
-        message=f"Changed {salary.name}'s pay terms from {effective_from.isoformat()}.",
+        message=(
+            f"Changed {salary.name}'s pay terms from "
+            f"{format_date(effective_from, salary.entity.tenant)}."
+        ),
         before=_jsonable({k: before.get(k) for k in changed}),
         after=_jsonable(changed), effective_from=effective_from.isoformat(),
         version_id=version.pk, reason=reason[:255],
@@ -1276,8 +1279,6 @@ def replace_components(structure, rows, *, effective_from=None, actor_user=None,
     has been paid on takes its new lines "from the start". The closed lines stay,
     so the months they priced can be read and recomputed.
     """
-    from vs_config.display import format_date
-
     from .models import PAYROLL_HISTORY_START, SalaryComponent
 
     end = _structure_last_paid_end(structure)
@@ -1308,7 +1309,8 @@ def replace_components(structure, rows, *, effective_from=None, actor_user=None,
             actor_user=actor_user, target=structure,
             message=(
                 f"Set up salary structure '{structure.name}'." if creating else
-                f"Changed salary structure '{structure.name}' from {effective_from.isoformat()}."
+                f"Changed salary structure '{structure.name}' from "
+                f"{format_date(effective_from, structure.entity.tenant)}."
             ),
             before={"components": before}, after={"components": after},
             effective_from=effective_from.isoformat(),

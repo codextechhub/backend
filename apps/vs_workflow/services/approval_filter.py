@@ -80,6 +80,35 @@ def latest_request_status(model, *, path=""):
     )
 
 
+def request_status_condition(model, statuses, *, path=""):
+    """A ``Q`` keeping the rows whose document's latest request stands in one of ``statuses``.
+
+    ``model`` and ``path`` are as for :func:`latest_request_status`. A document
+    never sent reads as blank rather than NULL, so a negation of this keeps it
+    instead of losing it to SQL's three-valued NOT.
+    """
+    from django.db.models.lookups import In
+
+    status = Coalesce(latest_request_status(model, path=path), Value(""),
+                      output_field=CharField())
+    return Q(In(status, [str(value) for value in statuses]))
+
+
+def with_approvers_condition(model, *, path=""):
+    """A ``Q`` keeping the rows whose document's latest request is open and with its approvers.
+
+    Open is what :func:`vs_finance.approvals.approval_overview` reads as
+    PENDING, less a request returned to its sender, which
+    :func:`returned_condition` states: a document the list shows as Awaiting
+    approval, for a document that keeps no approval state of its own.
+    """
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+
+    return request_status_condition(
+        model, (S.DRAFT, S.SUBMITTED, S.IN_PROGRESS), path=path,
+    )
+
+
 def returned_condition(model, *, path=""):
     """A ``Q`` keeping the rows whose document's latest request was returned to its sender.
 

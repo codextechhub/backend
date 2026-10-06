@@ -25,7 +25,7 @@ def normalize_scope(*, tenant=None, branch=None):
         if tenant is None:
             tenant = branch.tenant
         elif branch.tenant_id != tenant.pk:
-            raise InvalidConfigurationScope("Branch must belong to the selected tenant.")
+            raise InvalidConfigurationScope("Choose a branch of the organisation being configured.")
     return tenant, branch
 
 

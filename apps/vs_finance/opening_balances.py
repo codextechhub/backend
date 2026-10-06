@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from django.db import transaction
 
+from vs_config.display import format_date
+
 from .audit import record, record_rejection
 from .constants import (
     AccountMappingKey,
@@ -111,7 +113,8 @@ def _post_opening_invoice_atomic(invoice, *, actor_user=None):
     if live is not None and invoice.invoice_date >= live:
         raise PostingError(
             f"Bill {invoice.reference or number} for {customer.name} is dated "
-            f"{invoice.invoice_date}, on or after the books went live on {live}. "
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)}, on or after "
+            f"the books went live on {format_date(live, invoice.entity.tenant)}. "
             f"Raise it as an ordinary invoice instead.",
         )
 
@@ -144,7 +147,8 @@ def _post_opening_invoice_atomic(invoice, *, actor_user=None):
         entity=invoice.entity, action=FinanceAuditAction.CUSTOMER_OPENING_POSTED,
         actor_user=actor_user, target=invoice,
         message=(
-            f"Carried in an opening invoice for {customer.code} dated {invoice.invoice_date} "
+            f"Carried in an opening invoice for {customer.code} dated "
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)} "
             f"({format_naira(invoice.total)})."
         ),
         journal_id=entry.pk, total=invoice.total, invoice_date=str(invoice.invoice_date),

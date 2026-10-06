@@ -631,6 +631,12 @@ class PayoutBatchListCreateView(APIView):
     ``{"submit": true}`` to submit the batch for approval. Neither path calls the
     provider directly.
 
+    GET takes ``?status=`` as the words the rows wear (``display_status``:
+    DRAFT, PENDING_APPROVAL, PROCESSING, COMPLETED, PARTIALLY_COMPLETED,
+    FAILED; :func:`vs_payments.approvals.payout_batch_status_rules`), in any
+    case, refusing any other word (400). No word lists a batch an approver sent
+    back; ``?approval=returned`` lists those.
+
     docstring-name: Payout batches
     """
 
@@ -647,10 +653,18 @@ class PayoutBatchListCreateView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
+        from vs_workflow.services.approval_filter import (
+            filter_by_approval_param, filter_by_status_word,
+        )
+
+        from .approvals import payout_batch_status_rules
+
         _, reach = _reach(request)
         qs = reach.batches().select_related("entity")
-        if (status_ := request.query_params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_status_word(
+            qs, request.query_params.get("status"), payout_batch_status_rules(),
+        )
+        qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)
 
     # Handle POST requests for this endpoint.
@@ -710,6 +724,12 @@ class PayoutBatchListCreateView(APIView):
 class PayoutBatchSummaryView(APIView):
     """GET /payments/payout-batches/summary/ - batch KPI totals over ALL rows.
 
+    Each count is the number of rows its list word lists
+    (:func:`vs_payments.approvals.payout_batch_status_rules`): ``drafts`` the
+    batches nobody has sent for approval, ``pending_approval`` the ones with
+    their approvers, and ``sent_back`` the ones an approver returned to whoever
+    sent them, which neither of the others counts.
+
     docstring-name: Payout batches summary
     """
 
@@ -725,13 +745,23 @@ class PayoutBatchSummaryView(APIView):
 
         from .constants import PayoutStatus  # In-flight statuses backing the queued-money KPI.
 
+        from vs_workflow.services.approval_filter import returned_condition, word_condition
+
+        from .approvals import payout_batch_status_rules
+        from .models import PayoutBatch
+
         _, reach = _reach(request)
         qs = reach.batches()
         cutoff = timezone.now() - datetime.timedelta(days=7)
+        rules = payout_batch_status_rules()
         agg = qs.aggregate(
             total=Count("id"),
             completed7d=Count("id", filter=Q(status="COMPLETED", submitted_at__gte=cutoff)),
-            drafts=Count("id", filter=Q(status="DRAFT")),
+            drafts=Count("id", filter=word_condition(PayoutBatch, rules["DRAFT"])),
+            pending_approval=Count(
+                "id", filter=word_condition(PayoutBatch, rules["PENDING_APPROVAL"]),
+            ),
+            sent_back=Count("id", filter=returned_condition(PayoutBatch)),
         )
         # "queued" money must reflect only genuinely in-flight child instructions, not the
         # batch total - a PROCESSING batch can carry FAILED children that never left.  # Sum child amounts, not batch totals.
@@ -744,6 +774,8 @@ class PayoutBatchSummaryView(APIView):
             "queued": {"kobo": queued_kobo, "naira": format_naira(queued_kobo)},
             "completed7d": agg["completed7d"],
             "drafts": agg["drafts"],
+            "pending_approval": agg["pending_approval"],
+            "sent_back": agg["sent_back"],
         })
 
 

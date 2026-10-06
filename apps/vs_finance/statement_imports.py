@@ -99,7 +99,7 @@ def validate_bank_statement_import_batch(import_batch) -> dict:
         issues.append({
             "severity": "error",
             "code": "business_rule",
-            "message": "The selected bank account does not belong to this import tenant.",
+            "message": "The selected bank account is not one of these books' accounts.",
         })
 
     duplicate_file = BankStatementImportContext.objects.filter(

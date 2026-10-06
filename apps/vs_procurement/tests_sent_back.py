@@ -70,19 +70,57 @@ class AnOrderWithItsApproverReadsPendingTests(_SentBackFixture):
 
 class TheOrderExportTakesTheSameRowsTests(SimpleTestCase):
 
-    def test_draft_leaves_out_orders_with_an_approver_and_pending_keeps_them(self):
-        drafts, _ = _translate_purchase_orders({"status": "DRAFT"})
-        pending, _ = _translate_purchase_orders({"status": "PENDING_APPROVAL"})
-        partial, unmapped = _translate_purchase_orders({"status": "PARTIAL"})
-
+    def test_every_status_word_is_carried_as_the_list_reads_it(self):
         not_sent_back = {"id": "approval", "values": ["not_returned"]}
-        self.assertIn({"id": "status", "values": ["DRAFT"]}, drafts)
-        self.assertIn(not_sent_back, drafts)
-        approval = next(f for f in drafts if f["id"] == "approval_state")
-        self.assertNotIn("PENDING", approval["values"])
-        self.assertEqual(pending, [{"id": "approval_state", "values": ["PENDING"]}, not_sent_back])
-        self.assertEqual(partial, [not_sent_back])
-        self.assertEqual([u.param for u in unmapped], ["status"])
+        for word in ("DRAFT", "PENDING_APPROVAL", "PARTIAL", "APPROVED", "CANCELLED"):
+            with self.subTest(word=word):
+                filters, unmapped = _translate_purchase_orders({"status": word.lower()})
+                self.assertEqual(
+                    filters, [{"id": "display_status", "values": [word]}, not_sent_back])
+                self.assertEqual(unmapped, [])
+
+
+class PartlyReceivedExportTests(_SentBackFixture):
+    """The Partly received tab exports the orders it lists.
+
+    Mrs Adaeze's school has three issued orders: one with four of ten reams
+    received, one fully received and one with nothing received yet. The tab and
+    the file both hold the first alone, and the from-screen answer carries the
+    filter rather than reporting it as one the export cannot apply.
+    """
+
+    def issued(self, received):
+        from .models import PurchaseOrder
+
+        order = self.order()
+        PurchaseOrder.objects.filter(pk=order.pk).update(status=DocumentStatus.APPROVED)
+        for line in order.lines.all():
+            line.received_qty = line.quantity if received == "all" else (
+                line.quantity / 2 if received == "some" else 0)
+            line.save(update_fields=["received_qty", "updated_at"])
+        return order.pk
+
+    def test_the_tab_and_the_export_hold_the_same_orders(self):
+        from vs_exports.catalogue import ScopeContext, get_screen, resolve_screen
+        from vs_exports.engine import build_queryset
+
+        part = self.issued("some")
+        self.issued("all")
+        self.issued("none")
+
+        listed = self.ids(self.listed(self.adaeze, "purchase-orders/", status="partial"))
+        binding = get_screen("procurement.purchase_orders")
+        resolved = resolve_screen(binding, {"status": "PARTIAL"}, today=JAN)
+        filters = [f for f in resolved["filters"] if f["id"] != "order_date"]
+        exported = set(build_queryset(
+            binding.dataset, ScopeContext(tenant=self.tenant, entity=self.books, user=self.adaeze),
+            filters + [_january("order_date")],
+        ).values_list("pk", flat=True))
+
+        self.assertEqual(listed, {part})
+        self.assertEqual(exported, {part})
+        self.assertTrue(resolved["exact"])
+        self.assertIn("status", resolved["carried"])
 
 
 class SentBackFilterTests(_SentBackFixture):

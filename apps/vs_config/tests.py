@@ -683,16 +683,17 @@ class SettingConsumersSpeakPlainlyTests(SimpleTestCase):
 
 
 class SettingValuesAreRefusedInTheConsoleWordsTests(SimpleTestCase):
-    """A refused value is told what to type, in the words the console shows the type in.
+    """A refused value names its setting and says what to type, in the console's words.
 
     The console calls an INTEGER setting a "Whole number", so a decimal typed into
-    the held-ledger tolerance is refused as "Enter a whole number of naira", not as
-    "must be a valid integer".
+    the held-ledger tolerance is refused as "Held-ledger Reconciliation Tolerance:
+    enter a whole number of naira", not as "must be a valid integer". The setting
+    is named first, because the refusal can arrive on a screen holding several.
     """
 
-    def definition(self, key, value_type="INTEGER", rules=None):
+    def definition(self, key, value_type="INTEGER", rules=None, label="Example"):
         return ConfigurationDefinition(
-            key=key, label="Example", value_type=value_type, validation_rules=rules or {},
+            key=key, label=label, value_type=value_type, validation_rules=rules or {},
         )
 
     def refusal(self, definition, value):
@@ -704,18 +705,27 @@ class SettingValuesAreRefusedInTheConsoleWordsTests(SimpleTestCase):
 
     def test_a_decimal_tolerance_is_refused_as_a_whole_number_of_naira(self):
         tolerance = self.definition("payments.held_reconciliation_tolerance",
-                                    rules={"min": 0, "max": 1_000_000})
-        self.assertEqual(self.refusal(tolerance, 2.5), "Enter a whole number of naira.")
-        self.assertEqual(self.refusal(tolerance, "250"), "Enter a whole number of naira.")
-        self.assertEqual(self.refusal(tolerance, -1), "Example must be at least 0 naira.")
+                                    rules={"min": 0, "max": 1_000_000},
+                                    label="Held-ledger Reconciliation Tolerance")
+        self.assertEqual(self.refusal(tolerance, 2.5),
+                         "Held-ledger Reconciliation Tolerance: enter a whole number of naira.")
+        self.assertEqual(self.refusal(tolerance, "250"),
+                         "Held-ledger Reconciliation Tolerance: enter a whole number of naira.")
+        self.assertEqual(self.refusal(tolerance, -1),
+                         "Held-ledger Reconciliation Tolerance: enter at least 0 naira.")
+        self.assertEqual(self.refusal(tolerance, 2_000_000),
+                         "Held-ledger Reconciliation Tolerance: enter at most 1,000,000 naira.")
 
     def test_every_type_is_refused_in_its_console_words(self):
         self.assertEqual(self.refusal(self.definition("display.count"), 1.5),
-                         "Enter a whole number.")
+                         "Example: enter a whole number.")
         self.assertEqual(self.refusal(self.definition("display.flag", "BOOLEAN"), "yes"),
-                         "Choose on or off.")
+                         "Example: choose on or off.")
         self.assertEqual(self.refusal(self.definition("display.rate", "DECIMAL"), "a lot"),
-                         "Enter a decimal number.")
+                         "Example: enter a decimal number.")
+        self.assertEqual(
+            self.refusal(self.definition("display.rate", "DECIMAL", rules={"max": "2.5"}), "3"),
+            "Example: enter at most 2.5.")
 
     def test_every_platform_setting_the_catalogue_seeds_names_its_consumer(self):
         from .management.commands.seed_config_catalogue import DEFINITIONS

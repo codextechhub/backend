@@ -27,11 +27,13 @@ ledger to its new one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
 from django.db import transaction
 from django.db.models import Q, Sum
 
 from vs_config.clock import tenant_today
+from vs_config.display import format_date
 
 from .account_mappings import resolve_mapped_account
 from .audit import record
@@ -337,8 +339,9 @@ def split_shared_bank_account(
         "is_primary_collection": source.is_primary_collection,
     }
     legacy = Account.objects.select_for_update().get(pk=source.gl_account_id)
+    day = partial(format_date, tenant=source.entity.tenant)
     if split_date > tenant_today(source.entity.tenant):
-        raise BankAccountSplitError("The split date cannot be after the tenant's current date.")
+        raise BankAccountSplitError("The split date cannot be later than today.")
     if not source.is_active:
         raise BankAccountSplitError(f"Bank account {source.name} is already inactive.")
     if source.branch_id is not None:
@@ -390,8 +393,8 @@ def split_shared_bank_account(
     )
     if future_statement_line is not None:
         raise BankAccountSplitError(
-            f"The physical bank account has statement activity after {split_date}; "
-            f"the first line is dated {future_statement_line}."
+            f"The physical bank account has statement activity after {day(split_date)}; "
+            f"the first line is dated {day(future_statement_line)}."
         )
     future_statement = (
         source.statements.filter(statement_date__gt=split_date)
@@ -401,8 +404,8 @@ def split_shared_bank_account(
     )
     if future_statement is not None:
         raise BankAccountSplitError(
-            f"The physical bank account has a statement ending after {split_date}; "
-            f"the first ends on {future_statement}."
+            f"The physical bank account has a statement ending after {day(split_date)}; "
+            f"the first ends on {day(future_statement)}."
         )
     unmatched_line = (
         source.statement_lines.filter(
@@ -428,8 +431,8 @@ def split_shared_bank_account(
     )
     if future is not None:
         raise BankAccountSplitError(
-            f"The legacy ledger has posted movement after {split_date}; "
-            f"the first is dated {future}. Reverse or move it before cutover."
+            f"The legacy ledger has posted movement after {day(split_date)}; "
+            f"the first is dated {day(future)}. Reverse or move it before cutover."
         )
     legacy_lines = ledger_lines(source.entity).filter(
         account=legacy,
@@ -465,7 +468,7 @@ def split_shared_bank_account(
     if agreed_total != legacy_balance:
         raise BankAccountSplitError(
             f"The agreed branch opening balances sum to {format_naira(agreed_total)}, but the "
-            f"legacy ledger balance on {split_date} is {format_naira(legacy_balance)}."
+            f"legacy ledger balance on {day(split_date)} is {format_naira(legacy_balance)}."
         )
 
     book = dict(historical_balances)
@@ -632,7 +635,7 @@ def split_shared_bank_account(
         target=source,
         message=(
             f"Split legacy bank account {source.name} into {len(created_banks)} "
-            f"branch accounts on {split_date}, {treatment_note}."
+            f"branch accounts on {day(split_date)}, {treatment_note}."
         ),
         before=source_before,
         after={"is_active": False, "is_primary": False, "is_primary_collection": False},

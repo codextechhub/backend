@@ -269,7 +269,7 @@ def update_custody_settings(*, entity, data, actor_user=None):
 
     tenant = entity.tenant if entity.tenant_id else None
     if tenant is None:
-        raise ValidationError({"settings": "These books have no tenant to configure."})
+        raise ValidationError({"settings": "These books do not belong to an organisation, so there is nothing to configure."})
     if not isinstance(data, dict) or not data:
         raise ValidationError({"settings": "Provide at least one setting."})
     unknown = sorted(set(data) - set(_FIELDS))

@@ -154,9 +154,9 @@ class Ticket(TimeStampedModel):
     def clean(self):
         super().clean()
         if self.requester_id and self.requester.tenant_id != self.tenant_id:
-            raise ValidationError("Ticket requester must belong to the selected tenant.")
+            raise ValidationError("The person raising the ticket must belong to the same organisation.")
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
-            raise ValidationError("Ticket branch must belong to the selected tenant.")
+            raise ValidationError("Choose one of your own branches.")
         if self.status == TicketStatus.ASSIGNED and not self.assignee_id:
             raise ValidationError("Assigned tickets require an assignee.")
 

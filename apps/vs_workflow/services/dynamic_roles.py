@@ -93,7 +93,7 @@ def _check_value(field: ConditionField, value, tenant, where: str):
                 tenant=tenant, key=str(value),
                 status=TenantRoleTemplate.Status.ACTIVE).exists():
             raise TemplateInvalidError(
-                f"{where}: no active role with key '{value}' exists in this tenant.")
+                f"{where}: there is no active role with the key '{value}'.")
         return str(value)
     if kind == ConditionFieldType.BRANCH:
         from vs_tenants.references import find_branch_in_tenant
@@ -104,7 +104,7 @@ def _check_value(field: ConditionField, value, tenant, where: str):
     if kind == ConditionFieldType.PERSON:
         if _tenant_user(tenant, value) is None:
             raise TemplateInvalidError(
-                f"{where}: no active user with that id exists in your tenant.")
+                f"{where}: there is no active user with that id.")
         return str(value)
     raise TemplateInvalidError(f"{where}: {field.label} cannot be tested.")
 
@@ -137,7 +137,7 @@ def _resolve_target(raw: dict, tenant, where: str) -> dict:
             tenant=tenant, key=key, status=TenantRoleTemplate.Status.ACTIVE).first()
         if role is None:
             raise TemplateInvalidError(
-                f"{where}: no active role with key '{key}' exists in this tenant.")
+                f"{where}: there is no active role with the key '{key}'.")
         # The engine nominates only approving roles (see
         # approvers._users_for_role_key), so any other role would save and
         # then find nobody when a document arrived.
@@ -150,7 +150,7 @@ def _resolve_target(raw: dict, tenant, where: str) -> dict:
         user = _tenant_user(tenant, raw.get("user"))
         if user is None:
             raise TemplateInvalidError(
-                f"{where}: no active user with that id exists in your tenant.")
+                f"{where}: there is no active user with that id.")
         return target | {"user": user}
     if kind == DynamicRoleTargetKind.GROUP:
         from vs_workflow.models import WorkflowApproverGroup
@@ -160,7 +160,7 @@ def _resolve_target(raw: dict, tenant, where: str) -> dict:
             tenant=tenant, code=code, is_active=True).first()
         if group is None:
             raise TemplateInvalidError(
-                f"{where}: no active approver group with code '{code}' exists in this tenant.")
+                f"{where}: there is no active approver group with the code '{code}'.")
         return target | {"group": group}
     raise TemplateInvalidError(f"{where}: send it to a role, a person or an approver group.")
 

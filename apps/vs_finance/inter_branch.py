@@ -1428,8 +1428,8 @@ def run_recharge(entity, *, paying_branch, expense_account, amount, recharge_dat
             raise InterBranchError("No such shared cost rule in these books.", field="rule")
         if rule.treatment == SharedCostTreatment.ABSORB:
             raise InterBranchError(
-                f"The tenant has chosen that the paying branch absorbs {rule.name}, so it is "
-                f"not recharged. Change the rule to recharge it first.",
+                f"The rule for {rule.name} has the paying branch absorb it, so it is not "
+                f"recharged. Change the rule to recharge it first.",
                 field="rule",
             )
         basis = basis or rule.basis

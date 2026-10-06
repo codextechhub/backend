@@ -90,7 +90,7 @@ def _filing_branch(entity, ref, field):
     if str(ref).isdigit() and entity.tenant_id:
         branch = Branch.all_objects.filter(tenant_id=entity.tenant_id, pk=int(ref)).first()
     if branch is None:
-        raise ValidationError({field: f"No branch '{ref}' in this tenant."})
+        raise ValidationError({field: f"There is no branch '{ref}'."})
     return branch
 
 

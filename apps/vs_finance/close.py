@@ -25,6 +25,8 @@ from dataclasses import dataclass, field, replace
 from django.db import transaction
 from django.utils import timezone
 
+from vs_config.display import format_date
+
 from .audit import record
 from .account_mappings import resolve_mapped_account
 from .constants import (
@@ -1116,8 +1118,6 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     if closing_date != fiscal_year.end_date:
         from rest_framework.exceptions import ValidationError
 
-        from vs_config.display import format_date
-
         start = format_date(fiscal_year.start_date, entity.tenant)
         end = format_date(fiscal_year.end_date, entity.tenant)
         raise ValidationError({
@@ -1361,7 +1361,7 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None, bra
             raise PeriodCloseError(
                 f"FY{fiscal_year.year} cannot be re-opened: its closing journal "
                 f"{journal.document_number or journal.pk} sits in "
-                f"{period_label(journal.period, entity.tenant) if journal.period else journal.date}, "
+                f"{period_label(journal.period, entity.tenant) if journal.period else format_date(journal.date, entity.tenant)}, "
                 f"which is locked, so it cannot be reversed.")
 
     if fiscal_year.status == PeriodStatus.CLOSED:

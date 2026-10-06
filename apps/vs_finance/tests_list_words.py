@@ -14,7 +14,7 @@ from django.db.models import Q
 
 from core.test_utils import TenantAPIClient
 
-from .models import Customer, ExpenseClaim, Invoice, JournalEntry, Payment
+from .models import Concession, Customer, ExpenseClaim, Invoice, JournalEntry, Payment
 from .tests_sent_back import VIEW_KEYS, _SentBackFixture
 
 D = datetime.date
@@ -143,12 +143,69 @@ class ExpenseClaimWordsTests(_WordsFixture):
         summary = self.as_(self.hq).get(self.url("expense-claims/summary/")).data["data"]
         self.assertEqual(summary["sent_back"], 1)
 
+    def test_open_claims_counts_the_open_words_and_never_a_claim_sent_back(self):
+        claims, sent_back = self.claims()
+
+        summary = self.as_(self.hq).get(self.url("expense-claims/summary/")).data["data"]
+
+        open_words = ("DRAFT", "PENDING", "APPROVED", "PART_PAID")
+        listed = set().union(*(self.listed("expense-claims/", display_status=word)
+                               for word in open_words))
+        self.assertEqual(listed, {claims[word] for word in open_words})
+        self.assertNotIn(sent_back, listed)
+        self.assertEqual(summary["open"], len(listed))
+        self.assertEqual(summary["sent_back"], 1)
+
     def test_a_word_the_list_does_not_have_is_refused_by_the_list_and_the_export(self):
         from rest_framework.exceptions import ValidationError
 
         self.assertIn("display_status", self.refused("expense-claims/", display_status="SENT_BACK"))
         with self.assertRaises(ValidationError):
             self.exported("finance.expense_claims", display_status="SENT_BACK")
+
+
+class ConcessionSummaryTests(_WordsFixture):
+    """Active concessions are the ones in force: posted and not reversed.
+
+    Tunde holds a posted bursary, a reversed one, a draft, one with Mr Adeyemi
+    and one he sent back. Only the posted bursary reduces what Tunde owes, so
+    it is the one concession active; the draft tile is the draft alone.
+    """
+
+    def concession(self, status=None, *, send=False, end=None):
+        made = self.as_(self.okafor).post(self.url("concessions/"), {
+            "customer": "TUNDE", "invoice": self.bill.pk, "kind": "SCHOLARSHIP",
+            "concession_date": "2026-01-16", "amount": 10_000_00, "reason": "Bursary",
+        }, format="json")
+        self.assertEqual(made.status_code, 201, made.data)
+        pk = made.data["data"]["id"]
+        if send:
+            sent = self.as_(self.okafor).post(self.url(f"concessions/{pk}/submit/"), {},
+                                              format="json")
+            self.assertEqual(sent.status_code, 200, sent.data)
+        if end:
+            self.end(Concession, pk, end)
+        if status:
+            Concession.objects.filter(pk=pk).update(status=status)
+        return pk
+
+    def test_active_counts_the_concessions_in_force_and_the_tiles_follow_the_filters(self):
+        from .constants import DocumentStatus
+
+        posted = self.concession(DocumentStatus.POSTED)
+        self.concession(DocumentStatus.REVERSED)
+        draft = self.concession()
+        self.concession(send=True)
+        sent_back = self.concession(send=True, end="returned")
+
+        summary = self.as_(self.hq).get(self.url("concessions/summary/")).data["data"]
+
+        self.assertEqual(self.listed("concessions/", status="POSTED"), {posted})
+        self.assertEqual(summary["active_count"], 1)
+        self.assertEqual(self.listed("concessions/", status="DRAFT"), {draft})
+        self.assertEqual(summary["draft_pending"], 10_000_00)
+        self.assertEqual(self.listed("concessions/", approval="returned"), {sent_back})
+        self.assertEqual(summary["sent_back"], 10_000_00)
 
 
 class ReceivableWordsTests(_WordsFixture):

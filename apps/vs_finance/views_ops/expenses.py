@@ -368,6 +368,13 @@ class ExpenseClaimVoidView(_ExpenseClaimActionBase):
 class ExpenseClaimSummaryView(_FinanceBase):
     """GET - header KPIs over **all** expense claims (accurate under pagination).
 
+    ``open`` counts the claims the list shows under Draft, Awaiting approval,
+    Approved and Part-paid (:data:`vs_finance.expenses.CLAIM_DISPLAY_WORDS`),
+    each read as its word lists it, so a claim an approver sent back is not
+    among them; ``sent_back`` counts those. ``awaiting`` is what is still owed
+    on the Approved and Part-paid claims. ``month_total`` and ``avg`` are over
+    every claim not rejected, by claim date.
+
     docstring-name: Expense claims
     """
 
@@ -378,20 +385,25 @@ class ExpenseClaimSummaryView(_FinanceBase):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
 
+        from vs_workflow.services.approval_filter import word_condition
+
         from ..constants import DocumentStatus, InvoicePaymentStatus
+        from ..expenses import claim_display_rules
 
         entity = resolve_entity(request)
         today = tenant_today(entity.tenant)
         live = ~Q(status=DocumentStatus.CANCELLED)
         awaiting_q = Q(status=DocumentStatus.POSTED) & ~Q(
             payment_status=InvoicePaymentStatus.PAID)
+        words = claim_display_rules()
+        open_q = Q(pk__in=[])
+        for word in ("DRAFT", "PENDING", "APPROVED", "PART_PAID"):
+            open_q |= words[word]
 
         agg = ExpenseClaim.objects.filter(
             transaction_branch_q(request), entity=entity,
         ).aggregate(
-            open=Count("id", filter=Q(status__in=[
-                DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,
-            ]) | awaiting_q),
+            open=Count("id", filter=word_condition(ExpenseClaim, open_q)),
             month_total=Coalesce(Sum("total", filter=live & Q(
                 claim_date__year=today.year, claim_date__month=today.month)), 0),
             live_total=Coalesce(Sum("total", filter=live), 0),

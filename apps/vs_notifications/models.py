@@ -446,7 +446,7 @@ class NotificationSetting(models.Model):
         from django.core.exceptions import ValidationError
 
         if self.branch_id is not None and self.branch.tenant_id != self.tenant_id:
-            raise ValidationError({"branch": "The branch must belong to this tenant."})
+            raise ValidationError({"branch": "Choose one of your own branches."})
 
     def __str__(self):
         status = "on" if self.is_enabled else "off"

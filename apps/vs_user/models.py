@@ -137,7 +137,7 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
 # has a parent by that address.
 CROSS_TENANT_EMAIL_REFUSAL = (
     'This email address cannot be used for a new account here yet. Sign-in '
-    'does not yet name the tenant it is addressed to, so two accounts sharing '
+    'cannot yet tell which organisation an address belongs to, so two accounts sharing '
     'one address could not be told apart. Please use a different address, or '
     'contact CodeX support.'
 )
@@ -592,7 +592,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 'derived, so it must be supplied.'
             ]})
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
-            raise ValidationError("User branch must belong to the user's tenant.")
+            raise ValidationError("Choose one of the user's own branches.")
         if self.card_login_id is None and self.is_platform_user:
             self.card_login_id = uuid.uuid4()
             update_fields = kwargs.get('update_fields')

@@ -8,7 +8,9 @@ horizontal-module rule.
 """
 from __future__ import annotations
 
-from .constants import AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType, TaxTreatment
+from .constants import (
+    GRIR_NAME, AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType, TaxTreatment,
+)
 
 #: ISO currencies the platform knows out of the box. NGN is the platform base.
 DEFAULT_CURRENCIES = [  # Currency rows created by seed_currencies.
@@ -44,7 +46,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("2000", "Liabilities", AccountType.LIABILITY, False, False),  # Liability section header.
     ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),  # AP control account.
     ("2140", "Customer Credit", AccountType.LIABILITY, True, False),  # Customer credits liability.
-    ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),  # Goods-received/invoice-received clearing.
+    ("2150", GRIR_NAME, AccountType.LIABILITY, True, False),  # Goods received, not yet billed.
     ("2160", "Deferred Income", AccountType.LIABILITY, True, False),  # Billed ahead of the service period.
     ("2170", "Customer Deposits Held", AccountType.LIABILITY, True, False),  # Refundable deposits.
     ("2190", "Held for Other Branches", AccountType.LIABILITY, True, False),  # Received for another branch.

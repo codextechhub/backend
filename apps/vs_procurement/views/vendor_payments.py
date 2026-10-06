@@ -197,7 +197,7 @@ def _resolve_payment_wht(body, *, gross, tax_code, plan, existing=None):
         supplied = None
     wht = payables.resolve_wht(gross=gross, supplied=supplied, tax_code=tax_code, bills=plan)
     if wht.amount > gross:
-        raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
+        raise ValidationError({"wht_amount": "Withholding tax cannot be more than the bill amount being paid."})
     return wht
 
 

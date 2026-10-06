@@ -515,7 +515,7 @@ class PayeMethod(models.TextChoices):
     roster, for a tenant whose payroll is worked out elsewhere.
     """
     COMPUTED = "COMPUTED", "Computed from the national tax table"
-    SUPPLIED = "SUPPLIED", "Supplied by the tenant"
+    SUPPLIED = "SUPPLIED", "Taken from the salary structure or roster"
 
 
 class PayeSource(models.TextChoices):
@@ -1012,6 +1012,16 @@ BAD_DEBT_EXPENSE_CODE = "5350"           # Bad debts (expense) - write-offs and 
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
 
+#: The goods-received clearing account in the words each reader is given. A
+#: bursar's screens, refusals and messages say what it holds in plain words
+#: (:data:`GRIR_PLAIN`); an accountant's screens (the chart of accounts, the
+#: account mapping, journals and posting previews, the reconciliation report)
+#: give the accounting term with the plain words beside it (:data:`GRIR_NAME`),
+#: so neither reader has to translate.
+GRIR_PLAIN = "goods received, not yet billed"
+GRIR_NAME = f"GR/IR clearing ({GRIR_PLAIN})"
+
+
 class AccountMappingKey(models.TextChoices):
     """Entity-level account roles used by Finance and Procurement services."""
 
@@ -1020,9 +1030,9 @@ class AccountMappingKey(models.TextChoices):
     ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", "Accounts payable"
     CUSTOMER_CREDIT = "CUSTOMER_CREDIT", "Customer credit"
     VENDOR_ADVANCE = "VENDOR_ADVANCE", "Vendor advances"
-    GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing"
+    GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing (goods received, not yet billed)"
     OUTPUT_VAT = "OUTPUT_VAT", "Output VAT"
-    WHT_PAYABLE = "WHT_PAYABLE", "WHT payable"
+    WHT_PAYABLE = "WHT_PAYABLE", "WHT payable (withholding tax)"
     RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
     BAD_DEBT_EXPENSE = "BAD_DEBT_EXPENSE", "Bad debt expense"
     BANK_CHARGES = "BANK_CHARGES", "Bank charges"

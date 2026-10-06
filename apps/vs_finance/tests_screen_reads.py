@@ -463,7 +463,8 @@ class HeldReceiptCustomerLookupTests(_ReadsFixture):
         response = self.lookup(self.ikeja_bursar, "ADE01", branch=self.rival_branch)
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("No such branch", str(response.data))
+        self.assertIn("There is no such branch.", str(response.data))
+        self.assertNotIn("tenant", str(response.data))
 
     def test_a_one_branch_school_has_no_other_branch_to_hold_for(self):
         solo = self.person("finance.payment.create", tenant=self.solo_tenant)

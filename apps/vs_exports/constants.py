@@ -201,7 +201,7 @@ class DatasetScope(models.TextChoices):
     """
 
     ENTITY = "ENTITY", "One ledger entity"
-    TENANT = "TENANT", "The whole tenant"
+    TENANT = "TENANT", "The whole organisation"
 
 
 class ExportFormat(models.TextChoices):

@@ -109,6 +109,15 @@ class ApproverGroupApiTests(TestCase):
                      {"code": "x", "name": "X"})
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_a_code_already_taken_is_refused_in_words_a_school_reads(self):
+        """School staff are told the code is taken, never that it is taken "in this tenant"."""
+        resp = _call(LIST, "post", BASE, self.manager, self.tenant,
+                     {"code": "po-approvers", "name": "Again"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+        self.assertIn("An approver group with the code 'po-approvers' already exists.",
+                      str(resp.data))
+        self.assertNotIn("tenant", str(resp.data).lower())
+
     def test_view_permission_cannot_add_member(self):
         resp = _call(ADD_MEMBER, "post", BASE, self.viewer, self.tenant,
                      {"kind": "USER", "user": str(self.manager.pk)}, pk=self.group.pk)

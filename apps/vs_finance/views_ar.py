@@ -1523,7 +1523,7 @@ class FeeStructureGenerateView(_FinanceBase):
         structure = _resolve_fee_structure(request, entity, pk)
         if structure.applies_to != FeeAppliesTo.CUSTOMER:
             raise ValidationError({"applies_to":
-                "Only customer fee structures can generate AR invoices."})
+                "Only a customer fee structure can raise invoices."})
         body = request.data or {}
         # None dates each invoice on its own branch's day (see generate_invoices).
         invoice_date = _date(body.get("invoice_date"), "invoice_date")
@@ -3510,6 +3510,14 @@ class ConcessionVoidView(_ConcessionActionBase):
 class ConcessionSummaryView(_FinanceBase):
     """GET /finance/concessions/summary/ - KPI totals (kobo) for the header cards.
 
+    ``posted_ytd`` is the value of concessions posted and dated this year (the
+    school's year, on its own calendar). ``draft_pending`` is the value the
+    Draft filter lists, and ``sent_back`` the value an approver returned, which
+    the Draft filter leaves out. ``active_count`` is the number of concessions
+    in force: posted and not reversed, which is what the Posted filter lists.
+    A draft, one awaiting approval, one sent back and one reversed are not in
+    force, so none of them is counted.
+
     docstring-name: Concession summary
     """
 
@@ -3518,12 +3526,14 @@ class ConcessionSummaryView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         from django.db.models import Sum
-        from django.utils import timezone
+
+        from vs_config.clock import tenant_today
 
         entity = resolve_entity(request)
         qs = Concession.objects.filter(transaction_branch_q(request), entity=entity)
         posted_ytd = qs.filter(
-            status=DocumentStatus.POSTED, concession_date__year=timezone.now().year,
+            status=DocumentStatus.POSTED,
+            concession_date__year=tenant_today(entity.tenant).year,
         ).aggregate(s=Sum("amount"))["s"] or 0
         from vs_workflow.services.approval_filter import returned_condition, word_condition
 
@@ -3536,7 +3546,7 @@ class ConcessionSummaryView(_FinanceBase):
             "posted_ytd": int(posted_ytd),
             "draft_pending": int(draft_pending),
             "sent_back": int(sent_back),
-            "active_count": qs.count(),
+            "active_count": qs.filter(status=DocumentStatus.POSTED).count(),
         })
 
 

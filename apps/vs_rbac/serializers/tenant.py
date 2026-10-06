@@ -60,9 +60,9 @@ from .registry import (
 # when handed something larger, so oversized ids are "not found" too.
 _MAX_BIGINT = 9_223_372_036_854_775_807
 
-BRANCH_NOT_FOUND = "No such branch in this tenant."
-USER_NOT_FOUND = "No such user in this tenant."
-ROLE_NOT_FOUND = "No such role in this tenant."
+BRANCH_NOT_FOUND = "There is no such branch."
+USER_NOT_FOUND = "There is no such user."
+ROLE_NOT_FOUND = "There is no such role."
 
 
 class TenantScopedSerializerMixin:
@@ -507,7 +507,7 @@ class TenantRoleTemplateDetailSerializer(
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
                 raise serializers.ValidationError(
-                    {"name": "A role with this name already exists in this tenant."}
+                    {"name": "A role with this name already exists."}
                 )
         if "branch_ids" in attrs:
             requested = attrs["branch_ids"]

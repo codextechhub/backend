@@ -63,16 +63,29 @@ def _redacted(definition, value):
 def validate_value(definition, value):
     """Refuse ``value`` unless it fits ``definition``'s type and bounds.
 
-    A refusal tells the person what to type, in the words the console shows the
-    type in ("Enter a whole number", :data:`vs_config.labels.VALUE_TYPE_INSTRUCTIONS`),
-    naming the setting's unit where it has one ("of naira",
-    :data:`vs_config.runtime_settings.SETTING_UNITS`).
+    A refusal names the setting by its label and tells the person what to type,
+    in the words the console shows the type in
+    (:data:`vs_config.labels.VALUE_TYPE_INSTRUCTIONS`), with the setting's unit
+    where it has one (:data:`vs_config.runtime_settings.SETTING_UNITS`):
+    "Held-ledger Reconciliation Tolerance: enter a whole number of naira", and
+    for a bound, "...: enter at least 0 naira". The label comes first because a
+    console screen saving several settings at once shows the refusal apart from
+    the field it is about.
     """
     from vs_config.labels import VALUE_TYPE_INSTRUCTIONS
     from vs_config.runtime_settings import SETTING_UNITS
 
     kind = definition.value_type
     unit = SETTING_UNITS.get(definition.key, "")
+    named = definition.label or definition.key
+
+    def bound(word, limit):
+        amount = f"{limit:,}" if isinstance(limit, int) and not isinstance(limit, bool) else limit
+        return InvalidConfigurationValue(
+            f"{named}: enter {word} {amount}{f' {unit}' if unit else ''}.",
+            extra={"key": definition.key},
+        )
+
     try:
         if kind in {definition.ValueType.STRING, definition.ValueType.SECRET_REFERENCE}:
             # Empty strings are treated as unset because config values drive runtime behavior.
@@ -97,7 +110,8 @@ def validate_value(definition, value):
             str(kind), f"Enter a valid {definition.get_value_type_display().lower()}",
         )
         raise InvalidConfigurationValue(
-            f"{instruction}{f' of {unit}' if unit else ''}.",
+            f"{named}: {instruction[:1].lower()}{instruction[1:]}"
+            f"{f' of {unit}' if unit else ''}.",
             extra={"key": definition.key},
         )
 
@@ -112,20 +126,14 @@ def validate_value(definition, value):
             if "min" in rules:
                 minimum = Decimal(str(rules["min"])) if is_decimal else rules["min"]
                 if comparable < minimum:
-                    raise InvalidConfigurationValue(
-                        f"{definition.label} must be at least {rules['min']}"
-                        f"{f' {unit}' if unit else ''}."
-                    )
+                    raise bound("at least", rules["min"])
             if "max" in rules:
                 maximum = Decimal(str(rules["max"])) if is_decimal else rules["max"]
                 if comparable > maximum:
-                    raise InvalidConfigurationValue(
-                        f"{definition.label} must be at most {rules['max']}"
-                        f"{f' {unit}' if unit else ''}."
-                    )
+                    raise bound("at most", rules["max"])
         except TypeError:
             raise InvalidConfigurationValue(
-                f"{definition.label} cannot be checked against its allowed range."
+                f"{named} cannot be checked against its allowed range."
             )
     return value
 

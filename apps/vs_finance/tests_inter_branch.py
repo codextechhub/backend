@@ -571,7 +571,7 @@ class RechargeTests(_InterBranchFixture):
 
         self.assertEqual(net(self.audit_fee, self.yaba), 400_000_00)
         self.assertEqual(recharge.basis, RechargeBasis.PERCENTAGES)
-        with self.assertRaisesMessage(InterBranchError, "absorbs"):
+        with self.assertRaisesMessage(InterBranchError, "has the paying branch absorb it"):
             self.recharge(rule=absorbed)
         with self.assertRaisesMessage(InterBranchError, "total 100"):
             self.recharge(basis=RechargeBasis.PERCENTAGES,

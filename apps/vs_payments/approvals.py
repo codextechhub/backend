@@ -348,3 +348,68 @@ def ensure_settlement_approval_template(tenant, *, created_by=None):
             {**stage, "code": "second", "label": "Second settlement approval", "order": 20},
         ],
     ), True
+
+
+def payout_batch_status_rules() -> dict:
+    """The batch list's ``?status=`` words, each the batches whose ``display_status`` reads it.
+
+    A batch keeps its stored status DRAFT from the moment it is assembled until
+    the approved batch is handed to the provider, so its approval request says
+    where it stands (:mod:`vs_payments.workflow_handlers`):
+
+    * Draft is a batch nobody has sent for approval, or one whose request was
+      withdrawn, cancelled or rejected: what the Drafts tile means by "awaiting
+      submit".
+    * Awaiting approval (PENDING_APPROVAL) is one whose request is with its
+      approvers.
+    * Processing is a batch the provider is paying, and also an approved batch
+      the dispatch worker has not yet picked up, which is moments after the
+      approval commits.
+    * A batch an approver sent back reads Sent back and none of these
+      (:func:`vs_workflow.services.approval_filter.filter_by_status_word`);
+      ``?approval=returned`` finds it.
+
+    Mrs Okafor builds a batch and sends it to Mr Adeyemi, who returns it; she
+    builds another and leaves it. The Drafts tile counts one, the one she left,
+    and Sent back counts the returned one.
+    """
+    from django.db.models import Q
+
+    from vs_workflow.constants import WorkflowInstanceStatus as S
+    from vs_workflow.services.approval_filter import (
+        request_status_condition, with_approvers_condition,
+    )
+
+    from .constants import PayoutBatchStatus
+    from .models import PayoutBatch
+
+    draft = Q(status=PayoutBatchStatus.DRAFT)
+    approved = request_status_condition(PayoutBatch, (S.APPROVED,))
+    with_approvers = with_approvers_condition(PayoutBatch)
+    return {
+        "DRAFT": draft & ~with_approvers & ~approved,
+        "PENDING_APPROVAL": draft & with_approvers,
+        "PROCESSING": Q(status=PayoutBatchStatus.PROCESSING) | (draft & approved),
+        "COMPLETED": Q(status=PayoutBatchStatus.COMPLETED),
+        "PARTIALLY_COMPLETED": Q(status=PayoutBatchStatus.PARTIALLY_COMPLETED),
+        "FAILED": Q(status=PayoutBatchStatus.FAILED),
+    }
+
+
+def payout_batch_display_status(status, approval_state, approval_returned) -> str:
+    """The word a batch's row wears, as :func:`payout_batch_status_rules` lists it.
+
+    ``approval_state`` and ``approval_returned`` are the batch's approval read
+    (:class:`vs_finance.serializers.ApprovalStateMixin`). A batch sent back
+    reads DRAFT here and carries ``approval_returned`` true, which the screen
+    shows as Sent back, as it does for every other document.
+    """
+    from .constants import PayoutBatchStatus
+
+    if status != PayoutBatchStatus.DRAFT or approval_returned:
+        return str(status)
+    if approval_state == "PENDING":
+        return "PENDING_APPROVAL"
+    if approval_state == "APPROVED":
+        return "PROCESSING"
+    return str(status)

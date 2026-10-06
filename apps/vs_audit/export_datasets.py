@@ -173,7 +173,7 @@ def _translate_events(params):
         unmapped.append(Unmapped(
             "tenant_slug", value,
             "An audit export always covers your own organisation, so it cannot be "
-            "narrowed to another tenant the way the screen can.",
+            "narrowed to another organisation the way the screen can.",
         ))
     return filters, unmapped
 

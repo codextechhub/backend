@@ -454,7 +454,7 @@ class SharedBankAccountSplitTests(_FinanceBranchFixture):
         from .bank_splits import split_shared_bank_account
 
         with patch("vs_finance.bank_splits.tenant_today", return_value=JAN_15):
-            with self.assertRaisesMessage(BankAccountSplitError, "current date"):
+            with self.assertRaisesMessage(BankAccountSplitError, "cannot be later than today"):
                 split_shared_bank_account(
                     self.legacy_bank,
                     self.allocations(),
