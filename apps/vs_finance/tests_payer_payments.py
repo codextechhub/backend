@@ -298,7 +298,7 @@ class VoidTests(_PayerFixture):
                                         transfer_date=datetime.date(2026, 1, 16))
         post_inter_branch_transfer(transfer)
 
-        with self.assertRaisesMessage(PayerPaymentError, "Void that transfer first"):
+        with self.assertRaisesMessage(PostingError, "void that transfer first"):
             void_payer_payment(document)
         void_inter_branch_transfer(transfer)
         void_payer_payment(document)

@@ -46,7 +46,7 @@ from .exceptions import FinanceError, PayrollBranchUnassignedError, PayrollError
 from .money import format_naira
 from .payroll_statutory import ItemAccounts
 from .posting import post_journal, resolve_period
-from .wording import state_word
+from .wording import agrees, counted, state_word
 
 
 # Calculate salary breakdown from a structure.
@@ -536,7 +536,8 @@ def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
     ]
     if missing and policy.previous_pay_required and policy.paye_method != PayeMethod.SUPPLIED:
         raise PayrollError(
-            f"{len(missing)} person(s) on this run joined after January and have no earlier "
+            f"{counted(len(missing), 'person', 'people')} on this run joined after January and "
+            f"{agrees(len(missing), 'has', 'have')} no earlier "
             f"pay recorded for {period_end.year}. This school requires it before they are "
             f"paid, so their PAYE counts what a previous employer already taxed: record it "
             f"on their salary record (zeros where there was none), then raise the run.",

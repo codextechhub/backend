@@ -220,7 +220,9 @@ class FinanceReadingTests(_Base):
         for name, fn in vars(fin).items():
             if not name.startswith("_") or not inspect.isfunction(fn):
                 continue
-            if name.startswith("_translate") or "scope" not in inspect.signature(fn).parameters:
+            # A filter's own rule narrows rows its dataset's base already narrowed.
+            if name.startswith("_translate") or name.endswith("_compiles") \
+                    or "scope" not in inspect.signature(fn).parameters:
                 continue
             self.assertIn(
                 "narrow_to_caller_branches", inspect.getsource(fn),

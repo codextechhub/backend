@@ -84,6 +84,10 @@ class ReleaseRowsFollowBranchCloseTests(_AccrualFixture):
         self.assertEqual(ikeja["period_status"], "OPEN")
         self.assertEqual(ikeja["branch_period_status"], "CLOSED")
         self.assertFalse(ikeja["can_reverse"])
+        self.assertEqual(
+            ikeja["reverse_blocked_reason"],
+            "Ikeja Branch has closed January 2027; its release is sealed with that month.",
+        )
 
     def test_the_open_branchs_release_cannot_be_undone_while_the_month_undo_is_sealed(self):
         lekki = self.rows(self.okafor)["Lekki Branch"]
@@ -91,6 +95,8 @@ class ReleaseRowsFollowBranchCloseTests(_AccrualFixture):
         self.assertEqual(lekki["branch_period_status"], "OPEN")
         self.assertFalse(lekki["can_reverse"])
         self.assertIn("Ikeja Branch", lekki["reverse_blocked_reason"])
+        self.assertIn("closed January 2027,", lekki["reverse_blocked_reason"])
+        self.assertNotIn("2027-01", lekki["reverse_blocked_reason"])
 
     def test_a_lekki_reader_sees_only_lekkis_row_with_the_same_answer(self):
         rows = self.rows(self.lekki_bursar)

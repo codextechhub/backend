@@ -18,6 +18,8 @@ application refuses a new duplicate with or without the index.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from collections import defaultdict
 
 from django.core.management.base import BaseCommand, CommandError
@@ -86,7 +88,7 @@ class Command(BaseCommand):
                     f"branch {names.get(owning[row.pk], 'none')}, "
                     f"gross {row.gross_amount} kobo, added {row.created_at:%Y-%m-%d}"
                 )
-        self.stdout.write(f"{len(found)} person(s) with more than one active row.")
+        self.stdout.write(f"{counted(len(found), 'person', 'people')} with more than one active row.")
 
         installed = index_installed()
         if not opts["install"]:

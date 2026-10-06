@@ -60,7 +60,7 @@ from .receivables import (
     compute_tax,
     stamp_allocation_effective_date,
 )
-from .wording import state_word
+from .wording import counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -453,7 +453,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     record(  # Audit credit-note allocation.
         entity=note.entity, action=FinanceAuditAction.CREDIT_NOTE_ALLOCATED,  # Audit action.
         actor_user=actor_user, target=note,  # Actor and target context.
-        message=f"Applied {format_naira(applied)} of customer credit across {len(created)} invoice(s).",  # Summary.
+        message=f"Applied {format_naira(applied)} of customer credit across {counted(len(created), 'invoice')}.",  # Summary.
         journal_id=entry.pk, allocated=note.allocated_amount,  # Structured metadata.
         unallocated=note.credit_remaining, effective_date=str(effective),  # Credit left and effective date.
     )

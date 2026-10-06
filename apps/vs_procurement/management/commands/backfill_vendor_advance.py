@@ -20,6 +20,8 @@ reference guards against double-posting on re-run.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -106,4 +108,4 @@ class Command(BaseCommand):
                 total_posted += 1
 
         verb = "Posted" if commit else "Would post"
-        self.stdout.write(self.style.SUCCESS(f"{verb} {total_posted} reclass journal(s)."))
+        self.stdout.write(self.style.SUCCESS(f"{verb} {counted(total_posted, 'reclass journal')}."))

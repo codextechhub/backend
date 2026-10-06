@@ -16,6 +16,8 @@ Read-only on the ledger: it never repairs a seal or a balance.
 """
 from __future__ import annotations
 
+from vs_finance.wording import agrees, counted
+
 from django.core.management.base import BaseCommand, CommandError
 
 
@@ -40,12 +42,15 @@ class Command(BaseCommand):
         for entity in entities:
             result = verify_entity(entity)
             if result.ok:
-                self.stdout.write(f"  {entity.code}: {len(result.checks)} seal(s) match.")
+                self.stdout.write(f"  {entity.code}: {counted(len(result.checks), 'seal')} "
+                                  f"{agrees(len(result.checks), 'matches', 'match')}.")
                 continue
             lines = [describe(check) for check in result.mismatches]
             if result.chain_breaks:
                 lines.append(
-                    f"{len(result.chain_breaks)} seal(s) do not follow the seal before them "
+                    f"{counted(len(result.chain_breaks), 'seal')} "
+                    f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the seal before "
+                    f"{agrees(len(result.chain_breaks), 'it', 'them')} "
                     f"(ids {', '.join(map(str, result.chain_breaks))})."
                 )
             failed.append(entity.code)
@@ -57,7 +62,7 @@ class Command(BaseCommand):
 
         if failed:
             raise CommandError(
-                f"Sealed figures differ from the ledger for {len(failed)} set(s) of books: "
+                f"Sealed figures differ from the ledger for {counted(len(failed), 'set')} of books: "
                 f"{', '.join(failed)}."
             )
         self.stdout.write(self.style.SUCCESS("Every sealed figure matches the ledger."))

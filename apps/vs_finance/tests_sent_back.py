@@ -64,6 +64,18 @@ class _SentBackFixture(_ReturnedFixture):
     def ids(self, response):
         return {row["id"] for row in response.data["data"]}
 
+    def claim(self):
+        made = self.client_.post(self.url("expense-claims/"), {
+            "claimant_name": "Mrs Okafor", "claim_date": "2026-01-10", "title": "Bank visit",
+            "lines": [{"description": "Taxi", "expense_account": "5300",
+                       "quantity": 1, "unit_price": 5_000_00}],
+        }, format="json")
+        self.assertEqual(made.status_code, 201, made.data)
+        pk = made.data["data"]["id"]
+        sent = self.client_.post(self.url(f"expense-claims/{pk}/submit/"), {}, format="json")
+        self.assertEqual(sent.status_code, 200, sent.data)
+        return pk
+
 
 class SentBackFilterTests(_SentBackFixture):
 
@@ -147,6 +159,89 @@ class SentBackFilterTests(_SentBackFixture):
                 self.assertIn("approval", wrong.data["error"]["detail"])
 
 
+class SentBackExportTests(_SentBackFixture):
+    """The Export button on a finance list filtered to Sent back exports what the list shows.
+
+    Mrs Okafor filters the journals to Sent back and sees the one Mr Adeyemi
+    returned; the postings she exports are that journal's lines, not every line
+    in January. The postings dataset reads a line's journal, the claims dataset
+    the claim itself, both through the rule the lists use.
+    """
+
+    RETURNED = {"id": "approval", "values": ["returned"]}
+    JANUARY = {"start": "2026-01-01", "end": "2026-01-31"}
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.exporter = cls.bursar(None, keys=VIEW_KEYS + ("exports.catalogue.view",))
+
+    def exported(self, user, dataset_key, *filters, books=None, read="pk"):
+        from vs_exports.catalogue import ScopeContext, get_dataset
+        from vs_exports.engine import build_queryset
+
+        books = books or self.books
+        scope = ScopeContext(tenant=books.tenant, entity=books, user=user)
+        return set(build_queryset(get_dataset(dataset_key), scope, list(filters))
+                   .values_list(read, flat=True))
+
+    def postings(self, user, *filters, books=None):
+        return self.exported(user, "finance.gl_postings", {"id": "entry_date", **self.JANUARY},
+                             *filters, books=books, read="entry_id")
+
+    def test_postings_hold_only_the_lines_of_journals_sent_back_inside_the_reader_branches(self):
+        ikeja = self.direct_entry(self.okafor)
+        self.returned(JournalEntry, ikeja)
+        lekki = self.direct_entry(self.lekki_bursar)
+        self.returned(JournalEntry, lekki)
+        with_approver = self.direct_entry(self.okafor)
+
+        self.assertEqual(self.postings(self.reader, self.RETURNED), {ikeja, lekki})
+        self.assertEqual(self.postings(self.lekki_reader, self.RETURNED), {lekki})
+        self.assertTrue({ikeja, lekki, with_approver} <= self.postings(self.reader))
+
+    def test_claims_hold_only_the_claims_sent_back(self):
+        returned = self.claim()
+        self.returned(ExpenseClaim, returned)
+        with_approver = self.claim()
+        claims = ("finance.expense_claims", {"id": "claim_date", **self.JANUARY})
+
+        self.assertEqual(self.exported(self.reader, *claims, self.RETURNED), {returned})
+        self.assertEqual(self.exported(self.reader, *claims), {returned, with_approver})
+
+    def test_a_one_branch_school_exports_its_own_and_never_another_school_rows(self):
+        corona = self.direct_entry(self.okafor)
+        self.returned(JournalEntry, corona)
+        solo = self.direct_entry(self.solo_bursar, books=self.solo_books)
+        self.returned(JournalEntry, solo)
+
+        self.assertEqual(
+            self.postings(self.solo_reader, self.RETURNED, books=self.solo_books), {solo})
+        self.assertEqual(self.postings(self.reader, self.RETURNED), {corona})
+
+    def test_the_screen_export_carries_it_and_refuses_what_the_list_refuses(self):
+        returned = self.claim()
+        self.returned(ExpenseClaim, returned)
+        self.claim()
+
+        def from_screen(value):
+            return self.as_(self.exporter).get(
+                "/v1/exports/from-screen/?screen=finance.expense_claims"
+                f"&entity={self.books.code}&approval={value}")
+
+        carried = from_screen("returned")
+        refused = from_screen("yes")
+        listed = self.as_(self.exporter).get(self.url("expense-claims/?approval=yes"))
+
+        self.assertEqual(carried.status_code, 200, carried.data)
+        self.assertIn(self.RETURNED, carried.data["data"]["config"]["filters"])
+        self.assertTrue(carried.data["data"]["exact"])
+        self.assertEqual(carried.data["data"]["matching_rows"], 1)
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertEqual(refused.data["error"]["detail"]["approval"],
+                         listed.data["error"]["detail"]["approval"])
+
+
 class RefundsAndWriteOffsTests(_SentBackFixture):
 
     def write_off(self, amount):
@@ -184,18 +279,6 @@ class RefundsAndWriteOffsTests(_SentBackFixture):
 
 
 class AReturnedClaimIsNotRejectedUnderItsRequestTests(_SentBackFixture):
-
-    def claim(self):
-        made = self.client_.post(self.url("expense-claims/"), {
-            "claimant_name": "Mrs Okafor", "claim_date": "2026-01-10", "title": "Bank visit",
-            "lines": [{"description": "Taxi", "expense_account": "5300",
-                       "quantity": 1, "unit_price": 5_000_00}],
-        }, format="json")
-        self.assertEqual(made.status_code, 201, made.data)
-        pk = made.data["data"]["id"]
-        sent = self.client_.post(self.url(f"expense-claims/{pk}/submit/"), {}, format="json")
-        self.assertEqual(sent.status_code, 200, sent.data)
-        return pk
 
     def test_rejecting_a_returned_claim_is_refused_until_its_request_is_withdrawn(self):
         approver = self.bursar(self.ikeja, keys=ENTRY_KEYS + ("finance.expenseclaim.post",))

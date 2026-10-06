@@ -7,7 +7,9 @@ the separate accounting mutation that creates ledger history.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    filter_by_approval_param, filter_by_stored_status, filter_by_status_word, stored_status_rules,
+)
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
@@ -272,10 +274,13 @@ class VendorPaymentListCreateView(_ProcBase):
         """Return a paginated, filterable payment console for the current entity."""
         entity = resolve_entity(request)
         qs = _branch_scoped(request, entity, _payment_list_queryset(entity), request.query_params)
-        if status := request.query_params.get("status"):
-            qs = qs.filter(status=status)
-        if approval := request.query_params.get("approval_state"):
-            qs = qs.filter(approval_state=approval)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
+        # The approval pill: a payment sent back reads Sent back, not Pending.
+        qs = filter_by_status_word(
+            qs, request.query_params.get("approval_state"),
+            stored_status_rules(*ProcApprovalState.values, field="approval_state"),
+            param="approval_state",
+        )
         if search := request.query_params.get("search", "").strip():
             qs = qs.filter(Q(document_number__icontains=search) | Q(reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search))

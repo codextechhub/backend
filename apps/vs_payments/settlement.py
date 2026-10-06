@@ -37,7 +37,7 @@ from vs_finance.money import format_naira
 from . import audit
 from .constants import CollectionStatus, PaymentAuditAction
 from .exceptions import PaymentStateError
-from vs_finance.wording import state_word
+from vs_finance.wording import agrees, counted, state_word
 
 
 def awaiting_settlement_q(prefix: str = "") -> Q:
@@ -182,7 +182,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     entry = JournalEntry.objects.create(
         entity=entity, branch_id=branch_id, date=book_date,
         period=resolve_period(entity, book_date), source=JournalSource.BANK,
-        narration=(f"Settlement of {len(intents)} online payment(s) into {bank.name}")[:255],
+        narration=(f"Settlement of {counted(len(intents), 'online payment')} into {bank.name}")[:255],
         reference=line.reference, created_by=actor_user,
     )
     line_no = 1
@@ -224,14 +224,14 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     finance_record(
         entity=entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank,
-        message=(f"Settled {len(intents)} online payment(s) into {bank.name}: "
+        message=(f"Settled {counted(len(intents), 'online payment')} into {bank.name}: "
                  f"{format_naira(gross)} less {format_naira(fee)} fees."),
         bank_account_id=bank.id, journal_id=entry.pk, gross=gross, fee=fee, net=net,
     )
     audit.record(  # Filed under a payment's reference, so it reaches that payment's readers.
         action=PaymentAuditAction.COLLECTIONS_SETTLED, entity=entity,
         reference=intents[0].reference, actor_user=actor_user,
-        message=(f"Settled {len(intents)} collection(s): {format_naira(gross)} gross, "
+        message=(f"Settled {counted(len(intents), 'collection')}: {format_naira(gross)} gross, "
                  f"{format_naira(fee)} fees."),
         metadata={"collection_ids": ids, "journal_id": entry.pk,
                   "bank_line_id": line.pk, "gross": gross, "fee": fee, "net": net},
@@ -351,10 +351,12 @@ def gateway_clearing_current(entity, period, branch=None):
         passed=count == 0,
         blocking=False,
         detail=(
-            "No online payment has waited in gateway clearing too long"
+            "No online payment has waited too long for the provider to pay it into the bank"
             if count == 0 else
-            f"{count} online payment(s), {format_naira(int(total))}, confirmed {days} or more days before "
-            f"the period end are still in gateway clearing: match their settlement."
+            f"{counted(count, 'online payment')}, {format_naira(int(total))}, confirmed "
+            f"{days} or more days before the period end {agrees(count, 'is', 'are')} still "
+            f"waiting to be matched to the provider's payment into the bank: match "
+            f"{agrees(count, 'its', 'their')} settlement."
         ),
     )
 

@@ -54,14 +54,17 @@ def ap_reconciled(entity, period, branch=None):
         name="ap_reconciled", title="Payables agree with the ledger",
         passed=ap.is_reconciled,
         detail=(
-            f"Sub-ledger {format_naira(ap.subledger_total)} against control "
-            f"{format_naira(ap.control_total)}."
+            f"Suppliers' balances total {format_naira(ap.subledger_total)}; the payables "
+            f"account in the ledger holds {format_naira(ap.control_total)}."
         ),
     )
 
 
 def grir_explained(entity, period, branch=None):
-    """Warning: the GR/IR clearing balance, surfaced so it cannot be closed unseen.
+    """Warning: goods received and not yet billed, surfaced so it cannot be closed unseen.
+
+    The figure is the GR/IR clearing balance; a bursar reads it as goods received
+    but not yet billed (or billed but not yet received), so that is what it says.
 
     Deliberately non-blocking. Goods received near the period end and not yet billed
     leave a legitimate balance here, so failing the close on it would make month-end
@@ -82,15 +85,13 @@ def grir_explained(entity, period, branch=None):
         scope = BranchScope(frozenset((getattr(branch, "pk", branch),)), include_shared=False)
     balance = grir_balance(entity, branch_scope=scope)
     if balance == 0:
-        detail = "GR/IR nets to zero."
+        detail = "Every delivery received has been billed, and every bill delivered."
     elif balance > 0:
-        detail = (f"GR/IR clearing holds {format_naira(balance)} of goods received "
-                  f"and not yet invoiced.")
+        detail = f"{format_naira(balance)} of goods have been received and not yet billed."
     else:
-        detail = (f"GR/IR clearing holds {format_naira(-balance)} invoiced for goods "
-                  f"not yet received.")
+        detail = f"{format_naira(-balance)} has been billed for goods not yet received."
     return ChecklistItem(
-        name="grir_explained", title="Goods received and bills match",
+        name="grir_explained", title="Goods received but not yet billed",
         passed=balance == 0, blocking=False, detail=detail,
     )
 

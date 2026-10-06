@@ -16,7 +16,9 @@ branch-bound reader only the pairs their branches are part of.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    APPROVAL_PARAM, asks_for_returned, filter_by_approval_param, filter_by_status_word,
+)
 from django.db import transaction
 from django.db.models import Prefetch, Q
 from rest_framework import serializers
@@ -32,6 +34,7 @@ from vs_rbac.scoping import (
     transaction_branch_scope,
 )
 
+from core.list_filters import filter_by_word
 from core.response import success_response
 
 from ..approvals import with_approval_request
@@ -42,6 +45,7 @@ from ..constants import (
     RechargeBasis,
     SharedCostTreatment,
 )
+from ..inter_branch import held_forward_sent_back, held_stage_rules, transfer_stage_rules
 from ..models import (
     BankAccount,
     Customer,
@@ -270,10 +274,18 @@ class HeldReceiptSerializer(serializers.ModelSerializer):
         ]
 
     def get_forwarded_by(self, obj):
+        """The live forward, with ``approval_returned`` true when it was sent back.
+
+        Read from the list's ``forward_sent_back`` annotation
+        (:func:`vs_finance.inter_branch.held_forward_sent_back`), so a page costs
+        no query per row; a receipt read without it has no forward sent back.
+        """
         live = [t for t in obj.forwards.all() if t.status != DocumentStatus.REVERSED
                 and t.status != DocumentStatus.CANCELLED]
         return ({"id": live[0].pk, "document_number": live[0].document_number,
-                 "status": live[0].status} if live else None)
+                 "status": live[0].status,
+                 "approval_returned": bool(getattr(obj, "forward_sent_back", False))}
+                if live else None)
 
 
 class RechargeSerializer(serializers.ModelSerializer):
@@ -412,8 +424,7 @@ class InterBranchTransferListCreateView(_FinanceBase):
         params = request.query_params
         if (kind := params.get("kind")):
             qs = qs.filter(kind=kind)
-        if (status_ := params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_status_word(qs, params.get("status"), transfer_stage_rules())
         if (branch := params.get("branch")) and str(branch).isdigit():
             side = Q(branch_id=int(branch)) | Q(to_branch_id=int(branch))
             qs = qs.filter(side)
@@ -716,6 +727,7 @@ def _held_in_reach(request, entity):
         HeldForBranchReceipt.objects.filter(visible, entity=entity)
         .select_related("branch", "for_branch", "bank_account", "customer")
         .prefetch_related("forwards")
+        .annotate(forward_sent_back=held_forward_sent_back())
     )
 
 
@@ -745,9 +757,11 @@ class HeldReceiptListCreateView(_FinanceBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = _held_in_reach(request, entity)
-        if (status_ := request.query_params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_word(_held_in_reach(request, entity),
+                            request.query_params.get("status"), held_stage_rules())
+        # Sent back: the receipt's forward is back with whoever sent it.
+        if asks_for_returned(request.query_params.get(APPROVAL_PARAM)):
+            qs = qs.filter(forward_sent_back=True)
         return self.paginate(request, qs.order_by("-receipt_date", "-id"), HeldReceiptSerializer)
 
     def post(self, request):

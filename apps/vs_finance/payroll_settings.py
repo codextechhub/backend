@@ -9,6 +9,8 @@ binds every branch that pays staff from these books.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import datetime
 
 from django.db import transaction
@@ -130,7 +132,7 @@ def update_finance_payroll_settings(*, entity, data, actor_user):
             entity=entity, action=FinanceAuditAction.PAYROLL_SETTINGS_UPDATED,
             actor_user=actor_user, target=settings,
             target_type="FinancePayrollSettings", target_id=str(settings.pk or entity.pk),
-            message=f"Updated {len(changed_fields)} payroll setting(s).",
+            message=f"Updated {counted(len(changed_fields), 'payroll setting')}.",
             before={f: before_all[f] for f in changed_fields},
             after={f: after_all[f] for f in changed_fields},
         )

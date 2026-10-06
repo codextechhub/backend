@@ -14,6 +14,8 @@ names no branch, is read through its branch lines (:func:`_provisions_in_reach`)
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from vs_workflow.services.approval_filter import filter_by_approval_param
 from django.db import transaction
 from django.db.models import Q
@@ -185,6 +187,8 @@ class DeferredIncomeReleaseListView(_FinanceBase):
             .annotate(
                 period_id=Subquery(periods.values("pk")[:1]),
                 period_name=Subquery(periods.values("name")[:1]),
+                period_start=Subquery(periods.values("start_date")[:1]),
+                period_end=Subquery(periods.values("end_date")[:1]),
                 period_status=Subquery(periods.values("status")[:1]),
             )
             .annotate(branch_period_status=Coalesce(
@@ -221,38 +225,51 @@ class DeferredIncomeReleaseListView(_FinanceBase):
             pk__in={row.period_id for row in page if row.reversed_at is None},
         ))
         return paginator.get_paginated_response(
-            [_release_row(row, sealed.get(row.period_id, ())) for row in page])
+            [_release_row(row, sealed.get(row.period_id, ()), entity.tenant) for row in page])
 
 
-def _reverse_blocked_reason(release, sealed_by) -> str | None:
-    """Why the month's undo would refuse ``release``, or None when it would reverse it."""
+def _reverse_blocked_reason(release, sealed_by, tenant) -> str | None:
+    """Why the month's undo would refuse ``release``, or None when it would reverse it.
+
+    The month is named as the bursar names it ("January 2027", through
+    :func:`vs_finance.wording.period_label`), never by the period's stored
+    name ("2027-01"), which stays in the row's ``period_name`` for a client.
+    """
+    from types import SimpleNamespace
+
     from .constants import PeriodStatus
+    from .wording import period_label, period_status_word
 
     if release.reversed_at is not None:
         return None
     if release.period_id is None:
         return "No accounting period covers this release's date."
+    month = period_label(SimpleNamespace(
+        start_date=release.period_start, end_date=release.period_end,
+        name=release.period_name,
+    ), tenant)
     if release.period_status != PeriodStatus.OPEN:
-        state = release.period_status.lower().replace("_", " ")
-        return f"{release.period_name} is {state}; its releases are sealed with it."
+        return (f"{month} is {period_status_word(release.period_status)}; "
+                f"its releases are sealed with it.")
     if release.branch_period_status != PeriodStatus.OPEN:
-        return (f"{release.branch.name} has closed {release.period_name}; "
+        return (f"{release.branch.name} has closed {month}; "
                 f"its release is sealed with that month.")
     if sealed_by:
         verb = "has" if len(sealed_by) == 1 else "have"
-        return (f"{' and '.join(sealed_by)} {verb} closed {release.period_name}, and the undo "
+        return (f"{' and '.join(sealed_by)} {verb} closed {month}, and the undo "
                 f"reverses every branch's release of the month together.")
     return None
 
 
-def _release_row(release, sealed_by=()) -> dict:
+def _release_row(release, sealed_by=(), tenant=None) -> dict:
     """One release as the release list shows it.
 
     ``sealed_by`` names the branches whose closed month refuses this release's
     period undo (:func:`vs_finance.deferred_income.sealed_release_branches`).
+    ``tenant`` is the one whose month words the refusal is written in.
     """
     date = release.journal.date
-    reason = _reverse_blocked_reason(release, sealed_by)
+    reason = _reverse_blocked_reason(release, sealed_by, tenant)
     return {
         "id": release.pk,
         "branch_id": release.branch_id,
@@ -295,7 +312,7 @@ class DeferredIncomeReleaseView(_WholeTenantRun):
                 {"up_to": "Deferred income is released for days that have passed, not ahead."})
         releases = release_deferred_income(entity, up_to=up_to, actor_user=request.user)
         return success_response(
-            f"{len(releases)} deferred income release(s) posted.",
+            f"{counted(len(releases), 'deferred income release')} posted.",
             data={"up_to": up_to.isoformat(),
                   "releases": [_release_payload(release) for release in releases]},
         )
@@ -321,7 +338,7 @@ class DeferredIncomeReverseView(_WholeTenantRun):
             raise NotFound("No such period in this entity.")
         count = reverse_deferred_release(entity, period, actor_user=request.user)
         return success_response(
-            f"{count} deferred income release(s) reversed.",
+            f"{counted(count, 'deferred income release')} reversed.",
             data={"period": period.pk, "reversed": count},
         )
 
@@ -598,7 +615,7 @@ class CustomerDepositForfeitView(_WholeTenantRun):
             raise ValidationError({"as_of": "Deposits are forfeited as of today or earlier."})
         outcome = forfeit_unclaimed_deposits(entity, as_of=as_of, actor_user=request.user)
         return success_response(
-            f"{len(outcome['forfeitures'])} forfeiture journal(s) posted.",
+            f"{counted(len(outcome['forfeitures']), 'forfeiture journal')} posted.",
             data={
                 "forfeitures": [
                     {"id": f.pk, "branch_id": f.branch_id, "amount": f.amount,

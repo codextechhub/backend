@@ -1,6 +1,8 @@
 """Typed fiscal-calendar policy for one ledger entity: the rollover and the close order."""
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -110,7 +112,7 @@ def update_finance_calendar_settings(*, entity, data, actor_user):
             target=settings if settings.pk else None,
             target_type="FinanceCalendarSettings",
             target_id=str(settings.pk or entity.pk),
-            message=f"Updated {len(changed_after)} finance calendar setting(s).",
+            message=f"Updated {counted(len(changed_after), 'finance calendar setting')}.",
             before=changed_before,
             after=changed_after,
         )

@@ -44,17 +44,25 @@ from vs_exports.catalogue import (
     narrow_to_caller_branches,
     register,
 )
+from vs_workflow.services.approval_filter import export_filter, not_returned_spec
 
 
 # Build the entity-scoped base queryset for customer invoices.
 def _invoices(scope):
+    """Invoices in the books, each carrying ``screen_tab``: the tab the list files it under.
+
+    The tab is read by the list's own rules (:func:`vs_finance.receivables.invoice_bucket`),
+    overdue judged on the day at each invoice's own branch, so an export of a tab
+    holds the invoices the tab shows.
+    """
     from .models import Invoice
+    from .receivables import invoice_bucket
 
     # A transaction: never one not yet given a branch.
     return narrow_to_caller_branches(
         Invoice.objects.filter(entity=scope.entity),
         scope, inclusive=False,
-    )
+    ).annotate(screen_tab=invoice_bucket(scope.tenant))
 
 
 # Build the entity-scoped base queryset for invoice lines.
@@ -113,6 +121,65 @@ def _customers(scope):
 
 
 _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")
+_INVOICE_TABS = {
+    "draft": "Draft", "paid": "Paid", "overdue": "Overdue", "partial": "Partly paid",
+    "issued": "Issued",
+}
+_ALLOCATION = {
+    "ALLOCATED": "Allocated", "PARTIAL": "Partly allocated", "UNALLOCATED": "Unallocated",
+    "REFUNDED": "Refunded",
+}
+_ACCOUNT_STATUS = {
+    "ACTIVE": "Active", "INACTIVE": "Inactive", "CREDIT": "In credit", "OVERDUE": "Overdue",
+}
+
+
+def _chosen(spec, choices, filter_id, label):
+    """A choice filter's values, refused unless each is one of ``choices``."""
+    from vs_exports.catalogue import FilterError
+
+    values = spec.get("values") or []
+    unknown = [v for v in values if str(v) not in choices] if isinstance(values, list) else values
+    if not isinstance(values, list) or unknown:
+        raise FilterError(f"“{label}” takes {', '.join(choices)}.", filter_id=filter_id)
+    return [str(v) for v in values]
+
+
+def _allocation_compiles(spec, scope=None):
+    """The receipts the list's allocation words name (:func:`vs_finance.receivables.receipt_allocation_rules`)."""
+    from django.db.models import Q
+
+    from .receivables import receipt_allocation_rules
+
+    rules = receipt_allocation_rules()
+    combined = Q(pk__in=[]) if spec.get("values") else Q()
+    for value in _chosen(spec, _ALLOCATION, "allocation_status", "Allocation"):
+        combined |= rules[value]
+    return combined
+
+
+def _account_status_compiles(spec, scope=None):
+    """The customers whose account status the list would show as one of the values.
+
+    Worked out from each customer's balance in the books the exporter can see,
+    by the customer list's own reading
+    (:func:`vs_finance.views_ar.customers_with_account_status`).
+    """
+    from django.db.models import Q
+
+    from vs_rbac.scoping import transaction_branch_scope_for_user
+
+    from .models import Customer
+    from .views_ar import customers_with_account_status
+
+    values = _chosen(spec, _ACCOUNT_STATUS, "account_status", "Account status")
+    if not values or scope is None:
+        return Q()
+    reach = transaction_branch_scope_for_user(scope.user, tenant=scope.tenant)
+    kept = customers_with_account_status(
+        Customer.objects.filter(entity=scope.entity), scope.entity, values, reach,
+    )
+    return Q(pk__in=kept.values("pk"))
 _PAY_STATUS = choice_labels("vs_finance.constants.InvoicePaymentStatus")
 _JOURNAL_SOURCE = choice_labels("vs_finance.constants.JournalSource")
 
@@ -179,6 +246,8 @@ def register_datasets():
             FilterDef("customer_code", "Customer code", FILTER_TEXT,
                       source="customer__code"),
             FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
+            FilterDef("tab", "Tab", FILTER_CHOICE, source="screen_tab", choices=_INVOICE_TABS,
+                      description="The invoice screen's tab, overdue judged at each branch."),
         ),
     ))
 
@@ -263,6 +332,8 @@ def register_datasets():
                 ("entry__reference", "Reference"),
             ), description="Matches any one of these, the way the search box does."),
             FilterDef("account", "Account code", FILTER_TEXT, source="account__code"),
+            # A line's journal is what an approver sends back.
+            export_filter("vs_finance.JournalEntry", source="entry"),
         ),
     ))
 
@@ -297,6 +368,9 @@ def register_datasets():
             FilterDef("payment_date", "Received on", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("allocation_status", "Allocation", FILTER_CHOICE, choices=_ALLOCATION,
+                      compiles=_allocation_compiles,
+                      description="Where the receipt's cash went, as the receipts screen shows it."),
             FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
             FilterDef("method", "Method", FILTER_TEXT),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
@@ -354,6 +428,7 @@ def register_datasets():
                 ("title", "Purpose"),
             ), description="Matches any one of these, the way the search box does."),
             FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
+            export_filter("vs_finance.ExpenseClaim"),
         ),
     ))
 
@@ -391,6 +466,9 @@ def register_datasets():
             ), description="Matches either one, the way the search box does."),
             FilterDef("name", "Name", FILTER_TEXT),
             FilterDef("is_active", "Active", FILTER_BOOLEAN),
+            FilterDef("account_status", "Account status", FILTER_CHOICE, choices=_ACCOUNT_STATUS,
+                      compiles=_account_status_compiles,
+                      description="As the customer screen shows it, from each balance."),
         ),
     ))
 
@@ -402,18 +480,18 @@ def register_datasets():
 def _translate_invoices(params):
     """``/v1/finance/invoices/`` → filter specs for ``finance.customer_invoices``.
 
-    The screen's ``bucket`` tabs are derived rather than stored, so each one is
-    rebuilt here from the columns that actually back it. ``search`` spans three
-    columns with an OR and has no single-filter equivalent, so it is reported as
-    unmapped rather than dropped - dropping it would hand back every invoice.
+    The screen's ``bucket`` tabs are read by the list's own rules, carried as the
+    dataset's ``tab`` (each invoice's tab worked out the same way), so issued,
+    partial and overdue export exactly what each tab lists. ``open`` is the three
+    owing tabs together. A tab the list does not have is refused as the list
+    refuses it.
     """
-    import datetime
-
-    from vs_config.clock import tenant_today
+    from core.list_filters import word_value
     from vs_exports.catalogue import Unmapped
 
+    from .receivables import invoice_bucket_rules
+
     filters, unmapped = [], []
-    today = tenant_today(None)
 
     if value := params.get("status"):
         filters.append({"id": "status", "values": [value]})
@@ -432,58 +510,31 @@ def _translate_invoices(params):
     if value := params.get("search"):
         filters.append({"id": "search", "value": value})
 
-    bucket = (params.get("bucket") or "").lower()
-    if bucket == "draft":
-        filters.append({"id": "status", "values": ["DRAFT"]})
-    elif bucket in ("paid", "overdue", "partial", "open"):
-        filters.append({"id": "status", "values": ["POSTED"]})
-        if bucket == "paid":
-            filters.append({"id": "payment_status", "values": ["PAID"]})
-        elif bucket == "partial":
-            filters.append({"id": "payment_status", "values": ["PARTIAL"]})
-        elif bucket == "open":
-            filters.append({"id": "payment_status", "values": ["UNPAID", "PARTIAL"]})
-        else:  # overdue: posted, not settled, and past its due date
-            filters.append({"id": "payment_status", "values": ["UNPAID", "PARTIAL"]})
-            filters.append({
-                "id": "due_date",
-                "end": (today - datetime.timedelta(days=1)).isoformat(),
-            })
-    elif bucket:
-        unmapped.append(Unmapped("bucket", bucket, "This tab has no export equivalent."))
+    tab = word_value(params.get("bucket"), list(invoice_bucket_rules(None)), param="bucket")
+    if tab == "open":
+        filters.append({"id": "tab", "values": ["overdue", "partial", "issued"]})
+    elif tab:
+        filters.append({"id": "tab", "values": [tab]})
 
     return filters, unmapped
 
 
 # Translate the customer list screen's filters into export filters.
 def _translate_customers(params):
-    from vs_exports.catalogue import Unmapped
-
     filters, unmapped = [], []
     if value := params.get("search"):
         filters.append({"id": "search", "value": value})
     if (value := params.get("is_active")) is not None:
         filters.append({"id": "is_active", "value": str(value).lower() == "true"})
 
-    # The screen's status tabs are not one column. ACTIVE and INACTIVE are the
-    # stored flag, but OVERDUE and CREDIT are computed from the customer's live
-    # AR balance, which no stored field carries - so they are reported rather
-    # than quietly ignored, and the drawer says the file is wider.
-    status = params.get("status")
-    if status in ("ACTIVE", "INACTIVE"):
-        filters.append({"id": "is_active", "value": status == "ACTIVE"})
-    elif status in ("OVERDUE", "CREDIT"):
-        unmapped.append(Unmapped(
-            "status", status,
-            "Overdue and In-credit are worked out from each customer's live balance, "
-            "not stored on the customer, so the export cannot filter on them. Export "
-            "Invoices instead if you need the overdue set.",
-        ))
-    elif status:
-        unmapped.append(Unmapped(
-            "status", status,
-            "This status is not one the customer export recognises.",
-        ))
+    # The screen's status pill: Active is an active customer neither overdue nor
+    # in credit, worked out from the balance as the list works it out.
+    from core.list_filters import word_value
+
+    from .views_ar import CUSTOMER_ACCOUNT_STATUSES
+
+    if status := word_value(params.get("status"), CUSTOMER_ACCOUNT_STATUSES):
+        filters.append({"id": "account_status", "values": [status]})
     return filters, unmapped
 
 
@@ -496,7 +547,8 @@ def _translate_customers(params):
 def _translate_gl_postings(params):
     filters, unmapped = [], []
     if value := params.get("status"):
-        filters.append({"id": "entry_status", "values": [value]})
+        filters.append({"id": "entry_status", "values": [str(value).upper()]})
+        filters.append(not_returned_spec())
     if value := params.get("source"):
         filters.append({"id": "entry_source", "values": [value]})
     # The screen sends its date window as two flat params; the export wants one
@@ -519,9 +571,14 @@ def _translate_gl_postings(params):
 
 # Translate the receipts and allocation screen's filters into export filters.
 def _translate_receipts(params):
+    """The receipts screen's filters; its ``status`` is the allocation word each row shows."""
+    from core.list_filters import word_value
+
+    from .receivables import receipt_allocation_rules
+
     filters, unmapped = [], []
-    if value := params.get("status"):
-        filters.append({"id": "status", "values": [value]})
+    if value := word_value(params.get("status"), list(receipt_allocation_rules())):
+        filters.append({"id": "allocation_status", "values": [value]})
     if value := params.get("method"):
         filters.append({"id": "method", "value": value})
     if value := params.get("search"):
@@ -532,38 +589,35 @@ def _translate_receipts(params):
 
 
 # Translate the expense-claims screen's filters into export filters.
-#
-# The screen's status chip is a DISPLAY status: it collapses (status ×
-# payment_status) into four words a person actually uses. The list view expands
-# it server-side, and so does this - the same four branches, so a quick export
-# and the table agree. "Approved" is the interesting one: it means posted but
-# NOT fully reimbursed, which an "is any of" filter expresses as the payment
-# states other than PAID.
 def _translate_expense_claims(params):
-    from vs_exports.catalogue import Unmapped
+    """The claims screen's filters, its words read by the list's own table.
 
-    from .constants import DocumentStatus, InvoicePaymentStatus
+    ``display_status`` is the word a claim's pill shows
+    (:data:`vs_finance.expenses.CLAIM_DISPLAY_WORDS`): each becomes the stored
+    status and reimbursement states it means, so Approved exports claims posted
+    and not reimbursed at all and Part-paid those partly reimbursed. ``status``
+    is the stored status. Either leaves claims sent back out, as the list does
+    (they wear Sent back, which ``approval=returned`` carries). A word the list
+    does not have is refused as the list refuses it.
+    """
+    from core.list_filters import word_value
+
+    from .constants import DocumentStatus
+    from .expenses import CLAIM_DISPLAY_WORDS
 
     filters, unmapped = [], []
-    disp = params.get("display_status") or params.get("status")
-    if disp == "DRAFT":
-        filters.append({"id": "status", "values": [str(DocumentStatus.DRAFT)]})
-    elif disp == "REJECTED":
-        filters.append({"id": "status", "values": [str(DocumentStatus.CANCELLED)]})
-    elif disp == "PAID":
-        filters.append({"id": "status", "values": [str(DocumentStatus.POSTED)]})
-        filters.append({"id": "payment_status", "values": [str(InvoicePaymentStatus.PAID)]})
-    elif disp == "APPROVED":
-        filters.append({"id": "status", "values": [str(DocumentStatus.POSTED)]})
-        filters.append({"id": "payment_status", "values": [
-            str(s) for s in InvoicePaymentStatus.values if s != InvoicePaymentStatus.PAID
-        ]})
-    elif disp:
-        unmapped.append(Unmapped(
-            "display_status", disp,
-            "This status is not one the expense-claim export recognises, so the file "
-            "is not limited by it.",
-        ))
+    word = word_value(params.get("display_status"), list(CLAIM_DISPLAY_WORDS),
+                      param="display_status")
+    if word is not None:
+        status, payments = CLAIM_DISPLAY_WORDS[word]
+        filters.append({"id": "status", "values": [str(status)]})
+        if payments:
+            filters.append({"id": "payment_status", "values": [str(p) for p in payments]})
+    stored = word_value(params.get("status"), list(DocumentStatus.values))
+    if stored is not None:
+        filters.append({"id": "status", "values": [stored]})
+    if word is not None or stored is not None:
+        filters.append(not_returned_spec())
     for key in ("q", "search"):
         if value := params.get(key):
             filters.append({"id": "search", "value": value})

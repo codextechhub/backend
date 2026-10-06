@@ -22,7 +22,7 @@ from vs_config.display import format_date
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
 from .purchasing import price_po, refuse_sourced_lines, vendor_purchase_block_reason
-from vs_finance.wording import state_word
+from vs_finance.wording import agrees, counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -70,7 +70,8 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
     if stranded:
         codes = ", ".join(sorted(existing[vid].vendor.code for vid in stranded))
         raise SourcingError(
-            f"Cannot remove vendor(s) {codes} - they have already responded to this RFQ.",
+            f"Cannot remove {agrees(len(stranded), 'vendor', 'vendors')} {codes} - "
+            f"{agrees(len(stranded), 'it has', 'they have')} already responded to this RFQ.",
         )
 
     to_remove = set(existing) - wanted_ids
@@ -121,7 +122,7 @@ def issue_rfq(rfq, *, competition_exception_reason="", actor_user=None):
     competition_exception = invited_count < required_count
     if competition_exception and not exception_reason:
         raise SourcingError(
-            f"This RFQ has {invited_count} invited vendor(s), but policy requires "
+            f"This RFQ has {counted(invited_count, 'invited vendor')}, but policy requires "
             f"at least {required_count}. A user with the competition override permission "
             f"must provide an exception reason before it can be issued.",
         )
@@ -130,7 +131,7 @@ def issue_rfq(rfq, *, competition_exception_reason="", actor_user=None):
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_ISSUED,
         actor_user=actor_user, target=rfq,
-        message=f"Issued RFQ {rfq.document_number} ({line_count} line(s)).",
+        message=f"Issued RFQ {rfq.document_number} ({counted(line_count, 'line')}).",
         invited_vendor_count=invited_count,
         minimum_invited_vendors=required_count,
         competition_exception=competition_exception,
@@ -445,7 +446,7 @@ def award_quotation(
     competition_exception = submitted_count < required_count
     if competition_exception and not exception_reason:
         raise SourcingError(
-            f"This RFQ has {submitted_count} submitted quotation(s), but policy requires "
+            f"This RFQ has {counted(submitted_count, 'submitted quotation')}, but policy requires "
             f"at least {required_count}. A user with the competition override permission "
             f"must provide an exception reason before a quotation can be awarded.",
         )
@@ -620,7 +621,7 @@ def award_quotation(
         actor_user=actor_user, target=quotation,
         message=(
             f"Awarded quotation {quotation.document_number} from {vendor.code} to "
-            f"{len(purchase_orders)} purchase order(s) ({format_naira(sum(p.total for p in purchase_orders))})."
+            f"{counted(len(purchase_orders), 'purchase order')} ({format_naira(sum(p.total for p in purchase_orders))})."
         ),
         rfq_id=rfq.pk, purchase_order_id=po.pk,
         purchase_order_ids=[row.pk for row in purchase_orders],

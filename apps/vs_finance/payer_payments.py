@@ -55,7 +55,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PayerPaymentError
 from .money import format_naira
-from .wording import state_word
+from .wording import counted, state_word
 
 #: The split recorded when the bursar typed each customer's amount.
 EXPLICIT_SPLIT = "EXPLICIT"
@@ -515,13 +515,13 @@ def _audit_by_branch(document, action, *, actor_user=None, **metadata):
             message = (
                 f"{verb} {format_naira(document.amount)} from {document.payer.name} into "
                 f"{document.bank_account.name}: {format_naira(figure)} for "
-                f"{len(own)} customer(s) here"
+                f"{counted(len(own), 'customer')} here"
                 + (f", {format_naira(held)} held for other branches." if held else ".")
             )
         else:
             message = (
                 f"{verb} {format_naira(figure)} from {document.payer.name}, received at "
-                f"{document.branch.name} for {len(own)} customer(s) here."
+                f"{document.branch.name} for {counted(len(own), 'customer')} here."
             )
         record(
             entity=document.entity, action=action, actor_user=actor_user, target=document,
@@ -562,8 +562,8 @@ def _void_atomic(document, *, actor_user=None, date=None):
     credit, or a receivable move carried that credit to another branch).
     """
     from .banking import journal_is_reconciled
-    from .inter_branch import void_held_receipt
-    from .models import InterBranchTransfer, PayerPayment
+    from .inter_branch import refuse_while_forwarded, void_held_receipt
+    from .models import PayerPayment
     from .voids import _void_payment_atomic
 
     document = PayerPayment.objects.select_for_update().get(pk=document.pk)
@@ -572,16 +572,7 @@ def _void_atomic(document, *, actor_user=None, date=None):
             f"Only a posted payment can be voided; {document.document_number} is {state_word(document)}.",
         )
     shares = list(document.shares.select_related("receipt", "held_receipt", "customer").order_by("pk"))
-    held_ids = [s.held_receipt_id for s in shares if s.held_receipt_id]
-    forward = InterBranchTransfer.objects.filter(
-        held_receipt_id__in=held_ids,
-        status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED, DocumentStatus.POSTED),
-    ).select_related("held_receipt").first()
-    if forward is not None:
-        raise PayerPaymentError(
-            f"{forward.held_receipt.document_number} of this payment is forwarded by "
-            f"{forward.document_number}. Void that transfer first.",
-        )
+    refuse_while_forwarded([s.held_receipt for s in shares if s.held_receipt_id])
     journals = [s.receipt.journal_id for s in shares if s.receipt_id]
     journals += [s.held_receipt.journal_id for s in shares if s.held_receipt_id]
     if any(journal_is_reconciled(j) for j in journals if j):

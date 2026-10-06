@@ -21,6 +21,8 @@ Two callers with deliberately different failure behaviour:
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import logging
 
 from django.conf import settings
@@ -392,7 +394,7 @@ def _queue(delivery_id: int, *, actor_user=None):
         else FinanceAuditAction.DOCUMENT_EMAIL_FAILED,
         f"Queued {delivery.get_document_type_display().lower()} "
         f"{delivery.document_number or delivery.customer.code} for "
-        f"{len(delivery.recipients)} recipient(s)." if notification_ids else
+        f"{counted(len(delivery.recipients), 'recipient')}." if notification_ids else
         f"Could not queue {delivery.get_document_type_display().lower()} "
         f"{delivery.document_number or delivery.customer.code} for email.",
         actor_user=actor_user,

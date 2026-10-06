@@ -295,7 +295,7 @@ def build_queryset(dataset, scope, filters, sort=None):
     combined = Q()
     for spec in filters or []:
         try:
-            combined &= compile_filter(dataset, spec)
+            combined &= compile_filter(dataset, spec, scope)
         except FilterError as exc:
             raise ExportError(
                 FailureCode.FILTER_INVALID, str(exc), detail=exc.filter_id,

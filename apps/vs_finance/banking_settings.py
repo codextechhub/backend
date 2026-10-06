@@ -1,6 +1,8 @@
 """Typed bank-reconciliation and receipt-allocation defaults."""
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -129,7 +131,7 @@ def update_finance_banking_settings(*, entity, data, actor_user):
             target=settings if settings.pk else None,
             target_type="FinanceBankingSettings",
             target_id=str(settings.pk or entity.pk),
-            message=f"Updated {len(changed_after)} finance banking setting(s).",
+            message=f"Updated {counted(len(changed_after), 'finance banking setting')}.",
             before=changed_before,
             after=changed_after,
         )

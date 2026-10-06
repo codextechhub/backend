@@ -13,6 +13,7 @@ costs.
 from __future__ import annotations
 
 from django.db import connection
+from django.db.models import F
 from django.test import SimpleTestCase
 from django.test.utils import CaptureQueriesContext
 
@@ -95,6 +96,30 @@ class ApprovalStateReadTests(_ResubmitFixture):
         self.assertEqual(listed[rejected], ("DRAFT", "REJECTED"))
         detail = self.client_.get(self.url(f"credit-notes/{sent_back}/")).data["data"]
         self.assertEqual(detail["approval_state"], "PENDING")
+
+    def test_each_status_filter_lists_only_the_notes_wearing_that_status(self):
+        draft = self.note(submit=False)
+        waiting = self.note()
+        issued, applied, voided = (self.note(submit=False) for _ in range(3))
+        CreditNote.objects.filter(pk__in=(issued, applied)).update(status="POSTED")
+        CreditNote.objects.filter(pk=applied).update(allocated_amount=F("total"))
+        CreditNote.objects.filter(pk=voided).update(status="REVERSED")
+
+        def listed(value):
+            return set(self.states(f"credit-notes/?status={value}"))
+
+        self.assertEqual(listed("DRAFT"), {draft})
+        self.assertEqual(listed("draft"), {draft})
+        self.assertEqual(listed("PENDING_APPROVAL"), {waiting})
+        self.assertEqual(listed("REVERSED"), {voided})
+        self.assertEqual(listed("issued"), {issued})
+        self.assertEqual(listed("APPLIED"), {applied})
+        self.assertEqual(listed(""), {draft, waiting, issued, applied, voided})
+
+    def test_a_status_the_list_does_not_know_is_refused(self):
+        response = self.client_.get(self.url("credit-notes/?status=VOIDED"))
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("status", response.data["error"]["detail"])
 
     def test_a_sent_back_journal_reads_pending_in_the_ledger_list_and_detail(self):
         pk = self.journal()

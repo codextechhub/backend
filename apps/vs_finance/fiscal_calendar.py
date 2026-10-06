@@ -22,6 +22,8 @@ August entity rolls into another September-to-August year.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import datetime
 import logging
 
@@ -444,7 +446,7 @@ def _warn(entity, runway, *, settings, failure, today) -> bool:
         target_type="LedgerEntity",
         target_id=str(entity.pk),
         message=(
-            f"Warned {len(recipients)} finance user(s) that postings stop on "
+            f"Warned {counted(len(recipients), 'finance user')} that postings stop on "
             f"{format_date(runway['first_uncovered_date'], entity.tenant)}."
         ),
         first_uncovered_date=runway["first_uncovered_date"].isoformat(),

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    filter_by_approval_param, filter_by_stored_status, filter_by_status_word, returned_condition,
+)
 from django.db import transaction
 from rest_framework.exceptions import NotFound
 from vs_rbac.scoping import transaction_branch_q
@@ -56,31 +58,20 @@ class ExpenseClaimListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         from ..approvals import ApprovalGate
-        from ..constants import DocumentStatus, InvoicePaymentStatus
+        from ..expenses import claim_display_rules
 
         entity = resolve_entity(request)
         qs = ExpenseClaim.objects.filter(
             transaction_branch_q(request), entity=entity,
         ).prefetch_related("lines")
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (pay := request.query_params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
-        # The UI collapses (status × payment_status) into display states; translate
-        # them to the underlying filters so the list stays filtered server-side.
-        disp = request.query_params.get("display_status")
-        if disp == "DRAFT":
-            qs = qs.filter(status=DocumentStatus.DRAFT)
-        elif disp == "REJECTED":
-            qs = qs.filter(status=DocumentStatus.CANCELLED)
-        elif disp == "PAID":
-            qs = qs.filter(status=DocumentStatus.POSTED,
-                           payment_status=InvoicePaymentStatus.PAID)
-        elif disp == "APPROVED":  # posted but not yet fully reimbursed
-            qs = qs.filter(status=DocumentStatus.POSTED).exclude(
-                payment_status=InvoicePaymentStatus.PAID)
-        elif disp == "PENDING":
-            qs = qs.filter(status=DocumentStatus.PENDING_APPROVAL)
+        # The words the list shows a claim as (vs_finance.expenses.CLAIM_DISPLAY_WORDS).
+        qs = filter_by_status_word(
+            qs, request.query_params.get("display_status"), claim_display_rules(),
+            param="display_status",
+        )
         if (search := request.query_params.get("q")):
             from django.db.models import Q
             qs = qs.filter(
@@ -407,6 +398,7 @@ class ExpenseClaimSummaryView(_FinanceBase):
             live_count=Count("id", filter=live),
             awaiting_total=Coalesce(Sum("total", filter=awaiting_q), 0),
             awaiting_paid=Coalesce(Sum("amount_paid", filter=awaiting_q), 0),
+            sent_back=Count("id", filter=returned_condition(ExpenseClaim)),
         )
         avg = agg["live_total"] // agg["live_count"] if agg["live_count"] else 0
         return success_response(
@@ -416,5 +408,6 @@ class ExpenseClaimSummaryView(_FinanceBase):
                 "month_total": agg["month_total"],
                 "avg": avg,
                 "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
+                "sent_back": agg["sent_back"],
             },
         )

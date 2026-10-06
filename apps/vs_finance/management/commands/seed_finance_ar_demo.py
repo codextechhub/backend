@@ -13,6 +13,8 @@ Usage::
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import calendar
 import datetime
 
@@ -121,7 +123,7 @@ class Command(BaseCommand):
                     },
                 )
         self.stdout.write(
-            f"  fee structure: {fs.code} ({'created' if fs_created else 'exists'}), {fs.items.count()} item(s)"
+            f"  fee structure: {fs.code} ({'created' if fs_created else 'exists'}), {counted(fs.items.count(), 'item')}"
         )
         self.stdout.write(self.style.SUCCESS("  ✓ AR demo data ready."))
 
@@ -149,4 +151,4 @@ class Command(BaseCommand):
                 },
             )
             opened += int(created)
-        self.stdout.write(f"  periods: {year_no} fiscal year, +{opened} open month(s)")
+        self.stdout.write(f"  periods: {year_no} fiscal year, +{counted(opened, 'open month')}")

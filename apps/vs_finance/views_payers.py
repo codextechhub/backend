@@ -415,7 +415,8 @@ class PayerPaymentVoidView(_FinanceBase):
     """POST /finance/payer-payments/<id>/void/?entity= - void it and every receipt it made.
 
     Only a caller who works in the branch that received the money may void it.
-    Refused while a held share is forwarded: void the forward first.
+    Refused while a held share is forwarded, with the way out that fits the
+    forward (:func:`vs_finance.inter_branch.refuse_while_forwarded`).
 
     docstring-name: Void a payment from a payer
     """

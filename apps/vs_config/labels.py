@@ -98,6 +98,18 @@ VALUE_TYPE_LABELS = {
     "SECRET_REFERENCE": "Secret reference",
 }
 
+#: What a person is told to type when a value is not of its setting's type,
+#: worded from :data:`VALUE_TYPE_LABELS` so the refusal and the console agree.
+VALUE_TYPE_INSTRUCTIONS = {
+    "STRING": "Enter some text",
+    "INTEGER": "Enter a whole number",
+    "DECIMAL": "Enter a decimal number",
+    "BOOLEAN": "Choose on or off",
+    "JSON": "Enter structured data (JSON)",
+    "CHOICE": "Choose one of the listed values",
+    "SECRET_REFERENCE": "Enter a secret reference",
+}
+
 #: How carefully a setting's value is handled when it is read and audited.
 SENSITIVITY_LABELS = {
     "PUBLIC": "Public",

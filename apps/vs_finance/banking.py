@@ -42,7 +42,7 @@ from .posting import (
     resolve_period,
     reverse_journal,
 )
-from .wording import state_word
+from .wording import counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -407,7 +407,7 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
         record(  # Log the automatic reconciliation run.
             entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
             actor_user=actor_user, target=bank_account,
-            message=f"Auto-matched {len(matched)} line(s) on {bank_account.name}.",
+            message=f"Auto-matched {counted(len(matched), 'line')} on {bank_account.name}.",
             matched=len(matched), bank_account_id=bank_account.id,
         )
         _record_reconciliation(bank_account, matched_count=len(matched), actor_user=actor_user)  # Snapshot the new state.
@@ -551,7 +551,7 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
     record(  # Write a reconciliation audit event.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
-        message=f"Group-matched a statement line to {len(lines)} journal line(s) "
+        message=f"Group-matched a statement line to {counted(len(lines), 'journal line')} "
                 f"on {bank_account.name}.",
         bank_account_id=bank_account.id, journal_lines=len(lines),
     )
@@ -619,8 +619,8 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
     record(  # Log the split match in the audit trail.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
-        message=f"Split-matched journal line {journal_line.id} across {len(slines)} "
-                f"statement line(s) on {bank_account.name}.",
+        message=f"Split-matched journal line {journal_line.id} across "
+                f"{counted(len(slines), 'statement line')} on {bank_account.name}.",
         bank_account_id=bank_account.id, statement_lines=len(slines),
     )
     return slines  # Return the matched statement lines.

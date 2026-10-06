@@ -115,6 +115,28 @@ _MAP_ATTR = "_rbac_field_access_map"
 _ENTRIES_ATTR = "_rbac_field_access_entries"
 
 
+def field_words(name: str, label: str = "") -> str:
+    """What a person calls the field a client sends as *name*.
+
+    The Field Access library's own label when the field has one ("Gross
+    pay"); otherwise the name in words, a trailing ``_id`` dropped
+    (``invited_by_id`` reads "Invited by"). A refusal is read by the person
+    who filled the form, who never saw ``gross_amount``.
+    """
+    if label:
+        return label
+    words = name.removesuffix("_id").replace("_", " ").strip()
+    return words[:1].upper() + words[1:]
+
+
+def _listed(fields, labels) -> str:
+    """The fields named in words and joined as a sentence would join them."""
+    names = [field_words(name, (labels or {}).get(name, "")) for name in fields]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
 class FieldReadDenied(APIException):
     """A caller asked a route for a field their roles do not let them read.
 
@@ -124,6 +146,11 @@ class FieldReadDenied(APIException):
     The same envelope as :class:`FieldWriteDenied`, and it is asked before the
     field's own value is looked at, so the refusal says nothing about whether
     the record holds one.
+
+    ``labels`` maps a field's name to its library label, and the sentence
+    names each field by it (:func:`field_words`); the per-field details stay
+    keyed by the name a client sends, so a form still knows which input to
+    mark.
     """
 
     status_code = 403
@@ -131,12 +158,10 @@ class FieldReadDenied(APIException):
     http_status = 403
     default_detail = READ_DENIED_MESSAGE
 
-    def __init__(self, fields):
+    def __init__(self, fields, labels=None):
         self.fields = sorted(set(fields))
         self.extra = {name: [READ_DENIED_MESSAGE] for name in self.fields}
-        self.message = (
-            "You do not have permission to read: " + ", ".join(self.fields) + "."
-        )
+        self.message = f"You do not have permission to read {_listed(self.fields, labels)}."
         super().__init__(self.extra)
 
 
@@ -151,7 +176,9 @@ class FieldWriteDenied(APIException):
     ``error_code``, ``message`` and ``extra`` are the names
     :func:`core.exceptions.custom_exception_handler` reads, so the refusal
     comes out in the same envelope as every other error: ``message`` is the
-    sentence, and ``error.detail`` carries one message per field.
+    sentence, naming each field as a person would (``labels``, see
+    :class:`FieldReadDenied`), and ``error.detail`` carries one message per
+    field, keyed by the name a client sends.
     """
 
     status_code = 403
@@ -159,12 +186,10 @@ class FieldWriteDenied(APIException):
     http_status = 403
     default_detail = WRITE_DENIED_MESSAGE
 
-    def __init__(self, fields):
+    def __init__(self, fields, labels=None):
         self.fields = sorted(set(fields))
         self.extra = {name: [WRITE_DENIED_MESSAGE] for name in self.fields}
-        self.message = (
-            "You do not have permission to change: " + ", ".join(self.fields) + "."
-        )
+        self.message = f"You do not have permission to change {_listed(self.fields, labels)}."
         super().__init__(self.extra)
 
 
@@ -200,6 +225,7 @@ class _Entry:
 
     key: str
     open_on_create: bool
+    label: str = ""
 
 
 def _split_resource(resource: str) -> tuple[str, str]:
@@ -224,11 +250,11 @@ def _load_entries(resource: str) -> dict[str, _Entry]:
     module, name = _split_resource(resource)
     rows = FieldDefinition.objects.filter(
         resource__module_id=module, resource__name=name, is_active=True,
-    ).values_list("key", "name", "api_names", "open_on_create")
+    ).values_list("key", "name", "api_names", "open_on_create", "label")
     entries: dict[str, _Entry] = {}
-    for key, field_name, api_names, open_on_create in rows:
+    for key, field_name, api_names, open_on_create, label in rows:
         for api_name in api_names or [field_name]:
-            entries[api_name] = _Entry(key=key, open_on_create=open_on_create)
+            entries[api_name] = _Entry(key=key, open_on_create=open_on_create, label=label)
     return entries
 
 
@@ -494,7 +520,7 @@ def assert_writable(
     access = _access_for(request)
     entries = _entries_for(request, resource)
     aliases = aliases or {}
-    denied = []
+    denied = {}
     for name in body:
         entry = entries.get(aliases.get(name, name))
         if entry is None or access.can_write(entry.key):
@@ -507,9 +533,9 @@ def assert_writable(
             and (creating or name in aliases or access.can_read(entry.key))
         ):
             continue
-        denied.append(name)
+        denied[name] = entry.label
     if denied:
-        raise FieldWriteDenied(denied)
+        raise FieldWriteDenied(denied, labels=denied)
 
 
 class FieldAccessMixin:
@@ -711,7 +737,7 @@ class FieldAccessMixin:
 
         entries = self._field_entries()
         creating = self.instance is None
-        denied: list[str] = []
+        denied: dict[str, str] = {}
         dropped: list[str] = []
         for name in list(data):
             entry = self._entry_for(name, entries)
@@ -726,10 +752,10 @@ class FieldAccessMixin:
             elif access.can_read(entry.key) and self._is_echo(name, data[name]):
                 dropped.append(name)
                 continue
-            denied.append(name)
+            denied[name] = entry.label
 
         if denied:
-            raise FieldWriteDenied(denied)
+            raise FieldWriteDenied(denied, labels=denied)
         if dropped:
             data = {name: value for name, value in data.items() if name not in dropped}
         return super().to_internal_value(data)

@@ -7,7 +7,10 @@ approval or edit from silently becoming an accounting mutation.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    filter_by_approval_param, filter_by_stored_status, filter_by_status_word, returned_condition,
+    word_condition,
+)
 import hashlib
 import json
 from decimal import Decimal
@@ -334,29 +337,33 @@ def _invoice_list_queryset(entity):
     )
 
 
-def _invoice_display_filter(qs, value, *, tenant):
-    """Map console tabs to persisted lifecycle fields without conflating them.
+def vendor_invoice_display_rules(tenant) -> dict:
+    """The bill list's ``?display_status=`` tabs, each the bills it lists.
 
-    The overdue tab judges each bill on the day at its own branch, the school's
-    for a shared one (:func:`vs_config.clock.branch_day_q`).
+    Read from the persisted lifecycle fields without conflating them. The
+    overdue tab judges each bill on the day at its own branch, the school's for
+    a shared one (:func:`vs_config.clock.branch_day_q`). A bill sent back to
+    whoever sent it is listed under Sent back and no tab
+    (:func:`vs_workflow.services.approval_filter.filter_by_status_word`). The
+    bill export reads the same rules.
     """
-    if value == "DRAFT":
-        return qs.filter(status="DRAFT", approval_state="NOT_SUBMITTED")
-    if value == "PENDING_APPROVAL":
-        return qs.filter(approval_state="PENDING")
-    if value == "APPROVED":
-        return qs.filter(status="DRAFT", approval_state="APPROVED")
-    if value == "POSTED":
-        return qs.filter(status="POSTED")
-    if value == "OVERDUE":
-        return qs.filter(
-            _past_due(tenant), status="POSTED",
-        ).exclude(payment_status="PAID")
-    if value == "DISPUTED":
-        return qs.filter(match_status__in=("UNDER_RECEIVED", "OVER_BILLED"))
-    if value in ("PARTIAL", "PAID"):
-        return qs.filter(payment_status=value)
-    return qs
+    return {
+        "DRAFT": Q(status="DRAFT", approval_state="NOT_SUBMITTED"),
+        "PENDING_APPROVAL": Q(approval_state="PENDING"),
+        "APPROVED": Q(status="DRAFT", approval_state="APPROVED"),
+        "POSTED": Q(status="POSTED"),
+        "OVERDUE": _past_due(tenant) & Q(status="POSTED") & ~Q(payment_status="PAID"),
+        "DISPUTED": Q(match_status__in=("UNDER_RECEIVED", "OVER_BILLED")),
+        "PARTIAL": Q(payment_status="PARTIAL"),
+        "PAID": Q(payment_status="PAID"),
+    }
+
+
+def _invoice_display_filter(qs, value, *, tenant):
+    """Narrow bills to a console tab (:func:`vendor_invoice_display_rules`); an unknown tab is a 400."""
+    return filter_by_status_word(
+        qs, value, vendor_invoice_display_rules(tenant), param="display_status",
+    )
 
 
 def _past_due(tenant):
@@ -652,13 +659,15 @@ class VendorInvoiceListCreateView(_ProcBase):
         """List entity bills using persisted lifecycle fields for console tabs."""
         entity = resolve_entity(request)
         qs = _branch_scoped(request, entity, _invoice_list_queryset(entity), request.query_params)
-        for param in ("status", "payment_status", "match_status"):
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
+        for param in ("payment_status", "match_status"):
             if (val := request.query_params.get(param)):
                 qs = qs.filter(**{param: val})
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
-        if (display_status := request.query_params.get("display_status")):
-            qs = _invoice_display_filter(qs, display_status, tenant=entity.tenant)
+        qs = _invoice_display_filter(
+            qs, request.query_params.get("display_status"), tenant=entity.tenant,
+        )
         if (search := request.query_params.get("search", "").strip()):
             qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
                            | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
@@ -741,7 +750,10 @@ class VendorInvoiceSummaryView(_ProcBase):
     """KPI aggregate for the Vendor Invoices console.
 
     Counted over the bills the caller's own list returns, so a branch-bound
-    payables clerk is never shown another site's overdue balance.
+    payables clerk is never shown another site's overdue balance. Each tile
+    counts what its tab lists (:func:`vendor_invoice_display_rules`): Under
+    Review is the Pending Approval tab, and a bill sent back is in no tile but
+    ``sent_back``.
     """
     rbac_permission = "procurement.vendor_invoice.view"
 
@@ -753,16 +765,20 @@ class VendorInvoiceSummaryView(_ProcBase):
             request.query_params,
         )
         today = tenant_today(entity.tenant)
-        overdue = qs.filter(
-            _past_due(entity.tenant), status="POSTED",
-        ).exclude(payment_status="PAID")
+        rules = vendor_invoice_display_rules(entity.tenant)
+
+        def tab(word):
+            return qs.filter(word_condition(VendorInvoice, rules[word]))
+
+        overdue = tab("OVERDUE")
         data = {
             "as_of": today,
-            "under_review": {"count": qs.filter(approval_state="PENDING").count()},
-            "approved": {"count": qs.filter(status="DRAFT", approval_state="APPROVED").count()},
+            "under_review": {"count": tab("PENDING_APPROVAL").count()},
+            "approved": {"count": tab("APPROVED").count()},
             "overdue": {"count": overdue.count(), "amount": overdue.aggregate(
                 v=Sum("total") - Sum("amount_paid") - Sum("amount_credited"))["v"] or 0},
-            "disputed": {"count": qs.filter(match_status__in=("UNDER_RECEIVED", "OVER_BILLED")).count()},
+            "disputed": {"count": tab("DISPUTED").count()},
+            "sent_back": {"count": qs.filter(returned_condition(VendorInvoice)).count()},
         }
         return success_response("Vendor invoice summary retrieved.", data=data)
 

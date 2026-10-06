@@ -35,6 +35,7 @@ from vs_exports.catalogue import (
     narrow_to_caller_branches,
     register,
 )
+from vs_workflow.services.approval_filter import export_filter, not_returned_spec
 
 
 # Build the entity-scoped base queryset for purchase orders.
@@ -85,6 +86,36 @@ _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")
 _APPROVAL_STATE = choice_labels("vs_procurement.constants.ProcApprovalState")
 _KYC_STATUS = choice_labels("vs_procurement.constants.VendorKycStatus")
 _MATCH_STATUS = choice_labels("vs_procurement.constants.MatchStatus")
+_BILL_TABS = {
+    "DRAFT": "Draft", "PENDING_APPROVAL": "Pending approval", "APPROVED": "Approved",
+    "POSTED": "Posted", "OVERDUE": "Overdue", "DISPUTED": "Disputed",
+    "PARTIAL": "Partly paid", "PAID": "Paid",
+}
+
+
+def _bill_tab_compiles(spec, scope=None):
+    """The bills the list's tabs list (:func:`vs_procurement.views.receiving.vendor_invoice_display_rules`).
+
+    Overdue is judged on the day at each bill's own branch, in the exporting
+    school's calendar; checked before a run, with no school to hand, the values
+    alone are judged.
+    """
+    from django.db.models import Q
+
+    from vs_exports.catalogue import FilterError
+
+    from .views.receiving import vendor_invoice_display_rules
+
+    values = spec.get("values") or []
+    if not isinstance(values, list) or any(str(v) not in _BILL_TABS for v in values):
+        raise FilterError(f"“Tab” takes {', '.join(_BILL_TABS)}.", filter_id="tab")
+    if not values or scope is None:
+        return Q()
+    rules = vendor_invoice_display_rules(scope.tenant)
+    combined = Q(pk__in=[])
+    for value in values:
+        combined |= rules[str(value)]
+    return combined
 
 
 # Register every procurement dataset. Called once from AppConfig.ready().
@@ -129,6 +160,7 @@ def register_datasets():
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
             FilterDef("approval_state", "Approval", FILTER_CHOICE, choices=_APPROVAL_STATE),
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
+            export_filter("vs_procurement.PurchaseOrder"),
         ),
     ))
 
@@ -170,6 +202,9 @@ def register_datasets():
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
             FilterDef("match_status", "Match status", FILTER_CHOICE, choices=_MATCH_STATUS),
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
+            FilterDef("tab", "Tab", FILTER_CHOICE, choices=_BILL_TABS, compiles=_bill_tab_compiles,
+                      description="The bill screen's tab, overdue judged at each branch."),
+            export_filter("vs_procurement.VendorInvoice"),
         ),
     ))
 
@@ -259,11 +294,13 @@ def register_datasets():
             FilterDef("request_date", "Requested on", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("approval_state", "Approval", FILTER_CHOICE, choices=_APPROVAL_STATE),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
                 ("document_number", "Requisition number"), ("title", "Title"),
             ), description="Matches any one of these, the way the search box does."),
             FilterDef("cost_center", "Cost centre", FILTER_TEXT,
                       source="cost_center__code"),
+            export_filter("vs_procurement.PurchaseRequisition"),
         ),
     ))
 
@@ -281,13 +318,15 @@ def _translate_purchase_orders(params):
     So Pending Approval exports the orders whose approval is pending, and every
     other status leaves them out, and the file holds the rows the table showed.
     """
+    from core.list_filters import word_value
     from vs_exports.catalogue import Unmapped
 
     from .constants import ProcApprovalState
+    from .views.orders import purchase_order_status_rules
 
     filters, unmapped = [], []
     settled = [str(state) for state in ProcApprovalState.values if state != ProcApprovalState.PENDING]
-    if value := params.get("status"):
+    if value := word_value(params.get("status"), list(purchase_order_status_rules())):
         if value == "PENDING_APPROVAL":
             filters.append({"id": "approval_state", "values": [str(ProcApprovalState.PENDING)]})
         elif value == "PARTIAL":
@@ -300,6 +339,7 @@ def _translate_purchase_orders(params):
             filters.append({"id": "status", "values": [value]})
             if value not in ("CANCELLED", "REVERSED"):
                 filters.append({"id": "approval_state", "values": settled})
+        filters.append(not_returned_spec())
     if value := params.get("vendor"):
         filters.append({"id": "vendor", "value": value})
     for key in ("q", "search"):
@@ -348,9 +388,22 @@ def _translate_vendors(params):
 
 # Translate the vendor-invoice list screen's filters into export filters.
 def _translate_vendor_invoices(params):
+    """The bill list's filters: ``display_status`` is its tab, ``status`` the stored status.
+
+    Either leaves bills sent back out, as the list does. A tab the list does not
+    have is refused as the list refuses it.
+    """
+    from core.list_filters import word_value
+
     filters, unmapped = [], []
-    if value := params.get("status"):
-        filters.append({"id": "status", "values": [value]})
+    tab = word_value(params.get("display_status"), list(_BILL_TABS), param="display_status")
+    if tab:
+        filters.append({"id": "tab", "values": [tab]})
+    stored = word_value(params.get("status"), list(_DOC_STATUS))
+    if stored:
+        filters.append({"id": "status", "values": [stored]})
+    if tab or stored:
+        filters.append(not_returned_spec())
     if value := params.get("match_status"):
         filters.append({"id": "match_status", "values": [value]})
     if value := params.get("vendor"):
@@ -364,9 +417,28 @@ def _translate_vendor_invoices(params):
 
 # Translate the requisition list screen's filters into export filters.
 def _translate_requisitions(params):
+    """The requisition list's filters, its status words read as the list reads them.
+
+    Rejected is the approval overlay; any other word is the stored status of a
+    requisition not rejected. Each leaves requisitions sent back out
+    (:func:`vs_procurement.views.requisitions.requisition_status_rules`).
+    """
+    from core.list_filters import word_value
+
+    from .constants import ProcApprovalState
+    from .views.requisitions import requisition_status_rules
+
     filters, unmapped = [], []
-    if value := params.get("status"):
-        filters.append({"id": "status", "values": [value]})
+    word = word_value(params.get("status"), list(requisition_status_rules()))
+    if word == "REJECTED":
+        filters.append({"id": "approval_state", "values": [str(ProcApprovalState.REJECTED)]})
+    elif word:
+        filters.append({"id": "status", "values": [word]})
+        filters.append({"id": "approval_state", "values": [
+            str(state) for state in ProcApprovalState.values if state != ProcApprovalState.REJECTED
+        ]})
+    if word:
+        filters.append(not_returned_spec())
     for key in ("q", "search"):
         if value := params.get(key):
             filters.append({"id": "search", "value": value})
@@ -401,7 +473,7 @@ def register_screens():
     register_screen(ScreenBinding(
         key="procurement.vendor_invoices",
         handles=(
-            "status", "match_status", "vendor", "q", "search",
+            "status", "display_status", "match_status", "vendor", "q", "search",
         ),
         label="Procurement - Vendor invoices",
         dataset_key="procurement.vendor_invoices",

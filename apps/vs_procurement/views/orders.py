@@ -7,7 +7,9 @@ these APIs are integer kobo; quantities use bounded decimal units.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    filter_by_approval_param, filter_by_status_word, returned_condition,
+)
 import datetime
 
 from django.db import transaction
@@ -172,34 +174,37 @@ def _purchase_order_list_queryset(entity):
     return _po_base_queryset(entity).prefetch_related("lines", "source_quotation")
 
 
-def _filter_purchase_orders(qs, params):
-    """Apply server-side PO filters, including the derived partial-receipt stage.
+def purchase_order_status_rules() -> dict:
+    """The order list's ``?status=`` words, each the orders whose ``display_status`` reads it.
 
-    ``status`` filters on the order's ``display_status``, in its precedence
-    (:meth:`vs_procurement.serializers.PurchaseOrderSerializer.get_display_status`):
-    an order whose approval request is open is PENDING_APPROVAL and nothing else,
-    so ``?status=DRAFT`` leaves out a draft with its approvers (or returned to its
-    sender), and ``?status=PENDING_APPROVAL`` includes it. A cancelled or reversed
-    order is only ever its own status.
+    In its precedence (:meth:`vs_procurement.serializers.PurchaseOrderSerializer.get_display_status`):
+    an order whose approval request is open is Pending Approval and nothing else,
+    so Draft leaves out a draft with its approvers. One sent back to whoever sent
+    it reads Sent back, and no word lists it
+    (:func:`vs_workflow.services.approval_filter.filter_by_status_word`). A
+    cancelled or reversed order is only ever its own status. Partial is an issued
+    order part received; the received and ordered quantities are the list
+    queryset's aggregate annotations, so it is one grouped query.
     """
-    if (status_ := params.get("status")):
-        pending = Q(status=DocumentStatus.PENDING_APPROVAL) | Q(approval_state=ProcApprovalState.PENDING)
-        if status_ in CLOSED_PO_STATUSES:
-            qs = qs.filter(status=status_)
-        elif status_ == "PENDING_APPROVAL":
-            qs = qs.filter(pending).exclude(status__in=CLOSED_PO_STATUSES)
-        elif status_ == "PARTIAL":
-            # Quantities are aggregate annotations, so this becomes one grouped SQL query instead of page-local logic.
-            qs = qs.exclude(status__in=_UNISSUED_PO_STATUSES).exclude(pending).filter(
-                received_qty__gt=0, received_qty__lt=F("ordered_qty"),
-            )
-        elif status_ == "APPROVED":
-            # Fully received documents remain approved in the list; only in-progress receipt work moves to Partial.
-            qs = qs.filter(status=DocumentStatus.APPROVED).exclude(pending).filter(
-                Q(received_qty__isnull=True) | Q(received_qty=0) | Q(received_qty__gte=F("ordered_qty")),
-            )
-        else:
-            qs = qs.filter(status=status_).exclude(pending)
+    pending = Q(status=DocumentStatus.PENDING_APPROVAL) | Q(approval_state=ProcApprovalState.PENDING)
+    rules = {str(status): Q(status=status) & ~pending for status in DocumentStatus.values}
+    for status in CLOSED_PO_STATUSES:
+        rules[str(status)] = Q(status=status)
+    rules["PENDING_APPROVAL"] = pending & ~Q(status__in=CLOSED_PO_STATUSES)
+    rules["PARTIAL"] = (
+        ~Q(status__in=_UNISSUED_PO_STATUSES) & ~pending
+        & Q(received_qty__gt=0, received_qty__lt=F("ordered_qty"))
+    )
+    # Fully received orders stay Approved; only receipt work in progress is Partial.
+    rules["APPROVED"] = Q(status=DocumentStatus.APPROVED) & ~pending & (
+        Q(received_qty__isnull=True) | Q(received_qty=0) | Q(received_qty__gte=F("ordered_qty"))
+    )
+    return rules
+
+
+def _filter_purchase_orders(qs, params):
+    """Apply server-side PO filters, the status as the row's display status reads it."""
+    qs = filter_by_status_word(qs, params.get("status"), purchase_order_status_rules())
     if (vendor := params.get("vendor")):
         qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
     if (search := params.get("search", "").strip()):
@@ -255,8 +260,15 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
             prior_mtd_value += total
     # A zero prior period has no meaningful percentage denominator for a trend label.
     change_pct = round((mtd_value - prior_mtd_value) / prior_mtd_value * 100, 1) if prior_mtd_value else None
+    # Orders sent back are none of the issued orders above; the screen's Sent back tab.
+    sent_back = (
+        PurchaseOrder.objects.filter(entity=entity)
+        .filter(branch_filter if branch_filter is not None else Q())
+        .filter(returned_condition(PurchaseOrder)).count()
+    )
     return {
         "as_of": as_of.isoformat(),
+        "sent_back": {"count": sent_back},
         "open": {"count": open_count, "amount": open_value},
         "partially_received": {"count": partial_count},
         "awaiting_receipt": {"count": awaiting_count},

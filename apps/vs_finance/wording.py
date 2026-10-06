@@ -87,6 +87,23 @@ def code_words(choices, value) -> str:
         return words_for_code(value)
 
 
+def counted(number, one: str, many: str | None = None) -> str:
+    """``number`` and its noun, agreeing: "1 invoice", "3 invoices", "2 people".
+
+    ``many`` is the plural when adding an "s" does not make it ("person",
+    "people"). A sentence never hedges with "invoice(s)": the count is known
+    when it is written, so the noun can say it.
+    """
+    noun = one if number == 1 else (many or f"{one}s")
+    shown = f"{number:,}" if isinstance(number, int) else str(number)
+    return f"{shown} {noun}"
+
+
+def agrees(number, one: str, many: str) -> str:
+    """The word that agrees with ``number``: ``agrees(n, "is", "are")``."""
+    return one if number == 1 else many
+
+
 def branch_words(branch):
     """The branch to name in a sentence, or ``None`` where naming one adds nothing.
 

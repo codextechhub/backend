@@ -37,7 +37,7 @@ from .constants import (
 from .exceptions import DepreciationError, FinanceError
 from .money import format_naira
 from .posting import post_journal, resolve_period, sealed_fiscal_year
-from .wording import state_word
+from .wording import agrees, counted, period_words, state_word
 
 #: Why a depreciation run left a due charge unposted.
 SKIPPED_CLOSED_YEAR = "dated in a closed year"
@@ -357,7 +357,7 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
             entity=asset.entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Audit action.
             actor_user=actor_user, target=asset,  # Actor and asset context.
             message=(
-                f"Posted {len(posted)} depreciation charge(s) for {asset.name}"
+                f"Posted {counted(len(posted), 'depreciation charge')} for {asset.name}"
                 + (f"; skipped {len(posted.skipped)} {SKIPPED_CLOSED_YEAR}."
                    if posted.skipped else ".")
             ),
@@ -481,8 +481,8 @@ def _audit_run_per_branch(entity, groups, row_to_journal, *, actor_user, skipped
             actor_user=actor_user, target_type="LedgerEntity", target_id=str(entity.pk),
             branch=branch_id,
             message=(
-                f"Posted {whose} {format_naira(amount)} depreciation run across {assets} asset(s) "
-                f"in {len(part['periods'])} period(s)."
+                f"Posted {whose} {format_naira(amount)} depreciation run across {counted(assets, 'asset')} "
+                f"in {counted(len(part['periods']), 'period')}."
             ),
             journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(rows),
             total=amount, assets=assets, period_count=len(part["periods"]),
@@ -531,9 +531,10 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     if not groups:  # Every charge is in a closed year.
         years = sorted({item["fiscal_year"] for item in skipped})
         raise DepreciationError(
-            f"All {len(skipped)} depreciation charge(s) due up to "
-            f"{format_date(up_to_date, entity.tenant)} are "
-            f"{SKIPPED_CLOSED_YEAR} ({', '.join(years)}); reopen that year to post them.",
+            f"{agrees(len(skipped), 'The', 'All')} {counted(len(skipped), 'depreciation charge')} "
+            f"due up to {format_date(up_to_date, entity.tenant)} "
+            f"{agrees(len(skipped), 'is', 'are')} {SKIPPED_CLOSED_YEAR} ({', '.join(years)}); "
+            f"reopen that year to post {agrees(len(skipped), 'it', 'them')}.",
             skipped=skipped,
         )
     charges = [r for r in charges if r.pk not in skipped_ids]
@@ -553,7 +554,7 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
             entity=entity, branch_id=branch_id,  # The assets' branch.
             date=bucket["latest_date"], period=period,  # In-period date, and period.
             source=JournalSource.CLOSING,  # Depreciation run is a closing-source entry.
-            narration=f"Depreciation run for {period.name}", created_by=actor_user,  # Narration and actor.
+            narration=f"Depreciation run for {period_words(period)}", created_by=actor_user,
         )
         line_no = 0  # Journal line counter.
         for acct, amount in expense.items():  # Emit grouped expense debit lines.
@@ -658,11 +659,11 @@ def depreciation_posted_for_year(entity, fiscal_year, branch=None):
         parts.append(f"{label}: {shown}" + (f" and {extra} more" if extra > 0 else ""))
     more_assets = len(by_asset) - _CHECK_ASSET_LIMIT
     if more_assets > 0:
-        parts.append(f"and {more_assets} more asset(s)")
+        parts.append(f"and {counted(more_assets, 'more asset')}")
     return ChecklistItem(
         name="depreciation_posted_for_year", passed=False,
         detail=(
-            f"{count} depreciation charge(s) dated in FY{fiscal_year.year} are not posted "
+            f"{counted(count, 'depreciation charge')} dated in FY{fiscal_year.year} {agrees(count, 'is', 'are')} not posted "
             f"({'; '.join(parts)}). Run depreciation up to "
             f"{format_date(fiscal_year.end_date, entity.tenant)} first."
         ),
@@ -710,8 +711,8 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
     ).count()
     if unposted_due:  # Disposal requires depreciation to be current through disposal date.
         raise DepreciationError(
-            f"Asset {asset.document_number or asset.pk} has {unposted_due} unposted "
-            f"depreciation charge(s) due on or before "
+            f"Asset {asset.document_number or asset.pk} has "
+            f"{counted(unposted_due, 'unposted depreciation charge')} due on or before "
             f"{format_date(disposal_date, asset.entity.tenant)}; post depreciation "
             f"up to the disposal date before disposing.",
         )

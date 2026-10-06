@@ -7,7 +7,9 @@ derived server-side in integer kobo.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import (
+    filter_by_approval_param, filter_by_status_word, returned_condition, word_condition,
+)
 import datetime
 
 from django.db import transaction
@@ -226,12 +228,25 @@ def _filter_free_lines(qs, params):
     return qs
 
 
+def requisition_status_rules() -> dict:
+    """The requisition list's ``?status=`` words, each the rows whose pill reads it.
+
+    A requisition whose approval was rejected reads Rejected whatever its stored
+    status (a rejected workflow is stored as CANCELLED), so Rejected is the
+    approval overlay and every other word is the stored status of a requisition
+    not rejected. One sent back reads Sent back and no word lists it
+    (:func:`vs_workflow.services.approval_filter.filter_by_status_word`).
+    """
+    rejected = Q(approval_state=ProcApprovalState.REJECTED)
+    rules = {"REJECTED": rejected}
+    for status in DocumentStatus.values:
+        rules[str(status)] = Q(status=status) & ~rejected
+    return rules
+
+
 def _filter_requisitions(qs, params):
     """Apply the list/export filters from one shared source of truth."""
-    if (status_ := params.get("status")):
-        # A rejected workflow is stored as CANCELLED in the ledger, so the approval overlay disambiguates it.
-        qs = qs.filter(approval_state=ProcApprovalState.REJECTED) if status_ == "REJECTED" \
-            else qs.filter(status=status_)
+    qs = filter_by_status_word(qs, params.get("status"), requisition_status_rules())
     parked = _bool_param(params.get("parked"))
     if parked is not None:
         # Parked = submitted but its active approval stage has an empty approver
@@ -391,7 +406,9 @@ class RequisitionSummaryView(_ProcBase):
     Counted over exactly the rows the caller's own list returns (same branch
     narrowing, same ``?branch=``), so the header can never report spend the
     caller is not allowed to see, nor totals that fail to reconcile with the
-    rows underneath them.
+    rows underneath them. Each status tile counts what its tab lists
+    (:func:`requisition_status_rules`): a requisition sent back is in no tile
+    but ``sent_back``.
     """
     rbac_permission = "procurement.requisition.view"
 
@@ -409,16 +426,25 @@ class RequisitionSummaryView(_ProcBase):
             request.query_params,
         )
 
-        pending = qs.filter(status=DocumentStatus.PENDING_APPROVAL).aggregate(
+        # Each tile counts exactly what its tab lists; one sent back has its own tile.
+        rules = requisition_status_rules()
+
+        def tab(word):
+            return word_condition(PurchaseRequisition, rules[word])
+
+        pending = qs.filter(tab("PENDING_APPROVAL")).aggregate(
             count=Count("id"), amount=Sum("estimated_total"),
         )
         approved_mtd = qs.filter(
-            status=DocumentStatus.APPROVED, request_date__range=(current_start, as_of),
+            tab("APPROVED"), request_date__range=(current_start, as_of),
         ).aggregate(count=Count("id"), amount=Sum("estimated_total"))
         approved_prior = qs.filter(
-            status=DocumentStatus.APPROVED, request_date__range=(prior_start, prior_end),
+            tab("APPROVED"), request_date__range=(prior_start, prior_end),
         ).aggregate(count=Count("id"), amount=Sum("estimated_total"))
-        drafts = qs.filter(status=DocumentStatus.DRAFT).aggregate(
+        drafts = qs.filter(tab("DRAFT")).aggregate(
+            count=Count("id"), amount=Sum("estimated_total"),
+        )
+        sent_back = qs.filter(returned_condition(PurchaseRequisition)).aggregate(
             count=Count("id"), amount=Sum("estimated_total"),
         )
         active = qs.exclude(status=DocumentStatus.CANCELLED)
@@ -448,6 +474,7 @@ class RequisitionSummaryView(_ProcBase):
                 "change": approved_mtd["count"] - (approved_prior["count"] or 0),
             },
             "draft": {"count": drafts["count"], "amount": drafts["amount"] or 0},
+            "sent_back": {"count": sent_back["count"], "amount": sent_back["amount"] or 0},
             "total_value_mtd": {
                 "amount": current_total, "change_pct": percent_change(current_total, prior_total),
             },

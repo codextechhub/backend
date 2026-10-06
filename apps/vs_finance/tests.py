@@ -6491,7 +6491,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
     def test_ops_summary_endpoints_handle_empty_books(self):
         entity, _, _ = self.books
         for path, keys in (
-            ("expense-claims", {"open", "month_total", "avg", "awaiting"}),
+            ("expense-claims", {"open", "month_total", "avg", "awaiting", "sent_back"}),
             # payroll_scope rides along so the payroll screen knows whether to
             # ask which branch a run is for: reading the setting through the
             # config API needs `config.value.view`, which no payroll officer has.

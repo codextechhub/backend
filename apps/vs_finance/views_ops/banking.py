@@ -2,7 +2,9 @@
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_finance.wording import counted
+
+from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 import hashlib
 
 from django.db import transaction
@@ -518,9 +520,9 @@ class BankStatementLineView(_FinanceBase):
             closing_balance=(_signed_money(body.get("closing_balance"), "closing_balance")
                              if body.get("closing_balance") not in (None, "") else None),
         )
-        message = f"Imported {len(created)} statement line(s)."
+        message = f"Imported {counted(len(created), 'statement line')}."
         if suspected:
-            message += (f" {len(suspected)} suspected duplicate(s) held back - "
+            message += (f" {counted(len(suspected), 'suspected duplicate')} held back - "
                         f"re-send with force=true to import them anyway.")
         return success_response(
             message,
@@ -1100,7 +1102,7 @@ class BankAutoReconcileView(_FinanceBase):
         matched = auto_reconcile(
             bank, tolerance_days=tolerance, group=group, actor_user=request.user)
         return success_response(
-            f"Auto-matched {len(matched)} statement line(s).",
+            f"Auto-matched {counted(len(matched), 'statement line')}.",
             data=BankStatementLineSerializer(matched, many=True).data,
         )
 
@@ -1576,8 +1578,7 @@ class BankTransactionListCreateView(_FinanceBase):
             "bank_account", "counter_account", "branch")
         if (bank := request.query_params.get("bank_account")) and str(bank).isdigit():
             qs = qs.filter(bank_account_id=int(bank))
-        if (status_ := request.query_params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-transaction_date", "-id"), BankTransactionSerializer)
 
@@ -1835,8 +1836,7 @@ class BankTransferListCreateView(_FinanceBase):
             from django.db.models import Q
 
             qs = qs.filter(Q(from_account_id=int(bank)) | Q(to_account_id=int(bank)))
-        if (status_ := request.query_params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-transfer_date", "-id"), BankTransferSerializer)
 

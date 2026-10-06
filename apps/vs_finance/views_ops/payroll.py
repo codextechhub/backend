@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from collections.abc import Mapping
 
 from django.db import transaction
@@ -351,7 +353,7 @@ class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
                 actor_user=request.user, target=run, branch=run.branch_id,
                 message=(
                     f"Raised payroll run {run.document_number} by hand with PAYE typed on "
-                    f"{typed} line(s) instead of computed."
+                    f"{counted(typed, 'line')} instead of computed."
                 ),
                 lines=typed, paye=run.paye_total,
             )
@@ -1103,7 +1105,7 @@ class PayrollRunGenerateView(_FinanceBase):
             name if named else None for name in getattr(run, "previous_pay_missing", [])
         ]
         return success_response(
-            f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
+            f"Payroll run {run.document_number} generated from {counted(run.lines.count(), 'employee')}.",
             data=data, status=201,
         )
 

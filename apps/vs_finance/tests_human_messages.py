@@ -15,7 +15,7 @@ from django.test import SimpleTestCase, TestCase
 
 from .close import ChecklistItem, failures_sentence
 from .constants import CreditNoteKind, DocumentStatus
-from .wording import code_words, state_word, words_for_code
+from .wording import agrees, code_words, counted, state_word, words_for_code
 
 
 class CloseChecksReadInWordsTests(SimpleTestCase):
@@ -33,7 +33,7 @@ class CloseChecksReadInWordsTests(SimpleTestCase):
         self.assertEqual(
             sentence,
             "Payables agree with the ledger: Sub-ledger ₦10.00 against control ₦12.00; "
-            "Trial balance balances: Debits and credits differ by ₦2.00",
+            "Debits and credits balance: Debits and credits differ by ₦2.00",
         )
         self.assertNotIn("_", sentence)
 
@@ -58,6 +58,80 @@ class StatusesReadInWordsTests(SimpleTestCase):
     def test_a_note_kind_carries_no_accounting_note(self):
         self.assertEqual(CreditNoteKind.CREDIT.label, "Credit note")
         self.assertEqual(CreditNoteKind.DEBIT.label, "Debit note")
+
+
+#: Words a school bursar has no reason to know, kept off the close checklist.
+CLOSE_JARGON = ("GR/IR", "sub-ledger", "control ", "clearing", "checksum", "trial balance")
+
+
+class CloseChecklistSpeaksPlainlyTests(SimpleTestCase):
+
+    def assert_plain(self, text):
+        for word in CLOSE_JARGON:
+            self.assertNotIn(word.lower(), text.lower())
+
+    def test_finance_check_titles_carry_no_jargon(self):
+        from .close import CHECK_TITLES
+
+        for name, title in CHECK_TITLES.items():
+            with self.subTest(check=name):
+                self.assert_plain(title)
+
+    def test_goods_received_but_not_billed_reads_in_plain_words(self):
+        from vs_procurement import close_checks
+
+        details = {}
+        for balance in (0, 1_500_000, -250_000):
+            with mock.patch("vs_procurement.reports.grir_balance", return_value=balance), \
+                    mock.patch("vs_procurement.models.Vendor.objects") as vendors:
+                vendors.filter.return_value.exists.return_value = True
+                item = close_checks.grir_explained(object(), object())
+            self.assertEqual(item.label, "Goods received but not yet billed")
+            self.assert_plain(item.detail)
+            details[balance] = item.detail
+        self.assertIn("₦15,000.00", details[1_500_000])
+        self.assertIn("₦2,500.00", details[-250_000])
+
+    def test_the_ledger_agreement_checks_read_in_plain_words(self):
+        from types import SimpleNamespace
+
+        from vs_procurement import close_checks
+
+        ap = SimpleNamespace(is_reconciled=False, subledger_total=1_000, control_total=1_200)
+        with mock.patch("vs_procurement.reports.reconcile_ap", return_value=ap), \
+                mock.patch("vs_procurement.models.Vendor.objects") as vendors:
+            vendors.filter.return_value.exists.return_value = True
+            item = close_checks.ap_reconciled(object(), object())
+        self.assert_plain(item.detail)
+        self.assertIn("₦10.00", item.detail)
+        self.assertIn("₦12.00", item.detail)
+
+
+class CountsReadAsWordsTests(SimpleTestCase):
+
+    def test_a_count_and_its_noun_agree(self):
+        self.assertEqual(counted(1, "depreciation charge"), "1 depreciation charge")
+        self.assertEqual(counted(3, "depreciation charge"), "3 depreciation charges")
+        self.assertEqual(counted(0, "row"), "0 rows")
+        self.assertEqual(counted(2, "person", "people"), "2 people")
+        self.assertEqual(counted(1_250, "invoice"), "1,250 invoices")
+        self.assertEqual(agrees(1, "is", "are"), "is")
+        self.assertEqual(agrees(2, "is", "are"), "are")
+
+    def test_no_finance_procurement_or_payments_sentence_hedges_a_plural(self):
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parent.parent
+        hedged = []
+        for app in ("vs_finance", "vs_procurement", "vs_payments"):
+            for path in (root / app).rglob("*.py"):
+                if "migrations" in path.parts or path.name.startswith("test"):
+                    continue
+                for number, line in enumerate(path.read_text().splitlines(), 1):
+                    if re.search(r'f["\'].*[a-z}]\((e?s)\)', line):
+                        hedged.append(f"{path.relative_to(root)}:{number}")
+        self.assertEqual(hedged, [])
 
 
 class HeldToleranceIsInNairaTests(TestCase):

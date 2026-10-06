@@ -392,7 +392,7 @@ class RequiredAtHireTests(_StartersFixture):
         FinancePayrollSettings.objects.create(entity=cls.solo_books, previous_pay_required=True)
 
     def test_the_run_is_refused_until_his_earlier_pay_is_recorded(self):
-        with self.assertRaisesMessage(PayrollError, "1 person(s)"):
+        with self.assertRaisesMessage(PayrollError, "1 person on this run joined after January and has no"):
             self.raise_run(4)
 
         client = TenantAPIClient(user=self.solo_user)

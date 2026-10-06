@@ -8,7 +8,9 @@ accounting and the audit rows; these views own request parsing and reach.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_finance.wording import counted
+
+from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -168,8 +170,7 @@ class VendorCreditNoteListCreateView(_ProcBase):
             request.query_params,
         )
         params = request.query_params
-        if (status_ := params.get("status")):
-            qs = qs.filter(status=status_)
+        qs = filter_by_stored_status(qs, params.get("status"))
         if (vendor := params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (bill := params.get("vendor_invoice")) and str(bill).isdigit():
@@ -574,6 +575,6 @@ class VendorOpeningBillImportView(_ProcBase):
         except FinanceError as exc:
             raise ValidationError({"bills": exc.message})
         return success_response(
-            f"{len(bills)} opening bill(s) carried in.",
+            f"{counted(len(bills), 'opening bill')} carried in.",
             data=[VendorInvoiceSerializer(bill).data for bill in bills], status=201,
         )

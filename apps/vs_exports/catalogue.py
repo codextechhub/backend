@@ -200,6 +200,24 @@ class FilterDef:
     :func:`register` refuses a number range over a money column that does not
     say it is money, because that filter would read naira as kobo and apply
     a typed ₦50,000 as ₦500.
+
+    ``compiles`` lets a filter whose rule another app owns bring that rule
+    with it: ``(spec, scope) -> Q``, raising :class:`FilterError` for a value
+    it refuses. ``scope`` is the export's :class:`ScopeContext`, for a rule
+    that reads the books or the caller's branches (a customer's account status
+    is worked out from their balance); it is ``None`` when the filter is only
+    being checked before it is saved or queued, and the rule then judges the
+    value alone. It replaces the kind's own reading, while ``kind`` still says
+    what shape the builder offers and stores. The approval filter
+    (:func:`vs_workflow.services.approval_filter.export_filter`) is one: what
+    "sent back" means is the workflow's to say, and a second statement of it
+    here would drift from the lists'.
+
+    ``screen_param`` and ``from_screen`` carry a list screen's own query
+    parameter into this filter for every screen bound to the dataset, so no
+    screen's translator has to know it. ``from_screen`` is ``(raw value) ->
+    spec`` and refuses a value by raising the error the list itself raises
+    for it, which the screen endpoint returns unchanged.
     """
 
     id: str
@@ -216,6 +234,9 @@ class FilterDef:
     #: columns are being searched instead of leaving it to guesswork.
     searches: tuple = ()
     money: bool = False
+    compiles: object = None
+    screen_param: str = ""
+    from_screen: object = None
 
     @property
     def path(self) -> str:
@@ -223,9 +244,15 @@ class FilterDef:
 
     @property
     def paths(self) -> tuple:
-        """Every ORM path this filter touches - one for most kinds, several for search."""
+        """Every ORM path this filter touches - one for most kinds, several for search.
+
+        A filter that compiles itself reads the row at ``source``, or the row
+        itself when ``source`` is blank, so that route is the path it touches.
+        """
         if self.kind == FILTER_SEARCH:
             return tuple(path for path, _ in self.searches)
+        if self.compiles is not None:
+            return (self.source or "pk",)
         return (self.path,)
 
     # Serialise for the catalogue endpoint.
@@ -609,6 +636,11 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
         is safe but still worth showing.
     ``exact``
         True only when nothing was dropped: the file will match the table.
+
+    A parameter the dataset reads directly (:attr:`FilterDef.screen_param`) is
+    carried here, before the screen's translator sees the rest, so every
+    screen bound to that dataset carries it alike. A value its filter refuses
+    raises that filter's own error.
     """
     dataset = binding.dataset
     if dataset is None:
@@ -619,11 +651,20 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
         key: value for key, value in params.items()
         if key not in skip and value not in (None, "")
     }
-    filters, unmapped = binding.translate(meaningful)
+    direct = {
+        fdef.screen_param: fdef for fdef in dataset.filters
+        if fdef.screen_param and fdef.from_screen is not None
+    }
+    filters, unmapped = binding.translate(
+        {key: value for key, value in meaningful.items() if key not in direct}
+    )
+    for param, fdef in direct.items():
+        if param in meaningful:
+            filters.append(fdef.from_screen(meaningful[param]))
 
     # A parameter the translator never heard of is unmapped, not carried. Assuming
     # otherwise would report "we applied your filter" about a filter nobody applied.
-    known = set(binding.handles)
+    known = set(binding.handles) | set(direct)
     for param, value in sorted(meaningful.items()):
         if param not in known and not any(u.param == param for u in unmapped):
             unmapped.append(Unmapped(
@@ -737,12 +778,13 @@ def _naira_or_raw(raw) -> str:
 
 
 # Compile one saved filter into a Q object.
-def compile_filter(dataset: Dataset, spec: dict) -> Q:
+def compile_filter(dataset: Dataset, spec: dict, scope=None) -> Q:
     """Turn one stored filter dict into a ``Q``.
 
     Raises :class:`FilterError` when the filter refers to something the dataset no
     longer has - the withdrawn-filter failure the design calls out by name. The error
     message is the one a finance user reads, so it names the filter, not a column.
+    ``scope`` reaches a filter that compiles itself (:attr:`FilterDef.compiles`).
     """
     filter_id = str(spec.get("id") or "")
     fdef = dataset.filter_def(filter_id)
@@ -752,6 +794,9 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
             f"{dataset.name} dataset.",
             filter_id=filter_id,
         )
+
+    if fdef.compiles is not None:
+        return fdef.compiles(spec, scope)
 
     path = fdef.path
 

@@ -165,13 +165,15 @@ class AdjustmentPendingCountTests(_AccessFixture):
                 entity=e, invoice=invoice, branch=invoice.branch, amount=10_000, status=status,
             )
 
-    def test_voided_and_cancelled_documents_are_not_pending(self):
+    def test_only_documents_awaiting_approval_are_pending(self):
         client = self.client_holding(
             "pending-hq@corona.test", "finance.refund.view", "finance.writeoff.view",
         )
         body = client.get(f"/v1/finance/ar-adjustments/?entity={self.books.code}").json()
 
-        self.assertEqual(body["kpis"]["pending"], 3)
+        # One refund and one write-off awaiting approval; the draft refund, and the
+        # voided and cancelled ones, are not.
+        self.assertEqual(body["kpis"]["pending"], 2)
 
     def test_the_list_and_the_dashboard_count_the_same_documents(self):
         import types

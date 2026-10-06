@@ -2,6 +2,8 @@
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 
 from rest_framework.exceptions import NotFound, ValidationError
 from vs_rbac.scoping import transaction_branch_q
@@ -223,7 +225,7 @@ class FixedAssetDepreciateView(_FixedAssetActionBase):
         asset.refresh_from_db()
         data = dict(FixedAssetSerializer(asset).data)
         data["skipped_charges"] = posted.skipped
-        message = f"Posted {len(posted)} depreciation charge(s) for {asset.name}"
+        message = f"Posted {counted(len(posted), 'depreciation charge')} for {asset.name}"
         if posted.skipped:
             message += f"; skipped {len(posted.skipped)} dated in a closed year"
         return success_response(f"{message}.", data=data)
@@ -267,7 +269,7 @@ class FixedAssetRunDepreciationView(_FinanceBase):
             actor_user=request.user,
         )
         return success_response(
-            f"Posted depreciation across {result['asset_count']} asset(s).", data=result,
+            f"Posted depreciation across {counted(result['asset_count'], 'asset')}.", data=result,
         )
 
 

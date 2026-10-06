@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
 from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
@@ -537,8 +537,7 @@ class PettyCashReturnListView(_FinanceBase):
             qs = qs.filter(fund_id=int(fund))
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=str(kind).upper())
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         qs = _filter_by_branch(qs, request, entity)
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(request, qs.order_by("-return_date", "-id"), PettyCashReturnSerializer)

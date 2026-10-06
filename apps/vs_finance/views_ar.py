@@ -11,7 +11,12 @@ which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
-from vs_workflow.services.approval_filter import filter_by_approval, filter_by_approval_param
+from vs_finance.wording import counted
+
+from core.list_filters import filter_by_word, word_value
+from vs_workflow.services.approval_filter import (
+    filter_by_approval, filter_by_approval_param, filter_by_stored_status, filter_by_status_word,
+)
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -352,6 +357,38 @@ def _account_status(net: int, overdue: bool) -> str:
     return "ACTIVE"
 
 
+#: The customer list's ``?status=`` words, as the row's ``account_status`` pill reads.
+CUSTOMER_ACCOUNT_STATUSES = ("ACTIVE", "INACTIVE", "CREDIT", "OVERDUE")
+
+
+def customers_with_account_status(qs, entity, statuses, scope):
+    """``qs`` narrowed to the customers whose account status is one of ``statuses``.
+
+    Inactive is the stored flag. Active, In credit and Overdue are worked out
+    from each active customer's balance in the books the reader can see
+    (``scope``), as the row's pill is (:func:`_account_status`), so Active is
+    an active customer neither overdue nor in credit. Resolved for the whole
+    active set before paging, in a few aggregate queries. The customer list
+    and its export both read this.
+    """
+    from django.db.models import Q
+
+    wanted = set(statuses)
+    keep = Q(is_active=False) if "INACTIVE" in wanted else Q(pk__in=[])
+    derived = wanted - {"INACTIVE"}
+    if derived:
+        base_ids = list(qs.filter(is_active=True).values_list("id", flat=True))
+        ledger = _customer_ledger(entity, base_ids, scope=scope)
+        keep |= Q(id__in=[
+            cid for cid in base_ids
+            if _account_status(
+                (row := ledger.get(cid, {})).get("outstanding", 0) - row.get("credit", 0),
+                row.get("overdue", False),
+            ) in derived
+        ])
+    return qs.filter(keep)
+
+
 # Support the money obj workflow.
 def _money_obj(kobo) -> dict:
     """Money payload {kobo, naira} - the AR drawer shape (mirrors views._money)."""
@@ -399,23 +436,9 @@ class CustomerListCreateView(_FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
 
-        # Derived account-status filter. INACTIVE is the is_active column; ACTIVE/CREDIT/
-        # OVERDUE come from the ledger (not a column), so resolve them for the active set
-        # and keep matching ids before paginating (a few aggregate queries, no N+1).
-        status_f = request.query_params.get("status")
-        if status_f == "INACTIVE":
-            qs = qs.filter(is_active=False)
-        elif status_f in ("ACTIVE", "CREDIT", "OVERDUE"):
-            base_ids = list(qs.filter(is_active=True).values_list("id", flat=True))
-            led_all = _customer_ledger(entity, base_ids, scope=scope)
-            keep = [
-                cid for cid in base_ids
-                if _account_status(
-                    (l := led_all.get(cid, {})).get("outstanding", 0) - l.get("credit", 0),
-                    l.get("overdue", False),
-                ) == status_f
-            ]
-            qs = qs.filter(id__in=keep)
+        status_f = word_value(request.query_params.get("status"), CUSTOMER_ACCOUNT_STATUSES)
+        if status_f is not None:
+            qs = customers_with_account_status(qs, entity, [status_f], scope)
 
         paginator = XVSPagination()
         paginator.page_size = 25
@@ -870,6 +893,7 @@ class PaymentListView(_FinanceBase):
         from django.db.models import Q
 
         from .constants import DocumentStatus
+        from .receivables import receipt_allocation_rules
         from .models import Payment
 
         entity = resolve_entity(request)
@@ -885,24 +909,8 @@ class PaymentListView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
-        # allocation_status is derived from allocated_amount and what left as refund or
-        # transfer vs amount; express it as a DB filter so paging counts are correct,
-        # never post-slice in Python. Mirror PaymentSerializer.get_allocation_status
-        # - refunded is checked before unallocated, or cash that left would be counted
-        # as still available.
-        qs = qs.annotate(gone=F("refunded_amount") + F("transferred_amount"))
-        status_f = request.query_params.get("status")
-        if status_f == "ALLOCATED":
-            qs = qs.filter(allocated_amount__gte=F("amount"))
-        elif status_f == "REFUNDED":
-            qs = qs.filter(allocated_amount__lt=F("amount"),
-                           gone__gte=F("amount") - F("allocated_amount"))
-        elif status_f == "UNALLOCATED":
-            qs = qs.filter(allocated_amount__lte=0,
-                           gone__lt=F("amount") - F("allocated_amount"))
-        elif status_f == "PARTIAL":
-            qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"),
-                           gone__lt=F("amount") - F("allocated_amount"))
+        # The allocation word each row shows (receivables.receipt_allocation_rules).
+        qs = filter_by_word(qs, request.query_params.get("status"), receipt_allocation_rules())
         return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
 
 
@@ -1562,7 +1570,7 @@ class FeeStructureGenerateView(_FinanceBase):
         # One query each for the rows' customers and branches, not one per invoice.
         prefetch_related_objects(invoices, "customer", "branch")
         return success_response(
-            f"{len(invoices)} invoice(s) generated from {structure.code}.",
+            f"{counted(len(invoices), 'invoice')} generated from {structure.code}.",
             data={
                 "structure": structure.code,
                 "generated": len(invoices),
@@ -1575,6 +1583,29 @@ class FeeStructureGenerateView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 # Credit / debit notes                                                        #
 # --------------------------------------------------------------------------- #
+
+def _filter_credit_note_status(qs, value):
+    """``qs`` narrowed to the notes wearing status ``value`` (DRAFT, PENDING_APPROVAL,
+    ISSUED, APPLIED or REVERSED), matched in any case.
+
+    Each value is the status a row shows: Draft, Awaiting approval and Voided
+    are the stored DRAFT, PENDING_APPROVAL and REVERSED, nothing wider, so
+    choosing Draft never lists a note with its approver or a voided one. A
+    posted note reads Applied when it is a credit note fully allocated, and
+    Issued otherwise. A note an approver sent back wears Sent back, so no
+    status word lists it (:func:`vs_workflow.services.approval_filter.filter_by_status_word`):
+    ``?approval=returned`` does. Any other value is refused.
+    """
+    applied_q = Q(kind="CREDIT", allocated_amount__gt=0) & Q(allocated_amount__gte=F("total"))
+    posted = Q(status=DocumentStatus.POSTED)
+    return filter_by_status_word(qs, value, {
+        "DRAFT": Q(status=DocumentStatus.DRAFT),
+        "PENDING_APPROVAL": Q(status=DocumentStatus.PENDING_APPROVAL),
+        "ISSUED": posted & ~applied_q,
+        "APPLIED": posted & applied_q,
+        "REVERSED": Q(status=DocumentStatus.REVERSED),
+    })
+
 
 # Group endpoint behavior for Credit Note List Create View.
 class CreditNoteListCreateView(_FinanceBase):
@@ -1607,16 +1638,7 @@ class CreditNoteListCreateView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(reason__icontains=search)
                 | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
             )
-        # Derived status: applied = a fully-allocated credit note; issued = any other
-        # posted note; draft = not yet posted.
-        applied_q = Q(kind="CREDIT", allocated_amount__gt=0) & Q(allocated_amount__gte=F("total"))
-        status_val = (request.query_params.get("status") or "").lower()
-        if status_val == "draft":
-            qs = qs.exclude(status=DocumentStatus.POSTED)
-        elif status_val == "applied":
-            qs = qs.filter(status=DocumentStatus.POSTED).filter(applied_q)
-        elif status_val == "issued":
-            qs = qs.filter(status=DocumentStatus.POSTED).exclude(applied_q)
+        qs = _filter_credit_note_status(qs, request.query_params.get("status"))
         qs = filter_by_approval_param(qs, request.query_params)
         return _paginate(request, qs.order_by("-note_date", "-id"), CreditNoteSerializer, self)
 
@@ -2007,8 +2029,7 @@ class RefundListCreateView(_FinanceBase):
             entity=entity,
         )).select_related(
             "customer", "entity__tenant", "branch")
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         qs = filter_by_approval_param(qs, request.query_params)
@@ -2299,8 +2320,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
             transaction_branch_q(request), entity=entity,
         ).select_related(
             "invoice", "invoice__customer", "entity__tenant", "branch")
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (invoice := request.query_params.get("invoice")):
             qs = qs.filter(invoice=_resolve_invoice(request, entity, invoice))
         qs = filter_by_approval_param(qs, request.query_params)
@@ -2800,7 +2820,7 @@ class ARAdjustmentBatchView(_FinanceBase):
         total_amount = sum(document.amount for document in documents)
         verb = {"DRAFT": "created", "POST": "posted", "SUBMIT": "submitted"}[action]
         return success_response(
-            f"{len(documents)} {kind.lower()} adjustment(s) {verb}.",
+            f"{counted(len(documents), f'{kind.lower()} adjustment')} {verb}.",
             data={
                 "kind": kind,
                 "action": action,
@@ -2925,7 +2945,7 @@ class ARAdjustmentListView(_FinanceBase):
     Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
     by date and paginated; KPI totals (written-off YTD, pending count, refundable
     credit) ride in the response so they stay accurate across pages. Pending
-    counts drafts and documents awaiting approval
+    counts the documents awaiting approval, not drafts
     (:data:`~vs_finance.constants.PENDING_STATUSES`), as the receivables dashboard
     does, so a voided refund is not pending on one screen and finished on the other.
 
@@ -3009,6 +3029,14 @@ class ARAdjustmentListView(_FinanceBase):
             + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
                .filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
         )
+        # The Sent back filter's count, over the kinds this reader sees.
+        from vs_workflow.services.approval_filter import returned_condition
+
+        sent_back = (
+            refunds.filter(returned_condition(Refund)).count()
+            + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
+               .filter(returned_condition(WriteOffRequest)).count() if sees_writeoffs else 0)
+        )
         refundable_credit = None
         if sees_refunds:
             from .receivables import refundable_credit_by_branch
@@ -3044,6 +3072,7 @@ class ARAdjustmentListView(_FinanceBase):
             "kpis": {
                 "written_off_ytd": written_off_ytd,
                 "pending": pending,
+                "sent_back": sent_back,
                 "refundable_credit": refundable_credit,
             },
             "kinds": [kind for kind, seen in (("REFUND", sees_refunds), ("WRITEOFF", sees_writeoffs)) if seen],
@@ -3240,8 +3269,7 @@ class ConcessionListCreateView(_FinanceBase):
             "customer", "invoice", "entity__tenant", "branch")
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := (request.query_params.get("search") or "").strip()):
@@ -3497,10 +3525,17 @@ class ConcessionSummaryView(_FinanceBase):
         posted_ytd = qs.filter(
             status=DocumentStatus.POSTED, concession_date__year=timezone.now().year,
         ).aggregate(s=Sum("amount"))["s"] or 0
-        draft_pending = qs.filter(status=DocumentStatus.DRAFT).aggregate(s=Sum("amount"))["s"] or 0
+        from vs_workflow.services.approval_filter import returned_condition, word_condition
+
+        # Draft is what the Draft filter lists; one sent back is apart, as its row is.
+        draft_pending = qs.filter(
+            word_condition(Concession, Q(status=DocumentStatus.DRAFT)),
+        ).aggregate(s=Sum("amount"))["s"] or 0
+        sent_back = qs.filter(returned_condition(Concession)).aggregate(s=Sum("amount"))["s"] or 0
         return success_response("Concession summary retrieved.", data={
             "posted_ytd": int(posted_ytd),
             "draft_pending": int(draft_pending),
+            "sent_back": int(sent_back),
             "active_count": qs.count(),
         })
 
@@ -3950,7 +3985,7 @@ class DunningGenerateView(_FinanceBase):
             actor_user=request.user, scope=transaction_branch_scope(request),
         )
         return success_response(
-            f"Generated {len(notices)} dunning notice(s).",
+            f"Generated {counted(len(notices), 'dunning notice')}.",
             data={
                 "created": len(notices),
                 "notices": DunningNoticeSerializer(notices, many=True).data,
@@ -4141,8 +4176,7 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
             transaction_branch_q(request), entity=entity,
         ).select_related(
             "from_customer", "to_customer", "receipt", "entity__tenant", "branch")
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (customer := request.query_params.get("customer")):
             who = _resolve_customer(request, entity, customer)
             qs = qs.filter(Q(from_customer=who) | Q(to_customer=who))
@@ -4419,6 +4453,6 @@ class CustomerOpeningInvoiceImportView(_FinanceBase):
             raise ValidationError({"invoices": exc.message})
         prefetch_related_objects(invoices, "customer", "branch")
         return success_response(
-            f"{len(invoices)} opening invoice(s) carried in.",
+            f"{counted(len(invoices), 'opening invoice')} carried in.",
             data=InvoiceSerializer(invoices, many=True).data, status=201,
         )

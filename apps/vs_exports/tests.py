@@ -1860,6 +1860,10 @@ class CatalogueRegistrationTests(TestCase):
                     # A search filter touches several columns, so check them all.
                     for path in spec.paths:
                         base.filter(**{f"{path}__isnull": True})
+                    # A filter that brings its own rule is applied with each value.
+                    if spec.compiles is not None:
+                        for value in spec.choices:
+                            base.filter(spec.compiles({"id": spec.id, "values": [value]}, None))
                 except Exception as exc:
                     broken.append(f"{dataset.key}!{spec.id} -> {spec.paths}: {exc}")
         self.assertEqual(broken, [], "\n".join(broken))
@@ -1920,17 +1924,22 @@ class FromScreenTests(_ExportFixture, TestCase):
         self.assertEqual(sorted(data["carried"]), ["payment_status", "status"])
         self.assertTrue(data["exact"])
 
-    def test_a_derived_tab_is_rebuilt_from_the_columns_behind_it(self):
-        """The Overdue tab is posted + not settled + past due, not a stored flag."""
+    def test_a_derived_tab_is_read_by_the_lists_own_rules(self):
+        """The Overdue tab is posted, not settled and past due at each invoice's
+        branch: the export carries the tab itself, worked out by the list's rules."""
         response = self._get(
-            f"screen=finance.invoices&entity={self.entity.code}&bucket=overdue"
+            f"screen=finance.invoices&entity={self.entity.code}&bucket=Overdue"
         )
         data = response.json()["data"]
-        by_id = {f["id"]: f for f in data["config"]["filters"]}
-        self.assertEqual(by_id["status"]["values"], ["POSTED"])
-        self.assertEqual(sorted(by_id["payment_status"]["values"]), ["PARTIAL", "UNPAID"])
-        self.assertIn("due_date", by_id)
+        self.assertIn({"id": "tab", "values": ["overdue"]}, data["config"]["filters"])
         self.assertTrue(data["exact"])
+
+    def test_a_tab_the_list_does_not_have_is_refused_as_the_list_refuses_it(self):
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&bucket=nonsense"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("bucket", response.json()["error"]["detail"])
 
     def test_a_search_box_is_carried_across_all_its_columns(self):
         """A search box means "mentioned anywhere", so the export filter has to be an
@@ -2016,9 +2025,11 @@ class FromScreenTests(_ExportFixture, TestCase):
                 f"{screen.key} points at missing dataset {screen.dataset_key}",
             )
 
-    def test_every_bound_screen_translates_without_raising(self):
-        """A translator that blows up on an unfamiliar parameter would take the
-        module's list screen down with it."""
+    def test_every_bound_screen_translates_or_refuses_the_value_and_nothing_else(self):
+        """A value the list itself refuses is refused here with the list's 400; any
+        other failure would take the export drawer down."""
+        from rest_framework.exceptions import ValidationError
+
         from vs_exports.catalogue import all_screens, resolve_screen
 
         noise = {
@@ -2027,7 +2038,11 @@ class FromScreenTests(_ExportFixture, TestCase):
             "unknown_param": "1",
         }
         for screen in all_screens():
-            resolved = resolve_screen(screen, dict(noise))
+            try:
+                resolved = resolve_screen(screen, dict(noise))
+            except ValidationError as refused:
+                self.assertTrue(set(refused.detail) & set(noise), screen.key)
+                continue
             self.assertIsInstance(resolved["filters"], list)
             self.assertIsInstance(resolved["unmapped"], list)
 
@@ -2054,11 +2069,16 @@ class FromScreenTests(_ExportFixture, TestCase):
             "date_from": "2026-01-01", "date_to": "2026-12-31",
             "is_active": "true", "on_hold": "false", "assigned_to_me": "true",
         }
+        from rest_framework.exceptions import ValidationError
+
         silent = []
         for screen in all_screens():
             for param in screen.handles:
                 value = probes.get(param, "probe")
-                filters, unmapped = screen.translate({param: value})
+                try:
+                    filters, unmapped = screen.translate({param: value})
+                except ValidationError:
+                    continue  # the value is read, and refused as the list refuses it
                 if not filters and not unmapped:
                     silent.append(f"{screen.key}.{param}")
         self.assertEqual(silent, [], "; ".join(silent))

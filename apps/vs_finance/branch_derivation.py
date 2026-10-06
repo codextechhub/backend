@@ -56,6 +56,8 @@ makes a second run a no-op.
 """
 from __future__ import annotations
 
+from vs_finance.wording import agrees, counted
+
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
@@ -602,13 +604,18 @@ class Gate:
 
     ``count`` is how many unbranched ``unit`` s feed it today; ``resolved`` is
     how many of them the plan gives a branch, through the journal entry that
-    carries them.
+    carries them. ``units`` is the plural a sentence counts several by.
     """
 
     name: str
     unit: str
     count: int
     resolved: int
+    units: str = ""
+
+    def __post_init__(self):
+        if not self.units:
+            object.__setattr__(self, "units", f"{self.unit}s")
 
 
 def gates(plan: EntityPlan) -> list[Gate]:
@@ -650,7 +657,7 @@ def gates(plan: EntityPlan) -> list[Gate]:
             .values_list("entry_id", flat=True)
         )
         result.append(Gate(
-            name=f"year close {year.year}", unit="entry",
+            name=f"year close {year.year}", unit="entry", units="entries",
             count=shape.unbranched_entries, resolved=len(entry_ids & planned),
         ))
 
@@ -789,7 +796,8 @@ def describe(plan: EntityPlan, *, flagged_limit: int = 0) -> list[str]:
         total = sum(p.blank for p in written)
         lines.append(
             f"  This tenant owns no branch, which every tenant must; this is a data error. "
-            f"Its {total} unbranched row(s) are left untouched until it has one."
+            f"Its {counted(total, 'unbranched row')} {agrees(total, 'is', 'are')} left untouched "
+            f"until it has one."
         )
         for p in written:
             lines.append(f"    {p.target.model_label:<40} {p.blank:>6}")
@@ -820,8 +828,9 @@ def describe(plan: EntityPlan, *, flagged_limit: int = 0) -> list[str]:
         for gate in blocking:
             left = gate.count - gate.resolved
             lines.append(
-                f"    {gate.name}: {gate.count} unbranched {gate.unit}(s); the backfill "
-                f"resolves {gate.resolved}, {left} need an administrator"
+                f"    {gate.name}: {counted(gate.count, f'unbranched {gate.unit}', f'unbranched {gate.units}')}; "
+                f"the backfill resolves {gate.resolved}, {left} {agrees(left, 'needs', 'need')} "
+                f"an administrator"
             )
     derived = [p for p in plan.targets if p.derived]
     if derived:

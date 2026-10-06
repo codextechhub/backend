@@ -682,6 +682,48 @@ class SettingConsumersSpeakPlainlyTests(SimpleTestCase):
                 self.assertIsNone(code_path.search(text), f"{key}: {text}")
 
 
+class SettingValuesAreRefusedInTheConsoleWordsTests(SimpleTestCase):
+    """A refused value is told what to type, in the words the console shows the type in.
+
+    The console calls an INTEGER setting a "Whole number", so a decimal typed into
+    the held-ledger tolerance is refused as "Enter a whole number of naira", not as
+    "must be a valid integer".
+    """
+
+    def definition(self, key, value_type="INTEGER", rules=None):
+        return ConfigurationDefinition(
+            key=key, label="Example", value_type=value_type, validation_rules=rules or {},
+        )
+
+    def refusal(self, definition, value):
+        from .services.resolution import validate_value
+
+        with self.assertRaises(InvalidConfigurationValue) as caught:
+            validate_value(definition, value)
+        return str(caught.exception)
+
+    def test_a_decimal_tolerance_is_refused_as_a_whole_number_of_naira(self):
+        tolerance = self.definition("payments.held_reconciliation_tolerance",
+                                    rules={"min": 0, "max": 1_000_000})
+        self.assertEqual(self.refusal(tolerance, 2.5), "Enter a whole number of naira.")
+        self.assertEqual(self.refusal(tolerance, "250"), "Enter a whole number of naira.")
+        self.assertEqual(self.refusal(tolerance, -1), "Example must be at least 0 naira.")
+
+    def test_every_type_is_refused_in_its_console_words(self):
+        self.assertEqual(self.refusal(self.definition("display.count"), 1.5),
+                         "Enter a whole number.")
+        self.assertEqual(self.refusal(self.definition("display.flag", "BOOLEAN"), "yes"),
+                         "Choose on or off.")
+        self.assertEqual(self.refusal(self.definition("display.rate", "DECIMAL"), "a lot"),
+                         "Enter a decimal number.")
+
+    def test_every_platform_setting_the_catalogue_seeds_names_its_consumer(self):
+        from .management.commands.seed_config_catalogue import DEFINITIONS
+        from .runtime_settings import SETTING_CONSUMERS
+
+        self.assertEqual([row[0] for row in DEFINITIONS if row[0] not in SETTING_CONSUMERS], [])
+
+
 class GenericValueResetAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()

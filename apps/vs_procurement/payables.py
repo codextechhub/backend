@@ -55,7 +55,7 @@ from .constants import (
 from .exceptions import SettlementBranchError, ThreeWayMatchError
 from .purchasing import resolve_account
 from .settings import resolve_procurement_settings
-from vs_finance.wording import state_word
+from vs_finance.wording import counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -617,7 +617,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         record(  # Log the settlement the posting journal carried out.
             entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
             actor_user=actor_user, target=payment,
-            message=f"Allocated {format_naira(settled)} across {len(created_rows)} bill(s).",
+            message=f"Allocated {format_naira(settled)} across {counted(len(created_rows), 'bill')}.",
             journal_id=entry.pk, allocated=settled, unallocated=advance,
             effective_date=str(payment.payment_date),
         )
@@ -892,7 +892,7 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     record(  # Write the allocation audit event.
         entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
-        message=f"Allocated {format_naira(applied)} of vendor advance across {len(created)} bill(s).",
+        message=f"Allocated {format_naira(applied)} of vendor advance across {counted(len(created), 'bill')}.",
         journal_id=entry.pk, allocated=payment.allocated_amount,
         unallocated=payment.advance_remaining, effective_date=str(effective),
     )

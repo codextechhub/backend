@@ -36,7 +36,7 @@ from .constants import (
 )
 from .exceptions import PeriodCloseError
 from .money import format_naira
-from .wording import period_label, period_status_word
+from .wording import counted, period_label, period_status_word
 
 #: Checks contributed by dependent apps, in registration order. Populated at startup
 #: from each app's ``ready()``; see :func:`register_close_check`.
@@ -153,7 +153,7 @@ class ChecklistItem:
 
 #: How finance's own close checks read to a person, by their machine name.
 CHECK_TITLES = {
-    "trial_balance_balanced": "Trial balance balances",
+    "trial_balance_balanced": "Debits and credits balance",
     "no_draft_journals": "No draft journals left in the month",
     "ar_reconciled": "Receivables agree with the ledger",
     "depreciation_posted": "Depreciation posted",
@@ -249,7 +249,7 @@ def close_checklist(entity, period, *, branch=None, extra_checks=None, preview=F
     draft_count = drafts.filter(branch_id=branch_id).count() if branch_id else drafts.count()
     items.append(ChecklistItem(
         name="no_draft_journals", passed=draft_count == 0, blocking=False,
-        detail=f"{draft_count} draft journal(s) dated in period",
+        detail=f"{counted(draft_count, 'draft journal')} dated in period",
     ))
 
     # AR sub-ledger reconciles to the AR control account.
@@ -257,8 +257,8 @@ def close_checklist(entity, period, *, branch=None, extra_checks=None, preview=F
     items.append(ChecklistItem(
         name="ar_reconciled", passed=ar.is_reconciled,
         detail=(
-            f"Sub-ledger {format_naira(ar.subledger_total)} against control "
-            f"{format_naira(ar.control_total)}."
+            f"Customers' balances total {format_naira(ar.subledger_total)}; the "
+            f"receivables account in the ledger holds {format_naira(ar.control_total)}."
         ),
     ))
 
@@ -1389,7 +1389,7 @@ def reopen_fiscal_year(entity, fiscal_year, *, actor_user=None, reason=None, bra
         entity=entity, action=FinanceAuditAction.FISCAL_YEAR_REOPENED,
         actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
         message=(
-            f"Re-opened FY{fiscal_year.year}; reversed {len(reversals)} closing journal(s)."
+            f"Re-opened FY{fiscal_year.year}; reversed {counted(len(reversals), 'closing journal')}."
         ),
         fiscal_year=fiscal_year.year, reason=reason,
         journal_ids=[j.pk for j in journals], reversal_ids=[r.pk for r in reversals],

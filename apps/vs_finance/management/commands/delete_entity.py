@@ -23,6 +23,8 @@ Usage::
 
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, transaction
 
@@ -138,7 +140,7 @@ class Command(BaseCommand):
         if not_found:
             self.stdout.write(
                 self.style.WARNING(
-                    f"\n  {len(not_found)} entity code(s) not found (skipped):\n"
+                    f"\n  {counted(len(not_found), 'entity code')} not found (skipped):\n"
                     + "\n".join(f"    • {code}" for code in not_found)
                 )
             )

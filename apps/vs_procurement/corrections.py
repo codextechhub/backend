@@ -59,7 +59,7 @@ from .exceptions import (
     VendorInvoiceVoidError,
 )
 from .purchasing import resolve_account
-from vs_finance.wording import state_word
+from vs_finance.wording import counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -696,7 +696,7 @@ def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill
     record(
         entity=note.entity, action=FinanceAuditAction.VENDOR_CREDIT_NOTE_ALLOCATED,
         actor_user=actor_user, target=note,
-        message=f"Applied {format_naira(applied)} of vendor credit across {len(rows)} bill(s).",
+        message=f"Applied {format_naira(applied)} of vendor credit across {counted(len(rows), 'bill')}.",
         journal_id=entry.pk, allocated=note.allocated_amount,
         unallocated=note.advance_remaining, effective_date=str(effective),
     )

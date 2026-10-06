@@ -1,6 +1,8 @@
 """Typed customer-document defaults and audited entity policy updates."""
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -205,7 +207,7 @@ def update_finance_document_settings(*, entity, data, actor_user):
             actor_user=actor_user,
             target_type="FinanceDocumentSettings",
             target_id=str(settings.pk or entity.pk),
-            message=f"Updated {len(changed_after)} finance document setting(s).",
+            message=f"Updated {counted(len(changed_after), 'finance document setting')}.",
             before=changed_before,
             after=changed_after,
         )

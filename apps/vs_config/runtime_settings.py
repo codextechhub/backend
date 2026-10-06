@@ -153,6 +153,32 @@ SETTING_CONSUMERS = {
         "service": "Notification worker",
         "impact": "Controls the delay between email delivery retries.",
     },
+    "platform.entitlements.enforce": {
+        "service": "Plan entitlements",
+        "impact": "Refuses a request whose capability the school's plan does not include.",
+    },
+    "payments.held_reconciliation_tolerance": {
+        "service": "Daily held-ledger reconciliation",
+        "impact": (
+            "Sets how far the payment provider's balance may differ from the books "
+            "before the daily check opens a health incident."
+        ),
+    },
+    "payments.provider_balance_swept": {
+        "service": "Daily held-ledger reconciliation",
+        "impact": (
+            "Says whether the provider settles the platform's balance automatically, so "
+            "the daily check allows for each settlement."
+        ),
+    },
+}
+
+#: The unit a number setting is counted in, where it has one. A refusal names it
+#: ("Enter a whole number of naira"), so the person knows what they are typing.
+#: Code-owned beside :data:`SETTING_CONSUMERS`, because the unit is what the code
+#: that reads the key does with the number.
+SETTING_UNITS = {
+    "payments.held_reconciliation_tolerance": "naira",
 }
 
 

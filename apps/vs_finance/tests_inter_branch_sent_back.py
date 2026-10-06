@@ -86,9 +86,77 @@ class SentBackForwardTests(_SentBackFixture):
         instance = self.send_back(forward)
         receipt = HeldForBranchReceipt.objects.get(pk=held_id)
 
-        with self.assertRaises(ApprovalRequestOpenError):
+        with self.assertRaises(ApprovalRequestOpenError) as refused:
             void_held_receipt(receipt, actor_user=self.okafor)
 
+        self.assert_names_the_way_out(refused.exception, resume=True)
         withdraw(instance.id, instance.requested_by)
         voided = void_held_receipt(receipt, actor_user=self.okafor)
         self.assertEqual(voided.status, "REVERSED")
+
+    def test_a_held_receipt_is_not_voided_while_its_forward_is_with_its_approvers(self):
+        receipt, _ = self.forwarded()
+
+        with self.assertRaises(ApprovalRequestOpenError) as refused:
+            void_held_receipt(receipt, actor_user=self.okafor)
+
+        self.assert_names_the_way_out(refused.exception, resume=False)
+
+    def test_a_receipt_whose_forward_was_sent_back_is_under_sent_back_not_forwarding(self):
+        waiting, _ = self.forwarded()
+        returned, forward = self.forwarded()
+        self.send_back(forward)
+
+        def listed(**params):
+            query = "&".join(f"{key}={value}" for key, value in params.items())
+            response = self.okafor_client.get(self.url(f"held-receipts/?{query}"))
+            self.assertEqual(response.status_code, 200, response.data)
+            return {row["id"]: row for row in response.data["data"]}
+
+        self.assertEqual(set(listed(status="FORWARDING")), {waiting.pk})
+        sent_back = listed(approval="returned")
+        self.assertEqual(set(sent_back), {returned.pk})
+        self.assertTrue(sent_back[returned.pk]["forwarded_by"]["approval_returned"])
+        self.assertFalse(listed()[waiting.pk]["forwarded_by"]["approval_returned"])
+        wrong = self.okafor_client.get(self.url("held-receipts/?approval=yes"))
+        self.assertEqual(wrong.status_code, 400, wrong.data)
+
+    def test_a_void_that_fails_partway_leaves_nothing_behind(self):
+        """Voiding is one step: a failure after the reversal posts undoes the reversal too."""
+        from unittest import mock
+
+        from .models import JournalEntry
+
+        held = self.okafor_client.post(self.url("held-receipts/"), {
+            "bank_account": self.ikeja_bank.pk, "for_branch": self.lekki.pk,
+            "customer": "ADEYEMI", "amount": 400_000_00, "receipt_date": "2026-01-15",
+        }, format="json")
+        receipt = HeldForBranchReceipt.objects.get(pk=held.data["data"]["id"])
+        journals = JournalEntry.objects.filter(entity=self.books).count()
+
+        with mock.patch("vs_finance.inter_branch.record", side_effect=RuntimeError("audit down")):
+            with self.assertRaises(RuntimeError):
+                void_held_receipt(receipt, actor_user=self.okafor)
+
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.status, "POSTED")
+        self.assertEqual(JournalEntry.objects.filter(entity=self.books).count(), journals)
+
+    def forwarded(self):
+        held = self.okafor_client.post(self.url("held-receipts/"), {
+            "bank_account": self.ikeja_bank.pk, "for_branch": self.lekki.pk,
+            "customer": "ADEYEMI", "amount": 400_000_00, "receipt_date": "2026-01-15",
+        }, format="json")
+        held_id = held.data["data"]["id"]
+        forward = self.waiting(self.okafor_client.post(
+            self.url(f"held-receipts/{held_id}/forward/"), {"transfer_date": "2026-01-16"},
+            format="json"))
+        return HeldForBranchReceipt.objects.get(pk=held_id), forward
+
+    def assert_names_the_way_out(self, exc, *, resume):
+        """The refusal says what ends the forward: never to void a transfer nobody can void."""
+        message = str(exc)
+        self.assertNotIn("void that transfer", message.lower())
+        self.assertIn("Workflow, My Submissions", message)
+        self.assertIn("withdraw", message.lower())
+        self.assertEqual("resume" in message.lower(), resume)

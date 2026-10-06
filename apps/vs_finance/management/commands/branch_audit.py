@@ -16,6 +16,8 @@ The derivation rules are :mod:`vs_finance.branch_derivation`'s;
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.core.management.base import BaseCommand
 
 from vs_finance.branch_derivation import describe, entities, plan_entity
@@ -46,7 +48,7 @@ class Command(BaseCommand):
             if plan.owns_no_branch:
                 branchless.append(f"{entity.tenant.name} [{entity.tenant.slug}] books {entity.code}")
         self.stdout.write(
-            f"{len(books)} set(s) of books; {blank} unbranched row(s); "
+            f"{counted(len(books), 'set')} of books; {counted(blank, 'unbranched row')}; "
             f"{flagged} need an administrator."
         )
         if branchless:

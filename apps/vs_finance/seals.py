@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from django.db.models import Q, Sum
 
 from .constants import PeriodStatus
+from .wording import agrees, counted, period_words
 
 #: The statuses in which a period or year is sealed and its latest seal must hold.
 SEALED_STATUSES = (PeriodStatus.CLOSED, PeriodStatus.LOCKED)
@@ -189,7 +190,7 @@ class SealCheck:
     def label(self) -> str:
         seal = self.seal
         if seal.period_id:
-            return f"{seal.period.name} (FY{seal.fiscal_year.year})"
+            return f"{period_words(seal.period)} (FY{seal.fiscal_year.year})"
         return f"FY{seal.fiscal_year.year}"
 
 
@@ -307,11 +308,14 @@ def describe(check: SealCheck) -> str:
         parts.append("the seal's own figures were altered")
     if not check.lines_match:
         parts.append(
-            f"its ledger lines no longer match their checksum "
+            f"its ledger lines are no longer the ones that were sealed "
             f"({check.seal.line_count} sealed, {check.line_count_now} now)"
         )
     if check.differences:
-        parts.append(f"{len(check.differences)} account balance(s) differ from the sealed figures")
+        parts.append(
+            f"{counted(len(check.differences), 'account balance')} "
+            f"{agrees(len(check.differences), 'differs', 'differ')} from the sealed figures"
+        )
     return f"{check.label}: " + "; ".join(parts) + "."
 
 
@@ -337,11 +341,18 @@ def sealed_figures_close_check(entity, period):
     if result.ok:
         return ChecklistItem(
             name="sealed_figures_unchanged", passed=True, blocking=False,
-            detail=f"{len(result.checks)} sealed period(s) and year(s) still match the ledger",
+            detail=(
+                f"{counted(len(result.checks), 'sealed period or year', 'sealed periods and years')} "
+                f"still {agrees(len(result.checks), 'matches', 'match')} the ledger"
+            ),
         )
     details = [describe(c) for c in result.mismatches]
     if result.chain_breaks:
-        details.append(f"{len(result.chain_breaks)} seal(s) do not follow the seal before them.")
+        details.append(
+            f"{counted(len(result.chain_breaks), 'seal')} "
+            f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the seal before "
+            f"{agrees(len(result.chain_breaks), 'it', 'them')}."
+        )
     return ChecklistItem(
         name="sealed_figures_unchanged", passed=False, blocking=False,
         detail=" ".join(details),

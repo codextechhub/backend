@@ -29,6 +29,8 @@ a bank when its settlement is matched (:mod:`vs_payments.settlement`).
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import datetime
 
 from django.db import transaction
@@ -316,7 +318,7 @@ def update_custody_settings(*, entity, data, actor_user=None):
         audit.record(
             action=PaymentAuditAction.CUSTODY_SETTINGS_UPDATED, entity=entity,
             actor_user=actor_user,
-            message=f"Updated {len(changed)} payment custody setting(s).",
+            message=f"Updated {counted(len(changed), 'payment custody setting')}.",
             metadata={"before": {k: v[0] for k, v in changed.items()},
                       "after": {k: v[1] for k, v in changed.items()}},
         )

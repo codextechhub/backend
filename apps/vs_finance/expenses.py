@@ -34,6 +34,33 @@ from .posting import post_journal, resolve_period
 from .receivables import compute_line_net, compute_tax
 from .wording import state_word
 
+#: Each word the expense-claim list shows a claim as, and the stored status and
+#: reimbursement states it means. One table for the list's ``?display_status=``
+#: and its export, so the two select the same claims: Approved is posted and not
+#: reimbursed at all, Part-paid posted and partly reimbursed. A claim sent back
+#: wears Sent back and none of these (``?approval=returned``).
+CLAIM_DISPLAY_WORDS = {
+    "DRAFT": (DocumentStatus.DRAFT, ()),
+    "PENDING": (DocumentStatus.PENDING_APPROVAL, ()),
+    "APPROVED": (DocumentStatus.POSTED, (InvoicePaymentStatus.UNPAID,)),
+    "PART_PAID": (DocumentStatus.POSTED, (InvoicePaymentStatus.PARTIAL,)),
+    "PAID": (DocumentStatus.POSTED, (InvoicePaymentStatus.PAID,)),
+    "REJECTED": (DocumentStatus.CANCELLED, ()),
+}
+
+
+def claim_display_rules() -> dict:
+    """:data:`CLAIM_DISPLAY_WORDS` as list filter rules (``word -> Q``)."""
+    from django.db.models import Q
+
+    rules = {}
+    for word, (status, payments) in CLAIM_DISPLAY_WORDS.items():
+        rule = Q(status=status)
+        if payments:
+            rule &= Q(payment_status__in=payments)
+        rules[word] = rule
+    return rules
+
 
 # Recalculate claim line and header totals.
 def price_expense_claim(claim) -> None:

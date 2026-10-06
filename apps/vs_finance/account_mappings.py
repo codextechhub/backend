@@ -1,6 +1,8 @@
 """Typed entity-level account mappings and safe account-role resolution."""
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -232,7 +234,7 @@ def update_account_mappings(*, request, entity, values, actor_user):
             actor_user=actor_user,
             target_type="FinanceAccountSettings",
             target_id=str(entity.pk),
-            message=f"Updated {len(changed_after)} finance account mapping(s).",
+            message=f"Updated {counted(len(changed_after), 'finance account mapping')}.",
             before=changed_before,
             after=changed_after,
         )

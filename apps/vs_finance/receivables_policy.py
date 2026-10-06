@@ -7,6 +7,8 @@ refuses the write to a caller whose reach is not the whole tenant.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -174,7 +176,7 @@ def update_receivables_policy(*, entity, data, actor_user):
             target=policy,
             target_type="FinanceReceivablesPolicy",
             target_id=str(policy.pk),
-            message=f"Updated {len(changed_after)} finance receivables setting(s).",
+            message=f"Updated {counted(len(changed_after), 'finance receivables setting')}.",
             before=changed_before,
             after=changed_after,
         )

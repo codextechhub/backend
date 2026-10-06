@@ -277,7 +277,7 @@ class SettlementRunTests(_HeldFixture):
         early, note = held.build_settlement(
             self.books, self.lekki.pk, today=today + datetime.timedelta(days=2))
         self.assertIsNone(early)
-        self.assertIn("due 3 day(s)", note)
+        self.assertIn("due 3 days", note)
         due, _ = held.build_settlement(
             self.books, self.lekki.pk, today=today + datetime.timedelta(days=3))
         self.assertEqual(due.gross, 50_000)

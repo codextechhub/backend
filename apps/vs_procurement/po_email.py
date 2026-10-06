@@ -1,6 +1,8 @@
 """Durable purchase-order email scheduling, rendering, delivery, and retry."""
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import io
 import logging
 from decimal import Decimal
@@ -435,7 +437,7 @@ def _queue_delivery(delivery_id: int, *, actor_user=None):
     _audit(
         delivery,
         FinanceAuditAction.PURCHASE_ORDER_EMAIL_QUEUED if notification_ids else FinanceAuditAction.PURCHASE_ORDER_EMAIL_FAILED,
-        f"Queued purchase order {po.document_number} for {len(delivery.recipients)} vendor recipient(s)."
+        f"Queued purchase order {po.document_number} for {counted(len(delivery.recipients), 'vendor recipient')}."
         if notification_ids else f"Could not queue purchase order {po.document_number} for vendor email.",
         actor_user=actor_user,
         status=FinanceAuditStatus.SUCCESS if notification_ids else FinanceAuditStatus.FAILED,

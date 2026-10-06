@@ -21,6 +21,8 @@ transaction as the write.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 from django.core.management.base import BaseCommand, CommandError
 
 from vs_finance.branch_derivation import (
@@ -76,9 +78,9 @@ class Command(BaseCommand):
 
         if apply:
             self.stdout.write(self.style.SUCCESS(
-                f"Wrote a branch on {written} row(s); left {skipped} that gained one since planning."
+                f"Wrote a branch on {counted(written, 'row')}; left {skipped} that gained one since planning."
             ))
         else:
             self.stdout.write(self.style.SUCCESS(
-                f"Dry run: would write a branch on {planned} row(s). Pass --apply to write."
+                f"Dry run: would write a branch on {counted(planned, 'row')}. Pass --apply to write."
             ))

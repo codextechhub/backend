@@ -32,6 +32,7 @@ Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_finance.wording import counted
 from vs_procurement.approvals import (
     ensure_default_approval_templates,
     ensure_tenant_approval_templates,
@@ -106,7 +107,7 @@ class Command(BaseCommand):
             if options["platform"]:
                 published = ensure_default_approval_templates()
                 self.stdout.write(
-                    f"Platform route: {len(published)} row(s) published with no "
+                    f"Platform route: {counted(len(published), 'row')} published with no "
                     "stages. A tenant resolving here is asked to configure its "
                     "ladder or confirm.",
                 )

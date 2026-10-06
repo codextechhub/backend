@@ -881,7 +881,8 @@ def with_approval_request(data, document):
 
 
 def refuse_while_request_open(document, *, noun: str, act: str = "cancelled",
-                              remedy: str | None = None) -> None:
+                              remedy: str | None = None,
+                              returned_remedy: str | None = None) -> None:
     """Refuse to cancel or void ``document`` while its approval request is open.
 
     The one rule every route that ends a draft shares (a petty cash return's
@@ -896,7 +897,9 @@ def refuse_while_request_open(document, *, noun: str, act: str = "cancelled",
 
     ``act`` completes "then it can be ..." ("cancelled", "declined", "voided");
     ``remedy`` replaces that sentence where withdrawing does the act itself (a
-    withdrawn petty cash return is cancelled by the withdrawal).
+    withdrawn petty cash return is cancelled by the withdrawal), and
+    ``returned_remedy`` replaces it for a request returned to its sender, who
+    may also resume it.
     The caller has locked the document's row; the request is read after the lock.
     Raises :class:`~vs_finance.exceptions.ApprovalRequestOpenError` (422), whose
     payload carries ``approval_state`` and ``approval_returned`` for a screen.
@@ -916,8 +919,12 @@ def refuse_while_request_open(document, *, noun: str, act: str = "cancelled",
         )
     else:
         lead = f"The {noun} {number} is with its approvers."
+    advice = (
+        (returned_remedy if returned else None) or remedy
+        or f"Withdraw the approval request first, then it can be {act}."
+    )
     raise ApprovalRequestOpenError(
-        f"{lead} {remedy or f'Withdraw the approval request first, then it can be {act}.'}",
+        f"{lead} {advice}",
         approval_state=state, approval_returned=returned,
     )
 

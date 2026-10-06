@@ -30,7 +30,7 @@ from .constants import (
     FinanceAuditAction,
 )
 from .exceptions import PostingError
-from .wording import state_word
+from .wording import counted, state_word
 
 logger = logging.getLogger(__name__)  # Module logger for notification dispatch failures.
 
@@ -260,7 +260,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     record(  # Audit the dunning run summary.
         entity=entity, action=FinanceAuditAction.DUNNING_RUN_GENERATED,  # Audit action for dunning generation.
         actor_user=actor_user, target=policy,  # Actor and policy context.
-        message=f"Generated {len(created)} dunning notice(s) under '{policy.name}' "  # Human-readable summary.
+        message=f"Generated {counted(len(created), 'dunning notice')} under '{policy.name}' "  # Human-readable summary.
                 f"as at {format_date(as_of, entity.tenant)}.",  # Include run date.
         policy_id=policy.pk, as_of=str(as_of), notices_created=len(created),  # Structured run metadata.
     )

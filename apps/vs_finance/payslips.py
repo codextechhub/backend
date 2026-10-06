@@ -34,6 +34,8 @@ a payroll reader who may see every pay figure, for anybody's.
 """
 from __future__ import annotations
 
+from vs_finance.wording import counted
+
 import logging
 
 from django.db import transaction
@@ -507,7 +509,7 @@ def issue_payslips(run, lines, *, actor_user=None) -> list:
     record(
         entity=run.entity, action=FinanceAuditAction.PAYSLIPS_ISSUED, actor_user=actor_user,
         target=run, branch=branch_id,
-        message=f"Issued {len(created)} payslip(s) for payroll run {run.document_number or run.pk}.",
+        message=f"Issued {counted(len(created), 'payslip')} for payroll run {run.document_number or run.pk}.",
         payslip_count=len(created),
     )
     if policy.payslip_in_app or policy.payslip_email:

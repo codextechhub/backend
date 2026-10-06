@@ -439,7 +439,7 @@ class WriteRuleTests(_BackfillFixture):
         self.invoice_row.refresh_from_db()
         self.assertIsNone(self.invoice_row.branch_id)
         self.assertEqual(AuditEvent.objects.count(), events)
-        self.assertIn("Dry run: would write a branch on 1 row(s)", out.getvalue())
+        self.assertIn("Dry run: would write a branch on 1 row.", out.getvalue())
 
     def test_apply_writes_and_audits_each_change(self):
         call_command("branch_backfill", "--tenant", self.tenant.slug, "--apply", stdout=io.StringIO())
@@ -456,7 +456,7 @@ class WriteRuleTests(_BackfillFixture):
         out = io.StringIO()
         call_command("branch_backfill", "--tenant", self.tenant.slug, "--apply", stdout=out)
         self.assertEqual(AuditEvent.objects.count(), events)
-        self.assertIn("Wrote a branch on 0 row(s)", out.getvalue())
+        self.assertIn("Wrote a branch on 0 rows;", out.getvalue())
         self.assertFalse(any(p.assign for p in self.plan().targets))
 
     def test_a_row_that_already_has_a_branch_is_never_touched(self):
@@ -537,7 +537,7 @@ class GateTests(_BackfillFixture):
         self.assertEqual((vat.count, vat.resolved), (2, 1))
         out = io.StringIO()
         call_command("branch_audit", "--tenant", self.tenant.slug, stdout=out)
-        self.assertIn("year close 2026: 2 unbranched entry(s); the backfill resolves 1, 1 need an administrator", out.getvalue())
+        self.assertIn("year close 2026: 2 unbranched entries; the backfill resolves 1, 1 needs an administrator", out.getvalue())
 
     def test_the_gates_clear_once_the_backfill_has_run(self):
         self.posted_sale(self.books, owner_branch=self.lekki)

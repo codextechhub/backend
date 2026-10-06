@@ -15,6 +15,8 @@ Safe to re-run - all operations are idempotent.
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from vs_finance.wording import counted
+
 MODULE_NAME = "finance"
 MODULE_DESCRIPTION = "General ledger, receivables, banking, payroll, tax and reporting."
 MODULE_LABEL = "Finance"
@@ -325,11 +327,11 @@ class Command(BaseCommand):
                     if link_created:
                         granted += 1
                 self.stdout.write(
-                    f"  {role_id}: granted {granted} new key(s)." if granted
+                    f"  {role_id}: granted {counted(granted, 'new key')}." if granted
                     else f"  {role_id}: all keys already assigned."
                 )
 
         self.stdout.write(self.style.SUCCESS(
-            f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "
+            f"\n  Done. {counted(created_perms, 'new permission')}, {len(all_perms)} total "
             f"'{MODULE_NAME}' keys registered.\n"
         ))

@@ -72,7 +72,7 @@ from .constants import (
 from .exceptions import FinanceError, InterBranchError, InterBranchUnavailableError, PostingError
 from .money import format_naira
 from .posting import ensure_date_open, post_journal, resolve_period, reverse_journal
-from .wording import state_word
+from .wording import agrees, counted, state_word
 
 #: Kinds that move money between two bank accounts.
 MONEY_KINDS = (InterBranchTransferKind.CASH, InterBranchTransferKind.FORWARDED_RECEIPT)
@@ -580,19 +580,158 @@ def post_held_receipt(held, *, actor_user=None):
     return held
 
 
+def transfer_stage_rules() -> dict:
+    """The transfer list's ``?status=`` words, each the rows whose ``stage`` reads it.
+
+    The same rules as :attr:`vs_finance.models.InterBranchTransfer.stage`, as a
+    query: Sent is booked and not yet confirmed arrived, Received is booked and
+    confirmed, Declined and Not sent are the two kinds of cancelled. The stored
+    statuses DRAFT, POSTED and CANCELLED are still read as themselves for a
+    client that sends them.
+    """
+    posted = Q(status=DocumentStatus.POSTED)
+    cancelled = Q(status=DocumentStatus.CANCELLED)
+    return {
+        "REQUESTED": Q(status__in=(DocumentStatus.DRAFT, DocumentStatus.APPROVED)),
+        "PENDING_APPROVAL": Q(status=DocumentStatus.PENDING_APPROVAL),
+        "SENT": posted & Q(received_at__isnull=True),
+        "RECEIVED": posted & Q(received_at__isnull=False),
+        "DECLINED": cancelled & Q(declined_at__isnull=False),
+        "NOT_SENT": cancelled & Q(declined_at__isnull=True),
+        "VOIDED": Q(status=DocumentStatus.REVERSED),
+        "DRAFT": Q(status=DocumentStatus.DRAFT),
+        "POSTED": posted,
+        "CANCELLED": cancelled,
+        "REVERSED": Q(status=DocumentStatus.REVERSED),
+    }
+
+
+def live_forwards():
+    """The live forwards of each held receipt, correlated to the receipt row (``OuterRef("pk")``).
+
+    Live is neither cancelled nor reversed: a forward whose approval ended
+    unapproved, or one voided, no longer holds its receipt.
+    """
+    from django.db.models import OuterRef
+
+    from .models import InterBranchTransfer
+
+    return InterBranchTransfer.objects.filter(held_receipt=OuterRef("pk")).exclude(
+        status__in=(DocumentStatus.CANCELLED, DocumentStatus.REVERSED),
+    )
+
+
+def held_forward_sent_back():
+    """Whether a held receipt's live forward was sent back to whoever sent it, as a condition.
+
+    The receipt-list reading of the shared rule
+    (:func:`vs_workflow.services.approval_filter.returned_condition`), applied
+    to the forward: its row says Sent back and ``?approval=returned`` lists it.
+    """
+    from django.db.models import Exists
+
+    from vs_workflow.services.approval_filter import returned_condition
+
+    from .models import InterBranchTransfer
+
+    return Exists(live_forwards().filter(returned_condition(InterBranchTransfer)))
+
+
+def held_stage_rules() -> dict:
+    """The held-receipt list's ``?status=`` words, each the rows whose pill reads it.
+
+    Voided is a reversed receipt. Otherwise a receipt is Forwarded while a
+    forward of it is posted, Forwarding while one is live, not yet posted and
+    not sent back (with its approvers, or approved), and Held when no forward
+    is live (:func:`live_forwards`). A receipt whose forward was sent back
+    wears Sent back and no word lists it; ``?approval=returned`` does
+    (:func:`held_forward_sent_back`). The same reading as the row's
+    ``forwarded_by``. The stored statuses POSTED and REVERSED are still read as
+    themselves for a client that sends them.
+    """
+    from django.db.models import Exists
+
+    from vs_workflow.services.approval_filter import returned_condition
+
+    from .models import InterBranchTransfer
+
+    live = live_forwards()
+    standing = ~Q(status=DocumentStatus.REVERSED)
+    return {
+        "HELD": standing & ~Exists(live),
+        "FORWARDING": standing & Exists(
+            live.exclude(status=DocumentStatus.POSTED).exclude(returned_condition(InterBranchTransfer))
+        ),
+        "FORWARDED": standing & Exists(live.filter(status=DocumentStatus.POSTED)),
+        "VOIDED": Q(status=DocumentStatus.REVERSED),
+        "POSTED": Q(status=DocumentStatus.POSTED),
+        "REVERSED": Q(status=DocumentStatus.REVERSED),
+    }
+
+
+def refuse_while_forwarded(held_receipts) -> None:
+    """Refuse to void a held receipt while a forward of it is still live.
+
+    The advice follows where the forward stands, since only a posted transfer
+    can be voided. Mrs Okafor forwards a receipt held for Lekki and Mr Adeyemi
+    sends the forward back to her: it is a draft again, which nobody can void,
+    so she is told to resume it to send it on, or to withdraw it, which cancels
+    the forward and frees the receipt. One still with its approver is
+    withdrawn the same way; one approved and not yet sent is sent first. A
+    posted forward is voided, which reverses both branches' sides.
+
+    ``held_receipts`` are locked rows; the first live forward among them is
+    the one named.
+    """
+    from .approvals import refuse_while_request_open
+    from .models import InterBranchTransfer
+
+    forwards = (
+        InterBranchTransfer.objects.filter(held_receipt_id__in=[held.pk for held in held_receipts])
+        .exclude(status__in=(DocumentStatus.CANCELLED, DocumentStatus.REVERSED))
+        .select_related("held_receipt").order_by("pk")
+    )
+    for forward in forwards:
+        receipt = forward.held_receipt.document_number
+        number = forward.document_number or forward.pk
+        if forward.status == DocumentStatus.POSTED:
+            raise InterBranchError(
+                f"Receipt {receipt} is forwarded by {number}; void that transfer first, "
+                f"which reverses both branches' sides.",
+            )
+        if forward.status == DocumentStatus.APPROVED:
+            raise InterBranchError(
+                f"Receipt {receipt} is forwarded by {number}, which is approved and not "
+                f"yet sent. The receipt can be voided only once that transfer is sent "
+                f"and voided.",
+            )
+        refuse_while_request_open(
+            forward, noun=f"forward of receipt {receipt},", act="voided",
+            remedy=(
+                "Whoever sent it can withdraw it under Workflow, My Submissions, which "
+                "cancels the forward and lets the receipt be voided."
+            ),
+            returned_remedy=(
+                "Whoever sent it can resume it under Workflow, My Submissions to send it "
+                "on, or withdraw it there, which cancels the forward and lets the "
+                "receipt be voided."
+            ),
+        )
+
+
 @transaction.atomic
 def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
     """Reverse a held receipt that was never forwarded and that no statement has matched.
 
-    A forward whose approval request is still open (returned to whoever sent it
-    included) holds the receipt too: that request is withdrawn first.
+    A live forward holds the receipt (:func:`refuse_while_forwarded`): a posted
+    one is voided first, and one whose approval request is open, returned to
+    whoever sent it included, is resumed or withdrawn first.
 
     One that is a customer's share of a payer's payment is voided only with that
     payment (``payer_payment``), which voids every share together.
     """
-    from .approvals import refuse_while_request_open
     from .banking import journal_is_reconciled
-    from .models import HeldForBranchReceipt, InterBranchTransfer
+    from .models import HeldForBranchReceipt
     from .payer_payments import payer_payment_refusal
 
     held = HeldForBranchReceipt.objects.select_for_update().get(pk=held.pk)
@@ -601,17 +740,7 @@ def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
     split_from = payer_payment_refusal("held_receipt", held, payer_payment)
     if split_from is not None:
         raise InterBranchError(split_from)
-    forward = InterBranchTransfer.objects.filter(
-        held_receipt=held,
-        status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED, DocumentStatus.POSTED),
-    ).first()
-    if forward is not None:
-        raise InterBranchError(
-            f"Receipt {held.document_number} is forwarded by {forward.document_number}; "
-            f"void that transfer first.",
-        )
-    for draft in InterBranchTransfer.objects.filter(held_receipt=held, status=DocumentStatus.DRAFT):
-        refuse_while_request_open(draft, noun="forward of this receipt", act="voided")
+    refuse_while_forwarded([held])
     if journal_is_reconciled(held.journal_id):
         raise InterBranchError(
             f"Receipt {held.document_number} is matched to a bank statement line. "
@@ -1013,8 +1142,8 @@ def _move_open_receivables(customer, source, target, actor, *, on, key, purpose,
         _audit_both(
             transfer, FinanceAuditAction.RECEIVABLE_TRANSFERRED,
             f"{customer.name}'s balance moved from {source.name} to {target.name}: "
-            f"{format_naira(owed)} owed on {result.invoice_count} invoice(s) and "
-            f"{result.debit_note_count} debit note(s), {format_naira(credit_total)} of credit "
+            f"{format_naira(owed)} owed on {counted(result.invoice_count, 'invoice')} and "
+            f"{counted(result.debit_note_count, 'debit note')}, {format_naira(credit_total)} of credit "
             f"and {format_naira(deferred_total)} of income not yet earned.",
             actor_user=actor, customer_id=customer.pk, invoice_ids=list(result.invoice_ids),
             owed=owed, credit=credit_total, deferred=deferred_total, net=result.amount,
@@ -1603,7 +1732,10 @@ def inter_branch_close_check(entity, period, *, branch=None):
         if amount and (own is None or other is None) and concerns(own, other)
     )
     if unpaired:
-        problems.append(f"{unpaired} inter-branch balance(s) name no branch or no counterparty")
+        problems.append(
+            f"{counted(unpaired, 'inter-branch balance')} "
+            f"{agrees(unpaired, 'names', 'name')} no branch or no counterparty"
+        )
     disputed = [
         (a, b) for a, b in sorted({tuple(sorted(key)) for key in net if None not in key})
         if concerns(a, b) and net.get((a, b), 0) != -net.get((b, a), 0)

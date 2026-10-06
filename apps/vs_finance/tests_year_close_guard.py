@@ -667,7 +667,7 @@ class DepreciationAcrossAClosedYearTests(_YearFixture):
             close_fiscal_year(self.books, self.year())
 
         message = caught.exception.message
-        self.assertIn("11 depreciation charge(s) dated in FY2026 are not posted", message)
+        self.assertIn("11 depreciation charges dated in FY2026 are not posted", message)
         self.assertIn("Generator", message)
         self.assertIn("1 Feb 2026, 1 Mar 2026, 1 Apr 2026, 1 May 2026 and 7 more", message)
         self.assertIn("Run depreciation up to 31 Dec 2026 first", message)

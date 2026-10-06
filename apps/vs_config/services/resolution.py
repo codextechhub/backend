@@ -61,7 +61,18 @@ def _redacted(definition, value):
 
 # Enforce the type and rule contract stored on a configuration definition.
 def validate_value(definition, value):
+    """Refuse ``value`` unless it fits ``definition``'s type and bounds.
+
+    A refusal tells the person what to type, in the words the console shows the
+    type in ("Enter a whole number", :data:`vs_config.labels.VALUE_TYPE_INSTRUCTIONS`),
+    naming the setting's unit where it has one ("of naira",
+    :data:`vs_config.runtime_settings.SETTING_UNITS`).
+    """
+    from vs_config.labels import VALUE_TYPE_INSTRUCTIONS
+    from vs_config.runtime_settings import SETTING_UNITS
+
     kind = definition.value_type
+    unit = SETTING_UNITS.get(definition.key, "")
     try:
         if kind in {definition.ValueType.STRING, definition.ValueType.SECRET_REFERENCE}:
             # Empty strings are treated as unset because config values drive runtime behavior.
@@ -82,8 +93,11 @@ def validate_value(definition, value):
         elif kind == definition.ValueType.JSON and not isinstance(value, (dict, list)):
             raise ValueError
     except (ValueError, TypeError, InvalidOperation):
+        instruction = VALUE_TYPE_INSTRUCTIONS.get(
+            str(kind), f"Enter a valid {definition.get_value_type_display().lower()}",
+        )
         raise InvalidConfigurationValue(
-            f"{definition.label} must be a valid {definition.get_value_type_display().lower()}.",
+            f"{instruction}{f' of {unit}' if unit else ''}.",
             extra={"key": definition.key},
         )
 
@@ -99,13 +113,15 @@ def validate_value(definition, value):
                 minimum = Decimal(str(rules["min"])) if is_decimal else rules["min"]
                 if comparable < minimum:
                     raise InvalidConfigurationValue(
-                        f"{definition.label} must be at least {rules['min']}."
+                        f"{definition.label} must be at least {rules['min']}"
+                        f"{f' {unit}' if unit else ''}."
                     )
             if "max" in rules:
                 maximum = Decimal(str(rules["max"])) if is_decimal else rules["max"]
                 if comparable > maximum:
                     raise InvalidConfigurationValue(
-                        f"{definition.label} must be at most {rules['max']}."
+                        f"{definition.label} must be at most {rules['max']}"
+                        f"{f' {unit}' if unit else ''}."
                     )
         except TypeError:
             raise InvalidConfigurationValue(

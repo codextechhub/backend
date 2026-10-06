@@ -256,7 +256,33 @@ class WriteTests(_Enforcement):
             response.data["error"]["detail"],
             {"phone": ["You do not have permission to change this field."]},
         )
-        self.assertIn("phone", response.data["message"])
+        self.assertEqual(
+            response.data["message"], "You do not have permission to change Phone.",
+        )
+
+    def test_the_refusal_names_each_field_by_its_library_label(self):
+        exc = self._refusal({"phone": "08039999999", "bank_account_number": "9999999999"})
+        self.assertEqual(
+            exc.message,
+            "You do not have permission to change Bank account number and Phone.",
+        )
+        self.assertEqual(set(exc.extra), {"bank_account_number", "phone"})
+
+    def test_assert_writable_names_the_field_by_its_label(self):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            assert_writable(self._request(), "fenf.vendor", {"phone": "08039999999"})
+        self.assertEqual(caught.exception.message, "You do not have permission to change Phone.")
+
+    def test_a_field_with_no_label_is_named_in_words(self):
+        from vs_rbac.field_enforcement import FieldReadDenied
+
+        self.assertEqual(
+            FieldWriteDenied(["gross_amount", "invited_by_id"]).message,
+            "You do not have permission to change Gross amount and Invited by.",
+        )
+        self.assertEqual(
+            FieldReadDenied(["file"]).message, "You do not have permission to read File.",
+        )
 
     def test_a_writable_field_alone_passes(self):
         serializer = _VendorSerializer(data={"name": "Ade Stationers Ltd"},

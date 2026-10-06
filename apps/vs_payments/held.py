@@ -53,6 +53,8 @@ a school app.
 """
 from __future__ import annotations
 
+from vs_finance.wording import agrees, counted
+
 import datetime
 import logging
 
@@ -645,7 +647,7 @@ def build_settlement(entity, branch_id, *, today=None, final=False, actor_user=N
             last = (HeldSettlement.objects.filter(branch_id=branch_id)
                     .exclude(status=HeldSettlementStatus.FAILED).order_by("-run_on").first())
             if last is not None and (today - last.run_on).days < interval:
-                return None, f"{label}: next settlement is due {interval} day(s) after {last.run_on}."
+                return None, f"{label}: next settlement is due {counted(interval, 'day')} after {last.run_on}."
         cutoff = (timezone.now() if final else datetime.datetime.combine(
             today, datetime.time.min, tzinfo=tenant_zone(tenant)))
         claims = list(
@@ -685,7 +687,7 @@ def build_settlement(entity, branch_id, *, today=None, final=False, actor_user=N
         audit.record(
             action=PaymentAuditAction.HELD_SETTLEMENT_BUILT, entity=entity,
             reference=claims[0].reference, actor_user=actor_user,
-            message=(f"{'Final s' if final else 'S'}ettlement for {label}: {len(claims)} payment(s), "
+            message=(f"{'Final s' if final else 'S'}ettlement for {label}: {counted(len(claims), 'payment')}, "
                      f"{_naira(gross)} less {_naira(fees)} fees; transfer "
                      f"{_naira(settlement.amount)} after a {_naira(transfer_fee)} transfer fee."),
             metadata={"settlement_id": settlement.pk, "branch_id": branch_id, "gross": gross,
@@ -932,7 +934,10 @@ def outstanding_reasons(tenant) -> list[str]:
     unsettled = (CollectionIntent.objects.filter(entity__tenant=tenant, held_by_platform=True)
                  .filter(awaiting_settlement_q()).count())
     if unsettled:
-        reasons.append(f"{unsettled} held online payment(s) are not yet settled")
+        reasons.append(
+            f"{counted(unsettled, 'held online payment')} "
+            f"{agrees(unsettled, 'is', 'are')} not yet settled"
+        )
     return reasons
 
 
@@ -975,7 +980,10 @@ def pending_note_in_reach(row, entity, branch_ids) -> str | None:
     parts = [f"{b.name} has {_naira(held[b.pk])} held" for b in branches if b.pk in mine and b.pk in held]
     mine_unsettled = sum(n for branch_id, n in unsettled.items() if branch_id in mine)
     if mine_unsettled:
-        parts.append(f"{mine_unsettled} held online payment(s) are not yet settled")
+        parts.append(
+            f"{counted(mine_unsettled, 'held online payment')} "
+            f"{agrees(mine_unsettled, 'is', 'are')} not yet settled"
+        )
     mine_unready = [b.name for b in branches if b.pk in mine and b.pk in unready]
     if mine_unready:
         parts.append(f"not set up with the payment provider: {', '.join(mine_unready)}")

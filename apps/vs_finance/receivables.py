@@ -43,7 +43,7 @@ from .exceptions import (
 from .deferred_income import defers, schedule_line
 from .money import format_naira
 from .posting import post_journal, resolve_period
-from .wording import state_word
+from .wording import counted, state_word
 
 
 # --------------------------------------------------------------------------- #
@@ -1105,8 +1105,76 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     record(  # Log the allocation in the finance audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
-        message=f"Applied {format_naira(applied)} of customer credit across {len(created)} invoice(s).",
+        message=f"Applied {format_naira(applied)} of customer credit across {counted(len(created), 'invoice')}.",
         journal_id=entry.pk, allocated=payment.allocated_amount,
         unallocated=payment.credit_remaining, effective_date=str(effective),
     )
     return created  # Return the allocation rows that were created or extended.
+
+
+def invoice_bucket_rules(tenant) -> dict:
+    """The invoice list's ``?bucket=`` words, each the invoices whose tab reads it.
+
+    What counts as overdue is judged on the day at each invoice's own branch
+    (:func:`vs_config.clock.branch_day_q`), the school's for a shared one. Draft,
+    paid, overdue, partial and issued never overlap, so each invoice sits in one
+    tab: a partly paid invoice past its due date is overdue, not partial.
+    ``open`` is no tab: every posted invoice with money still owed, overdue or
+    not, which is what a payment picker offers. The invoice export reads the
+    same rules (:func:`invoice_bucket`), so the file holds the rows the tab shows.
+    """
+    from django.db.models import Q
+
+    from vs_config.clock import branch_day_q
+
+    from .constants import DocumentStatus, InvoicePaymentStatus
+
+    past_due = branch_day_q(tenant, "branch", lambda day: Q(due_date__lt=day))
+    not_overdue = ~past_due | Q(due_date__isnull=True)
+    posted = Q(status=DocumentStatus.POSTED)
+    owing = posted & ~Q(payment_status=InvoicePaymentStatus.PAID)
+    return {
+        "draft": Q(status=DocumentStatus.DRAFT),
+        "paid": posted & Q(payment_status=InvoicePaymentStatus.PAID),
+        "overdue": owing & past_due,
+        "partial": posted & Q(payment_status=InvoicePaymentStatus.PARTIAL) & not_overdue,
+        "issued": posted & Q(payment_status=InvoicePaymentStatus.UNPAID) & not_overdue,
+        "open": owing,
+    }
+
+
+#: The invoice tabs that never overlap, in the order the export names them.
+INVOICE_TABS = ("draft", "paid", "overdue", "partial", "issued")
+
+
+def invoice_bucket(tenant):
+    """Each invoice's tab (:data:`INVOICE_TABS`) as an annotation, blank for none."""
+    from django.db.models import Case, CharField, Value, When
+
+    rules = invoice_bucket_rules(tenant)
+    return Case(
+        *(When(rules[tab], then=Value(tab)) for tab in INVOICE_TABS),
+        default=Value(""), output_field=CharField(),
+    )
+
+
+def receipt_allocation_rules() -> dict:
+    """The receipts list's ``?status=`` words, each the receipts whose allocation reads it.
+
+    The same reading as :meth:`vs_finance.serializers.PaymentSerializer.get_allocation_status`,
+    as a query so a page and its count are right: refunded is checked before
+    unallocated, or cash that left would be counted as still available. The
+    receipts export filters by these too.
+    """
+    from django.db.models import F, Q
+    from django.db.models.lookups import GreaterThanOrEqual, LessThan
+
+    gone = F("refunded_amount") + F("transferred_amount")
+    rest = F("amount") - F("allocated_amount")
+    still_here = Q(LessThan(gone, rest))
+    return {
+        "ALLOCATED": Q(allocated_amount__gte=F("amount")),
+        "PARTIAL": Q(allocated_amount__gt=0, allocated_amount__lt=F("amount")) & still_here,
+        "UNALLOCATED": Q(allocated_amount__lte=0) & still_here,
+        "REFUNDED": Q(allocated_amount__lt=F("amount")) & Q(GreaterThanOrEqual(gone, rest)),
+    }

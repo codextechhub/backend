@@ -9,7 +9,7 @@ rendered by ``core.exceptions.custom_exception_handler`` (the typed-exception pa
 the views stay thin.
 """
 from __future__ import annotations
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 import datetime
 from shutil import which
 
@@ -1089,8 +1089,7 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
             .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
         )
         params = self.request.query_params
-        if (status_val := params.get("status")):
-            qs = qs.filter(status=status_val)
+        qs = filter_by_stored_status(qs, params.get("status"))
         if (source := params.get("source")):
             qs = qs.filter(source=source)
         if (date_from := params.get("date_from")):
@@ -1115,7 +1114,10 @@ class JournalSummaryView(APIView):
     the same source/date/search filters as the list). Journals dated in an
     archived fiscal year are left out unless ``?include_archived=true``, as the
     list leaves them out (:func:`vs_finance.archive.hide_archived`), so each
-    tab's count is the number of rows the tab shows.
+    tab's count is the number of rows the tab shows. A journal an approver sent
+    back is counted under ``sent_back`` and in no ``by_status`` entry, as the
+    Draft tab does not list it (:func:`vs_workflow.services.approval_filter.word_condition`);
+    ``total`` counts every journal, the All tab.
 
     docstring-name: Journal summary
     """
@@ -1147,7 +1149,16 @@ class JournalSummaryView(APIView):
                 | Q(narration__icontains=search)
                 | Q(reference__icontains=search)
             )
-        by_status = {row["status"]: row["n"] for row in qs.values("status").annotate(n=Count("id"))}
+        from vs_workflow.services.approval_filter import returned_condition, word_condition
+
+        counts = qs.aggregate(
+            total=Count("id"),
+            sent_back=Count("id", filter=returned_condition(JournalEntry)),
+            **{str(status): Count("id", filter=word_condition(JournalEntry, Q(status=status)))
+               for status in DocumentStatus.values},
+        )
+        by_status = {status: counts[str(status)] for status in DocumentStatus.values
+                     if counts[str(status)]}
         posted_total = (
             qs.filter(status=DocumentStatus.POSTED)
             .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
@@ -1159,8 +1170,9 @@ class JournalSummaryView(APIView):
         return success_response(
             "Journal summary retrieved.",
             data={
-                "total": sum(by_status.values()),
+                "total": counts["total"],
                 "by_status": by_status,
+                "sent_back": counts["sent_back"],
                 "posted_total": _money(posted_total),
                 "reversed_total": _money(reversed_total),
             },
@@ -1411,34 +1423,17 @@ def _invoice_line_fields(line, index):
     return {"kind": kind, "service_start": start, "service_end": end}
 
 
-# Support the invoice bucket workflow.
 def _invoice_bucket(qs, bucket, tenant):
-    """Filter invoices to a derived status bucket (the design's status tabs).
+    """Filter invoices to a tab word (:func:`vs_finance.receivables.invoice_bucket_rules`).
 
-    What counts as overdue is judged on the day at each invoice's own branch
-    (:func:`vs_config.clock.branch_day_q`), the school's for a shared one.
-    ``open`` is no tab: it is every posted invoice with money still owed, overdue
-    or not, which is what a payment picker offers.
+    Matched in any case; a word the list does not have is refused (400 on
+    ``bucket``) rather than answered with every invoice.
     """
-    from django.db.models import Q
-    from .constants import DocumentStatus, InvoicePaymentStatus
+    from core.list_filters import filter_by_word
 
-    past_due = branch_day_q(tenant, "branch", lambda day: Q(due_date__lt=day))
-    not_overdue = ~past_due | Q(due_date__isnull=True)
-    posted = qs.filter(status=DocumentStatus.POSTED)
-    if bucket == "draft":
-        return qs.filter(status=DocumentStatus.DRAFT)
-    if bucket == "paid":
-        return posted.filter(payment_status=InvoicePaymentStatus.PAID)
-    if bucket == "overdue":
-        return posted.exclude(payment_status=InvoicePaymentStatus.PAID).filter(past_due)
-    if bucket == "partial":
-        return posted.filter(payment_status=InvoicePaymentStatus.PARTIAL).filter(not_overdue)
-    if bucket == "issued":
-        return posted.filter(payment_status=InvoicePaymentStatus.UNPAID).filter(not_overdue)
-    if bucket == "open":
-        return posted.exclude(payment_status=InvoicePaymentStatus.PAID)
-    return qs
+    from .receivables import invoice_bucket_rules
+
+    return filter_by_word(qs, bucket, invoice_bucket_rules(tenant), param="bucket")
 
 
 # Group endpoint behavior for Invoice Summary View.
@@ -2584,7 +2579,10 @@ class IncomeStatementView(APIView):
 
         rows = [_xrow("Revenue", r) for r in rep.income_rows]
         rows += [_xrow("Expense", r) for r in rep.expense_rows]
-        scope = rep.period_name or (f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
+        from .wording import period_words
+
+        scope = (period_words(period) if period is not None
+                 else f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
         export = _maybe_export(request, ReportTable(
             title="Income Statement",
             subtitle=f"{entity.code} · {scope}",
