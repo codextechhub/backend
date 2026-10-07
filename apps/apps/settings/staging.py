@@ -85,3 +85,12 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 # env change, no redeploy. Flip it back to bypass a broken broker.
 CELERY_TASK_ALWAYS_EAGER     = config("CELERY_EAGER", default=True, cast=bool)
 CELERY_TASK_EAGER_PROPAGATES = CELERY_TASK_ALWAYS_EAGER
+
+# Error reporting. Off unless SENTRY_DSN is set; see core.observability.
+from core.observability import init_sentry  # noqa: E402
+
+init_sentry(
+    dsn=config("SENTRY_DSN", default=""),
+    environment=config("SENTRY_ENVIRONMENT", default=""),
+    release=config("RENDER_GIT_COMMIT", default=""),
+)

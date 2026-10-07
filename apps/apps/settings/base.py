@@ -448,6 +448,13 @@ IMPERSONATION_IDLE_TIMEOUT_MINUTES = 30  # Proxy sessions idle beyond this are s
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE    = "Lax"
 
+# The CSRF cookie is shared across sibling hosts through CSRF_COOKIE_DOMAIN, so
+# two deployments under one parent domain (a live product and its staging twin)
+# would otherwise set the same cookie and send each other's token. A deployment
+# that has such a twin gives its cookie a name of its own; the frontends read
+# the same name from VITE_CSRF_COOKIE_NAME. The default is Django's.
+CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="csrftoken")
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",

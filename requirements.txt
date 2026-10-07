@@ -13,6 +13,7 @@ gunicorn==26.0.0
 whitenoise==6.12.0
 drf-spectacular==0.29.0
 python-decouple==3.8
+sentry-sdk==2.71.0
 user-agents==2.2.0
 shortuuid==1.0.13
 # Test runs only: lets a --parallel worker send a failing test's traceback back

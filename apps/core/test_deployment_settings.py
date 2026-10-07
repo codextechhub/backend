@@ -38,6 +38,7 @@ NAMES = (
     "HEALTH_PROBE_BASE_URL",
     "HEALTH_SSL_DOMAIN",
     "CSRF_TRUSTED_ORIGINS",
+    "CSRF_COOKIE_NAME",
     "CLIENT_IP_HEADERS",
     "MIDDLEWARE",
 )
@@ -72,6 +73,7 @@ _ADDRESS_VARS = (
     "HEALTH_PROBE_BASE_URL",
     "HEALTH_SSL_DOMAIN",
     "CSRF_TRUSTED_ORIGINS",
+    "CSRF_COOKIE_NAME",
 )
 
 #: A full, self-consistent staging configuration.
@@ -193,6 +195,15 @@ class DeployedAddressTests(SimpleTestCase):
 
         self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
         self.assertIn("HEALTH_SSL_DOMAIN", outcome["message"])
+
+    def test_the_csrf_cookie_keeps_djangos_name_unless_the_deployment_names_one(self):
+        """A live product and its staging twin share a parent domain, so the
+        twin names its own cookie and the live one needs to name nothing."""
+        default = self._resolve(**_STAGING_ADDRESSES)
+        named = self._resolve(**_STAGING_ADDRESSES, CSRF_COOKIE_NAME="csrftoken_staging")
+
+        self.assertEqual(default["settings"]["CSRF_COOKIE_NAME"], "csrftoken")
+        self.assertEqual(named["settings"]["CSRF_COOKIE_NAME"], "csrftoken_staging")
 
     def test_the_client_address_comes_from_cloudflare(self):
         """Render puts Cloudflare in front of the service, and the headers it
