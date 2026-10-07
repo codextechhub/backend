@@ -429,6 +429,44 @@ class PayerPaymentApiTests(_PayerFixture):
         for payment in (read, listed):
             self.assertEqual(payment["split_label"], offered["OLDEST_FIRST"])
 
+    def test_a_recorder_without_the_settings_key_is_offered_the_split_choices(self):
+        """The screen reads the choices from the route it records through, in the settings' words."""
+        settings_read = TenantAPIClient(user=self.ikeja_bursar).get(
+            self.url("settings/receivables/"))
+        self.assertEqual(settings_read.status_code, 403, settings_read.data)
+        offered = serialize_receivables_policy(
+            resolve_receivables_policy(self.books))["payer_payment_split_options"]
+
+        response = TenantAPIClient(user=self.ikeja_bursar).get(self.url("payer-payments/preview/"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["split_options"], offered)
+        self.assertEqual([o["value"] for o in data["split_options"]],
+                         ["OLDEST_FIRST", "PROPORTIONAL", "AS_ENTERED"])
+        self.assertEqual((data["split_default"], data["split_default_label"]),
+                         ("OLDEST_FIRST", offered[0]["label"]))
+        self.assertFalse(PayerPayment.objects.exists())
+
+    def test_the_split_default_is_the_schools_current_setting(self):
+        update_receivables_policy(entity=self.books, data={"payer_payment_split": "PROPORTIONAL"},
+                                  actor_user=None)
+
+        data = TenantAPIClient(user=self.ikeja_bursar).get(
+            self.url("payer-payments/preview/")).data["data"]
+
+        self.assertEqual(data["split_default"], "PROPORTIONAL")
+        self.assertEqual(data["split_default_label"],
+                         dict(PayerPaymentSplit.choices)["PROPORTIONAL"])
+
+    def test_the_split_choices_stay_behind_the_create_key_and_the_tenant(self):
+        reader = TenantAPIClient(user=self.reader).get(self.url("payer-payments/preview/"))
+        rival = TenantAPIClient(user=self.rival).get(self.url("payer-payments/preview/"))
+
+        self.assertEqual(reader.status_code, 403, reader.data)
+        self.assertEqual(rival.status_code, 404, rival.data)
+        self.assertNotIn("split_options", rival.data.get("data") or {})
+
     def test_another_tenant_cannot_reach_these_books(self):
         response = self.record(self.rival)
 

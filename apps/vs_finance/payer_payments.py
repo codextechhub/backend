@@ -55,7 +55,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PayerPaymentError
 from .money import format_naira
-from .wording import counted, state_word, words_for_code
+from .wording import choice_options, counted, state_word, words_for_code
 
 #: The split recorded when the bursar typed each customer's amount.
 EXPLICIT_SPLIT = "EXPLICIT"
@@ -74,6 +74,27 @@ def split_label(split) -> str:
 
     labels = dict(PayerPayment.SPLIT_CHOICES)
     return str(labels[split]) if split in labels else words_for_code(split)
+
+
+def split_choices(entity) -> dict:
+    """The ways a payment may be split, and the one these books use when none is chosen.
+
+    The options are the ones the receivables settings offer
+    (:data:`~vs_finance.receivables_policy.CHOICE_SETTINGS`), read from the same
+    list, so a payment screen and the setting that chose its default word each
+    choice identically. A bursar who may record payments but not read the
+    settings still needs them to offer the choice. ``split_default`` is the
+    entity's ``payer_payment_split``, with its label beside it; typing each
+    customer's amount is always possible and is not an option in the list.
+    """
+    from .receivables_policy import CHOICE_SETTINGS, resolve_receivables_policy
+
+    default = resolve_receivables_policy(entity).payer_payment_split
+    return {
+        "split_options": choice_options(CHOICE_SETTINGS["payer_payment_split"]),
+        "split_default": default,
+        "split_default_label": split_label(default),
+    }
 
 
 # --------------------------------------------------------------------------- #

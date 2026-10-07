@@ -35,7 +35,7 @@ from vs_rbac.scoping import caller_branch_ids, inherited_branch_id, transaction_
 
 from .constants import DocumentStatus, PaymentMethod
 from .models import CreditNote, PayerLink, PayerPayment
-from .payer_payments import split_label
+from .payer_payments import split_choices, split_label
 from .views import resolve_entity
 from .views_ar import _resolve_customer
 from .views_ops.base import (
@@ -336,10 +336,21 @@ class PayerPaymentPreviewView(_FinanceBase):
     amount and the part left as credit, and, for branches the caller reaches, the
     bills it settles.
 
+    GET answers the choices the screen offers before it previews: ``split_options``
+    (``[{value, label}]``, the receivables settings' own list and words),
+    ``split_default`` (the books' current setting) and ``split_default_label``. It
+    needs the same key as recording, so a bursar who may record a payment but not
+    read the settings can still offer the choice.
+
     docstring-name: Preview a payment from a payer
     """
 
     rbac_permission = "finance.payment.create"
+
+    def get(self, request):
+        return success_response(
+            "Payment split choices retrieved.", data=split_choices(resolve_entity(request)),
+        )
 
     def post(self, request):
         from .payer_payments import plan_payer_payment
