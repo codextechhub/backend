@@ -2715,6 +2715,8 @@ class CashFlowView(APIView):
         reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
         cf = cash_flow_statement(entity, period=period, scope=reader_scope)
+        window = (_period_label(period, entity) if period is not None
+                  else f"FY{cf.fiscal_year}" if cf.fiscal_year else "Year to date")
 
         _ACT_LABEL = {
             "operating": "Operating activities",
@@ -2729,7 +2731,7 @@ class CashFlowView(APIView):
                          format_naira(cf.by_activity[act])])
         export = _maybe_export(request, ReportTable(
             title="Cash Flow Statement",
-            subtitle=f"{entity.code} · {_period_label(period, entity) or 'Year to date'}",
+            subtitle=f"{entity.code} · {window}",
             columns=["Activity", "Line", "Amount"],
             rows=rows,
             summary_rows=[
@@ -2753,6 +2755,7 @@ class CashFlowView(APIView):
                 "narrowed": reader_scope.is_narrowed,
                 "period": getattr(period, "name", None),
                 "period_label": _period_label(period, entity),
+                "fiscal_year": cf.fiscal_year,
                 "opening_cash": _money(cf.opening_cash),
                 "closing_cash": _money(cf.closing_cash),
                 "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},

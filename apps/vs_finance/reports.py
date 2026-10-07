@@ -1502,6 +1502,23 @@ def fiscal_year_as_of(entity, as_of):
     )
 
 
+def default_fiscal_year(entity):
+    """The fiscal year a statement covers when no period or year is chosen.
+
+    The year today falls in, read on the tenant's own calendar and clock
+    (:func:`fiscal_year_as_of`), or the latest year on record when none has begun
+    yet. ``None`` only when the entity has no fiscal year at all. The income
+    statement and the cash flow statement both take their default window from
+    here, so a screen that names "FY2026" for one names the same year for the other.
+    """
+    from .models import FiscalYear
+
+    return (
+        fiscal_year_as_of(entity, tenant_today(entity.tenant))
+        or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+    )
+
+
 # Handle the income statement workflow.
 def income_statement(entity, *, period=None, fiscal_year=None, scope=None) -> IncomeStatement:
     """Build the income statement (P&L) for ``entity`` over a window.
@@ -1620,10 +1637,7 @@ def income_statement_compare(entity, *, period=None, fiscal_year=None,
     elif fiscal_year is not None:
         fy = fiscal_year
     else:
-        fy = (
-            fiscal_year_as_of(entity, tenant_today(entity.tenant))
-            or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
-        )
+        fy = default_fiscal_year(entity)
     if fy is None:
         return IncomeStatementCompare(
             entity_id=entity.id, period_id=None, period_name=None,
@@ -1890,11 +1904,14 @@ class CashFlowStatement:
     ``opening_cash + net_change == closing_cash`` is the reconciliation the statement
     exists to prove. ``by_activity`` holds the operating / investing / financing
     subtotals, which sum to ``net_change``. ``activity_lines`` breaks each activity into
-    its counter-account line items (direct method).
+    its counter-account line items (direct method). ``fiscal_year`` is the year the
+    window covers (its label, ``2026``) when the window is a fiscal year, and ``None``
+    for one chosen period or for an entity with no fiscal year to name.
     """
 
     entity_id: int
     period_id: int | None
+    fiscal_year: int | None = None
     opening_cash: int = 0
     closing_cash: int = 0
     by_activity: dict = field(default_factory=lambda: {a: 0 for a in CASH_FLOW_ACTIVITIES})
@@ -1913,16 +1930,26 @@ class CashFlowStatement:
 
 
 # Handle the cash flow statement workflow.
-def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement:
-    """Build the cash-flow statement for ``entity``, optionally one ``period``.
+def cash_flow_statement(entity, *, period=None, fiscal_year=None, scope=None) -> CashFlowStatement:
+    """Build the cash-flow statement for ``entity`` over one window.
+
+    The window is ``period`` when given, else ``fiscal_year`` when given, else the
+    fiscal year today falls in (:func:`default_fiscal_year`), the same default the
+    income statement uses, so a bursar who chooses nothing reads this year's cash
+    and never every year's under one heading. An entity with no fiscal year at all
+    reads its whole ledger.
 
     Cash accounts are the entity's ``1100 Cash & Bank`` plus any GL account a
     :class:`~vs_finance.models.BankAccount` maps to. The statement classifies the
-    non-cash leg of every journal in the ledger that touches cash into operating /
+    non-cash leg of every journal in the window that touches cash into operating /
     investing / financing (see :func:`_classify_cash_flow`), and reconciles opening +
     net change to closing cash. The legs and the opening and closing balances read
     the same ledger (:func:`vs_finance.branch_ledger.ledger_lines`), so a reversal and
-    the entry it reverses cancel in both. Scoped to ``period`` when given, else the whole ledger to date.
+    the entry it reverses cancel in both.
+
+    Opening cash is the balance held when the window began: every movement in the
+    periods that began before it, so a month opens with what the month before it
+    closed with, and opening + net change is the cash held at the window's end.
     ``scope`` narrows both the cash balances and the classified journals to a
     reader's branches, so the statement still reconciles.
     """
@@ -1933,6 +1960,10 @@ def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement
     from vs_rbac.scoping import UNNARROWED
 
     scope = scope or UNNARROWED
+    if period is None and fiscal_year is None:
+        fiscal_year = default_fiscal_year(entity)
+    if period is not None:
+        fiscal_year = None
 
     # 1. Identify the entity's cash accounts (1100 + any mapped bank GL account).
     cash_ids = {resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id}
@@ -1940,36 +1971,43 @@ def cash_flow_statement(entity, *, period=None, scope=None) -> CashFlowStatement
         BankAccount.objects.filter(entity=entity).values_list("gl_account_id", flat=True)
     )
 
-    stmt = CashFlowStatement(entity_id=entity.id, period_id=getattr(period, "id", None))
+    stmt = CashFlowStatement(
+        entity_id=entity.id, period_id=getattr(period, "id", None),
+        fiscal_year=getattr(fiscal_year, "year", None),
+    )
     if not cash_ids:
         return stmt
 
     # 2. Opening / closing cash from the denormalised balances.
-    bal_qs = ledger_balances(entity, scope).filter(account_id__in=cash_ids).select_related("account")
+    bal_qs = ledger_balances(entity, scope).filter(account_id__in=cash_ids).select_related(
+        "account", "period")
     if period is not None:
-        bal_qs = bal_qs.filter(period=period)
+        bal_qs = bal_qs.filter(period__start_date__lte=period.start_date)
+    elif fiscal_year is not None:
+        bal_qs = bal_qs.filter(period__fiscal_year__start_date__lte=fiscal_year.start_date)
 
     opening = closing = 0
     for bal in bal_qs:
         sign = 1 if bal.account.normal_balance == NormalBalance.DEBIT else -1
         open_net = (bal.opening_debit - bal.opening_credit) * sign
         move = (bal.debit_total - bal.credit_total) * sign
-        opening += open_net
         closing += open_net + move
+        # Cash from before the window is all in hand when it opens.
+        before_window = (
+            bal.period_id != period.id if period is not None
+            else fiscal_year is not None and bal.period.fiscal_year_id != fiscal_year.id
+        )
+        opening += open_net + move if before_window else open_net
     stmt.opening_cash = opening
     stmt.closing_cash = closing
 
     # 3. Classify the non-cash legs of every ledger journal that touches cash.
-    cash_entry_ids = set(
-        scope.filter(ledger_lines(entity).filter(account_id__in=cash_ids), "entry__")
-        .values_list("entry_id", flat=True)
-    )
+    cash_lines = ledger_lines(entity).filter(account_id__in=cash_ids)
     if period is not None:
-        cash_entry_ids &= set(
-            JournalLine.objects
-            .filter(entry__period=period, entry_id__in=cash_entry_ids)
-            .values_list("entry_id", flat=True)
-        )
+        cash_lines = cash_lines.filter(entry__period=period)
+    elif fiscal_year is not None:
+        cash_lines = cash_lines.filter(entry__period__fiscal_year=fiscal_year)
+    cash_entry_ids = set(scope.filter(cash_lines, "entry__").values_list("entry_id", flat=True))
 
     legs = (
         JournalLine.objects
@@ -2410,8 +2448,9 @@ def statutory_pack(entity, *, as_of=None, period=None, fiscal_year=None) -> Stat
     Income Statement covers ``period`` when given, else the ordinary periods of
     ``fiscal_year``, else of the year ``as_of`` falls in: a filing reports one
     year's profit, and a closed year still shows the profit it made. The cash-flow
-    statement and statement of changes in equity are scoped to ``period`` when
-    given (else inception to date). Every figure is *regrouped* from the existing
+    statement covers that same window: ``period`` when given, else the same fiscal
+    year. The statement of changes in equity is scoped to ``period`` when given
+    (else inception to date). Every figure is *regrouped* from the existing
     statements, so the pack's totals reconcile to them exactly. It is the school's
     filing, so it is only ever built for the whole entity.
     """
@@ -2471,7 +2510,7 @@ def statutory_pack(entity, *, as_of=None, period=None, fiscal_year=None) -> Stat
         total_income=pnl.total_income,
         total_expense=pnl.total_expense,
         net_income=pnl.net_income,
-        cash_flow=cash_flow_statement(entity, period=period),
+        cash_flow=cash_flow_statement(entity, period=period, fiscal_year=fiscal_year),
         changes_in_equity=statement_of_changes_in_equity(entity, period=period),
         trial_balance=trial_balance(entity, period=period),
     )
