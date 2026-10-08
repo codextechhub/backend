@@ -153,7 +153,13 @@ class BranchReportEndpointTests(_LedgerFixture):
 
     def test_the_statutory_pack_is_the_schools_filing_and_refused_to_a_branch(self):
         branch = self.client_holding("pack-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
-        self.assertEqual(self.get(branch, "statutory-pack").status_code, 403)
+        denied = self.get(branch, "statutory-pack")
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn(
+            "The statutory pack covers the whole school, so it is available only to readers "
+            "whose access covers every branch.",
+            str(denied.data),
+        )
 
         school = self.client_holding("pack-hq@corona.test", "finance.report.view")
         self.assertEqual(self.get(school, "statutory-pack").status_code, 200)

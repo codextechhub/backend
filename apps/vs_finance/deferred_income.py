@@ -494,7 +494,7 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
 
         raise PeriodCloseError(
             f"{period_label(period, entity.tenant)} is {period_status_word(period.status)}; "
-            f"its deferred income releases are sealed with it. Reopen the month first.",
+            f"its deferred income releases belong to the closed month. Reopen the month first.",
         )
     releases = list(
         DeferredIncomeRelease.objects.select_for_update()

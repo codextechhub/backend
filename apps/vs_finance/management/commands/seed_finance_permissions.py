@@ -182,10 +182,10 @@ FINANCE_RESOURCES = [
     # CodeX for everybody, so both keys are platform-scoped and the views also
     # require platform staff. Reading needs no key of its own.
     ("statutory",    "national payroll tax data", [("create", "CRITICAL"), ("update", "CRITICAL")]),
-    # Reading the sealed figures of closed periods and verifying them against the
+    # Reading the recorded figures of closed periods and verifying them against the
     # ledger. Read-only, but it shows every branch's balances, so the view also
     # requires whole-tenant reach.
-    ("seal",         "sealed period figures",  [("view", "NORMAL")]),
+    ("seal",         "closed period figures",  [("view", "NORMAL")]),
 ]
 
 
