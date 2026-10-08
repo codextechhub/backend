@@ -1,4 +1,6 @@
 """What reaches Sentry, and when reporting is allowed to start."""
+from unittest import mock
+
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
@@ -49,3 +51,14 @@ class InitSentryTests(SimpleTestCase):
     def test_a_dsn_without_an_environment_is_refused(self):
         with self.assertRaises(ImproperlyConfigured):
             init_sentry("https://key@example.ingest.de.sentry.io/1", "")
+
+    def test_nothing_but_the_failure_itself_is_collected(self):
+        with mock.patch("core.observability.sentry_sdk.init") as init:
+            started = init_sentry("https://key@example.ingest.de.sentry.io/1", "staging")
+
+        self.assertTrue(started)
+        options = init.call_args.kwargs
+        self.assertEqual(options["max_breadcrumbs"], 0)
+        self.assertFalse(options["send_default_pii"])
+        self.assertFalse(options["include_local_variables"])
+        self.assertEqual(options["max_request_body_size"], "never")

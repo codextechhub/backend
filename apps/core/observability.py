@@ -3,7 +3,8 @@
 This platform holds children's records and parents' contact details, so the
 reports carry the failure and not the people in it: no request bodies, no
 cookies or credentials, no signed-in user, no local variables from the failing
-frame, and no log lines as breadcrumbs. What remains is the exception, the
+frame, and no breadcrumbs (the trail of queries and log lines before the
+failure, which can quote a record). What remains is the exception, the
 stack, the route and the release, which is what finding the fault needs.
 
 Reporting is off unless a deployment names a DSN, and a DSN without an
@@ -57,11 +58,12 @@ def init_sentry(dsn: str, environment: str, release: str = "") -> bool:
         integrations=[
             DjangoIntegration(),
             CeleryIntegration(),
-            # Log lines are not breadcrumbs: messages can quote a record.
+            # Log lines are not events below ERROR: messages can quote a record.
             LoggingIntegration(level=None, event_level="ERROR"),
         ],
         send_default_pii=False,
         include_local_variables=False,
+        max_breadcrumbs=0,
         max_request_body_size="never",
         traces_sample_rate=0.0,
         before_send=scrub_event,
