@@ -6334,15 +6334,18 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         from io import BytesIO
 
         from openpyxl import load_workbook
-        from pypdf import PdfReader
+        from reportlab import rl_config
 
         entity, _ = self._seed()
         query = (
             f"/v1/finance/reports/statutory-pack/?entity={entity.code}"
             "&as_of=2026-02-15&fiscal_year=2026"
         )
-        with mock.patch(
-            "vs_finance.reports.tenant_today", return_value=datetime.date(2026, 2, 15),
+        with (
+            mock.patch(
+                "vs_finance.reports.tenant_today", return_value=datetime.date(2026, 2, 15),
+            ),
+            mock.patch.object(rl_config, "pageCompression", 0),
         ):
             headings = self.client.get(query).json()["data"]["headings"]
             responses = {
@@ -6356,9 +6359,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             " | ".join(str(cell) for cell in row if cell is not None)
             for row in workbook.active.iter_rows(values_only=True)
         )
-        texts["pdf"] = "\n".join(
-            page.extract_text() or "" for page in PdfReader(BytesIO(responses["pdf"].content)).pages
-        )
+        texts["pdf"] = responses["pdf"].content.decode("latin-1").replace(r"\267", "·")
 
         for fmt, text in texts.items():
             with self.subTest(format=fmt):
