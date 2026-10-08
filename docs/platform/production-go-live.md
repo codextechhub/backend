@@ -120,6 +120,42 @@ In the env group:
 6. Confirm `core.W001` does not appear in the logs (it warns when Celery is
    eager in a non-debug deployment).
 
+## The two frontends (console-fe and school-fe)
+
+Each frontend is its own repository with its own `staging` branch, and gets the
+same forward-only `production` branch as the backend. Run `./release.sh status`,
+`promote` and `rollback <tag>` from inside the repository; the commands are the
+ones described under Git model. Production for each is a static site, created
+from the same settings as the matching staging site (copy them, then change only
+what the table says).
+
+| | Console (console-fe) | School app (school-fe) |
+| --- | --- | --- |
+| Repository branch | `production` | `production` |
+| Build command | `npm ci && npm run build` | `npm ci && npm run build` |
+| Publish directory | `dist` | `dist` |
+| Auto-deploy | **off** | **off** |
+| Custom domain | `intranet.codexng.com` | `*.xvs.codexng.com` and `xvs.codexng.com` |
+| Rewrite rule | every path to `/index.html` (the app routes in the browser) | the same |
+
+The settings are baked into the build, so they are set as environment variables
+on each static site, not in the repository:
+
+| Variable | Production value |
+| --- | --- |
+| `VITE_BACKEND_URL` | `https://api.codexng.com/v1` |
+| `VITE_SENTRY_DSN` | that frontend's own Sentry project |
+| `VITE_SENTRY_ENVIRONMENT` | `production` |
+| `VITE_SENTRY_RELEASE` | optional: the git commit |
+
+Leave `VITE_CSRF_COOKIE_NAME` unset in production. The repositories carry no
+Node version pin or rewrite file, so copy the Node version and the rewrite rule
+from the staging site rather than assuming them.
+
+Order of a release: backend first, then the Console and the school app, so a
+frontend never calls an API that lacks the change it depends on. The school
+wildcard is its own domain entry, separate from `*.codexng.com`.
+
 ## Paystack and Zoho
 
 - **Paystack webhook.** In the Paystack dashboard (live mode), set the webhook
