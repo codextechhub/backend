@@ -469,7 +469,7 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         serializer.save()
         instance = serializer.instance
         create_import_audit_log(
-            school=instance.school,
+            tenant=instance.tenant,
             branch=instance.branch,
             action="batch_uploaded",
             actor=self.request.user,
@@ -559,7 +559,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         serializer.save()
         instance = serializer.instance
         create_import_audit_log(
-            school=instance.school,
+            tenant=instance.tenant,
             branch=instance.branch,
             action="batch_updated",
             actor=self.request.user,
@@ -584,7 +584,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
                 ),
             })
         create_import_audit_log(
-            school=instance.school,
+            tenant=instance.tenant,
             branch=instance.branch,
             action="batch_deleted",
             actor=self.request.user,
@@ -664,7 +664,7 @@ class CancelImportBatchView(ImportBatchContextMixin, APIView):
         import_batch.save(update_fields=["status", "is_ready_for_import", "updated_at"])
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             branch=import_batch.branch,
             action="batch_cancelled",
             actor=request.user,
@@ -778,7 +778,7 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
         result = validate_import_batch(import_batch)
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             branch=import_batch.branch,
             action="batch_validated",
             actor=request.user,
@@ -875,7 +875,7 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
         issue = serializer.instance
         import_batch = issue.import_batch
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             branch=import_batch.branch,
             action="issue_resolved",
             actor=self.request.user,
@@ -953,7 +953,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
         run_async = serializer.validated_data.get("run_async", True)
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             branch=import_batch.branch,
             action="import_triggered",
             actor=request.user,

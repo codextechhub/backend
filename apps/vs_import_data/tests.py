@@ -1,7 +1,11 @@
+from datetime import timedelta
+
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 
 from core.test_utils import TenantAPIClient
+from vs_audit.models import AuditEvent
 from vs_rbac.tests.helpers import (
     codex_tenant,
     make_assignment,
@@ -19,11 +23,14 @@ from .models import (
     FileFormatChoices,
     ImportBatch,
     ImportBatchStatusChoices,
+    ImportJob,
+    ImportJobStatusChoices,
     ImportTemplate,
     ImportTemplateColumn,
     TemplateColumnDataTypeChoices,
 )
 from .services.validation_service import validate_import_batch
+from .tasks import mark_stuck_import_jobs_task
 
 
 class ImportValidationPublishGateTests(TestCase):
@@ -64,6 +71,50 @@ class ImportValidationPublishGateTests(TestCase):
         self.assertTrue(batch.has_critical_errors)
         self.assertFalse(batch.is_ready_for_import)
         self.assertEqual(batch.status, ImportBatchStatusChoices.VALIDATION_FAILED)
+
+
+class MarkStuckImportJobsTaskTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant = codex_tenant()
+        cls.user = make_vision_user(
+            email="stuck-import-job@test.com",
+            tenant=cls.tenant,
+        )
+        cls.batch = ImportBatch.objects.create(
+            tenant=cls.tenant,
+            uploaded_by=cls.user,
+            dataset_type=DatasetTypeChoices.CX_USERS,
+            file=SimpleUploadedFile("stuck.csv", b"Name\nAda\n"),
+            file_format=FileFormatChoices.CSV,
+            original_filename="stuck.csv",
+            status=ImportBatchStatusChoices.IMPORT_RUNNING,
+        )
+        cls.job = ImportJob.objects.create(
+            import_batch=cls.batch,
+            queued_by=cls.user,
+            status=ImportJobStatusChoices.RUNNING,
+            started_at=timezone.now() - timedelta(hours=3),
+        )
+
+    def test_marks_tenant_scoped_job_failed(self):
+        result = mark_stuck_import_jobs_task(minutes=120)
+
+        self.job.refresh_from_db()
+        self.batch.refresh_from_db()
+        self.assertEqual(result, {"marked_failed_jobs": 1})
+        self.assertEqual(self.job.status, ImportJobStatusChoices.FAILED)
+        self.assertIsNotNone(self.job.completed_at)
+        self.assertEqual(
+            self.batch.status,
+            ImportBatchStatusChoices.IMPORT_FAILED,
+        )
+        event = AuditEvent.objects.get(
+            entity_type="import_job",
+            entity_id=str(self.job.id),
+        )
+        self.assertEqual(event.tenant, self.tenant)
+        self.assertEqual(event.metadata["tenant_id"], str(self.tenant.id))
 
 
 class ImportBatchCancellationTests(TestCase):

@@ -890,7 +890,7 @@ def execute_import(import_batch, queued_by):
                     succeeded_rows += 1
 
                 create_import_audit_log(
-                    school=import_batch.school,
+                    tenant=import_batch.tenant,
                     branch=import_batch.branch,
                     actor=queued_by,
                     import_batch=import_batch,
@@ -1013,7 +1013,7 @@ def finalize_import_job(
 
     audit_action = "import_failed" if (failed_rows > 0 and succeeded_rows == 0) else "import_completed"
     create_import_audit_log(
-        school=import_batch.school,
+        tenant=import_batch.tenant,
         branch=import_batch.branch,
         actor=job.queued_by,
         import_batch=import_batch,

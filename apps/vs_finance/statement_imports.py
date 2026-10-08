@@ -536,7 +536,7 @@ def rollback_bank_statement_import_job(job, *, initiated_by=None, reason=""):
     batch.save(update_fields=["status", "updated_at"])
 
     create_import_audit_log(
-        school=batch.school,
+        tenant=batch.tenant,
         branch=batch.branch,
         actor=initiated_by,
         import_batch=batch,

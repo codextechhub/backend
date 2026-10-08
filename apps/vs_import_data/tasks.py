@@ -72,7 +72,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
         result = validate_import_batch(import_batch)
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             actor=import_batch.uploaded_by,
             import_batch=import_batch,
             action="validation_completed",
@@ -122,7 +122,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
         logger.exception("Validation task failed for import batch %s", import_batch_id)
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             actor=import_batch.uploaded_by,
             import_batch=import_batch,
             action="validation_failed",
@@ -189,7 +189,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
         )
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             actor=queued_by,
             import_batch=import_batch,
             job=job,
@@ -242,7 +242,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
         logger.exception("Import execution task failed for import batch %s", import_batch_id)
 
         create_import_audit_log(
-            school=import_batch.school,
+            tenant=import_batch.tenant,
             actor=queued_by,
             import_batch=import_batch,
             job=job,
@@ -334,7 +334,7 @@ def rollback_import_job_task(
             )
 
         create_import_audit_log(
-            school=job.import_batch.school,
+            tenant=job.import_batch.tenant,
             actor=initiated_by,
             import_batch=job.import_batch,
             job=job,
@@ -370,7 +370,7 @@ def rollback_import_job_task(
         job.save(update_fields=["rollback_started_at", "updated_at"])
 
         create_import_audit_log(
-            school=job.import_batch.school,
+            tenant=job.import_batch.tenant,
             actor=initiated_by,
             import_batch=job.import_batch,
             job=job,
@@ -503,7 +503,7 @@ def mark_stuck_import_jobs_task(minutes: int = 120) -> dict:
         started_at__lt=cutoff,
     ).select_related(
         "import_batch",
-        "import_batch__school",
+        "import_batch__tenant",
         "import_batch__template",
     )
 
@@ -529,7 +529,7 @@ def mark_stuck_import_jobs_task(minutes: int = 120) -> dict:
             job.import_batch.save(update_fields=["status", "updated_at"])
 
             create_import_audit_log(
-                school=job.import_batch.school,
+                tenant=job.import_batch.tenant,
                 actor=None,
                 import_batch=job.import_batch,
                 job=job,

@@ -29,7 +29,7 @@ _ACTION_MAP: dict[str, str] = {
 
 def create_import_audit_log(
     *,
-    school=None,
+    tenant=None,
     branch=None,
     action: str,
     actor=None,
@@ -45,9 +45,9 @@ def create_import_audit_log(
     """
     Record one import-pipeline action as a vs_audit AuditEvent.
 
-    The function signature is kept stable so existing callers (import_executor,
-    rollback_service) do not need to change. Import-specific context (branch,
-    batch, job) is forwarded into the event's metadata.
+    Import-specific context (tenant, branch, batch, and job) is forwarded into
+    the event's metadata. A branch takes precedence when it supplies the more
+    precise tenant scope.
     """
     from vs_audit.services import AuditDiffService
 
@@ -61,7 +61,7 @@ def create_import_audit_log(
 
     extra_meta = {
         "import_action": action,
-        "school_id": str(school.pk) if school else None,
+        "tenant_id": str(tenant.pk) if tenant else None,
         "branch_id": str(branch.pk) if branch else None,
         "import_batch_id": str(import_batch.pk) if import_batch else None,
         "job_id": str(job.pk) if job else None,
@@ -69,15 +69,9 @@ def create_import_audit_log(
         **metadata,
     }
 
-    # Imports run inside Celery tasks, where there is no request and so no
-    # ambient tenant to inherit; every row of a 900-pupil import would be
-    # unattributable. Both references carry the tenant, and the branch is
-    # preferred because a branch-scoped import names it precisely.
-    tenant = None
+    # Prefer the branch's tenant when the import has branch scope.
     if branch is not None:
         tenant = branch.tenant
-    elif school is not None:
-        tenant = school.tenant
 
     return emit_audit_event(
         module_key=AuditModuleKey.IMPORT,

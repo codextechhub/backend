@@ -158,7 +158,7 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
     )
 
     create_import_audit_log(
-        school=import_batch.school,
+        tenant=import_batch.tenant,
         branch=import_batch.branch,
         actor=initiated_by,
         import_batch=import_batch,
