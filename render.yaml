@@ -9,6 +9,8 @@
 #
 # Both services below now set CELERY_EAGER=false and take REDIS_URL from the
 # Key Value instance, so a blueprint apply brings up a working scheduler.
+# The repository-level .python-version also pins manually created services to
+# Python 3.11.9. Keep the explicit service values below aligned with that file.
 #
 # IF YOUR WEB SERVICE WAS CREATED BY HAND rather than from this blueprint, this
 # file changes nothing on its own: set CELERY_EAGER=false and REDIS_URL in the
