@@ -18,6 +18,8 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 
 LATEST BASES ON 2026-10-07: MRD v2.100, M01 v1.31, M02 v1.8, M03 v1.22, M04 v1.33, M05 v1.11, M06 v1.8, M07 v1.25, M08 v1.16, M09 v2.16, M10 v1.8, M11 v2.15, M12 v2.19, M13 v2.13, M14 v3.7, M17 v1.10, M18 v1.16, M19 v1.15, M20 v1.9, M21 v1.8, M22 v1.17, M23 v1.17, M24 v1.7, M25 v1.5, M26 v1.7, M30 v1.6, M31 v1.11. Recheck on the day.
 
+Also (commit 30873433): D131 follow-up for M04 and M19. The Closed figures checklist, verification messages and role permission description say closed figures rather than sealed figures; the stable finance.seal.view key and the sealed response fields stay unchanged. Existing permission and lock-action descriptions are refreshed by vs_rbac migration 0033, while the deployment seeds carry the same wording for fresh databases.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
