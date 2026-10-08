@@ -340,10 +340,13 @@ class SealedFiguresTests(_Books):
 
         response = self.client_for(self.adaeze).get(url)
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["message"], "Closed figures verified.")
         self.assertTrue(response.data["data"]["ok"])
         self.assertEqual(response.data["data"]["checked"], 1)
 
-        self.assertEqual(self.client_for(self.ngozi).get(url).status_code, 403)
+        denied = self.client_for(self.ngozi).get(url)
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn("closed figures", str(denied.data).lower())
         self.assertEqual(self.client_for(self.tunde).get(url).status_code, 403)
         foreign = self.client_for(self.bola).get(url)
         self.assertIn(foreign.status_code, (403, 404))

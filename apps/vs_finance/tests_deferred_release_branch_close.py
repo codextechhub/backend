@@ -86,7 +86,8 @@ class ReleaseRowsFollowBranchCloseTests(_AccrualFixture):
         self.assertFalse(ikeja["can_reverse"])
         self.assertEqual(
             ikeja["reverse_blocked_reason"],
-            "Ikeja Branch has closed January 2027; its release is sealed with that month.",
+            "Ikeja Branch has closed January 2027; its release cannot be undone while that "
+            "month is closed.",
         )
 
     def test_the_open_branchs_release_cannot_be_undone_while_the_month_undo_is_sealed(self):

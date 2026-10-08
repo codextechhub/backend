@@ -250,10 +250,10 @@ def _reverse_blocked_reason(release, sealed_by, tenant) -> str | None:
     ), tenant)
     if release.period_status != PeriodStatus.OPEN:
         return (f"{month} is {period_status_word(release.period_status)}; "
-                f"its releases are sealed with it.")
+                f"its releases cannot be undone while the month is closed.")
     if release.branch_period_status != PeriodStatus.OPEN:
         return (f"{release.branch.name} has closed {month}; "
-                f"its release is sealed with that month.")
+                f"its release cannot be undone while that month is closed.")
     if sealed_by:
         verb = "has" if len(sealed_by) == 1 else "have"
         return (f"{' and '.join(sealed_by)} {verb} closed {month}, and the undo "
