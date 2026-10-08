@@ -181,7 +181,7 @@ class SchoolSlugUpdateTests(TestCase):
     def test_a_slug_held_by_a_non_school_tenant_is_refused(self):
         """``School.save()`` mirrors onto the tenant with a queryset
         ``update()``, which cannot raise a field error - only an IntegrityError
-        against ``Tenant.slug``. A VIGIL clinic group holding the name is
+        against ``Tenant.slug``. A Health clinic group holding the name is
         enough, and there is no school row to have caught it."""
         Tenant.objects.create(
             name="Riverside Clinics",

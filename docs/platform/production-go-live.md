@@ -52,13 +52,17 @@ network only when they share one.
    - Build: `./build.sh`
    - Start: `cd apps && gunicorn apps.wsgi:application`
    - Attach `xvs-prod-env`. Set `DJANGO_SETTINGS_MODULE=apps.settings.staging`
-     (the module serves any deployment; its name is historical), `PYTHON_VERSION=3.11.9`.
+     (the module serves any deployment; its name is historical).
+   - The repository's `.python-version` pins Python 3.11.9 for every Render
+     service. If `PYTHON_VERSION` is also set in the dashboard, it takes
+     precedence and must be exactly `3.11.9`.
    - Health check path: `/v1/health/`-family endpoints require auth, so use a
      cheap public path your Render health check can reach, or leave the default.
 5. **Worker.** Name `xvs-prod-worker`, same branch, auto-deploy **off**.
    - Build: `pip install -r requirements.txt`
    - Start: `cd apps && celery -A apps worker -B --loglevel=info --concurrency=2`
-   - Same env group and same variables. Exactly **one** worker while `-B`
+   - Same env group and same variables. Confirm the deploy log reports Python
+     3.11.9 before starting the worker. Exactly **one** worker while `-B`
      (beat) is embedded; two would double-fire every periodic task.
 6. Create the worker and Key Value **before** turning `CELERY_EAGER` to
    `false`. With no broker, every `.delay()` becomes a connection error.
@@ -143,7 +147,7 @@ In the env group:
 
 ## Watching it
 
-- **VIGIL** (`vs_health`) answers "is it alive": probes, certificate expiry.
+- **Health** (`vs_health`) answers "is it alive": probes, certificate expiry.
   Its probes run from the worker they watch, so add an **external uptime
   ping** (UptimeRobot or similar) on the API address as the second opinion.
 - **Sentry**, region **EU** (the data region cannot change after the

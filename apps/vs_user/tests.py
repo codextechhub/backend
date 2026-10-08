@@ -1710,13 +1710,13 @@ class InvitationEngineDispatchTests(TestCase):
         from vs_user.tasks import _tenant_display_name
 
         tenant = Tenant.objects.create(
-            name="Vigil Health Group",
-            slug="vigil-health-email",
+            name="Health Group",
+            slug="health-group-email",
             kind=Tenant.Kind.ORGANIZATION,
             status=Tenant.Status.ACTIVE,
         )
         user = User.objects.create_user(
-            email="security@vigil-health.test",
+            email="security@health-group.test",
             password="Str0ng!pass123",
             first_name="Nneka",
             last_name="Okafor",
@@ -1724,7 +1724,7 @@ class InvitationEngineDispatchTests(TestCase):
             status=User.Status.ACTIVE,
         )
 
-        self.assertEqual(_tenant_display_name(user), "Vigil Health Group")
+        self.assertEqual(_tenant_display_name(user), "Health Group")
 
 
 class PasswordPolicyTests(TestCase):

@@ -376,7 +376,7 @@ the repo (`tenant_code_issues` §7).
 
 ## 7. Worked example
 
-A clinic group on VIGIL, to make the point that none of this is school-shaped.
+A clinic group on Health, to make the point that none of this is school-shaped.
 
 **1. Two sites.** `Tenant(name="Stella Maris Clinics", slug="stella-maris",
 kind=ORGANIZATION)` is created. Two `Branch` rows follow. The first save finds no

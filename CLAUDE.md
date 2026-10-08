@@ -6,7 +6,7 @@
 apps - `vs_finance`, `vs_procurement`, `vs_payments`, `vs_rbac`, `vs_workflow`,
 `vs_notifications`, `vs_audit`, `core` - are deliberately **domain-neutral**. They
 know about entities, customers, invoices, vendors, roles and approvals; they know
-nothing about schools. `vs_health` (VIGIL) is already a second domain standing on
+nothing about schools. `vs_health` (Health) is already a second domain standing on
 the same foundation, and there will be more.
 
 **XVS is the first product built on that platform** - the schools product.

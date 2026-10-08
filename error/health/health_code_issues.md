@@ -1161,7 +1161,7 @@ ROUTE_PREFIX_SERVICES = {
 ```
 
 The service key `schools` and the display name "Schools & Onboarding" are baked
-into an engine's constants and seed data, and the second one is what a VIGIL
+into an engine's constants and seed data, and the second one is what a Health
 operator would read on their own health console.
 
 Unlike the `vs_notifications` finding, there is no *import* of `vs_schools`

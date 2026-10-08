@@ -1070,12 +1070,12 @@ does, because `School.save()` **creates** the tenant there
 
 `Tenant.slug` is `unique=True` (`vs_tenants/models.py:100-102`), and `Tenant`
 has three kinds: `PLATFORM`, `SCHOOL`, `ORGANIZATION`
-(`vs_tenants/models.py:81-84`). VIGIL is described in `CLAUDE.md` as a second
+(`vs_tenants/models.py:81-84`). Health is described in `CLAUDE.md` as a second
 domain on the same foundation, so non-school tenants exist by design.
 
 ### What actually happens
 
-A clinic group is onboarded on VIGIL as tenant `stella-maris`. Months later CX
+A clinic group is onboarded on Health as tenant `stella-maris`. Months later CX
 onboards Stella Maris Secondary School. The slug `stella-maris` is free among
 schools, so validation passes with no suggestions offered.
 

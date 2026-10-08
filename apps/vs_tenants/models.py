@@ -4,7 +4,7 @@ A tenant is served from its own subdomain, so its slug is a DNS label before it
 is an identifier: a school called "Support Academy" that took ``support`` would
 be served the help site instead of its own. :data:`RESERVED_TENANT_SLUGS` holds
 the names the platform answers on itself. It lives in this platform app rather
-than in the schools product because an ORGANIZATION tenant and a VIGIL clinic
+than in the schools product because an ORGANIZATION tenant and a Health clinic
 group come off the same wildcard and must be held to the same list, and the
 engines may not import the schools app to reach it.
 
@@ -42,7 +42,7 @@ tenant_slug_validator = RegexValidator(
 #: field definition, so no migration follows. See the module docstring.
 RESERVED_TENANT_SLUGS = frozenset({
     # The bare product and marketing hosts.
-    "www", "xvs", "vigil", "intranet", "blog", "docs", "help", "support",
+    "www", "xvs", "health", "intranet", "blog", "docs", "help", "support",
     "status", "portal", "about", "careers", "legal", "privacy", "terms",
     # The API and its neighbours.
     "api", "app", "auth", "login", "logout", "signup", "register", "account",

@@ -710,7 +710,7 @@ Three occurrences:
 The app is otherwise clean: it imports nothing from `apps/schools/`, and
 `test_vs_tickets_does_not_import_the_school_package` (`tests.py:865-882`) pins
 that. The leak is through vocabulary and an ORM string path, not an import, so
-the test cannot see it. On `vs_health` (VIGIL) or any future domain,
+the test cannot see it. On `vs_health` (Health) or any future domain,
 `tenant__school_profile` matches nothing and `Ticket.school` is always `None`.
 
 **Fix:** rename the filter to `?tenant=` … except that name is taken by the

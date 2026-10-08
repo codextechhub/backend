@@ -780,7 +780,7 @@ school-level action").
 
 `CLAUDE.md` is explicit that outside `apps/schools/` the word is **tenant**, and
 that the ban is on identifiers rather than explanations - but this is a
-user-facing string, not an explanation, and a VIGIL clinic group will read it.
+user-facing string, not an explanation, and a Health clinic group will read it.
 
 **Fix:** two words.
 

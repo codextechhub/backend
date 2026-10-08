@@ -3,7 +3,7 @@
 For each ledger entity (or those named with ``--entity``), recomputes every
 current seal (:func:`vs_finance.seals.verify_entity`) and prints one line per
 difference. Exits with an error when anything differs, so it can run on a
-schedule as a health check; ``--open-incident`` also files one VIGIL incident
+schedule as a health check; ``--open-incident`` also files one Health incident
 per affected set of books, which stays open until an operator resolves it.
 
 Usage::

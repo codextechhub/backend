@@ -964,7 +964,7 @@ business logic (`services/validation_service.py:229-479`) reimplementing
 
 ### What actually happens
 
-VIGIL (`vs_health`'s domain sibling) or the next domain gets a generic import
+Health (`vs_health`'s domain sibling) or the next domain gets a generic import
 pipeline whose validators, executors and rollback all know only about schools,
 and whose dataset-type enumeration has no room for their data. Adding a
 `patients` dataset means editing an engine's constants, its executor's routing

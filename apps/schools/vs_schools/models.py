@@ -37,7 +37,7 @@ slug_validator = RegexValidator(
 
 # The one list, which now lives in the platform app beside the tenant slug
 # validator: the names it protects are platform hostnames, and an ORGANIZATION
-# or VIGIL tenant gets a subdomain off the same wildcard as a school. Re-exported
+# or Health tenant gets a subdomain off the same wildcard as a school. Re-exported
 # here because this app, its serializers and vs_import_data all read it by this
 # name. Extend it in vs_tenants, not here.
 from vs_tenants.models import (  # noqa: E402  (kept beside the name it replaces)

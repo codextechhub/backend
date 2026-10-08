@@ -508,7 +508,7 @@ deliberate and documented at the call site:
   tenant, so it filters nothing; `filter(tenant__school_profile__slug=slug)` is
   what stops branch 1 of one school being returned for branch 1 of another.
 - **A branch belonging to a non-school tenant is unreachable here.** Every
-  queryset joins through `school_profile`, so a VIGIL clinic's branches are
+  queryset joins through `school_profile`, so a Health clinic's branches are
   outside this app entirely - which is correct, and is why
   `branch_school_slug()` returns `None` rather than raising
   (`serializers.py:358-380`).

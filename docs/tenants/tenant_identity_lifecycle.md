@@ -25,14 +25,14 @@ here rather than repeating them.
 - **A tenant is the ownership boundary, and it is not a school.** `Tenant.Kind`
   has three values - `PLATFORM`, `SCHOOL`, `ORGANIZATION` (`models.py:81-84`).
   `schools.vs_schools.School` is a *profile* hanging off a SCHOOL tenant, not
-  the tenant itself. VIGIL clinics are a second domain on the same foundation.
+  the tenant itself. Health clinics are a second domain on the same foundation.
 - **The slug is a DNS label first and an identifier second.** Every tenant is
   served from its own subdomain - `bright-star.xvs.codexng.com`, matched by the
   CORS origin regex in `settings.base` - so a school called "Support Academy"
   that took `support` would be served the help site instead of its own
   (`models.py:25-31`).
 - **The reserved list lives here, not in the schools app**, because the names it
-  protects are platform infrastructure. An ORGANIZATION tenant and a VIGIL
+  protects are platform infrastructure. An ORGANIZATION tenant and a Health
   clinic group get a subdomain off the same wildcard and must be held to the
   same list, and the engines may not import the schools app to reach it
   (`models.py:32-36`).
@@ -85,7 +85,7 @@ here rather than repeating them.
 |---|---|
 | `PLATFORM` | CodeX itself. Exactly one row, `codex`, seeded by migration 0002. Exempt from the reserved-slug rule |
 | `SCHOOL` | An XVS customer. Carries a `School` profile through the `school_profile` reverse one-to-one |
-| `ORGANIZATION` | Any other customer - the shape VIGIL clinic groups take |
+| `ORGANIZATION` | Any other customer - the shape Health clinic groups take |
 
 `Kind` has **no default**, so every writer must state it. `School.save()` passes
 `Kind.SCHOOL` (`schools/vs_schools/models.py:281`).
@@ -134,7 +134,7 @@ A `frozenset` of 67 names in five groups, each group carrying its own reason:
 
 | Group | Examples |
 |---|---|
-| Product and marketing hosts | `www`, `xvs`, `vigil`, `support`, `status`, `portal`, `legal` |
+| Product and marketing hosts | `www`, `xvs`, `health`, `support`, `status`, `portal`, `legal` |
 | The API and its neighbours | `api`, `app`, `auth`, `login`, `signup`, `oauth`, `sso`, `graphql` |
 | Infrastructure and delivery | `admin`, `root`, `static`, `cdn`, `media`, `mail`, `ns1`, `vpn`, `metrics`, `health` |
 | Environments | `dev`, `staging`, `test`, `demo`, `sandbox`, `preview`, `local` |
