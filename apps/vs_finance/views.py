@@ -2904,6 +2904,38 @@ class ChangesInEquityView(APIView):
         )
 
 
+def _statutory_pack_headings(pack, period, entity) -> dict[str, str]:
+    """Name the four statement windows once for the response and every export.
+
+    The position statement is a point in time. Income and cash flow cover the
+    chosen month or fiscal year. Changes in equity covers the chosen month, but
+    without one it remains the underlying statement's inception-to-date walk.
+    Dates follow the tenant's display setting because the values are ready for a
+    screen or downloaded file to show verbatim.
+    """
+    period_heading = _period_label(period, entity) if period is not None else None
+    income_heading = (
+        period_heading
+        or (f"Fiscal year {pack.fiscal_year}" if pack.fiscal_year is not None else "All periods")
+    )
+    cash_year = pack.cash_flow.fiscal_year
+    cash_heading = (
+        period_heading
+        or (f"Fiscal year {cash_year}" if cash_year is not None else "All periods")
+    )
+    equity_heading = period_heading or (
+        f"Inception to {format_date(pack.changes_in_equity.as_of, entity.tenant)}"
+    )
+    return {
+        "statement_of_financial_position": (
+            f"as at {format_date(pack.as_of, entity.tenant)}"
+        ),
+        "income_statement": income_heading,
+        "cash_flow": cash_heading,
+        "changes_in_equity": equity_heading,
+    }
+
+
 # Group endpoint behavior for Statutory Pack View.
 class StatutoryPackView(APIView):
     """The IFRS-for-SMEs statutory pack for the entity's filings.
@@ -2915,6 +2947,10 @@ class StatutoryPackView(APIView):
 
     ``?fiscal_year=2026`` names the year its income statement covers; without it
     (and without ``?period=``) the year ``?as_of=`` falls in is used.
+
+    ``headings`` names each statement's actual window. The same strings are put
+    on the statement rows in every download, and the companion cash-flow and
+    equity summaries appear in both the response and file.
 
     docstring-name: Statutory reporting pack
     """
@@ -2939,29 +2975,54 @@ class StatutoryPackView(APIView):
             entity, as_of=as_of, period=period,
             fiscal_year=_resolve_fiscal_year(entity, request),
         )
+        headings = _statutory_pack_headings(pack, period, entity)
+        cf = pack.cash_flow
+        soce = pack.changes_in_equity
 
-        # Export face: the IFRS-mapped Statement of Financial Position + Income
-        # Statement as one flat table (the companion statements have their own exports).
-        rows: list = []
+        # Build the filing table.
+        rows: list = [[
+            "STATEMENT OF FINANCIAL POSITION",
+            headings["statement_of_financial_position"],
+            "",
+        ]]
         for section in pack.sofp_sections:
             rows.append([section.label.upper(), "", ""])
             for g in section.groups:
                 rows.append(["", g.label, g.amount_naira])
             rows.append(["", f"  Total {section.label.lower()}", section.total_naira])
-        rows.append(["INCOME STATEMENT", "", ""])
+        rows.extend([
+            ["", "Total assets", format_naira(pack.total_assets)],
+            ["", "Total equity", format_naira(pack.total_equity)],
+            ["", "Total liabilities", format_naira(pack.total_liabilities)],
+            ["INCOME STATEMENT", headings["income_statement"], ""],
+        ])
         for g in pack.income_lines:
             rows.append(["", g.label, g.amount_naira])
-        rows.append(["", "  Net income", format_naira(pack.net_income)])
+        rows.extend([
+            ["", "Total income", format_naira(pack.total_income)],
+            ["", "Total expense", format_naira(pack.total_expense)],
+            ["", "Net income", format_naira(pack.net_income)],
+            ["CASH FLOW", headings["cash_flow"], ""],
+            ["", "Cash at start of period", format_naira(cf.opening_cash)],
+            ["", "Operating activities", format_naira(cf.by_activity["operating"])],
+            ["", "Investing activities", format_naira(cf.by_activity["investing"])],
+            ["", "Financing activities", format_naira(cf.by_activity["financing"])],
+            ["", "Net change in cash", format_naira(cf.net_change)],
+            ["", "Cash at end of period", format_naira(cf.closing_cash)],
+            ["", "Reconciles to cash at end", "Yes" if cf.is_reconciled else "No"],
+            ["CHANGES IN EQUITY", headings["changes_in_equity"], ""],
+            ["", "Opening equity", format_naira(soce.total_opening)],
+            ["", "Profit for the period", format_naira(soce.total_profit)],
+            ["", "Contributions", format_naira(soce.total_contributions)],
+            ["", "Transfers and distributions", format_naira(soce.total_transfers)],
+            ["", "Closing equity", format_naira(soce.total_closing)],
+            ["", "Reconciles to the position statement", "Yes" if soce.is_reconciled else "No"],
+        ])
         export = _maybe_export(request, ReportTable(
             title="Statutory Pack (IFRS for SMEs)",
             subtitle=f"{entity.code} · as at {format_date(pack.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
-            summary_rows=[
-                ["", "Total assets", format_naira(pack.total_assets)],
-                ["", "Total equity", format_naira(pack.total_equity)],
-                ["", "Total liabilities", format_naira(pack.total_liabilities)],
-            ],
         ), filename=f"statutory_pack_{entity.code}")
         if export is not None:
             return export
@@ -2977,8 +3038,6 @@ class StatutoryPackView(APIView):
                 ],
             }
 
-        cf = pack.cash_flow
-        soce = pack.changes_in_equity
         tb = pack.trial_balance
         return success_response(
             message="Statutory pack retrieved.",
@@ -2988,6 +3047,7 @@ class StatutoryPackView(APIView):
                 "period": getattr(period, "name", None),
                 "period_label": _period_label(period, entity),
                 "fiscal_year": pack.fiscal_year,
+                "headings": headings,
                 "statement_of_financial_position": {
                     "sections": [
                         {

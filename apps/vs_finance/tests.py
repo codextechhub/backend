@@ -6294,6 +6294,87 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertTrue(pack["cash_flow"]["is_reconciled"])
         self.assertTrue(pack["trial_balance"]["is_balanced"])
 
+    def test_statutory_pack_names_each_statements_actual_window(self):
+        entity, _ = self._seed()
+        with mock.patch(
+            "vs_finance.reports.tenant_today", return_value=datetime.date(2026, 2, 15),
+        ):
+            response = self.client.get(
+                f"/v1/finance/reports/statutory-pack/?entity={entity.code}"
+                "&as_of=2026-02-15&fiscal_year=2026"
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            response.json()["data"]["headings"],
+            {
+                "statement_of_financial_position": "as at 15 Feb 2026",
+                "income_statement": "Fiscal year 2026",
+                "cash_flow": "Fiscal year 2026",
+                "changes_in_equity": "Inception to 15 Feb 2026",
+            },
+        )
+
+        monthly = self.client.get(
+            f"/v1/finance/reports/statutory-pack/?entity={entity.code}"
+            "&as_of=2026-01-31&period=1"
+        )
+        self.assertEqual(monthly.status_code, 200, monthly.content)
+        self.assertEqual(
+            monthly.json()["data"]["headings"],
+            {
+                "statement_of_financial_position": "as at 31 Jan 2026",
+                "income_statement": "January 2026",
+                "cash_flow": "January 2026",
+                "changes_in_equity": "January 2026",
+            },
+        )
+
+    def test_statutory_pack_files_use_the_response_headings_and_companion_summaries(self):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+        from reportlab import rl_config
+
+        entity, _ = self._seed()
+        query = (
+            f"/v1/finance/reports/statutory-pack/?entity={entity.code}"
+            "&as_of=2026-02-15&fiscal_year=2026"
+        )
+        with (
+            mock.patch(
+                "vs_finance.reports.tenant_today", return_value=datetime.date(2026, 2, 15),
+            ),
+            mock.patch.object(rl_config, "pageCompression", 0),
+        ):
+            headings = self.client.get(query).json()["data"]["headings"]
+            responses = {
+                fmt: self.client.get(f"{query}&export={fmt}")
+                for fmt in ("csv", "xlsx", "pdf")
+            }
+
+        texts = {"csv": responses["csv"].content.decode("utf-8")}
+        workbook = load_workbook(BytesIO(responses["xlsx"].content), read_only=True)
+        texts["xlsx"] = "\n".join(
+            " | ".join(str(cell) for cell in row if cell is not None)
+            for row in workbook.active.iter_rows(values_only=True)
+        )
+        texts["pdf"] = responses["pdf"].content.decode("latin-1").replace(r"\267", "·")
+
+        for fmt, text in texts.items():
+            with self.subTest(format=fmt):
+                self.assertEqual(responses[fmt].status_code, 200)
+                for heading in headings.values():
+                    self.assertIn(heading, text)
+                for summary in (
+                    "Cash at start of period", "Operating activities",
+                    "Net change in cash", "Cash at end of period",
+                    "Opening equity", "Profit for the period", "Contributions",
+                    "Transfers and distributions", "Closing equity",
+                ):
+                    self.assertIn(summary, text)
+                self.assertIn(f"{entity.code} · as at 15 Feb 2026", text)
+
     # Verify balance sheet accepts and validates its as of date behavior.
     def test_balance_sheet_accepts_and_validates_as_of_date(self):
         entity, _ = self._seed()

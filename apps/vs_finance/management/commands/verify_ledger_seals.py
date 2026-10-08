@@ -22,7 +22,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    help = "Verify every closed period's sealed figures against the ledger."
+    help = "Verify every closed period's recorded figures against the ledger."
 
     def add_arguments(self, parser):
         parser.add_argument("--entity", nargs="+", metavar="CODE",
@@ -42,14 +42,17 @@ class Command(BaseCommand):
         for entity in entities:
             result = verify_entity(entity)
             if result.ok:
-                self.stdout.write(f"  {entity.code}: {counted(len(result.checks), 'seal')} "
-                                  f"{agrees(len(result.checks), 'matches', 'match')}.")
+                self.stdout.write(
+                    f"  {entity.code}: "
+                    f"{counted(len(result.checks), 'closed period or year', 'closed periods and years')} "
+                    f"{agrees(len(result.checks), 'matches', 'match')}."
+                )
                 continue
             lines = [describe(check) for check in result.mismatches]
             if result.chain_breaks:
                 lines.append(
-                    f"{counted(len(result.chain_breaks), 'seal')} "
-                    f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the seal before "
+                    f"{counted(len(result.chain_breaks), 'record of closed figures', 'records of closed figures')} "
+                    f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the record before "
                     f"{agrees(len(result.chain_breaks), 'it', 'them')} "
                     f"(ids {', '.join(map(str, result.chain_breaks))})."
                 )
@@ -62,10 +65,10 @@ class Command(BaseCommand):
 
         if failed:
             raise CommandError(
-                f"Sealed figures differ from the ledger for {counted(len(failed), 'set')} of books: "
+                f"Closed figures differ from the ledger for {counted(len(failed), 'set')} of books: "
                 f"{', '.join(failed)}."
             )
-        self.stdout.write(self.style.SUCCESS("Every sealed figure matches the ledger."))
+        self.stdout.write(self.style.SUCCESS("Every closed figure matches the ledger."))
 
     @staticmethod
     def _open_incident(entity, lines):
@@ -74,8 +77,8 @@ class Command(BaseCommand):
 
         report_configuration_fault(
             fault_key=f"finance.sealed-figures.{entity.code}",
-            title=f"Sealed figures changed: {entity.code}",
+            title=f"Closed figures changed: {entity.code}",
             summary=" ".join(lines)[:2000],
             severity=Severity.SEV2, affected_tenant_count=1,
-            who="Sealed figures verification",
+            who="Closed figures verification",
         )

@@ -32,7 +32,7 @@ def _assert_whole_tenant_reader(request, entity) -> None:
     """Refuse (403) a caller whose reach is not the whole tenant."""
     if not caller_reaches_whole_tenant(request.user, entity.tenant):
         raise PermissionDenied(
-            "Only a school-wide reader can see the sealed figures, because they "
+            "Only a school-wide reader can see the closed figures, because they "
             "cover every branch."
         )
 
@@ -49,7 +49,7 @@ class LedgerSealVerifyView(APIView):
 
     ``finance.seal.view``, and whole-tenant reach (403 otherwise).
 
-    docstring-name: Verify sealed figures
+    docstring-name: Verify closed figures
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -104,7 +104,7 @@ class LedgerSealVerifyView(APIView):
             for c in result.checks
         ]
         return success_response(
-            "Sealed figures verified." if result.ok else "Sealed figures differ from the ledger.",
+            "Closed figures verified." if result.ok else "Closed figures differ from the ledger.",
             data={
                 "ok": result.ok,
                 "checked": len(checks),

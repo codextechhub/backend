@@ -305,16 +305,16 @@ def describe(check: SealCheck) -> str:
     """One sentence a person reads about a failed check."""
     parts = []
     if not check.seal_intact:
-        parts.append("the seal's own figures were altered")
+        parts.append("the recorded closed figures were altered")
     if not check.lines_match:
         parts.append(
-            f"its ledger lines are no longer the ones that were sealed "
-            f"({check.seal.line_count} sealed, {check.line_count_now} now)"
+            f"its ledger lines are no longer the ones recorded at close "
+            f"({check.seal.line_count} at close, {check.line_count_now} now)"
         )
     if check.differences:
         parts.append(
             f"{counted(len(check.differences), 'account balance')} "
-            f"{agrees(len(check.differences), 'differs', 'differ')} from the sealed figures"
+            f"{agrees(len(check.differences), 'differs', 'differ')} from the closed figures"
         )
     return f"{check.label}: " + "; ".join(parts) + "."
 
@@ -342,15 +342,15 @@ def sealed_figures_close_check(entity, period):
         return ChecklistItem(
             name="sealed_figures_unchanged", passed=True, blocking=False,
             detail=(
-                f"{counted(len(result.checks), 'sealed period or year', 'sealed periods and years')} "
+                f"{counted(len(result.checks), 'closed period or year', 'closed periods and years')} "
                 f"still {agrees(len(result.checks), 'matches', 'match')} the ledger"
             ),
         )
     details = [describe(c) for c in result.mismatches]
     if result.chain_breaks:
         details.append(
-            f"{counted(len(result.chain_breaks), 'seal')} "
-            f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the seal before "
+            f"{counted(len(result.chain_breaks), 'record of closed figures', 'records of closed figures')} "
+            f"{agrees(len(result.chain_breaks), 'does', 'do')} not follow the record before "
             f"{agrees(len(result.chain_breaks), 'it', 'them')}."
         )
     return ChecklistItem(

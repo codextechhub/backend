@@ -91,7 +91,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("close",      "Close an accounting period, locking it against further postings."),
     ("force_close", "Close an accounting period or year over failing close checks (audited, with a reason)."),
     ("reopen",     "Re-open a closed accounting period or fiscal year back to open (audited)."),
-    ("lock",       "Permanently seal a closed accounting period against any re-open."),
+    ("lock",       "Permanently lock a closed accounting period against reopening."),
     ("establish",  "Fund a petty-cash float from a bank account (open or increase it)."),
     ("replenish",  "Replenish a petty-cash float back to its imprest level."),
     ("file",       "File a statutory return (VAT, WHT, PAYE) with the authority."),

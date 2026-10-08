@@ -267,6 +267,16 @@ class CashFlowDefaultWindowEndpointTests(_WindowFixture):
         self.assertEqual(data["closing_cash"]["kobo"], 131_000)
         self.assertIn("FY2026", text)
 
+    def test_a_single_branch_reader_can_open_the_statutory_pack(self):
+        reader = self.client_holding(
+            "pack-solo@solo.test", "finance.report.view", tenant=self.solo_tenant,
+        )
+        with patch(TODAY, return_value=MARCH_15):
+            response = self.get(reader, self.solo_books, "statutory-pack")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["headings"]["cash_flow"], "Fiscal year 2026")
+
     def test_a_branch_reader_is_narrowed_and_still_reconciles(self):
         ikeja = self.client_holding(
             "cf-ikeja@corona.test", "finance.report.view", branch=self.ikeja)
