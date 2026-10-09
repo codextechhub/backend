@@ -217,9 +217,9 @@ class _ExportBase(APIView):
 class CatalogueView(_ExportBase):
     """``GET /v1/exports/catalogue/`` - datasets this caller may export.
 
-    Filtered by the caller's own permissions, so the builder never offers a dataset
-    that would fail at run time. Modules with nothing available are still listed, with
-    an empty dataset list, because "Procurement - no datasets yet" is information.
+    Filtered by the caller's own permissions and tenant kind, so the builder never
+    offers a dataset that would fail at run time. Empty modules are omitted because
+    they reveal categories that do not apply to the active tenant.
     """
 
     rbac_permission = ExportPermission.CATALOGUE_VIEW
@@ -238,8 +238,9 @@ class CatalogueView(_ExportBase):
             "Dataset catalogue retrieved successfully.",
             {
                 "modules": [
-                    {"name": name, "datasets": datasets, "available": bool(datasets)}
+                    {"name": name, "datasets": datasets, "available": True}
                     for name, datasets in sorted(by_module.items())
+                    if datasets
                 ],
             },
         )

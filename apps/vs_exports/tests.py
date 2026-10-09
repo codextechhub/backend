@@ -274,10 +274,11 @@ class CatalogueAndPreviewTests(_ExportFixture, TestCase):
     def setUp(self):
         self.client = TenantAPIClient(user=self.admin)
 
-    def test_catalogue_lists_modules_including_empty_ones(self):
+    def test_catalogue_omits_empty_modules(self):
         data = self.client.get("/v1/exports/catalogue/").json()["data"]
         names = {m["name"] for m in data["modules"]}
         self.assertIn("Finance", names)
+        self.assertTrue(all(module["datasets"] for module in data["modules"]))
         finance = next(m for m in data["modules"] if m["name"] == "Finance")
         self.assertTrue(finance["available"])
         self.assertIn(DATASET, {d["id"] for d in finance["datasets"]})

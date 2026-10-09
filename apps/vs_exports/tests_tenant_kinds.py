@@ -82,6 +82,7 @@ class DatasetKindAPITests(_ExportFixture, TestCase):
             for row in module["datasets"]
         }
         self.assertNotIn("school.students", keys)
+        self.assertTrue(all(module["datasets"] for module in catalogue.data["data"]["modules"]))
         self.assertEqual(
             client.get("/v1/exports/catalogue/school.students/").status_code, 404,
         )
@@ -100,6 +101,7 @@ class DatasetKindAPITests(_ExportFixture, TestCase):
             for row in module["datasets"]
         }
         self.assertNotIn("admin.positions", keys)
+        self.assertTrue(all(module["datasets"] for module in catalogue.data["data"]["modules"]))
         self.assertEqual(
             client.get("/v1/exports/catalogue/admin.positions/").status_code, 404,
         )
