@@ -72,6 +72,7 @@ def register_datasets():
         base=_students,
         scope=DatasetScope.TENANT,
         permission="school.students.export",
+        tenant_kinds=("SCHOOL",),
         row_cap=100_000,
         default_columns=(
             "id", "student_number", "last_name", "first_name", "status",

@@ -234,6 +234,10 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         from schools.vs_students.imports import validate_students_import_batch
 
         return validate_students_import_batch(import_batch)
+    if dataset_type in {"org_units", "positions", "matrix_reports"}:
+        from vs_user.imports import validate_organogram_import
+
+        return validate_organogram_import(import_batch)
     if dataset_type == "academic_structure":
         # Owned by academics, for the same reason. This one reads the file as a
         # whole rather than row by row: a level under two programmes, or a

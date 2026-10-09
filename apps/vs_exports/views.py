@@ -578,7 +578,7 @@ class FromScreenView(_ExportBase):
                 "available": [s.key for s in all_screens()],
             })
 
-        dataset = binding.dataset
+        dataset = binding.dataset_for(request.query_params.dict())
         if dataset is None:
             raise NotFound("The dataset behind this screen is no longer published.")
         if not may_export_dataset(request.user, dataset, self.tenant):
@@ -611,7 +611,7 @@ class FromScreenView(_ExportBase):
         return success_response(
             "Export configuration prepared from the screen.",
             {
-                "screen": binding.describe(),
+                "screen": {**binding.describe(), "dataset": dataset.key},
                 "config": config,
                 # The drawer offers a format picker, so it needs the dataset's
                 # own list rather than assuming the two-value default. Every

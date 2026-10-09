@@ -86,9 +86,13 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
 
     outcomes = []
 
-    for row_result in job.row_results.exclude(target_object_pk="").select_related(
+    row_results = job.row_results.exclude(target_object_pk="").select_related(
         "job__import_batch"
-    ):
+    )
+    if job.import_batch.template.dataset_type in {"org_units", "positions"}:
+        row_results = row_results.order_by("-row_number")
+
+    for row_result in row_results:
         if row_result.row_number in already_reverted:
             outcomes.append(
                 {

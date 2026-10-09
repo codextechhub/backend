@@ -572,6 +572,77 @@ def reverse_user(row_result, *, initiated_by=None) -> str:
 
 
 # =========================================================
+# Platform organogram
+# =========================================================
+def reverse_org_node(row_result, *, initiated_by=None) -> str:
+    from vs_user.models import OrgNode
+
+    pk = _numeric_pk(row_result)
+    instance = OrgNode.objects.select_for_update().filter(pk=pk).first()
+    if instance is None:
+        raise RollbackRefused(f"No org unit with id {pk} exists; nothing was deleted.")
+    code = _field(row_result, "code")
+    if not code or instance.code.casefold() != code.casefold():
+        raise RollbackRefused(
+            f"Org unit id {pk} no longer matches code '{code}', so it was left alone."
+        )
+    try:
+        instance.delete()
+    except ProtectedError as exc:
+        protected = {obj._meta.label for obj in exc.protected_objects}
+        raise RollbackRefused(
+            f"Org unit '{code}' is still in use ({', '.join(sorted(protected))})."
+        ) from exc
+    return f"Org unit '{code}' was deleted."
+
+
+def reverse_position(row_result, *, initiated_by=None) -> str:
+    from vs_user.models import Position
+
+    pk = _numeric_pk(row_result)
+    instance = Position.objects.select_for_update().filter(pk=pk).first()
+    if instance is None:
+        raise RollbackRefused(f"No position with id {pk} exists; nothing was deleted.")
+    code = _field(row_result, "code")
+    if not code or instance.code.casefold() != code.casefold():
+        raise RollbackRefused(
+            f"Position id {pk} no longer matches code '{code}', so it was left alone."
+        )
+    if instance.assignments.exists() or instance.matrix_reports.exists() or instance.matrix_directs.exists():
+        raise RollbackRefused(
+            f"Position '{code}' has assignments or matrix reporting lines, so it is in use."
+        )
+    if instance.heads_node.exists():
+        raise RollbackRefused(f"Position '{code}' is the head of an org unit, so it is in use.")
+    instance.delete()
+    return f"Position '{code}' was deleted."
+
+
+def reverse_matrix_report(row_result, *, initiated_by=None) -> str:
+    from vs_user.models import MatrixReport
+
+    pk = _numeric_pk(row_result)
+    instance = MatrixReport.objects.select_related(
+        "position", "reports_to",
+    ).select_for_update().filter(pk=pk).first()
+    if instance is None:
+        raise RollbackRefused(
+            f"No matrix reporting line with id {pk} exists; nothing was deleted."
+        )
+    position_code = _field(row_result, "position_code")
+    reports_to_code = _field(row_result, "reports_to_code")
+    if (
+        instance.position.code.casefold() != position_code.casefold()
+        or instance.reports_to.code.casefold() != reports_to_code.casefold()
+    ):
+        raise RollbackRefused(
+            f"Matrix reporting line id {pk} no longer matches the recorded pair."
+        )
+    instance.delete()
+    return f"Matrix line '{position_code}' to '{reports_to_code}' was deleted."
+
+
+# =========================================================
 # Calendar events
 # =========================================================
 def reverse_calendar_event(row_result, *, initiated_by=None) -> str:
@@ -651,6 +722,9 @@ _REVERSERS = {
     "School": reverse_school,
     "Branch": reverse_branch,
     "User": reverse_user,
+    "OrgNode": reverse_org_node,
+    "Position": reverse_position,
+    "MatrixReport": reverse_matrix_report,
     "CalendarEvent": reverse_calendar_event,
 }
 

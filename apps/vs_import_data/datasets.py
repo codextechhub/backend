@@ -55,6 +55,9 @@ from .models import DatasetTypeChoices
 PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.SCHOOLS,
     DatasetTypeChoices.CX_USERS,
+    DatasetTypeChoices.ORG_UNITS,
+    DatasetTypeChoices.POSITIONS,
+    DatasetTypeChoices.MATRIX_REPORTS,
     # Reconciliation data, loaded by whoever runs the ledger. Not something a
     # school is asked for during onboarding, and not on this checklist.
     DatasetTypeChoices.BANK_STATEMENTS,

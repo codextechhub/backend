@@ -67,6 +67,7 @@ def register_datasets():
         # boundary. See the module docstring.
         scope=DatasetScope.TENANT,
         permission="platform.schools.view",
+        tenant_kinds=("PLATFORM",),
         row_cap=100_000,
         default_columns=("name", "code", "status", "ownership_type", "created_at"),
         fields=(

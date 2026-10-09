@@ -803,6 +803,200 @@ TEMPLATES: list[dict] = [
 
     {
         # -----------------------------------------------------------------------
+        # CodeX organogram units
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "cx_org_units_v1",
+            "name": "CX Organogram Units Import",
+            "dataset_type": DatasetTypeChoices.ORG_UNITS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": "Template for CodeX divisions, departments and teams.",
+            "instructions": (
+                "Import divisions first, then departments, then teams. Parent Code "
+                "must name an earlier row or an existing org unit. Re-importing a "
+                "code updates that unit."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "Code": "DV-OPS", "Name": "Operations", "Kind": "DIVISION",
+                "Parent Code": "", "Description": "Operations division",
+                "Active": "Yes",
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "Code", "target_field": "code", "display_name": "Code",
+                "help_text": "Stable unique org-unit code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "is_unique": True, "max_length": 40,
+                "sample_value": "DV-OPS", "column_order": 1,
+            },
+            {
+                "column_name": "Name", "target_field": "name", "display_name": "Name",
+                "help_text": "Org-unit name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 150,
+                "sample_value": "Operations", "column_order": 2,
+            },
+            {
+                "column_name": "Kind", "target_field": "kind", "display_name": "Kind",
+                "help_text": "DIVISION, DEPARTMENT or TEAM.",
+                "data_type": TemplateColumnDataTypeChoices.CHOICE,
+                "is_required": True,
+                "allowed_values": ["DIVISION", "DEPARTMENT", "TEAM"],
+                "sample_value": "DIVISION", "column_order": 3,
+            },
+            {
+                "column_name": "Parent Code", "target_field": "parent_code",
+                "display_name": "Parent Code",
+                "help_text": "Blank for a division; required for lower tiers.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 40, "column_order": 4,
+            },
+            {
+                "column_name": "Description", "target_field": "description",
+                "display_name": "Description", "help_text": "Optional description.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "column_order": 5,
+            },
+            {
+                "column_name": "Active", "target_field": "is_active",
+                "display_name": "Active", "help_text": "Yes or No.",
+                "data_type": TemplateColumnDataTypeChoices.BOOLEAN,
+                "is_required": False, "default_value": "Yes",
+                "sample_value": "Yes", "column_order": 6,
+            },
+        ],
+    },
+
+    {
+        # -----------------------------------------------------------------------
+        # CodeX organogram positions
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "cx_positions_v1",
+            "name": "CX Organogram Positions Import",
+            "dataset_type": DatasetTypeChoices.POSITIONS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": "Template for CodeX organogram seats and solid reporting lines.",
+            "instructions": (
+                "Import org units first. Manager positions must appear before the "
+                "positions that report to them. References use codes and role keys."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "Code": "COO", "Title": "Chief Operating Officer",
+                "Org Unit Code": "DV-OPS", "Reports To Code": "",
+                "Default Role Key": "xvs_platform_admin", "Headcount": 1,
+                "Active": "Yes",
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "Code", "target_field": "code", "display_name": "Code",
+                "help_text": "Stable unique position code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "is_unique": True, "max_length": 40,
+                "sample_value": "COO", "column_order": 1,
+            },
+            {
+                "column_name": "Title", "target_field": "title", "display_name": "Title",
+                "help_text": "Position title.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 150,
+                "sample_value": "Chief Operating Officer", "column_order": 2,
+            },
+            {
+                "column_name": "Org Unit Code", "target_field": "org_unit_code",
+                "display_name": "Org Unit Code", "help_text": "Existing org-unit code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 40,
+                "sample_value": "DV-OPS", "column_order": 3,
+            },
+            {
+                "column_name": "Reports To Code", "target_field": "reports_to_code",
+                "display_name": "Reports To Code",
+                "help_text": "Blank for a top-level position; otherwise an earlier position code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 40, "column_order": 4,
+            },
+            {
+                "column_name": "Default Role Key", "target_field": "default_role_key",
+                "display_name": "Default Role Key",
+                "help_text": "Optional role-template key in the platform tenant.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 120, "column_order": 5,
+            },
+            {
+                "column_name": "Headcount", "target_field": "headcount",
+                "display_name": "Headcount", "help_text": "Positive whole number.",
+                "data_type": TemplateColumnDataTypeChoices.INTEGER,
+                "is_required": False, "default_value": "1",
+                "sample_value": "1", "column_order": 6,
+            },
+            {
+                "column_name": "Active", "target_field": "is_active",
+                "display_name": "Active", "help_text": "Yes or No.",
+                "data_type": TemplateColumnDataTypeChoices.BOOLEAN,
+                "is_required": False, "default_value": "Yes",
+                "sample_value": "Yes", "column_order": 7,
+            },
+        ],
+    },
+
+    {
+        # -----------------------------------------------------------------------
+        # CodeX matrix reporting lines
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "cx_matrix_reports_v1",
+            "name": "CX Matrix Reporting Lines Import",
+            "dataset_type": DatasetTypeChoices.MATRIX_REPORTS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": "Template for CodeX dotted reporting lines.",
+            "instructions": (
+                "Import positions first. Each position and reports-to pair may "
+                "appear once; re-importing that pair updates its label."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "Position Code": "OPS-ANALYST", "Reports To Code": "CFO",
+                "Relationship Label": "Finance oversight",
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "Position Code", "target_field": "position_code",
+                "display_name": "Position Code", "help_text": "Existing position code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 40,
+                "sample_value": "OPS-ANALYST", "column_order": 1,
+            },
+            {
+                "column_name": "Reports To Code", "target_field": "reports_to_code",
+                "display_name": "Reports To Code", "help_text": "Existing position code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 40,
+                "sample_value": "CFO", "column_order": 2,
+            },
+            {
+                "column_name": "Relationship Label", "target_field": "relationship_label",
+                "display_name": "Relationship Label", "help_text": "Optional dotted-line label.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 120,
+                "sample_value": "Finance oversight", "column_order": 3,
+            },
+        ],
+    },
+
+    {
+        # -----------------------------------------------------------------------
         # Bank statements
         # -----------------------------------------------------------------------
         # One file = one statement period for the bank account selected before the

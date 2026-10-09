@@ -139,6 +139,7 @@ def register_datasets():
         base=_sessions,
         scope=DatasetScope.TENANT,
         permission="academics.session.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=10_000,
         default_columns=("name", "start_date", "end_date", "status"),
         fields=(
@@ -165,6 +166,7 @@ def register_datasets():
         base=_departments,
         scope=DatasetScope.TENANT,
         permission="academics.structure.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=10_000,
         default_columns=("name", "code", "branch__name", "is_active"),
         fields=(
@@ -193,6 +195,7 @@ def register_datasets():
         base=_programs,
         scope=DatasetScope.TENANT,
         permission="academics.structure.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=10_000,
         default_columns=("name", "code", "department__name", "branch__name"),
         fields=(
@@ -224,6 +227,7 @@ def register_datasets():
         base=_levels,
         scope=DatasetScope.TENANT,
         permission="academics.structure.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=20_000,
         default_columns=("name", "code", "program__name", "order_index"),
         fields=(
@@ -258,6 +262,7 @@ def register_datasets():
         base=_classes,
         scope=DatasetScope.TENANT,
         permission="academics.classes.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=50_000,
         default_columns=("name", "code", "level__name", "arm", "branch__name"),
         fields=(
@@ -296,6 +301,7 @@ def register_datasets():
         base=_subjects,
         scope=DatasetScope.TENANT,
         permission="academics.subject.view",
+        tenant_kinds=("SCHOOL",),
         row_cap=20_000,
         default_columns=("name", "code", "department__name", "is_core"),
         fields=(

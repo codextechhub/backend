@@ -63,6 +63,9 @@ KIND_MONEY = "money"       # stored in kobo (integer), like the rest of the plat
 KIND_NUMBER = "number"
 KIND_CHOICE = "choice"     # stored as a code, displayed as its label
 
+# Plain values keep the export engine independent of tenant domain models.
+ALL_TENANT_KINDS = ("PLATFORM", "SCHOOL", "ORGANIZATION")
+
 
 # Render one cell value for the requested values mode.
 def render_value(kind: str, value, mode: str, *, choices: dict | None = None, tenant=None):
@@ -371,6 +374,8 @@ class Dataset:
     #: Which boundary this dataset's rows live inside. Entity-scoped datasets refuse
     #: to run without one; tenant-scoped ones ignore it entirely.
     scope: str = DatasetScope.ENTITY
+    #: Tenant kinds whose consoles may offer or run this dataset.
+    tenant_kinds: tuple = ALL_TENANT_KINDS
 
     @property
     def needs_entity(self) -> bool:
@@ -592,10 +597,16 @@ class ScreenBinding:
     #: whole and whose own console reads the recent past (the ledger, sign-ins,
     #: audit events); the window is then returned to the screen to say so.
     default_window_days: int | None = None
+    #: Optional ``params -> dataset key`` selector for a screen with distinct tabs.
+    dataset_from_params: callable = None
 
     @property
     def dataset(self):
         return get_dataset(self.dataset_key)
+
+    def dataset_for(self, params: dict):
+        key = self.dataset_from_params(params) if self.dataset_from_params else self.dataset_key
+        return get_dataset(key)
 
     # Serialise for the catalogue endpoint.
     def describe(self) -> dict:
@@ -700,7 +711,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
     screen bound to that dataset carries it alike. A value its filter refuses
     raises that filter's own error.
     """
-    dataset = binding.dataset
+    dataset = binding.dataset_for(params)
     if dataset is None:
         raise KeyError(binding.dataset_key)
 

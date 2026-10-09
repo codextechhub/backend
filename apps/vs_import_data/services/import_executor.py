@@ -101,6 +101,21 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "cx_users":
         return import_cx_users_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "org_units":
+        from vs_user.imports import import_org_unit_row
+
+        return import_org_unit_row(import_batch, payload, queued_by)
+
+    if dataset_type == "positions":
+        from vs_user.imports import import_position_row
+
+        return import_position_row(import_batch, payload, queued_by)
+
+    if dataset_type == "matrix_reports":
+        from vs_user.imports import import_matrix_report_row
+
+        return import_matrix_report_row(import_batch, payload, queued_by)
+
     if dataset_type == "calendar_events":
         return import_calendar_events_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 

@@ -93,8 +93,17 @@ def _holds(user, key: str, tenant) -> bool:
 
 # Decide whether a user may export a dataset at all.
 def may_export_dataset(user, dataset, tenant) -> bool:
-    """The dataset's own permission key - the coarse gate."""
-    return _holds(user, dataset.permission, tenant)
+    """Apply dataset ownership and its RBAC permission at every export boundary.
+
+    Tenant-kind ownership is checked here because catalogue reads, previews,
+    saved definitions, quick runs, schedules, workers and downloads all ask
+    this function. A super-admin bypasses RBAC, but never a dataset's declared
+    product boundary.
+    """
+    tenant_kind = getattr(tenant, "kind", None)
+    return tenant_kind in dataset.tenant_kinds and _holds(
+        user, dataset.permission, tenant,
+    )
 
 
 # Decide whether a user may include restricted fields.
