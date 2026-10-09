@@ -18,6 +18,21 @@ staging.
 A future product `foo` takes `*.foo.codexng.com`, and its staging twin
 `*.foo-staging.codexng.com`.
 
+### Render resources created for production
+
+Render resource names are labels in the dashboard only. Staging's existing
+resources keep their names; only staging's hostnames change.
+
+| What | Production name | Type |
+| --- | --- | --- |
+| Database | `xvs-prod-db` (database `xvs_prod`, user `xvs_prod_user`) | Postgres, Frankfurt |
+| Broker | `xvs-prod-redis` | Key Value, Frankfurt |
+| Shared settings | `xvs-prod-env` | Environment group |
+| API | `xvs-prod-backend` | Web service, branch `production` |
+| Background tasks | `xvs-prod-worker` | Background worker, branch `production` |
+| Console | `xvs-prod-console` | Static site (console-fe), branch `production` |
+| School app | `xvs-prod-school` | Static site (school-fe), branch `production` |
+
 ## Git model
 
 - `main` holds the work. `./deploy-staging.sh` resets `staging` to `main`.
@@ -62,12 +77,23 @@ network only when they share one.
      (beat) is embedded; two would double-fire every periodic task.
 6. Create the worker and Key Value **before** turning `CELERY_EAGER` to
    `false`. With no broker, every `.delay()` becomes a connection error.
-7. **Custom domains** on the web service:
-   `api.codexng.com`, `intranet.codexng.com` (if the Console is served from
-   here; otherwise it points at the Console host), `*.codexng.com` and
-   `*.xvs.codexng.com`. The two wildcards are separate entries: a wildcard
-   covers one label only. Add the DNS records Render shows in Cloudflare.
-   Cloudflare proxying stays on, as `CLIENT_IP_HEADERS` expects it.
+7. **Console static site** `xvs-prod-console`, then **school static site**
+   `xvs-prod-school`. Their settings are in "The two frontends" below.
+8. **Custom domains**, attached at cutover (see "Order of the cutover"), not
+   before. A hostname can sit on only one Render service, so staging must have
+   let go of it first.
+
+   | Service | Domains |
+   | --- | --- |
+   | `xvs-prod-backend` (API) | `api.codexng.com` |
+   | `xvs-prod-console` | `intranet.codexng.com` and `*.codexng.com` (platform tenants) |
+   | `xvs-prod-school` | `xvs.codexng.com` and `*.xvs.codexng.com` (school tenants) |
+
+   `*.codexng.com` covers one label only, so `*.xvs.codexng.com` is its own
+   entry. Add the DNS records Render shows in Cloudflare, with proxying on, as
+   `CLIENT_IP_HEADERS` expects. Because `*.codexng.com` also matches every
+   staging host, each staging hostname needs its own explicit record (listed
+   below), or it would fall through to the production Console.
 
 ## Environment variables
 
@@ -135,7 +161,7 @@ what the table says).
 | Build command | `npm ci && npm run build` | `npm ci && npm run build` |
 | Publish directory | `dist` | `dist` |
 | Auto-deploy | **off** | **off** |
-| Custom domain | `intranet.codexng.com` | `*.xvs.codexng.com` and `xvs.codexng.com` |
+| Custom domain | `intranet.codexng.com` and `*.codexng.com` | `xvs.codexng.com` and `*.xvs.codexng.com` |
 | Rewrite rule | every path to `/index.html` (the app routes in the browser) | the same |
 
 The settings are baked into the build, so they are set as environment variables
@@ -200,15 +226,62 @@ wildcard is its own domain entry, separate from `*.codexng.com`.
   record the restore steps here once rehearsed. A rollback of code never
   undoes a migration; a database restore does.
 
-## Renaming staging
+## Renaming staging: every name that changes
 
-Done after production is live, so the real names are never in limbo. Change
-`FRONTEND_BASE_URL`, `SCHOOL_APP_BASE_URL`, `API_PUBLIC_BASE_URL`,
-`HEALTH_PROBE_BASE_URL`, `HEALTH_SSL_DOMAIN`, `ALLOWED_HOSTS`,
-`CORS_ALLOWED_ORIGINS` and `CORS_ALLOWED_ORIGIN_REGEXES` (its default matches
-only `*.xvs.codexng.com`, so staging must set it to `*.xvs-staging.codexng.com`)
-on the staging services, move the Cloudflare records, and add the matching
-custom domains on the staging web service.
+Render service names do not change. These do.
+
+### Hostnames
+
+| Purpose | Today | After |
+| --- | --- | --- |
+| API | `api.codexng.com` | `api-staging.codexng.com` |
+| Console | `intranet.codexng.com` | `intranet-staging.codexng.com` |
+| School app, root | `xvs.codexng.com` | `xvs-staging.codexng.com` |
+| School tenants | `<slug>.xvs.codexng.com` | `<slug>.xvs-staging.codexng.com` |
+
+### On staging's backend (web service and worker)
+
+| Variable | New value |
+| --- | --- |
+| `FRONTEND_BASE_URL` | `https://intranet-staging.codexng.com` |
+| `SCHOOL_APP_BASE_URL` | `https://xvs-staging.codexng.com` |
+| `API_PUBLIC_BASE_URL` | `https://api-staging.codexng.com` |
+| `HEALTH_PROBE_BASE_URL` | `https://api-staging.codexng.com` |
+| `HEALTH_SSL_DOMAIN` | `api-staging.codexng.com` |
+| `ALLOWED_HOSTS` | `api-staging.codexng.com,intranet-staging.codexng.com,.xvs-staging.codexng.com` |
+| `CORS_ALLOWED_ORIGINS` | `https://intranet-staging.codexng.com` |
+| `CORS_ALLOWED_ORIGIN_REGEXES` | `^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.xvs-staging\.codexng\.com$` (the default matches only `*.xvs.codexng.com`) |
+| `CSRF_COOKIE_NAME` | `csrftoken_staging` (new) |
+| `CSRF_TRUSTED_ORIGINS`, `PAYMENTS_CALLBACK_URL`, `PLATFORM_PAY_BASE_URL` | if any is set explicitly, change it to the staging hosts; if unset, leave it |
+
+### On the staging Console and school builds (rebuild after changing)
+
+| Variable | New value |
+| --- | --- |
+| `VITE_BACKEND_URL` | `https://api-staging.codexng.com/v1` |
+| `VITE_CSRF_COOKIE_NAME` | `csrftoken_staging` |
+
+### Outside Render
+
+| Where | Change |
+| --- | --- |
+| Paystack, **Test** tab | webhook URL to `https://api-staging.codexng.com/v1/payments/webhooks/paystack/` |
+| Cloudflare DNS | explicit records for `api-staging`, `intranet-staging`, `xvs-staging` and `*.xvs-staging`, pointing at the staging services |
+| Render custom domains | add the four new staging hostnames to the matching staging services |
+
+## Order of the cutover
+
+The order matters because a hostname can sit on one Render service at a time.
+
+1. Create every production resource and test it on its temporary
+   `onrender.com` address. Put that address in production's `ALLOWED_HOSTS`
+   while testing, and remove it afterwards.
+2. Rename staging (every table above) and confirm staging works on the new
+   hostnames, including a test Paystack payment arriving through the new
+   webhook.
+3. Remove the old hostnames from staging's Render services. Attach the
+   production hostnames to the production services and point Cloudflare at them.
+4. Set Paystack's **Live** webhook, then run the smoke test.
 
 ## CSRF cookie name
 

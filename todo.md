@@ -78,6 +78,27 @@ FIX: design each as a Settings section once the gradebook defines what a
 result is; (b) and (c) need a decision first, not code.
 BLOCKED BY: the gradebook module, and the two decisions above.
 
+### 3. Move staging to the -staging names, and update Paystack's Test webhook (2026-10-08)
+
+Do this after production's resources exist and BEFORE production's hostnames
+are attached. Staging's API answers on `api.codexng.com`, the address
+production takes, and a hostname can sit on one Render service at a time. Left
+until after cutover, Paystack's Test webhook (which points there) would reach
+production, which refuses it, so staging silently stops receiving payments.
+
+Do these together:
+- Move staging to `api-staging.codexng.com`, `intranet-staging.codexng.com` and
+  `*.xvs-staging.codexng.com` (staging env vars, Cloudflare records, custom domains).
+- In the Paystack dashboard, Test tab, set the webhook URL to
+  `https://api-staging.codexng.com/v1/payments/webhooks/paystack/`.
+- Set `CSRF_COOKIE_NAME=csrftoken_staging` on staging's backend and
+  `VITE_CSRF_COOKIE_NAME=csrftoken_staging` on both staging frontends.
+- Set `CORS_ALLOWED_ORIGINS` and `CORS_ALLOWED_ORIGIN_REGEXES` to the staging hosts.
+- Set each staging frontend's `VITE_BACKEND_URL` to `https://api-staging.codexng.com/v1`.
+
+Every name is listed in `docs/platform/production-go-live.md` ("Renaming
+staging: every name that changes" and "Order of the cutover").
+
 ## Done
 - DONE 2026-09-29 (405d89da): queue entries D1 to D50, D56 to D63, D67 and D68 are written into MRD v2.94 and the FRD versions M01 v1.29, M03 v1.19, M04 v1.29, M05 v1.7, M06 v1.5, M07 v1.22, M08 v1.13, M09 v2.13, M10 v1.6, M11 v2.12, M12 v2.14, M13 v2.12, M14 v3.5, M17 v1.7, M18 v1.13, M19 v1.12, M20 v1.6, M21 v1.6, M22 v1.14, M23 v1.14, M24 v1.5, M25 v1.2, M26 v1.3, M30 v1.3 and M31 v1.10, reviewed and approved by the owner. Their patch scripts are committed beside them in docs/frd/tools.
 # The blank class column and the missing dry run are both fixed (2026-08-30, 182 FAL tests green). CLASS LABEL: `DebtorRow.class_label` and `FeeRow.class_label` were hardcoded to "" behind a comment saying there was no student app to ask - false since M11 landed. They now read the child's active enrolment in the newest session, via `_class_labels` + `_labelled`, applied to the built page rather than inside the row builder so a long debtor list costs ONE extra query instead of one per row (the test asserts the invariant - a class of thirty costs what a class of two costs - not a magic number). A CROSS-TENANT LEAK WAS FOUND AND CLOSED IN THAT SAME FIX, before it shipped: `Customer.source_id` is a loose string, not an FK, so a school that imported receivables before its roll can hold a reference like "7" that means nothing locally while ANOTHER school's pupil genuinely has pk 7. Unscoped, the first school's debtor list would print the second school's class against a child it has never heard of. The lookup is tenant-scoped and a test fails without it. Entity scoping upstream cannot catch this, because the leak enters through a value the ledger merely stores. DRY RUN: `generate_cohort_invoices(..., dry_run=True)` runs the REAL generation inside a transaction and rolls it back, rather than re-deriving the amounts. Deliberate: fee items are priced and taxed inside `post_invoice`, so a second implementation would quote a pre-tax figure and be wrong in exactly the case a bursar most needs it right. Running the real code also means every refusal a real run would raise is raised in the preview, so a preview cannot promise a run that then fails. `InvoiceGenerationResult` gained `dry_run` and `students_to_bill`; the preview returns no invoice pks, because they stop existing when the block exits. The in-memory fake was updated too, or a test that previewed then billed would see its own preview come back as an idempotent skip.
