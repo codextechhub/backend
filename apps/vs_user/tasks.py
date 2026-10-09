@@ -60,7 +60,7 @@ def _tenant_display_name(user) -> str:
     if profile is not None:
         return profile.name
     if getattr(user.tenant, 'kind', None) == 'PLATFORM':
-        return 'CodeX Vision'
+        return 'CodeX'
     return user.tenant.name
 
 

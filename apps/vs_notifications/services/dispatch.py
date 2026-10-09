@@ -43,6 +43,7 @@ from ..constants import ChannelChoices, NotificationStatus
 from ..exceptions import UnknownEventTypeError, TemplateRenderError
 from ..models import Notification, NotificationEventType, NotificationTemplate
 from ..signals import notification_failed
+from .branding import email_brand_context
 from .render import render_notification_template
 from .settings import resolve_channels
 
@@ -212,6 +213,11 @@ class NotificationService:
         notifications_to_create = []
 
         for owner_tenant, targets, enabled_channels in plans:
+            render_context = dict(context or {})
+            if ChannelChoices.EMAIL in enabled_channels:
+                # Product identity follows the recipient's surface. It must win
+                # over issuer or tenant names supplied for the message body.
+                render_context.update(email_brand_context(owner_tenant))
             for target in targets:
                 # Each target gets one record per enabled channel.
                 for channel in enabled_channels:
@@ -266,7 +272,7 @@ class NotificationService:
                     # Render template (subject, plain body, optional HTML body).
                     try:
                         rendered_subject, rendered_body, rendered_html = (
-                            render_notification_template(template, context)
+                            render_notification_template(template, render_context)
                         )
                     except TemplateRenderError as exc:
                         logger.error(

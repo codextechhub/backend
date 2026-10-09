@@ -31,11 +31,13 @@ import re
 from django.utils.html import urlize
 
 
-# Shown in the header strip when the context carries no issuer/school name.
-BRAND_FALLBACK = "CodeX Vision"
+# Shown in the header strip when no product-specific identity is supplied.
+BRAND_FALLBACK = "CodeX"
 
 # Context keys consulted, in order, for the sender name in the header.
-_BRAND_CONTEXT_KEYS = ("issuer_name", "school_name", "entity_name", "tenant_name")
+_BRAND_CONTEXT_KEYS = (
+    "email_brand", "issuer_name", "school_name", "entity_name", "tenant_name",
+)
 
 # The same, for the mark beside it. One key per name key, in the same order, so
 # a caller that names the sender can brand it without learning a second
@@ -193,7 +195,6 @@ def compose_email_html(
 
     subject = guard.mask(subject or "")
     body = guard.mask(body or "")
-    cta_label = guard.mask(cta_label or "").strip() or "Open in CodeX Vision"
     cta_url = guard.mask(raw_cta_url)
 
     # Only absolute http(s) destinations become buttons. A javascript: value
@@ -205,6 +206,7 @@ def compose_email_html(
             cta_url = ""
 
     brand = _clean(brand) or BRAND_FALLBACK
+    cta_label = guard.mask(cta_label or "").strip() or f"Open in {brand}"
     headline = _clean(subject) or brand
     mark = _brand_mark_html(brand_logo_url, keep_placeholders=keep_placeholders)
     content = _blocks_to_html(body or "", skip_url=cta_url)
@@ -268,14 +270,14 @@ letter-spacing:-.2px;">{headline_text}</h1>
 </td></tr>
 <tr><td style="padding:20px 32px;background-color:{_PANEL};border-top:1px solid {_LINE};">
 <p style="margin:0;color:{_MUTED};font-size:12px;line-height:1.6;">\
-This automated notification was delivered securely through CodeX Vision. \
+This automated notification was delivered securely through {brand_text}. \
 Please do not reply to this email.</p>
 </td></tr>
 </table>
 </td></tr>
 <tr><td align="center" style="padding:18px 20px 0;">
 <p style="margin:0;color:{_FAINT};font-size:11px;line-height:1.5;">\
-Powered by CodeX Vision</p>
+Powered by {brand_text}</p>
 </td></tr>
 </table>
 </td></tr>
@@ -317,11 +319,11 @@ def _brand_mark_html(logo_url: str, *, keep_placeholders: bool = False) -> str:
             f'<img src="{url}" width="42" height="42" alt="" '
             'style="display:block;width:42px;height:42px;border-radius:11px;'
             'object-fit:cover;border:0;">'
-            "{% else %}CV{% endif %}"
+            "{% else %}CX{% endif %}"
         )
 
     if not url.lower().startswith(("http://", "https://")):
-        return "CV"
+        return "CX"
     return (
         f'<img src="{_attr(url)}" width="42" height="42" alt="" '
         'style="display:block;width:42px;height:42px;border-radius:11px;'

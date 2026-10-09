@@ -438,7 +438,7 @@ def _build_default_templates() -> dict:
                 "Category: {{ ticket_category }}\n"
                 "Priority: {{ ticket_priority }}\n"
                 "Requester: {{ requester_name }}\n\n"
-                "Please log in to CodeX Vision to review it."
+                "Please log in to {{ email_brand }} to review it."
             ),
         },
         ("ticket.assigned", C.IN_APP): {
@@ -574,7 +574,7 @@ def _build_default_templates() -> dict:
                 "Student ID: {{ student_id }}\n"
                 "Academic session: {{ session_name }}\n\n"
                 "Please log in to Vision to view the full student profile.\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -610,7 +610,7 @@ def _build_default_templates() -> dict:
                 "{% if return_date %}  Expected back : {{ return_date }}\n{% endif %}"
                 "{% if reason %}  Reason        : {{ reason }}\n{% endif %}"
                 "\nPlease contact the school to discuss it.\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -622,12 +622,12 @@ def _build_default_templates() -> dict:
         ("student.deactivated", C.EMAIL): {
             "subject": "Student record deactivated - {{ student_first_name }} {{ student_last_name }}",
             "body": (
-                "A student record has been deactivated on CodeX Vision.\n\n"
+                "A student record has been deactivated on {{ email_brand }}.\n\n"
                 "Student: {{ student_first_name }} {{ student_last_name }}\n"
                 "Student ID: {{ student_id }}\n"
                 "Reason: {{ reason_code }}\n"
                 "Actioned by: {{ deactivated_by_name }}\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -648,7 +648,7 @@ def _build_default_templates() -> dict:
                 "From class: {{ from_class_name }}\n"
                 "To class: {{ to_class_name }}\n"
                 "Transferred by: {{ transferred_by_name }}\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -673,7 +673,7 @@ def _build_default_templates() -> dict:
                 "Flagged: {{ flagged_count }}\n"
                 "Batch ID: {{ batch_id }}\n\n"
                 "Log in to Vision to review flagged students.\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -693,8 +693,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Submitted by: {{ submitter_name }}\n"
                 "Current stage: {{ stage_name }}\n\n"
-                "Please log in to CodeX Vision to review and act on this request.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} to review and act on this request.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -714,8 +714,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Submitted by: {{ submitter_name }}\n"
                 "Current stage: {{ stage_name }}\n\n"
-                "Please log in to CodeX Vision to review and act on this request.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} to review and act on this request.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -732,8 +732,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Approved by: {{ approved_by_name }}\n"
                 "Next stage: {{ next_stage_name }}\n\n"
-                "Please log in to CodeX Vision to continue the approval process.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} to continue the approval process.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -756,8 +756,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Rejected by: {{ rejected_by_name }}\n"
                 "Reason: {{ rejection_reason }}\n\n"
-                "Please log in to CodeX Vision for more details.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} for more details.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -778,8 +778,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Returned by: {{ returned_by_name }}\n"
                 "Comment: {{ return_comment }}\n\n"
-                "Please log in to CodeX Vision, make the required changes, and resubmit.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }}, make the required changes, and resubmit.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -798,8 +798,8 @@ def _build_default_templates() -> dict:
                 "Document type: {{ document_type }}\n"
                 "Title: {{ document_title }}\n"
                 "Final approver: {{ final_approver_name }}\n\n"
-                "Please log in to CodeX Vision to view the outcome.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} to view the outcome.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -816,8 +816,8 @@ def _build_default_templates() -> dict:
                 "Title: {{ document_title }}\n"
                 "Stage: {{ stage_name }}\n"
                 "Escalated to: {{ escalated_to_name }}\n\n"
-                "Please log in to CodeX Vision to action this request promptly.\n\n"
-                "CodeX Vision"
+                "Please log in to {{ email_brand }} to action this request promptly.\n\n"
+                "{{ email_brand }}"
             ),
         },
 
@@ -835,7 +835,7 @@ def _build_default_templates() -> dict:
                 "Stage: {{ stage_name }}\n\n"
                 "It has been passed to somebody else to decide, so there is nothing "
                 "for you to do.\n\n"
-                "CodeX Vision"
+                "{{ email_brand }}"
             ),
         },
 
@@ -861,7 +861,7 @@ def _build_default_templates() -> dict:
                 "Due date: {{ due_date }}\n\n"
                 "{{ note }}\n\n"
                 "Pay online: {{ payment_link }}\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
             "cta_label": "Pay online",
             "cta_url": "{{ payment_link }}",
@@ -883,7 +883,7 @@ def _build_default_templates() -> dict:
                 "{{ note }}\n\n"
                 "If anything on this statement looks wrong, please contact the finance "
                 "team before making payment.\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
         },
 
@@ -914,7 +914,7 @@ def _build_default_templates() -> dict:
                 "{{ action_message }}\n\n"
                 "If anything in this adjustment is unclear, please contact the finance "
                 "team before making payment.\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
         },
 
@@ -945,7 +945,7 @@ def _build_default_templates() -> dict:
                 "{{ action_message }}\n\n"
                 "If anything in this adjustment is unclear, please contact the finance "
                 "team before making payment.\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
         },
 
@@ -969,7 +969,7 @@ def _build_default_templates() -> dict:
                 "Payment date: {{ payment_date }}\n"
                 "Applied to invoice: {{ invoice_number }}\n\n"
                 "{{ note }}\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
         },
 
@@ -1008,7 +1008,7 @@ def _build_default_templates() -> dict:
                 "Hello {{ employee_name }},\n\n"
                 "Your payslip for {{ period_label }} is attached as a PDF.\n\n"
                 "If anything on it looks wrong, please speak to the payroll team.\n\n"
-                "{{ issuer_name }} via CodeX Vision"
+                "{{ issuer_name }} via {{ email_brand }}"
             ),
         },
 
@@ -1112,7 +1112,7 @@ def _build_default_templates() -> dict:
                 "Original due date: {{ due_date }}\n"
                 "Days overdue: {{ days_overdue }}\n\n"
                 "Please make payment as soon as possible to avoid disruption to your child's schooling.\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -1133,7 +1133,7 @@ def _build_default_templates() -> dict:
                 "Refund amount: ₦{{ refund_amount }}\n"
                 "Original invoice: {{ original_invoice_number }}\n"
                 "Processed by: {{ processed_by_name }}\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ school_name }} via {{ email_brand }}"
             ),
         },
 
@@ -1221,7 +1221,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("onboarding.activated", C.EMAIL): {
-            "subject": "{{ school_name }} is live on CodeX Vision",
+            "subject": "{{ school_name }} is live on {{ email_brand }}",
             "body": (
                 "Onboarding is complete for {{ school_name }}.\n\n"
                 "ACTIVATION DETAILS\n"
@@ -1374,7 +1374,7 @@ def _build_default_templates() -> dict:
                 "Errors: {{ error_count }}\n"
                 "Import ID: {{ import_id }}\n\n"
                 "Log in to Vision to review any errors.\n\n"
-                "CodeX Vision"
+                "{{ email_brand }}"
             ),
         },
 
@@ -1394,7 +1394,7 @@ def _build_default_templates() -> dict:
                 "Error summary: {{ error_summary }}\n"
                 "Import ID: {{ import_id }}\n\n"
                 "Please log in to Vision to review the error report and retry.\n\n"
-                "CodeX Vision"
+                "{{ email_brand }}"
             ),
         },
 
@@ -1484,7 +1484,7 @@ def _build_default_templates() -> dict:
                 "  Rows      : {{ rows }}\n\n"
                 "{% if error %}{{ error }}\n\n{% endif %}"
                 "Open the run in Vision to download the file.\n\n"
-                "CodeX Vision"
+                "{{ email_brand }}"
             ),
         },
         ("export.run_failed", C.IN_APP): {
@@ -1502,7 +1502,7 @@ def _build_default_templates() -> dict:
                 "  Reference : {{ reference }}\n\n"
                 "{{ error }}\n\n"
                 "Open the run in Vision to see the full record.\n\n"
-                "CodeX Vision"
+                "{{ email_brand }}"
             ),
         },
 
@@ -1530,7 +1530,7 @@ def _build_default_templates() -> dict:
                 "{% if task_department %}  Department : {{ task_department }}\n{% endif %}"
                 "\n"
                 "Review it on the console under Tasks → My Team → {{ assignee_first }}.\n\n"
-                "- CodeX Vision Console (automated message)"
+                "- {{ email_brand }} Console (automated message)"
             ),
         },
     }

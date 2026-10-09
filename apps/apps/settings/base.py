@@ -508,7 +508,7 @@ EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 EMAIL_TIMEOUT = config("EMAIL_TIMEOUT", default=20, cast=int)
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
-    default="CodeX Vision <chidera.ohanenye@codexng.com>",
+    default="CodeX <chidera.ohanenye@codexng.com>",
 )
 # Monitoring copies are BCC, never CC, and a copy of an invitation carries a
 # working activation link. See the module docstring before changing either.
@@ -579,6 +579,12 @@ PAYMENTS_FAKE_WEBHOOK_SECRET = ""
 # The school apps, not the Console. Scheme and host only; the slug becomes a
 # subdomain at call time. See the module docstring.
 SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="http://localhost:5174")
+
+# Product-specific notification branding resolves through the schools FAL, so
+# the domain-neutral notification engine never imports a school application.
+NOTIFICATION_EMAIL_BRAND_PROVIDER = (
+    "schools.core.fal.notification_branding.email_brand_for_tenant"
+)
 
 # Where a payer goes when the platform's own books raised the invoice.
 # Empty means the reserved pay. subdomain. See the module docstring.

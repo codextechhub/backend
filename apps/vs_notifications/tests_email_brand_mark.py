@@ -1,16 +1,16 @@
-"""The mark in the email header: the sender's own, or the platform's.
-
-Every standard email signed itself "CV" regardless of who sent it, so a parent
-opening a fee reminder from Holy Cross saw the school's name in text beside a
-product badge they had never been told about.
+"""Exercise the product mark selected for each notification email audience.
 
 Most of what is tested here is the template path rather than the live one,
 because that is the path real email takes: the document is composed once and
-stored on the row, then rendered per recipient. A mark resolved at compose time
-would have frozen one school's logo onto every school's email.
+stored on the row, then rendered per recipient. Resolving the mark at delivery
+keeps one tenant's identity from appearing in another tenant's email.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest import mock
+
+from django.test import override_settings
 from django.test import TestCase
 
 from .models import NotificationTemplate
@@ -31,6 +31,58 @@ def mark_cell(html: str) -> str:
     return html[start:].split("</td>")[0]
 
 
+class ProductEmailBrandTests(TestCase):
+    """System mail uses the product identity for the recipient's surface."""
+
+    @override_settings(NOTIFICATION_EMAIL_BRAND_PROVIDER="")
+    @mock.patch(
+        "vs_config.platform_settings.get_platform_profile",
+        return_value={"name": "Old name", "logo_url": "https://assets.test/codex.png"},
+    )
+    def test_platform_mail_uses_codex_and_its_configured_logo(self, _profile):
+        from vs_notifications.services.branding import email_brand_context
+
+        context = email_brand_context(SimpleNamespace(kind="PLATFORM"))
+
+        self.assertEqual(context["email_brand"], "CodeX")
+        self.assertEqual(context["brand_logo_url"], "https://assets.test/codex.png")
+
+    @override_settings(
+        NOTIFICATION_EMAIL_BRAND_PROVIDER="",
+        FRONTEND_BASE_URL="https://console.codexng.com",
+    )
+    @mock.patch(
+        "vs_config.platform_settings.get_platform_profile",
+        return_value={"name": "CodeX", "logo_url": ""},
+    )
+    def test_platform_mail_defaults_to_the_codex_icon(self, _profile):
+        from vs_notifications.services.branding import email_brand_context
+
+        context = email_brand_context(SimpleNamespace(kind="PLATFORM"))
+
+        self.assertEqual(
+            context["brand_logo_url"],
+            "https://console.codexng.com/image/codex-logo.jpg",
+        )
+
+    @override_settings(
+        NOTIFICATION_EMAIL_BRAND_PROVIDER=(
+            "schools.core.fal.notification_branding.email_brand_for_tenant"
+        ),
+        SCHOOL_APP_BASE_URL="https://xvs.codexng.com",
+    )
+    def test_xvs_mail_uses_the_product_logo_for_its_tenant(self):
+        from vs_notifications.services.branding import email_brand_context
+
+        context = email_brand_context(SimpleNamespace(kind="SCHOOL"))
+
+        self.assertEqual(context["email_brand"], "XVS")
+        self.assertEqual(
+            context["brand_logo_url"],
+            "https://xvs.codexng.com/svg/logo-blue.svg",
+        )
+
+
 class EmailBrandMarkTests(TestCase):
     """The live path: subject and body already rendered for one recipient."""
 
@@ -41,10 +93,10 @@ class EmailBrandMarkTests(TestCase):
     def test_a_sender_with_a_logo_signs_the_email_with_it(self):
         cell = mark_cell(self.compose(LOGO))
         self.assertIn(f'src="{LOGO}"', cell)
-        self.assertNotIn("CV", cell)
+        self.assertNotIn("CX", cell)
 
     def test_a_sender_without_one_keeps_the_platform_mark(self):
-        self.assertIn("CV", mark_cell(self.compose("")))
+        self.assertIn("CX", mark_cell(self.compose("")))
 
     def test_only_http_becomes_an_image(self):
         """The CTA has this rule; the mark is interpolated into the same document.
@@ -57,7 +109,7 @@ class EmailBrandMarkTests(TestCase):
                         "//evil.test/x.png", "file:///etc/passwd"):
             with self.subTest(hostile):
                 cell = mark_cell(self.compose(hostile))
-                self.assertIn("CV", cell)
+                self.assertIn("CX", cell)
                 self.assertNotIn("<img", cell)
 
     def test_a_url_cannot_break_out_of_the_attribute(self):
@@ -96,7 +148,7 @@ class StoredTemplateMarkTests(TestCase):
         """
         cell = mark_cell(self.document())
         self.assertIn("{% if brand_logo_url %}", cell)
-        self.assertIn("{% else %}CV{% endif %}", cell)
+        self.assertIn("{% else %}CX{% endif %}", cell)
         self.assertIn("{{ brand_logo_url }}", cell)
 
     def render(self, context):
@@ -115,7 +167,7 @@ class StoredTemplateMarkTests(TestCase):
 
     def test_a_school_with_no_logo_falls_back_rather_than_breaking(self):
         cell = mark_cell(self.render({"email_brand": "Bright Star"}))
-        self.assertIn("CV", cell)
+        self.assertIn("CX", cell)
         self.assertNotIn("<img", cell)
         self.assertNotIn('src=""', cell)
 
@@ -239,4 +291,43 @@ class ContextKeyFamilyTests(TestCase):
             template, {"school_name": "Holy Cross", "school_logo_url": "javascript:alert(1)"},
         )
         self.assertNotIn("javascript:", refused)
-        self.assertIn("CV", mark_cell(refused))
+        self.assertIn("CX", mark_cell(refused))
+
+
+class ProductBrandingMigrationTests(TestCase):
+    """Existing standard rows adopt product branding without losing custom HTML."""
+
+    def test_replaces_retired_copy_and_only_regenerates_standard_html(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        standard = NotificationTemplate.objects.filter(
+            channel="email", html_is_custom=False,
+        ).first()
+        custom = NotificationTemplate.objects.filter(channel="email").exclude(
+            pk=standard.pk,
+        ).first()
+        if standard is None or custom is None:
+            self.skipTest("two email templates are required")
+
+        standard.body = "Open CodeX Vision now."
+        standard.html_body = "<html>old standard</html>"
+        standard.save(update_fields=["body", "html_body"])
+
+        custom.body = "Open CodeX Vision now."
+        custom.html_body = "<html>staff design</html>"
+        custom.html_is_custom = True
+        custom.save(update_fields=["body", "html_body", "html_is_custom"])
+
+        migration = import_module(
+            "vs_notifications.migrations.0020_product_email_branding"
+        )
+        migration.apply_product_email_branding(apps, None)
+
+        standard.refresh_from_db()
+        custom.refresh_from_db()
+        self.assertEqual(standard.body, "Open {{ email_brand }} now.")
+        self.assertIn("{{ brand_logo_url }}", standard.html_body)
+        self.assertEqual(custom.body, "Open {{ email_brand }} now.")
+        self.assertEqual(custom.html_body, "<html>staff design</html>")

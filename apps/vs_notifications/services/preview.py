@@ -49,6 +49,7 @@ def template_variables(*texts: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _EXACT_SAMPLES = {
+    "email_brand":     "CodeX",
     "school_name":      "Corona Secondary School",
     "issuer_name":      "Corona Secondary School",
     "entity_name":      "Corona Secondary School",

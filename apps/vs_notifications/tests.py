@@ -378,6 +378,43 @@ class DispatchTests(_NotifFixture):
         self.assertEqual(in_app.status, NotificationStatus.SENT)
         delay.assert_called_once_with(str(email.id))
 
+    @mock.patch(
+        "vs_config.platform_settings.get_platform_profile",
+        return_value={"name": "Anything", "logo_url": "https://assets.test/codex.png"},
+    )
+    def test_platform_recipient_gets_codex_email_branding(self, _profile):
+        rcpt = self._recipient("platform-brand@test.com")
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            ids = NotificationService.send(
+                event_key="ticket.created",
+                context={"tenant_name": "A customer"},
+                recipients=[rcpt],
+            )
+
+        email = Notification.objects.get(id__in=ids, channel=ChannelChoices.EMAIL)
+        self.assertIn("CodeX", email.html_body)
+        self.assertIn('src="https://assets.test/codex.png"', email.html_body)
+        self.assertNotIn("CodeX Vision", email.html_body)
+
+    @override_settings(SCHOOL_APP_BASE_URL="https://xvs.codexng.com")
+    def test_xvs_recipient_gets_product_email_branding(self):
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            ids = NotificationService.send(
+                event_key="ticket.created",
+                context={"tenant_name": "Bright Star School"},
+                recipients=[self.admin_a],
+                tenant=self.school_a.tenant,
+            )
+
+        email = Notification.objects.get(id__in=ids, channel=ChannelChoices.EMAIL)
+        self.assertIn("XVS", email.html_body)
+        self.assertIn(
+            'src="https://xvs.codexng.com/svg/logo-blue.svg"',
+            email.html_body,
+        )
+        self.assertNotIn("CodeX Vision", email.html_body)
+
     def test_unregistered_recipient_gets_no_in_app_record(self):
         """An address is not an inbox.
 
@@ -1319,7 +1356,7 @@ class EmailLayoutTests(_NotifFixture):
             body="Hello Ada,\n\nReference: TCK-0001\nPriority: High",
         )
         self.assertIn("Secure notification", html)
-        self.assertIn("Powered by CodeX Vision", html)
+        self.assertIn("Powered by CodeX", html)
         self.assertIn("Notification</div>", html)
         self.assertIn("border-radius:16px", html)
         self.assertIn("background-color:#f9fafb", html)
@@ -1335,7 +1372,7 @@ class EmailLayoutTests(_NotifFixture):
 
     def test_standard_document_falls_back_to_platform_branding(self):
         html = self._render(subject="Ticket raised", body="Body text.")
-        self.assertIn("CodeX Vision", html)
+        self.assertIn("CodeX", html)
 
     def test_rendered_values_cannot_inject_markup(self):
         """A value substituted into the stored markup is escaped, every time."""
@@ -1888,6 +1925,7 @@ class OnboardingEmailDesignTests(_NotifFixture):
         from .services.render import render_notification_template
 
         context = {
+            "email_brand": "XVS",
             "school_name": "Bright Star School",
             "school_slug": "bright-star",
             "school_logo_url": "",
@@ -1959,7 +1997,7 @@ class OnboardingEmailDesignTests(_NotifFixture):
     def test_activation_and_expiry_mail_use_human_dates_and_precise_outcomes(self):
         subject, body, _ = self._render("onboarding.activated")
 
-        self.assertEqual(subject, "Bright Star School is live on CodeX Vision")
+        self.assertEqual(subject, "Bright Star School is live on XVS")
         self.assertIn("Activated at: 04 Sep 2026, 11:32 WAT", body)
         self.assertIn("permitted by their roles", body)
         self.assertNotIn("2026-09-04T", body)
