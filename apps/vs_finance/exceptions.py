@@ -279,7 +279,7 @@ class MissingAccountError(PostingError):
     """An account a posting needs (found by its chart code) is absent, inactive or a heading.
 
     ``label`` names the account's role as the account mapping does, so the
-    sentence reads "Account 2300, WHT payable (withholding tax), is missing ...".
+    sentence reads "Account 2300, WHT payable, is missing ...".
     """
 
     error_code = "ACCOUNT_NOT_FOUND"

@@ -1018,24 +1018,19 @@ BAD_DEBT_EXPENSE_CODE = "5350"           # Bad debts (expense) - write-offs and 
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
 
-#: The accounts a school's two readers name differently, in the words each is given.
-#: A bursar's screens, refusals and messages say what the account holds in plain
-#: words (``*_PLAIN``); an accountant's screens (the chart of accounts, the account
-#: mapping, journals and posting previews, the close checklist, the reconciliation
-#: reports) give the accounting term with the plain words beside it (``*_NAME``),
-#: so neither reader has to translate. Each pair is the one source for the seeded
-#: account's name, its mapping role's label and every journal line or check that
-#: names it, so a posted document and the preview of a new one always agree.
+#: The accounting terms used for seeded accounts and account-mapping labels.
+#: Plain-language explanations stay in page help and validation messages rather
+#: than being appended to the account name itself.
 GRIR_PLAIN = "goods received, not yet billed"
-GRIR_NAME = f"GR/IR clearing ({GRIR_PLAIN})"
+GRIR_NAME = "GR/IR clearing"
 AR_PLAIN = "what customers owe"
-AR_NAME = f"Accounts receivable ({AR_PLAIN})"
+AR_NAME = "Accounts receivable"
 AP_PLAIN = "what is owed to suppliers"
-AP_NAME = f"Accounts payable ({AP_PLAIN})"
+AP_NAME = "Accounts payable"
 WHT_PLAIN = "withholding tax"
-WHT_NAME = f"WHT payable ({WHT_PLAIN})"
+WHT_NAME = "WHT payable"
 GATEWAY_PLAIN = "online payments not yet in the bank"
-GATEWAY_NAME = f"Gateway clearing ({GATEWAY_PLAIN})"
+GATEWAY_NAME = "Gateway clearing"
 
 
 class AccountMappingKey(models.TextChoices):

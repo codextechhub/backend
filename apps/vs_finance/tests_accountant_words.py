@@ -1,13 +1,4 @@
-"""Each reader gets the words their screen is for, and one name per thing.
-
-Corona's accountant reads the chart, the account mapping, posting previews and
-the close checklist: there an accounting term comes with the bursar's words
-beside it, "WHT payable (withholding tax)". Mrs Okafor, the bursar, is told in
-plain words alone, "Customer C001 has no account chosen for what they owe". A
-setting's dropdown, its "Recent changes" line and its refusal all use the same
-label, read from the server. A month is offered as "February 2026", never as
-the stored "2026-02".
-"""
+"""Account names stay concise while refusals explain what users need to fix."""
 from __future__ import annotations
 
 import datetime
@@ -32,13 +23,13 @@ from .exceptions import MissingAccountError, NoReceivableAccountError
 from .models import Account, FiscalPeriod
 from .tests_branch_scope import _FinanceBranchFixture
 
-_migration = importlib.import_module("vs_finance.migrations.0068_paired_account_names")
+_migration = importlib.import_module("vs_finance.migrations.0070_simple_account_names")
 
 #: Words that never reach a bursar on their own.
 BURSAR_JARGON = ("control", "sub-ledger", "subledger", "legacy", "cutover", "entity", "postable")
 
 
-class PairedAccountNamesTests(_FinanceBranchFixture):
+class SimpleAccountNamesTests(_FinanceBranchFixture):
 
     SEEDED = {"1125": GATEWAY_NAME, "1200": AR_NAME, "2100": AP_NAME, "2300": WHT_NAME}
 
@@ -47,38 +38,43 @@ class PairedAccountNamesTests(_FinanceBranchFixture):
             Account.objects.filter(entity=books, code__in=self.SEEDED).values_list("code", "name")
         )
 
-    def test_the_seeded_chart_and_the_mapping_use_one_paired_name(self):
+    def test_the_seeded_chart_and_the_mapping_use_short_account_names(self):
         self.assertEqual(self.names(self.books), self.SEEDED)
         self.assertEqual(AccountMappingKey.GATEWAY_CLEARING.label, GATEWAY_NAME)
         self.assertEqual(AccountMappingKey.ACCOUNTS_RECEIVABLE.label, AR_NAME)
         self.assertEqual(AccountMappingKey.ACCOUNTS_PAYABLE.label, AP_NAME)
-        self.assertEqual(AccountMappingKey.WHT_PAYABLE.label, "WHT payable (withholding tax)")
+        self.assertEqual(AccountMappingKey.WHT_PAYABLE.label, "WHT payable")
 
     def test_only_an_untouched_seeded_name_is_renamed(self):
-        seeded = {"1125": "Gateway Clearing", "1200": "Accounts Receivable",
-                  "2100": "Accounts Payable", "2300": "WHT Payable"}
+        seeded = {
+            "1125": "Gateway clearing (online payments not yet in the bank)",
+            "1200": "Accounts receivable (what customers owe)",
+            "2100": "Accounts payable (what is owed to suppliers)",
+            "2300": "WHT payable (withholding tax)",
+        }
         for code, name in seeded.items():
             Account.objects.filter(entity=self.books, code=code).update(name=name)
             Account.objects.filter(entity=self.solo_books, code=code).update(name=name)
         Account.objects.filter(entity=self.solo_books, code="2300").update(
             name="Withholding tax payable")
 
-        _migration.rename_seeded(live_apps, None)
+        _migration.shorten_seeded_names(live_apps, None)
 
         self.assertEqual(self.names(self.books), self.SEEDED)
         self.assertEqual(self.names(self.solo_books)["2300"], "Withholding tax payable")
         self.assertEqual(self.names(self.solo_books)["1200"], AR_NAME)
 
-        _migration.restore_seeded(live_apps, None)
+        _migration.restore_paired_names(live_apps, None)
 
         self.assertEqual(self.names(self.books), seeded)
         self.assertEqual(self.names(self.solo_books)["2300"], "Withholding tax payable")
 
     def test_a_gateway_account_placed_at_another_code_is_renamed_too(self):
-        Account.objects.filter(entity=self.books, code="1125").update(code="1126",
-                                                                      name="Gateway Clearing")
+        Account.objects.filter(entity=self.books, code="1125").update(
+            code="1126", name="Gateway clearing (online payments not yet in the bank)"
+        )
 
-        _migration.rename_seeded(live_apps, None)
+        _migration.shorten_seeded_names(live_apps, None)
 
         self.assertEqual(Account.objects.get(entity=self.books, code="1126").name, GATEWAY_NAME)
 
@@ -89,7 +85,7 @@ class RefusalsSpeakToTheirReaderTests(SimpleTestCase):
         for word in BURSAR_JARGON:
             self.assertNotIn(word, text.lower())
 
-    def test_a_bursar_is_told_in_plain_words_and_an_accountant_gets_the_pair(self):
+    def test_a_bursar_gets_plain_words_and_an_accountant_gets_the_account_name(self):
         from vs_procurement.exceptions import NoPayableAccountError
 
         customer = SimpleNamespace(code="C001", pk=1)
@@ -101,9 +97,9 @@ class RefusalsSpeakToTheirReaderTests(SimpleTestCase):
             "for them yet. Choose one on the customer's record.",
         )
         self.assert_plain(str(NoPayableAccountError(vendor)))
-        self.assertIn("accounts receivable (what customers owe) account",
+        self.assertIn("accounts receivable account",
                       str(NoReceivableAccountError(customer, accountant=True)))
-        self.assertIn("accounts payable (what is owed to suppliers) account",
+        self.assertIn("accounts payable account",
                       str(NoPayableAccountError(vendor, accountant=True)))
 
     def test_a_missing_account_is_named_by_code_and_role(self):
@@ -112,7 +108,7 @@ class RefusalsSpeakToTheirReaderTests(SimpleTestCase):
         message = str(MissingAccountError("2300", label=WHT_NAME))
 
         self.assertTrue(message.startswith(
-            "Account 2300, WHT payable (withholding tax), is missing from the chart of accounts"
+            "Account 2300, WHT payable, is missing from the chart of accounts"
         ), message)
         self.assertNotIn("entity", message)
         self.assertNotIn("postable", message)
