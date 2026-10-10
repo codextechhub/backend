@@ -69,6 +69,9 @@ class _SchoolCreationMixin:
         # does not care about branches still has to carry its main one. These
         # tests are about books and entitlements, not about branch shape.
         payload = dict(payload)
+        payload.setdefault("email", f"billing-{next(self._branch_email_counter)}@school.test")
+        payload.setdefault("phone", "+2348000000000")
+        payload.setdefault("address", "1 School Road")
         payload.setdefault("branches", [self._branch(
             "Main Branch",
             is_main=True,

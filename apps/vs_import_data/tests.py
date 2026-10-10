@@ -388,6 +388,9 @@ class ImportDoesNotWriteARoleLabelTests(TestCase):
             payload={
                 "name": "Greenfield Academy",
                 "slug": "import-greenfield",
+                "email": "billing@import-greenfield.test",
+                "phone": "+2348011111111",
+                "address": "1 Greenfield Road, Lagos",
                 "school_admin_full_name": "Ada Okoye",
                 "school_admin_email": "ada@import-greenfield.test",
                 "school_admin_role": "Director of ICT",
@@ -422,6 +425,9 @@ class ImportDoesNotWriteARoleLabelTests(TestCase):
             payload={
                 "name": "Bare Minimum",
                 "slug": "import-bare",
+                "email": "billing@import-bare.test",
+                "phone": "+2348022222222",
+                "address": "2 Bare Road, Lagos",
                 "school_admin_full_name": "Ada Okoye",
                 "school_admin_email": "ada@import-bare.test",
                 "branch_admin_full_name": "Tunde Bello",
@@ -483,6 +489,9 @@ class ImportDoesNotWriteARoleLabelTests(TestCase):
             payload={
                 "name": "Stale Template",
                 "slug": "import-stale",
+                "email": "billing@import-stale.test",
+                "phone": "+2348033333333",
+                "address": "3 Stale Road, Lagos",
                 "school_admin_full_name": "Ada Okoye",
                 "school_admin_email": "ada@import-stale.test",
                 "school_admin_role": "IT Head",

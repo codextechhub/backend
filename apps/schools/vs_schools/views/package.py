@@ -1,10 +1,14 @@
 # views/package.py
 
 from rest_framework import generics
+from rest_framework.exceptions import ValidationError
 from ..models import PackagePlan
 from vs_config.models import Capability
-from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
-from ..serializers import PackagePlanSerializer, XVSModuleSerializer
+from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+from vs_audit.services import AuditDiffService, emit_audit_event
+from vs_finance.models import LedgerEntity
+from vs_rbac.permissions import HasRBACPermission, IsVisionStaff, IsAuthenticatedAndActive
+from ..serializers import PackagePlanPriceSerializer, PackagePlanSerializer, XVSModuleSerializer
 
 
 class PackagePlanListView(generics.ListAPIView):
@@ -17,6 +21,42 @@ class PackagePlanListView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = PackagePlanSerializer
     queryset = PackagePlan.objects.filter(is_active=True).order_by("name")
+
+
+class PackagePlanPriceView(generics.UpdateAPIView):
+    """PATCH one tier's per-student catalogue rate for future agreements."""
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+    rbac_permission = "platform.schools.configure"
+    serializer_class = PackagePlanPriceSerializer
+    queryset = PackagePlan.objects.filter(is_active=True)
+    lookup_field = "code"
+
+    def perform_update(self, serializer):
+        platform = LedgerEntity.objects.platform()
+        if platform is None:
+            raise ValidationError(
+                "Platform finance must be configured before subscription prices can change."
+            )
+        plan = serializer.instance
+        before = {"price_per_student": plan.price_per_student}
+        updated = serializer.save()
+        after = {"price_per_student": updated.price_per_student}
+        emit_audit_event(
+            module_key=AuditModuleKey.CONFIG,
+            action_type=AuditActionType.UPDATE,
+            actor_user=self.request.user,
+            tenant=platform.tenant,
+            entity_type="PackagePlan",
+            entity_id=str(updated.pk),
+            entity_label=updated.name,
+            severity=AuditSeverity.INFO,
+            summary=f"{updated.name} subscription price updated",
+            before_data=before,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before, after_data=after,
+            ),
+        )
 
 
 class XVSModuleListView(generics.ListAPIView):

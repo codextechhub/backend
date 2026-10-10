@@ -48,6 +48,7 @@ from vs_rbac.tests.helpers import (
     make_role_permission,
     make_school,
     make_school_admin,
+    with_school_billing_details,
     make_vision_user,
 )
 from vs_tenants.models import Branch, BranchStatus, Tenant
@@ -947,7 +948,11 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
         ])
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
-        response = client.post(reverse("school-create"), payload, format="json")
+        response = client.post(
+            reverse("school-create"),
+            with_school_billing_details(payload),
+            format="json",
+        )
         if expect == 201:
             assert_school_created(self, response)
         else:

@@ -34,6 +34,7 @@ from vs_rbac.tests.helpers import (
     make_branch,
     make_school,
     make_vision_user,
+    with_school_billing_details,
 )
 from vs_tenants.models import Branch, BranchStatus, Tenant
 
@@ -656,7 +657,7 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         """Create a school the way the wizard does, main branch and all."""
         response = self._client().post(
             reverse("school-create"),
-            {
+            with_school_billing_details({
                 "name": name,
                 "slug": slug,
                 "status": SchoolStatus.PENDING,
@@ -669,7 +670,7 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                         "email": f"head@{slug}.test",
                     },
                 }],
-            },
+            }),
             format="json",
         )
         assert_school_created(self, response)
@@ -885,7 +886,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         """The wizard path: a school and its main branch in one request."""
         response = self._client().post(
             reverse("school-create"),
-            {
+            with_school_billing_details({
                 "name": name,
                 "slug": slug,
                 "branches": [{
@@ -897,7 +898,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                         "email": f"head@{slug}.test",
                     },
                 }],
-            },
+            }),
             format="json",
         )
         assert_school_created(self, response)

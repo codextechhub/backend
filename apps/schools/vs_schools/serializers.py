@@ -246,6 +246,8 @@ class PackagePlanSerializer(serializers.ModelSerializer):
             "code",
             "description",
             "billing_cycle",
+            "currency",
+            "price_per_student",
             "default_depth",
             "default_depth_label",
             "module_depths",
@@ -267,6 +269,26 @@ class PackagePlanSerializer(serializers.ModelSerializer):
         ]
 
 
+class PackagePlanPriceSerializer(serializers.ModelSerializer):
+    """Change the catalogue rate used by future school subscriptions."""
+
+    price_per_student = serializers.IntegerField(min_value=1)
+
+    class Meta:
+        model = PackagePlan
+        fields = ["price_per_student"]
+
+    def validate(self, attrs):
+        if self.instance.price_per_student is None:
+            raise serializers.ValidationError({
+                "price_per_student": (
+                    "This tier is quoted per school. Set its agreed rate on the "
+                    "school subscription instead."
+                ),
+            })
+        return attrs
+
+
 class ChangeSchoolPlanSerializer(serializers.Serializer):
     """Move a school onto another plan.
 
@@ -278,6 +300,7 @@ class ChangeSchoolPlanSerializer(serializers.Serializer):
 
     package_plan = serializers.SlugField(max_length=100)
     subscription_expires_at = serializers.DateField(required=False, allow_null=True)
+    agreed_price_per_student = serializers.IntegerField(required=False, min_value=1)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_package_plan(self, code):
@@ -303,6 +326,20 @@ class ChangeSchoolPlanSerializer(serializers.Serializer):
         if value and value < tenant_today(self.context["school"].tenant):
             raise serializers.ValidationError("Subscription expiry cannot be in the past.")
         return value
+
+    def validate(self, attrs):
+        plan = attrs.get("package_plan")
+        quoted_rate = attrs.get("agreed_price_per_student")
+        if plan and plan.price_per_student is None:
+            if quoted_rate is None:
+                raise serializers.ValidationError({
+                    "agreed_price_per_student": (
+                        "Enter the agreed per-student rate for this quoted tier."
+                    ),
+                })
+        elif plan:
+            attrs["agreed_price_per_student"] = plan.price_per_student
+        return attrs
 
 
 class SchoolPlanUpliftSerializer(serializers.Serializer):
@@ -397,16 +434,44 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
         default=None,
         help_text="Optional. Date the subscription expires. Cannot be in the past.",
     )
+    subscription_starts_at = serializers.DateField(
+        help_text="The first day covered by the subscription.",
+    )
+    agreed_price_per_student = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        help_text="Required only when the selected tier uses a quoted rate.",
+    )
+    minimum_billable_students = serializers.IntegerField(
+        required=False,
+        min_value=0,
+        default=0,
+    )
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         errors = {}
 
         # A school being created keeps the platform's zone, so its day is the platform's.
         expires_at = attrs.get("subscription_expires_at")
+        starts_at = attrs.get("subscription_starts_at")
         if expires_at and expires_at < tenant_today(None):
             errors["subscription_expires_at"] = (
                 "Subscription expiry date cannot be in the past."
             )
+        if starts_at and expires_at and expires_at < starts_at:
+            errors["subscription_expires_at"] = (
+                "Subscription expiry cannot be before the subscription start date."
+            )
+
+        plan = attrs["package_plan"]
+        quoted_rate = attrs.get("agreed_price_per_student")
+        if plan.price_per_student is None:
+            if quoted_rate is None:
+                errors["agreed_price_per_student"] = (
+                    "Enter the agreed per-student rate for this quoted tier."
+                )
+        else:
+            attrs["agreed_price_per_student"] = plan.price_per_student
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -459,7 +524,10 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
             "id",
             "package_plan",
             "enabled_modules",
+            "subscription_starts_at",
             "subscription_expires_at",
+            "agreed_price_per_student",
+            "minimum_billable_students",
             "is_active",
             "notes",
             "created_at",
@@ -921,6 +989,8 @@ class SchoolListSerializer(serializers.ModelSerializer):
             # notification settings ?school=) take - pickers need it.
             "id",
             "name",
+            "email",
+            "phone",
             "slug",
             "code",
             "ownership_type",
@@ -989,6 +1059,8 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
             # notification settings) that take an id rather than a slug.
             "id",
             "name",
+            "email",
+            "phone",
             "slug",
             "code",
             "ownership_type",
@@ -1081,6 +1153,9 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
     """
 
     slug = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=True, allow_blank=False)
+    phone = serializers.CharField(required=True, allow_blank=False, validators=[phone_validator])
+    address = serializers.CharField(required=True, allow_blank=False)
     branding = SchoolBrandingSerializer(required=False)
     primary_admin_data = SchoolPrimaryAdminWriteSerializer(required=False, write_only=True)
     branches = BranchInlineCreateSerializer(
@@ -1100,6 +1175,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         model = School
         fields = [
             "name",
+            "email",
+            "phone",
             "slug",
             "code",
             "ownership_type",
@@ -1428,7 +1505,10 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             expires_at = package_setup_data.pop("subscription_expires_at", None)
             if not expires_at:
                 from dateutil.relativedelta import relativedelta
-                expires_at = tenant_today(school.tenant) + relativedelta(years=1)
+                expires_at = (
+                    package_setup_data["subscription_starts_at"]
+                    + relativedelta(years=1)
+                )
 
             setup = SchoolPackageSetup.objects.create(
                 school=school,
@@ -1447,7 +1527,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 actor=actor,
             )
 
-        # --- 6. Set of books (best effort, never fatal) ---
+        # --- 6. Register the school in CodeX's own receivables ledger ---
+        from .services.platform_customer import register_platform_customer
+
+        report_stage("customer")
+        register_platform_customer(school)
+
+        # --- 7. Set of books (best effort, never fatal) ---
         # Every school gets books, entitled to finance or not: adding them later
         # means going back to repair every school created before this point. The
         # service opens its own savepoint and swallows its own failures, so a
@@ -1459,7 +1545,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         report_stage("books")
         provision_books_for_school(school)
 
-        # --- 7. Onboarding control room (best effort, never fatal) ---
+        # --- 8. Onboarding control room (best effort, never fatal) ---
         # A school that cannot see its checklist the moment it is created has
         # to be found and repaired by hand, so provisioning happens here rather
         # than on the school's first sign-in. Same shape as the books above:
@@ -1537,12 +1623,19 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
     """
 
     slug = serializers.CharField(required=False)
+    email = serializers.EmailField(required=False, allow_blank=False)
+    phone = serializers.CharField(
+        required=False, allow_blank=False, validators=[phone_validator],
+    )
+    address = serializers.CharField(required=False, allow_blank=False)
     branding = SchoolBrandingSerializer(required=False)
 
     class Meta:
         model = School
         fields = [
             "slug",
+            "email",
+            "phone",
             "ownership_type",
             "address",
             "website",

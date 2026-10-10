@@ -34,6 +34,7 @@ from .helpers import (
     make_role_permission,
     make_school_admin,
     make_vision_user,
+    with_school_billing_details,
 )
 
 
@@ -79,7 +80,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
     def _create_school(cls, slug, plan):
         response = cls._operator_client().post(
             reverse("school-create"),
-            {
+            with_school_billing_details({
                 "name": "Bright Star Academy",
                 "slug": slug,
                 "package_setup_data": {
@@ -97,7 +98,7 @@ class OneSchoolMeetsTheWallTests(TestCase):
                         "email": f"head@{slug}.test",
                     },
                 }],
-            },
+            }),
             format="json",
         )
         if response.status_code != 202 or response.data["data"]["status"] != "SUCCEEDED":

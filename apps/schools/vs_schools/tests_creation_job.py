@@ -20,7 +20,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from core.models import BackgroundJob
-from vs_rbac.tests.helpers import make_vision_user
+from vs_rbac.tests.helpers import make_vision_user, with_school_billing_details
 
 from .exceptions import AdminProvisioningError
 from .models import School
@@ -28,6 +28,7 @@ from .services.creation import (
     GENERIC_FAILURE,
     STEP_BOOKS,
     STEP_BRANCHES,
+    STEP_CUSTOMER,
     STEP_INVITATIONS,
     STEP_ONBOARDING,
     STEP_PLAN,
@@ -68,7 +69,7 @@ class SchoolCreationJobContractTests(TestCase):
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             with self.captureOnCommitCallbacks(execute=True):
                 return (client or self._client()).post(
-                    reverse("school-create"), payload, format="json",
+                    reverse("school-create"), with_school_billing_details(payload), format="json",
                 )
 
     # --- the success contract ---------------------------------------------
@@ -103,8 +104,8 @@ class SchoolCreationJobContractTests(TestCase):
         # The steps that always run are still there and in order.
         self.assertEqual(
             steps,
-            [STEP_SCHOOL, STEP_ROLES, STEP_BRANCHES, STEP_BOOKS, STEP_ONBOARDING,
-             STEP_INVITATIONS],
+            [STEP_SCHOOL, STEP_ROLES, STEP_BRANCHES, STEP_CUSTOMER, STEP_BOOKS,
+             STEP_ONBOARDING, STEP_INVITATIONS],
         )
 
     # --- validation refuses before anything is queued ---------------------
@@ -230,13 +231,13 @@ class SchoolCreationJobContractTests(TestCase):
         ), mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             response = self._client().post(
                 reverse("school-create"),
-                {
+                with_school_billing_details({
                     "name": "Stops Early", "slug": "stops-early",
                     "primary_admin_data": {
                         "full_name": "Ada Obi", "email": "ada@stops-early.test",
                     },
                     "branches": [_branch(email="branch@stops-early.test")],
-                },
+                }),
                 format="json",
             )
 
@@ -262,13 +263,13 @@ class SchoolCreationJobContractTests(TestCase):
         ), mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             response = self._client().post(
                 reverse("school-create"),
-                {
+                with_school_billing_details({
                     "name": "Blows Up", "slug": "blows-up",
                     "primary_admin_data": {
                         "full_name": "Ada Obi", "email": "ada@blows-up.test",
                     },
                     "branches": [_branch(email="branch@blows-up.test")],
-                },
+                }),
                 format="json",
             )
 

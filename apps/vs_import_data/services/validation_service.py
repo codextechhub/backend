@@ -370,6 +370,27 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 "raw_value": plan_code,
             })
 
+        if plan_code == "enterprise" and not _s("agreed_price_per_student"):
+            issues.append({
+                "severity": "error",
+                "code": "required_value_missing",
+                "message": "Enterprise schools require an agreed price per student.",
+                "row_number": row_number,
+                "column_name": _col("agreed_price_per_student"),
+                "raw_value": "",
+            })
+
+        minimum_students = _int("minimum_billable_students")
+        if minimum_students is not None and minimum_students < 0:
+            issues.append({
+                "severity": "error",
+                "code": "business_rule",
+                "message": "Minimum Billable Students cannot be negative.",
+                "row_number": row_number,
+                "column_name": _col("minimum_billable_students"),
+                "raw_value": _s("minimum_billable_students"),
+            })
+
         # --- subscription_expires_at: YYYY-MM-DD and must be future ---
         expires_raw = _s("subscription_expires_at")
         if expires_raw:

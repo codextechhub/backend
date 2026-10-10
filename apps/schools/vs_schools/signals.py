@@ -26,12 +26,27 @@ Primary-admin invite status
 """
 import logging
 
+from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
 from vs_user.signals import invitation_dispatch_settled
 
 logger = logging.getLogger("vs_schools.signals")
+
+
+@receiver(post_save, sender="vs_schools.School", dispatch_uid="vs_schools.platform_customer")
+def sync_platform_customer(sender, instance, **kwargs):
+    """Keep a registered CodeX customer aligned with the school's billing details.
+
+    Registration itself is explicit in the creation service because it is a
+    mandatory creation step. This receiver only updates an existing link, so
+    historical rows and low-level fixtures are not made dependent on platform
+    finance setup merely because they save a school.
+    """
+    from .services.platform_customer import sync_registered_platform_customer
+
+    sync_registered_platform_customer(instance)
 
 
 @receiver(invitation_dispatch_settled, dispatch_uid="vs_schools.primary_admin_invite")

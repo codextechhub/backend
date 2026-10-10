@@ -1,7 +1,7 @@
 from django.urls import path
 
 from .views.my_branches import MyBranchDetailView, MyBranchListView
-from .views.package import PackagePlanListView, XVSModuleListView
+from .views.package import PackagePlanListView, PackagePlanPriceView, XVSModuleListView
 from .views.plan import (
     SchoolPlanUpliftDetailView,
     SchoolPlanUpliftView,
@@ -46,6 +46,11 @@ urlpatterns = [
 
     # --------- Package Plans & Modules ---------
     path("package-plans/", PackagePlanListView.as_view(), name="package-plan-list"),
+    path(
+        "package-plans/<slug:code>/price/",
+        PackagePlanPriceView.as_view(),
+        name="package-plan-price",
+    ),
     path("modules/", XVSModuleListView.as_view(), name="xvs-module-list"),
 
     # --------- The caller's own school ---------

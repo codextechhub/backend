@@ -42,6 +42,7 @@ STEP_ROLES = "roles"
 STEP_SCHOOL_ADMIN = "school_admin"
 STEP_BRANCHES = "branches"
 STEP_PLAN = "plan"
+STEP_CUSTOMER = "customer"
 STEP_BOOKS = "books"
 STEP_ONBOARDING = "onboarding"
 STEP_INVITATIONS = "invitations"
@@ -67,7 +68,7 @@ def creation_steps(validated_data: dict) -> list[str]:
     steps.append(STEP_BRANCHES)
     if validated_data.get("package_setup_data"):
         steps.append(STEP_PLAN)
-    steps += [STEP_BOOKS, STEP_ONBOARDING]
+    steps += [STEP_CUSTOMER, STEP_BOOKS, STEP_ONBOARDING]
     if has_school_admin or has_branch_admin:
         steps.append(STEP_INVITATIONS)
     return steps

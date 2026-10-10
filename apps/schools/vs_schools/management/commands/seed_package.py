@@ -38,6 +38,8 @@ PLANS = [
             "Covers core student and teacher management with limited capacity."
         ),
         "billing_cycle": BillingCycle.YEARLY,
+        "currency": "NGN",
+        "price_per_student": 350_000,
         "default_depth": CapabilityDepth.CORE,
         "is_active": True,
     },
@@ -49,6 +51,8 @@ PLANS = [
             "Includes expanded capacity and access to additional modules."
         ),
         "billing_cycle": BillingCycle.YEARLY,
+        "currency": "NGN",
+        "price_per_student": 500_000,
         "default_depth": CapabilityDepth.PLUS,
         "is_active": True,
     },
@@ -60,6 +64,8 @@ PLANS = [
             "high capacity, all modules, and priority support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
+        "currency": "NGN",
+        "price_per_student": 750_000,
         "default_depth": CapabilityDepth.ADVANCED,
         "is_active": True,
     },
@@ -71,6 +77,8 @@ PLANS = [
             "schools. No capacity ceilings. Custom SLA and support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
+        "currency": "NGN",
+        "price_per_student": None,
         "default_depth": None,
         "is_active": True,
     },
@@ -114,6 +122,8 @@ class Command(BaseCommand):
                     "name": plan_data["name"],
                     "description": plan_data["description"],
                     "billing_cycle": plan_data["billing_cycle"],
+                    "currency": plan_data["currency"],
+                    "price_per_student": plan_data["price_per_student"],
                     "default_depth": plan_data["default_depth"],
                     "is_active": plan_data["is_active"],
                 },

@@ -102,7 +102,8 @@ class Currency(models.TextChoices):
 #: and are here to catch a repaired or imported row that lost one, not because
 #: a school is ever expected to type them.
 REQUIRED_PROFILE_FIELDS: tuple[str, ...] = (
-    "name", "slug", "code", "ownership_type", "term_structure", "currency",
+    "name", "slug", "code", "email", "phone", "address", "ownership_type",
+    "term_structure", "currency",
 )
 
 
@@ -152,6 +153,8 @@ class School(TimeStampedModel):
         help_text="Canonical ownership boundary.",
     )
     name = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=32, blank=True, default="")
     # The slug WAS the primary key. It's now a unique business identifier
     # over a surrogate BigAuto id (added implicitly via DEFAULT_AUTO_FIELD), so
     # renaming a school's slug no longer means rewriting every FK in the
@@ -512,6 +515,17 @@ class PackagePlan(TimeStampedModel):
         choices=BillingCycle.choices,
         default=BillingCycle.YEARLY,
     )
+    currency = models.CharField(
+        max_length=8, choices=Currency.choices, default=Currency.NGN,
+    )
+    price_per_student = models.PositiveBigIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Price per active student for one billing cycle, in the "
+            "currency's minor unit. Null means the school needs a quoted rate."
+        ),
+    )
 
     default_depth = models.PositiveSmallIntegerField(
         choices=CapabilityDepth.choices, null=True, blank=True,
@@ -605,6 +619,22 @@ class SchoolPackageSetup(TimeStampedModel):
         related_name="school_setups",
     )
     subscription_expires_at = models.DateField()
+    subscription_starts_at = models.DateField()
+    agreed_price_per_student = models.PositiveBigIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "The agreed per-student rate in minor currency units. It is copied "
+            "from the tier or entered for a quoted plan."
+        ),
+    )
+    minimum_billable_students = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Optional contracted minimum. Zero delays the first invoice until "
+            "the school has active enrolled students."
+        ),
+    )
 
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
@@ -622,6 +652,13 @@ class SchoolPackageSetup(TimeStampedModel):
         tenant = self.school.tenant if self.school_id else None
         if self.subscription_expires_at < tenant_today(tenant):
             errors["subscription_expires_at"] = "Subscription expiry cannot be in the past."
+        if (
+            self.subscription_starts_at
+            and self.subscription_expires_at < self.subscription_starts_at
+        ):
+            errors["subscription_expires_at"] = (
+                "Subscription expiry cannot be before the subscription start date."
+            )
 
         if errors:
             raise ValidationError(errors)

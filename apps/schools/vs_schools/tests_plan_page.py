@@ -25,6 +25,7 @@ from vs_rbac.tests.helpers import (
     assert_school_created,
     make_school_admin,
     make_vision_user,
+    with_school_billing_details,
 )
 
 from .models import PackagePlan, School, SchoolPackageSetup
@@ -52,11 +53,12 @@ class _PlanPage(TestCase):
     def _create(self, slug, plan):
         response = self.client.post(
             reverse("school-create"),
-            {
+            with_school_billing_details({
                 "name": "Bright Star Academy",
                 "slug": slug,
                 "package_setup_data": {
                     "package_plan": plan.code,
+                    "subscription_starts_at": date.today().isoformat(),
                     "subscription_expires_at": (
                         date.today() + timedelta(days=365)
                     ).isoformat(),
@@ -69,7 +71,7 @@ class _PlanPage(TestCase):
                         "email": f"head@{slug}.test",
                     },
                 }],
-            },
+            }),
             format="json",
         )
         assert_school_created(self, response)

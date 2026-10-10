@@ -123,7 +123,8 @@ def apply_plan_entitlements(
 
 @transaction.atomic
 def change_plan(
-    *, school, plan, actor, reason="", expires_at=None, unsettled_roles=None,
+    *, school, plan, actor, reason="", expires_at=None,
+    agreed_price_per_student=None, unsettled_roles=None,
 ):
     """Move a school onto another plan, and re-grant in the same transaction.
 
@@ -145,6 +146,11 @@ def change_plan(
     setup = school.package_setup
     previous = setup.package_plan
     setup.package_plan = plan
+    setup.agreed_price_per_student = (
+        agreed_price_per_student
+        if agreed_price_per_student is not None
+        else plan.price_per_student
+    )
     if expires_at is not None:
         setup.subscription_expires_at = expires_at
     setup.save()

@@ -395,7 +395,9 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         slug                    optional – auto-generated from name if blank
         code                    optional
         ownership_type          optional – PUBLIC / PRIVATE / FAITH_BASED / NGO
-        address                 optional
+        email                   required
+        phone                   required
+        address                 required
         website                 optional
         motto                   optional
         term_structure          optional – 3_TERMS / 2_SEMESTERS
@@ -423,8 +425,12 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
 
     Package setup
         package_plan            optional – PackagePlan code e.g. basic / standard / premium
+        subscription_starts_at  required when package_plan is present – YYYY-MM-DD
+        agreed_price_per_student required for enterprise, amount in naira
+        minimum_billable_students optional – defaults to zero
         subscription_expires_at optional – YYYY-MM-DD
     """
+    from decimal import Decimal
     from types import SimpleNamespace
     from schools.vs_schools.models import School
     from schools.vs_schools.serializers import SchoolCreateSerializer
@@ -495,6 +501,15 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         # how deep the school reaches into each, so there is no module list to
         # carry.
         package_setup_data = {"package_plan": package_plan_code}
+        package_setup_data["subscription_starts_at"] = _s("subscription_starts_at")
+        agreed_price = _s("agreed_price_per_student")
+        if agreed_price:
+            package_setup_data["agreed_price_per_student"] = int(
+                Decimal(agreed_price) * 100
+            )
+        package_setup_data["minimum_billable_students"] = _int(
+            "minimum_billable_students", 0,
+        )
         sub_expires = _s("subscription_expires_at")
         if sub_expires:
             package_setup_data["subscription_expires_at"] = sub_expires
@@ -502,10 +517,13 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     # --- Assemble school payload ---
     school_payload: dict = {
         "name": _s("name"),
+        "email": _s("email"),
+        "phone": _s("phone"),
+        "address": _s("address"),
         "branches": [branch],
     }
 
-    for field in ("slug", "code", "address", "website", "motto", "registration_id"):
+    for field in ("slug", "code", "website", "motto", "registration_id"):
         val = _s(field)
         if val:
             school_payload[field] = val

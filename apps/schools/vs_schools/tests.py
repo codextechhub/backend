@@ -20,6 +20,7 @@ from vs_rbac.tests.helpers import (
     make_branch,
     make_school,
     make_vision_user,
+    with_school_billing_details,
 )
 from vs_tenants.models import Branch, Tenant
 
@@ -42,14 +43,14 @@ class SchoolCodeAllocationTests(TestCase):
         self.assertTrue(school.code.startswith(f"SC-{school.tenant_id}"))
 
     def test_create_serializer_validates_without_code(self):
-        serializer = SchoolCreateSerializer(data={
+        serializer = SchoolCreateSerializer(data=with_school_billing_details({
             "name": "Serializer School",
             "ownership_type": "PRIVATE",
             "address": "1 Test Road",
             "term_structure": "3_TERMS",
             "currency": "NGN",
             "branches": [_branch_payload(email="head@serializer-school.test")],
-        })
+        }))
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
@@ -70,16 +71,16 @@ class SchoolCodeAllocationTests(TestCase):
             actor=actor,
         )
 
-        omitted = SchoolCreateSerializer(data={
+        omitted = SchoolCreateSerializer(data=with_school_billing_details({
             "name": "Defaults School",
             "branches": [_branch_payload(email="head@defaults-school.test")],
-        })
-        explicit = SchoolCreateSerializer(data={
+        }))
+        explicit = SchoolCreateSerializer(data=with_school_billing_details({
             "name": "Explicit School",
             "ownership_type": "PRIVATE",
             "currency": "NGN",
             "branches": [_branch_payload(email="head@explicit-school.test")],
-        })
+        }))
 
         self.assertTrue(omitted.is_valid(), omitted.errors)
         self.assertEqual(omitted.validated_data["ownership_type"], "NGO")
@@ -680,7 +681,7 @@ class EverySchoolHasAtLeastOneBranchTests(TestCase):
         the literal status a refusal returns inline.
         """
         response = self._client().post(
-            reverse("school-create"), payload, format="json",
+            reverse("school-create"), with_school_billing_details(payload), format="json",
         )
         if expect == 201:
             assert_school_created(self, response)
@@ -832,6 +833,9 @@ class BulkImporterSuppliesAMainBranchTests(TestCase):
             payload={
                 "name": "Imported Academy",
                 "slug": "imported-academy",
+                "email": "billing@imported-academy.test",
+                "phone": "+2348000000000",
+                "address": "1 Imported Road",
                 "branch_admin_full_name": "Imported Head",
                 "branch_admin_email": "head@imported-academy.test",
             },
@@ -853,6 +857,9 @@ class BulkImporterSuppliesAMainBranchTests(TestCase):
             payload={
                 "name": "Named Academy",
                 "slug": "named-academy",
+                "email": "billing@named-academy.test",
+                "phone": "+2348000000000",
+                "address": "1 Named Road",
                 "branch_name": "Yaba Branch",
                 "branch_state": "Lagos",
                 "branch_admin_full_name": "Yaba Head",
@@ -1110,7 +1117,9 @@ class AdminEmailCaseIsRefusedTests(TestCase):
         """
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
-        response = client.post(reverse("school-create"), payload, format="json")
+        response = client.post(
+            reverse("school-create"), with_school_billing_details(payload), format="json",
+        )
         if expect == 201:
             assert_school_created(self, response)
         else:
@@ -1221,7 +1230,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             with self.captureOnCommitCallbacks(execute=True):
                 response = self._client().post(
-                    reverse("school-create"), payload, format="json",
+                    reverse("school-create"), with_school_billing_details(payload), format="json",
                 )
         if expect == 201:
             assert_school_created(self, response)

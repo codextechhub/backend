@@ -190,8 +190,11 @@ class SchoolProfileEndpointTests(_SchoolProfileFixture):
 
         response = self._get(self.admin)
         missing = response.data["data"]["missing_required"]
-        self.assertEqual([row["field"] for row in missing], ["ownership_type"])
-        self.assertEqual(missing[0]["label"], "Ownership type")
+        self.assertEqual(
+            [row["field"] for row in missing],
+            ["email", "phone", "address", "ownership_type"],
+        )
+        self.assertEqual(missing[-1]["label"], "Ownership type")
 
     def test_missing_required_is_the_same_answer_the_onboarding_gate_gives(self):
         """One list, two readers. Two copies would eventually disagree."""

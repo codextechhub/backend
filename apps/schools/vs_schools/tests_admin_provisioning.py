@@ -39,6 +39,7 @@ from vs_rbac.tests.helpers import (
     make_branch,
     make_school,
     make_vision_user,
+    with_school_billing_details,
 )
 from vs_user.models import User
 
@@ -104,7 +105,7 @@ class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 return client.post(
                     reverse("school-create"),
-                    {
+                    with_school_billing_details({
                         "name": slug.replace("-", " ").title(),
                         "slug": slug,
                         "branches": [
@@ -118,7 +119,7 @@ class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
                                 },
                             },
                         ],
-                    },
+                    }),
                     format="json",
                 )
 
@@ -217,7 +218,7 @@ class OnePersonWearingSeveralHatsTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 response = client.post(
                     reverse("school-create"),
-                    {
+                    with_school_billing_details({
                         "name": slug.replace("-", " ").title(),
                         "slug": slug,
                         "primary_admin_data": {
@@ -225,7 +226,7 @@ class OnePersonWearingSeveralHatsTests(TestCase):
                             "email": school_admin_email,
                         },
                         "branches": branches,
-                    },
+                    }),
                     format="json",
                 )
         return response, delay
@@ -322,7 +323,7 @@ class SharedAdminAcrossBranchesTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 response = self._client().post(
                     reverse("school-create"),
-                    {
+                    with_school_billing_details({
                         "name": "Corona Secondary",
                         "slug": "corona-secondary",
                         "branches": [
@@ -345,7 +346,7 @@ class SharedAdminAcrossBranchesTests(TestCase):
                                 },
                             },
                         ],
-                    },
+                    }),
                     format="json",
                 )
         assert_school_created(self, response)
@@ -617,13 +618,13 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
         with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
             response = self._client().post(
                 reverse("school-create"),
-                {
+                with_school_billing_details({
                     "name": "Bright Star School",
                     "slug": "bright-star-atomic",
                     "branches": [self._branch(
                         "Main Branch", "head@bright-star-atomic.test",
                     )],
-                },
+                }),
                 format="json",
             )
 
@@ -662,7 +663,7 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
         ), mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             response = self._client().post(
                 reverse("school-create"),
-                {
+                with_school_billing_details({
                     "name": "Two Branch School",
                     "slug": "two-branch-atomic",
                     "branches": [
@@ -675,7 +676,7 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
                             is_main=False,
                         ),
                     ],
-                },
+                }),
                 format="json",
             )
 
@@ -712,7 +713,7 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
         with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
             response = self._client().post(
                 reverse("school-create"),
-                {
+                with_school_billing_details({
                     "name": "Same Admin School",
                     "slug": "same-admin-atomic",
                     "primary_admin_data": {
@@ -720,7 +721,7 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
                         "email": email,
                     },
                     "branches": [self._branch("Main Branch", email)],
-                },
+                }),
                 format="json",
             )
 
@@ -970,7 +971,9 @@ class AnAdministratorIsAMemberOfStaffTests(TestCase):
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
             with self.captureOnCommitCallbacks(execute=True):
                 response = client.post(
-                    reverse("school-create"), payload, format="json",
+                    reverse("school-create"),
+                    with_school_billing_details(payload),
+                    format="json",
                 )
         assert_school_created(self, response)
         return Tenant.objects.get(slug=slug)
@@ -1210,7 +1213,7 @@ class ASchoolIsNeverCreatedShortOfRolesTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 return client.post(
                     reverse("school-create"),
-                    {
+                    with_school_billing_details({
                         "name": slug.replace("-", " ").title(),
                         "slug": slug,
                         "branches": [{
@@ -1222,7 +1225,7 @@ class ASchoolIsNeverCreatedShortOfRolesTests(TestCase):
                                 "email": f"admin@{slug}.ng",
                             },
                         }],
-                    },
+                    }),
                     format="json",
                 )
 

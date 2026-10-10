@@ -82,6 +82,7 @@ class SchoolPlanView(_PlanView):
             actor=request.user,
             reason=serializer.validated_data.get("reason", ""),
             expires_at=serializer.validated_data.get("subscription_expires_at"),
+            agreed_price_per_student=serializer.validated_data["agreed_price_per_student"],
             unsettled_roles=unsettled,
         )
         return success_response(

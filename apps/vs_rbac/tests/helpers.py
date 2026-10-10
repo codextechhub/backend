@@ -7,6 +7,7 @@ Role / assignment / change-request factories single-write the canonical
 preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
+from django.utils import timezone
 from django.utils.text import slugify
 from schools.vs_schools.models import School
 from vs_user.models import User
@@ -88,6 +89,21 @@ def assert_school_created(test, response):
     test.assertEqual(response.status_code, 202, response.data)
     test.assertEqual(response.data["data"]["status"], "SUCCEEDED", response.data)
     return response
+
+
+def with_school_billing_details(payload):
+    """Supply mandatory school billing fields to older creation fixtures."""
+    payload = dict(payload)
+    slug = payload.get("slug") or "school"
+    payload.setdefault("email", f"billing@{slug}.test")
+    payload.setdefault("phone", "+2348000000000")
+    payload.setdefault("address", "1 School Road")
+    package = payload.get("package_setup_data")
+    if package is not None:
+        package = dict(package)
+        package.setdefault("subscription_starts_at", timezone.localdate().isoformat())
+        payload["package_setup_data"] = package
+    return payload
 
 
 def make_school(slug="test-school", name="Test School", **kwargs):

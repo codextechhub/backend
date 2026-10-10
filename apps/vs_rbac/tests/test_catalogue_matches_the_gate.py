@@ -39,6 +39,7 @@ from .helpers import (
     make_role_permission,
     make_school_admin,
     make_vision_user,
+    with_school_billing_details,
 )
 
 
@@ -83,7 +84,7 @@ class CatalogueMatchesTheGateTests(TestCase):
         client.force_authenticate(user=cls.operator)
         response = client.post(
             reverse("school-create"),
-            {
+            with_school_billing_details({
                 "name": "Bright Star Academy", "slug": slug,
                 "package_setup_data": {
                     "package_plan": plan_code,
@@ -98,7 +99,7 @@ class CatalogueMatchesTheGateTests(TestCase):
                         "full_name": "Bright Star Head", "email": f"head@{slug}.test",
                     },
                 }],
-            },
+            }),
             format="json",
         )
         if response.status_code != 202 or response.data["data"]["status"] != "SUCCEEDED":

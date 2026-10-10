@@ -50,6 +50,7 @@ from vs_rbac.tests.helpers import (
     make_branch,
     make_school,
     make_vision_user,
+    with_school_billing_details,
 )
 from vs_tenants.models import Branch, BranchStatus
 
@@ -75,10 +76,12 @@ class _PackageFixture(TestCase):
         cls.basic = PackagePlan.objects.create(
             name="Entitlement Test Basic", code="entitlement-basic",
             default_depth=CapabilityDepth.CORE,
+            price_per_student=350_000,
         )
         cls.premium = PackagePlan.objects.create(
             name="Entitlement Test Premium", code="entitlement-premium",
             default_depth=CapabilityDepth.ADVANCED,
+            price_per_student=750_000,
         )
 
         # procurement requires finance. The dependency is still worth having
@@ -140,7 +143,9 @@ class _PackageFixture(TestCase):
 
     def _create(self, *args, **kwargs):
         response = self._client().post(
-            reverse("school-create"), self._payload(*args, **kwargs), format="json",
+            reverse("school-create"),
+            with_school_billing_details(self._payload(*args, **kwargs)),
+            format="json",
         )
         assert_school_created(self, response)
         return response
@@ -786,6 +791,8 @@ class EveryWayTheReachShrinksTakesTheGrantsWithItTests(_RoleGrants, _PackageFixt
         role = self._bursar_with(school, deep_key.key)
         setup = SchoolPackageSetup.objects.create(
             school=school, package_plan=self.basic,
+            subscription_starts_at=date.today(),
+            agreed_price_per_student=self.basic.price_per_student,
             subscription_expires_at=date.today() + timedelta(days=365),
         )
 
