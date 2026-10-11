@@ -33,6 +33,7 @@ from vs_rbac.scoping import (
     shared_write_refusal,
     transaction_branch_scope,
 )
+from vs_rbac.field_enforcement import FieldAccessMixin, assert_writable
 
 from core.list_filters import filter_by_word
 from core.references import find_by_code_or_id
@@ -164,7 +165,7 @@ def _reach(request):
 # Serializers                                                                 #
 # --------------------------------------------------------------------------- #
 
-class InterBranchTransferSerializer(ApprovalStateMixin, serializers.ModelSerializer):
+class InterBranchTransferSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.ModelSerializer):
     """One transfer, both branches named.
 
     A receivable move also says what it carried and who owes whom for it:
@@ -195,6 +196,8 @@ class InterBranchTransferSerializer(ApprovalStateMixin, serializers.ModelSeriali
     journals = serializers.SerializerMethodField()
     moved_items = serializers.SerializerMethodField()
     net_owed = serializers.SerializerMethodField()
+    field_resource = "finance.interbranch"
+    field_access_detail = True
 
     class Meta:
         model = InterBranchTransfer
@@ -256,7 +259,9 @@ class InterBranchTransferSerializer(ApprovalStateMixin, serializers.ModelSeriali
         return {"amount": abs(net), "owed_by": owed_by, "owed_to": owed_to}
 
 
-class HeldReceiptSerializer(serializers.ModelSerializer):
+class HeldReceiptSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.interbranch"
+    field_access_detail = True
     branch_name = serializers.CharField(source="branch.name", read_only=True)
     for_branch_name = serializers.CharField(source="for_branch.name", read_only=True)
     bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
@@ -287,7 +292,9 @@ class HeldReceiptSerializer(serializers.ModelSerializer):
                 if live else None)
 
 
-class RechargeSerializer(serializers.ModelSerializer):
+class RechargeSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.interbranch"
+    field_access_detail = True
     branch_name = serializers.CharField(source="branch.name", read_only=True)
     expense_account_code = serializers.CharField(source="expense_account.code", read_only=True)
     lines = serializers.SerializerMethodField()
@@ -314,7 +321,9 @@ class RechargeSerializer(serializers.ModelSerializer):
         ]
 
 
-class SharedCostRuleSerializer(serializers.ModelSerializer):
+class SharedCostRuleSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.interbranch"
+    field_access_detail = True
     expense_account_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
     shares = serializers.SerializerMethodField()
 
