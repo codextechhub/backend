@@ -57,6 +57,49 @@ pre-existing changes in the worktree or work completed in an earlier request.
 - Documentation-only changes do not require application tests; validate only
   the documentation or formatting affected, when such validation exists.
 
+## Field Access is part of every feature contract
+
+Every new or changed user-visible business field must receive an explicit
+Field Access decision in the same change. This includes fields in forms,
+drawers, detail panels, tables, cards, exports, imports, documents, emails and
+derived summaries. A resource permission answers whether somebody may open the
+resource; it does not answer which fields inside that resource they may read or
+change.
+
+Default to including the field. Give a stored or submitted field separate Read
+and Write control. Give a computed, generated, status, audit or other
+server-owned field Read control and mark it non-writable. Do not create switches
+for transport-only values such as internal IDs, pagination data or protocol
+metadata, but make sure a display label, nested object or derived value cannot
+leak a hidden field under another response name.
+
+When the correct boundary is genuinely unclear, ask the user directly before
+building it. Show one concrete case and ask whether the fields should have
+separate switches or one deliberately grouped switch. For example: "Bright
+Star School records an inter-branch transfer from Ikeja Branch to Lekki Branch.
+Should Amount, Purpose and the two bank accounts each have their own switches,
+or should the bank accounts share one Banking details switch?" Do not silently
+exclude a field because it seems harmless.
+
+Field Access work is end-to-end:
+
+- Register the field in the owning app's `field_access.py` with a human label,
+  group, scope, sensitivity, writable state and every API alias. Register the
+  app from `AppConfig.ready()` and keep `sync_field_registry` deploy-safe.
+- Enforce reads on every serializer, nested payload, export, document, email and
+  hand-built response that carries it. Enforce writes on every create, update,
+  import, bulk action and alternate endpoint that can change it.
+- Add deep-payload, alternate read-path, alternate write-path and default-access
+  regression coverage as applicable. An unregistered field being open by
+  default is not evidence that the feature is covered.
+- Coordinate the consuming frontend in the same product change so hidden fields
+  disappear completely and read-only fields are never submitted.
+
+Before finishing any product change, report `Field Access impact:` followed by
+the fields added, changed or reviewed. If there is no impact, say
+`Field Access impact: none` and give the reason. Documentation-only and Git-only
+requests do not require this statement.
+
 ## The word "school" belongs to the schools folder
 
 School concepts - students, guardians, classes, terms, sessions - live in
