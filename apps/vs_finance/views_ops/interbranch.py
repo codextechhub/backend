@@ -342,6 +342,31 @@ class SharedCostRuleSerializer(FieldAccessMixin, serializers.ModelSerializer):
         ]
 
 
+def _field_context(request, **extra):
+    """Serializer context that applies Field Access and any surface-specific reach."""
+    return {"request": request, **extra}
+
+
+def _transfer_data(request, transfer):
+    return InterBranchTransferSerializer(
+        transfer, context=_field_context(request),
+    ).data
+
+
+def _held_data(request, held):
+    return HeldReceiptSerializer(held, context=_field_context(request)).data
+
+
+def _recharge_data(request, recharge):
+    return RechargeSerializer(
+        recharge, context=_field_context(request, reach=_reach(request)),
+    ).data
+
+
+def _rule_data(request, rule):
+    return SharedCostRuleSerializer(rule, context=_field_context(request)).data
+
+
 # --------------------------------------------------------------------------- #
 # Transfers                                                                   #
 # --------------------------------------------------------------------------- #
@@ -389,7 +414,7 @@ def _route(request, transfer, *, verb):
                 f"Transfer {transfer.document_number} is waiting for approval at "
                 f"{transfer.branch.name}. It is sent once it is approved."
             ),
-            data=InterBranchTransferSerializer(transfer).data
+            data=_transfer_data(request, transfer)
             | {"approval": release_svc.approval_block(instance)},
             status=201,
         )
@@ -398,7 +423,7 @@ def _route(request, transfer, *, verb):
     transfer.refresh_from_db()
     return success_response(
         message=f"{verb} {transfer.to_branch.name} as {transfer.document_number}.",
-        data=InterBranchTransferSerializer(transfer).data, status=201,
+        data=_transfer_data(request, transfer), status=201,
     )
 
 
@@ -455,6 +480,7 @@ class InterBranchTransferListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         require_several_branches(entity)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body, creating=True)
         source = _bank_account_in_reach(request, entity, body.get("from_bank_account"), "from_bank_account")
         if source.branch_id is None:
             raise ValidationError({"from_bank_account": (
@@ -500,6 +526,7 @@ class InterBranchRequestView(_FinanceBase):
         entity = resolve_entity(request)
         require_several_branches(entity)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body, creating=True)
         to_branch = _transaction_branch(request, entity, body, field="to_branch")
         from_branch = _branch(entity, body.get("from_branch"), "from_branch")
         account = None
@@ -517,7 +544,7 @@ class InterBranchRequestView(_FinanceBase):
         transfer = _transfer_or_404(request, entity, transfer.pk)
         return success_response(
             f"Asked {from_branch.name} for the money as {transfer.document_number}.",
-            data=InterBranchTransferSerializer(transfer).data, status=201,
+            data=_transfer_data(request, transfer), status=201,
         )
 
 
@@ -530,7 +557,7 @@ class InterBranchTransferDetailView(_FinanceBase):
         transfer = _transfer_or_404(request, resolve_entity(request), pk)
         return success_response(
             "Inter-branch transfer retrieved.",
-            data=with_approval_request(InterBranchTransferSerializer(transfer).data, transfer))
+            data=with_approval_request(_transfer_data(request, transfer), transfer))
 
 
 class InterBranchSendView(_FinanceBase):
@@ -551,6 +578,7 @@ class InterBranchSendView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         with transaction.atomic():
             transfer = _transfer_or_404(request, entity, pk)
             inherited_branch_id(request, transfer)
@@ -586,11 +614,13 @@ class InterBranchDeclineView(_FinanceBase):
         entity = resolve_entity(request)
         transfer = _transfer_or_404(request, entity, pk)
         inherited_branch_id(request, transfer)
-        decline_request(transfer, reason=_text((request.data or {}).get("reason"), "reason", 255),
+        body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
+        decline_request(transfer, reason=_text(body.get("reason"), "reason", 255),
                         actor_user=request.user)
         transfer = _transfer_or_404(request, entity, pk)
         return success_response(f"Request {transfer.document_number} declined.",
-                                data=InterBranchTransferSerializer(transfer).data)
+                                data=_transfer_data(request, transfer))
 
 
 class InterBranchConfirmView(_FinanceBase):
@@ -610,13 +640,15 @@ class InterBranchConfirmView(_FinanceBase):
         entity = resolve_entity(request)
         transfer = _transfer_or_404(request, entity, pk)
         inherited_branch_id(request, transfer, field="to_branch")
+        body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         confirm_arrival(
-            transfer, arrival_date=_date((request.data or {}).get("arrival_date"), "arrival_date"),
+            transfer, arrival_date=_date(body.get("arrival_date"), "arrival_date"),
             actor_user=request.user,
         )
         transfer = _transfer_or_404(request, entity, pk)
         return success_response(f"Transfer {transfer.document_number} confirmed as arrived.",
-                                data=InterBranchTransferSerializer(transfer).data)
+                                data=_transfer_data(request, transfer))
 
 
 class InterBranchVoidView(_FinanceBase):
@@ -636,17 +668,19 @@ class InterBranchVoidView(_FinanceBase):
 
         entity = resolve_entity(request)
         transfer = _transfer_or_404(request, entity, pk)
+        body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         if not caller_may_change(request.user, entity.tenant, (transfer.branch_id, transfer.to_branch_id)):
             raise PermissionDenied(
                 f"Voiding this transfer changes both {transfer.branch.name}'s and "
                 f"{transfer.to_branch.name}'s books, so it needs somebody who works in both.",
             )
         void_inter_branch_transfer(
-            transfer, actor_user=request.user, date=_date((request.data or {}).get("date"), "date"),
+            transfer, actor_user=request.user, date=_date(body.get("date"), "date"),
         )
         transfer = _transfer_or_404(request, entity, pk)
         return success_response(f"Transfer {transfer.document_number} voided.",
-                                data=InterBranchTransferSerializer(transfer).data)
+                                data=_transfer_data(request, transfer))
 
 
 class InterBranchBalancesView(_FinanceBase):
@@ -697,6 +731,7 @@ class InterBranchReceivableMoveView(_FinanceBase):
             raise PermissionDenied(shared_write_refusal("where a customer's open balance is kept"))
         require_several_branches(entity)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body, creating=True)
         ref = body.get("customer")
         if ref in (None, ""):
             raise ValidationError({"customer": "Name the customer."})
@@ -777,6 +812,7 @@ class HeldReceiptListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         require_several_branches(entity)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body, creating=True)
         bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
         for_branch = _branch(entity, body.get("for_branch"), "for_branch")
         method = body.get("method") or PaymentMethod.BANK_TRANSFER
@@ -797,7 +833,7 @@ class HeldReceiptListCreateView(_FinanceBase):
         held = _held_or_404(request, entity, held.pk)
         return success_response(
             f"Held for {for_branch.name} as {held.document_number}.",
-            data=HeldReceiptSerializer(held).data, status=201,
+            data=_held_data(request, held), status=201,
         )
 
 
@@ -850,7 +886,7 @@ class HeldReceiptDetailView(_FinanceBase):
 
     def get(self, request, pk):
         held = _held_or_404(request, resolve_entity(request), pk)
-        return success_response("Held receipt retrieved.", data=HeldReceiptSerializer(held).data)
+        return success_response("Held receipt retrieved.", data=_held_data(request, held))
 
 
 class HeldReceiptForwardView(_FinanceBase):
@@ -873,6 +909,7 @@ class HeldReceiptForwardView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         held = _held_or_404(request, entity, pk)
         inherited_branch_id(request, held)
         source = None
@@ -906,11 +943,13 @@ class HeldReceiptVoidView(_FinanceBase):
         entity = resolve_entity(request)
         held = _held_or_404(request, entity, pk)
         inherited_branch_id(request, held)
+        body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         void_held_receipt(held, actor_user=request.user,
-                          date=_date((request.data or {}).get("date"), "date"))
+                          date=_date(body.get("date"), "date"))
         held = _held_or_404(request, entity, pk)
         return success_response(f"Held receipt {held.document_number} voided.",
-                                data=HeldReceiptSerializer(held).data)
+                                data=_held_data(request, held))
 
 
 # --------------------------------------------------------------------------- #
@@ -996,6 +1035,7 @@ class RechargeListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         require_several_branches(entity)
         body = request.data or {}
+        assert_writable(request, "finance.interbranch", body, creating=True)
         payer = _transaction_branch(request, entity, body, field="branch")
         rule = None
         if body.get("rule") not in (None, ""):
@@ -1021,7 +1061,7 @@ class RechargeListCreateView(_FinanceBase):
         recharge = _recharge_or_404(request, entity, recharge.pk)
         return success_response(
             f"Recharged as {recharge.document_number}.",
-            data=RechargeSerializer(recharge, context={"reach": _reach(request)}).data, status=201,
+            data=_recharge_data(request, recharge), status=201,
         )
 
 
@@ -1033,7 +1073,7 @@ class RechargeDetailView(_FinanceBase):
     def get(self, request, pk):
         recharge = _recharge_or_404(request, resolve_entity(request), pk)
         return success_response("Recharge retrieved.",
-                                data=RechargeSerializer(recharge, context={"reach": _reach(request)}).data)
+                                data=_recharge_data(request, recharge))
 
 
 class RechargeVoidView(_FinanceBase):
@@ -1051,21 +1091,25 @@ class RechargeVoidView(_FinanceBase):
 
         entity = resolve_entity(request)
         recharge = _recharge_or_404(request, entity, pk)
+        body = request.data or {}
+        assert_writable(request, "finance.interbranch", body)
         branches = {recharge.branch_id, *(line.branch_id for line in recharge.lines.all() if line.transfer_id)}
         if not caller_may_change(request.user, entity.tenant, branches):
             raise PermissionDenied("Voiding this recharge changes every sharing branch's books, "
                                    "so it needs somebody who works in all of them.")
         void_recharge(recharge, actor_user=request.user,
-                      date=_date((request.data or {}).get("date"), "date"))
+                      date=_date(body.get("date"), "date"))
         recharge = _recharge_or_404(request, entity, pk)
         return success_response(f"Recharge {recharge.document_number} voided.",
-                                data=RechargeSerializer(recharge, context={"reach": _reach(request)}).data)
+                                data=_recharge_data(request, recharge))
 
 
 def _apply_rule(request, entity, rule, body, *, creating):
     """Write the fields ``body`` names onto ``rule`` and replace its percentages if given."""
     from ..audit import record
     from ..constants import AccountType, FinanceAuditAction
+
+    assert_writable(request, "finance.interbranch", body, creating=creating)
 
     if creating or "name" in body:
         rule.name = _text(body.get("name"), "name", 120, required=True, message="Name the cost.")
@@ -1146,7 +1190,7 @@ class SharedCostRuleListCreateView(WholeTenantWriteMixin, _FinanceBase):
         rule = _apply_rule(request, entity, SharedCostRule(entity=entity, created_by=request.user),
                            request.data or {}, creating=True)
         return success_response(f"Shared cost rule {rule.name} saved.",
-                                data=SharedCostRuleSerializer(rule).data, status=201)
+                                data=_rule_data(request, rule), status=201)
 
 
 class SharedCostRuleDetailView(WholeTenantWriteMixin, _FinanceBase):
@@ -1167,10 +1211,10 @@ class SharedCostRuleDetailView(WholeTenantWriteMixin, _FinanceBase):
 
     def get(self, request, pk):
         return success_response("Shared cost rule retrieved.",
-                                data=SharedCostRuleSerializer(self._rule(request, pk)).data)
+                                data=_rule_data(request, self._rule(request, pk)))
 
     def patch(self, request, pk):
         rule = self._rule(request, pk)
         rule = _apply_rule(request, rule.entity, rule, request.data or {}, creating=False)
         return success_response(f"Shared cost rule {rule.name} saved.",
-                                data=SharedCostRuleSerializer(rule).data)
+                                data=_rule_data(request, rule))
