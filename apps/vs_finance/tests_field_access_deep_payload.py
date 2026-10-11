@@ -1,9 +1,9 @@
-"""No bank number or pay figure reaches a caller who may read none, at any depth.
+"""No restricted finance field reaches a caller who may read none, at any depth.
 
 Every declared surface of ``finance.bankaccount``, ``finance.payrollrun`` and
-``finance.salary`` is rendered on a real record whose registered fields are
-filled in, as a caller whose role has every field of that resource switched
-off, and the whole payload is walked.
+``finance.salary``, plus the inter-branch surfaces, is rendered on a real record
+whose registered fields are filled in, as a caller whose role has every field
+of that resource switched off, and the whole payload is walked.
 
 Two tenants: one with two branches, whose rows are posted to a branch, and one
 with a single branch, whose rows are shared across it.
@@ -24,12 +24,20 @@ from vs_finance.models import (
     FiscalPeriod,
     FiscalYear,
     LedgerEntity,
+    HeldForBranchReceipt,
+    InterBranchRecharge,
+    InterBranchRechargeLine,
+    InterBranchTransfer,
     PayrollDeductionType,
     PayrollLine,
     PayrollRun,
     PayBroughtForward,
+    SharedCostRule,
+    SharedCostRuleShare,
 )
+from vs_finance.constants import InterBranchTransferKind, RechargeBasis, SharedCostTreatment
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
+from vs_finance.tests_inter_branch import JAN_15, _InterBranchFixture
 from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
 from vs_rbac.tests.helpers import make_branch, make_school
 
@@ -141,3 +149,62 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
                 Sample(_SURFACE + "PayBroughtForwardSerializer", previous, tenant=tenant),
             ]
         return samples
+
+
+_INTERBRANCH_SURFACE = "vs_finance.views_ops.interbranch."
+
+
+class InterBranchDeepPayloadTests(DeepPayloadChecks, _InterBranchFixture):
+    resources = frozenset({"finance.interbranch"})
+    covers = frozenset({
+        _INTERBRANCH_SURFACE + "InterBranchTransferSerializer",
+        _INTERBRANCH_SURFACE + "HeldReceiptSerializer",
+        _INTERBRANCH_SURFACE + "RechargeSerializer",
+        _INTERBRANCH_SURFACE + "SharedCostRuleSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        customer = cls.customer(cls.books, "IB-DEEP", cls.lekki)
+        cls.transfer = InterBranchTransfer.objects.create(
+            entity=cls.books, kind=InterBranchTransferKind.CASH, branch=cls.ikeja,
+            to_branch=cls.lekki, from_bank_account=cls.ikeja_bank,
+            to_bank_account=cls.lekki_bank, amount=100_000_00,
+            transfer_date=JAN_15, purpose="Generator fuel", reference="IB-DEEP",
+            customer=customer,
+        )
+        cls.held = HeldForBranchReceipt.objects.create(
+            entity=cls.books, branch=cls.ikeja, for_branch=cls.lekki,
+            bank_account=cls.ikeja_bank, customer=customer, amount=25_000_00,
+            receipt_date=JAN_15, reference="HELD-DEEP", narration="Lekki fees",
+        )
+        cls.rule = SharedCostRule.objects.create(
+            entity=cls.books, name="Group audit", treatment=SharedCostTreatment.RECHARGE,
+            basis=RechargeBasis.PERCENTAGES, expense_account=cls.audit_fee,
+        )
+        SharedCostRuleShare.objects.create(
+            rule=cls.rule, branch=cls.lekki, percent_bps=10000,
+        )
+        cls.recharge = InterBranchRecharge.objects.create(
+            entity=cls.books, branch=cls.ikeja, rule=cls.rule,
+            expense_account=cls.audit_fee, amount=300_000_00,
+            recharge_date=JAN_15, basis=RechargeBasis.PERCENTAGES,
+            narration="Annual audit", reference="RECHARGE-DEEP",
+        )
+        InterBranchRechargeLine.objects.create(
+            recharge=cls.recharge, branch=cls.lekki, weight=10000,
+            amount=300_000_00, transfer=cls.transfer,
+        )
+
+    def samples(self):
+        return [
+            Sample(_INTERBRANCH_SURFACE + "InterBranchTransferSerializer",
+                   self.transfer, tenant=self.tenant),
+            Sample(_INTERBRANCH_SURFACE + "HeldReceiptSerializer",
+                   self.held, tenant=self.tenant),
+            Sample(_INTERBRANCH_SURFACE + "RechargeSerializer",
+                   self.recharge, context={"reach": None}, tenant=self.tenant),
+            Sample(_INTERBRANCH_SURFACE + "SharedCostRuleSerializer",
+                   self.rule, tenant=self.tenant),
+        ]

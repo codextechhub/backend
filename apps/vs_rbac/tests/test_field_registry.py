@@ -56,6 +56,7 @@ SYNC = "vs_rbac.management.commands.sync_field_registry.all_declarations"
 #: Every resource with a registered field. Adding one is a deliberate change.
 EXPECTED_RESOURCES = {
     ("finance", "bankaccount"),
+    ("finance", "interbranch"),
     ("finance", "payrollrun"),
     ("finance", "salary"),
     ("import", "batches"),
@@ -85,6 +86,18 @@ ENDPOINT_GUARDED_RESOURCES = {
 #: Serializers that can write a registered name without carrying a rule for it,
 #: each with the reason that is safe. Every entry must still match a real hit.
 WRITE_PATH_ALLOWLIST = {
+    ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "reference"):
+        "A statement correction reference belongs to the correction line, not an "
+        "inter-branch document, and its endpoint has its own banking permission.",
+    ("vs_finance.views_ops.banking._BankBranchAllocationSerializer", "bank_account_name"):
+        "The allocation creates a new branch account name under banking setup; it does "
+        "not change the account attached to an inter-branch document.",
+    ("vs_finance.serializers.DirectEntryCreateSerializer", "narration"):
+        "A journal narration belongs to a direct entry and is guarded by the journal "
+        "create permission, not the inter-branch purpose switch.",
+    ("vs_finance.serializers.DirectEntryCreateSerializer", "reference"):
+        "A journal reference belongs to a direct entry and is guarded by the journal "
+        "create permission, not the inter-branch reference switch.",
     ("vs_import_data.serializers.ImportBatchUploadSerializer", "file"):
         "The upload is the only way a file enters a batch, and no key guards writing one.",
     ("vs_import_data.serializers.ImportTemplateCreateSerializer", "validation_rules"):

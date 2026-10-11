@@ -59,6 +59,8 @@ from .models import (
     FiscalPeriod,
     FiscalYear,
     HeldForBranchReceipt,
+    InterBranchRecharge,
+    InterBranchRechargeLine,
     InterBranchTransfer,
     Invoice,
     InvoiceLine,
@@ -174,6 +176,91 @@ class SplitByWeightTests(SimpleTestCase):
             split_by_weight(3_000_000_00, {1: 500, 2: 300, 3: 200}),
             {1: 1_500_000_00, 2: 900_000_00, 3: 600_000_00},
         )
+
+
+class InterBranchFieldAccessTests(_InterBranchFixture):
+    """Field switches filter every inter-branch shape and refuse blocked writes."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        super().setUpTestData()
+        keys = install_declared_fields("finance.interbranch")
+        cls.hidden_user = cls.user_for(cls.tenant, "ib-fields-hidden@corona.test")
+        cls.grant(cls.hidden_user, *TRANSFER_KEYS, tenant=cls.tenant,
+                  role_key="ib-fields-hidden", branch=None)
+        hidden = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="ib-fields-hidden")
+        set_field_access(hidden, *keys, read=True, write=True)
+        set_field_access(
+            hidden, "finance.interbranch.amount", "finance.interbranch.customer",
+            read=False, write=False,
+        )
+        cls.read_only_user = cls.user_for(cls.tenant, "ib-fields-read-only@corona.test")
+        cls.grant(cls.read_only_user, *TRANSFER_KEYS, tenant=cls.tenant,
+                  role_key="ib-fields-read-only", branch=None)
+        read_only = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="ib-fields-read-only")
+        set_field_access(read_only, *keys, read=True, write=True)
+        set_field_access(read_only, "finance.interbranch.amount", read=True, write=False)
+
+        cls.transfer = InterBranchTransfer.objects.create(
+            entity=cls.books, kind=InterBranchTransferKind.CASH, branch=cls.ikeja,
+            to_branch=cls.lekki, from_bank_account=cls.ikeja_bank,
+            to_bank_account=cls.lekki_bank, amount=100_000_00,
+            transfer_date=JAN_15, purpose="Generator fuel",
+        )
+        cls.recharge = InterBranchRecharge.objects.create(
+            entity=cls.books, branch=cls.ikeja, expense_account=cls.audit_fee,
+            amount=100_000_00, recharge_date=JAN_15, basis=RechargeBasis.COUNTS,
+            narration="Internet",
+        )
+        InterBranchRechargeLine.objects.create(
+            recharge=cls.recharge, branch=cls.lekki, weight=1,
+            amount=100_000_00, transfer=cls.transfer,
+        )
+        cls.customer_row = cls.customer(cls.books, "FIELD-CUSTOMER", cls.lekki)
+
+    def setUp(self):
+        super().setUp()
+        self.hidden = TenantAPIClient(user=self.hidden_user)
+        self.read_only = TenantAPIClient(user=self.read_only_user)
+
+    def test_hidden_amount_is_removed_from_rows_nested_shares_and_balances(self):
+        transfer = self.hidden.get(self.url("inter-branch-transfers/"))
+        self.assertEqual(transfer.status_code, 200, transfer.data)
+        self.assertNotIn("amount", transfer.data["data"][0])
+        self.assertEqual(transfer.data["data"][0]["purpose"], "Generator fuel")
+
+        recharge = self.hidden.get(self.url(f"recharges/{self.recharge.pk}/"))
+        self.assertEqual(recharge.status_code, 200, recharge.data)
+        self.assertNotIn("amount", recharge.data["data"])
+        self.assertNotIn("amount", recharge.data["data"]["lines"][0])
+
+        balances = self.hidden.get(self.url("inter-branch-balances/"))
+        self.assertEqual(balances.status_code, 200, balances.data)
+        self.assertNotIn("net_total", balances.data["data"])
+
+    def test_hidden_customer_cannot_be_discovered_by_exact_code_lookup(self):
+        response = self.hidden.get(self.url(
+            f"held-receipts/customer-lookup/?for_branch={self.lekki.pk}"
+            f"&code={self.customer_row.code}"
+        ))
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_read_only_amount_is_named_on_detail_and_refused_on_create(self):
+        detail = self.read_only.get(self.url(f"inter-branch-transfers/{self.transfer.pk}/"))
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertIn("amount", detail.data["data"]["_read_only_fields"])
+
+        before = InterBranchTransfer.objects.count()
+        refused = self.send(
+            self.read_only, source=self.ikeja_bank, to_branch=self.lekki,
+            amount=50_000_00,
+        )
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertEqual(refused.data["error"]["code"], "field_write_denied")
+        self.assertEqual(InterBranchTransfer.objects.count(), before)
 
 
 class CashTransferTests(_InterBranchFixture):
