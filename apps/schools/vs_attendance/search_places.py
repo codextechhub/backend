@@ -3,8 +3,10 @@
 Attendance answers to the ``attendance`` capability (:mod:`vs_rbac.capability_map`).
 Each place takes the key its screen's read endpoint requires: the registers,
 the settings and the reasons for excused absences read with
-``attendance.register.view``, corrections with either correction key and the
-reports with ``attendance.report.view``.
+``attendance.register.view``, corrections with either correction key, the
+reports with ``attendance.report.view`` and the day's lessons with
+``attendance.register.mark_any``, because a teacher's own lessons are on their
+own registers screen.
 
 Each field of the settings screen is a ``vs_config`` definition, labelled in
 its own words and anchored at the field name the screen's endpoint uses
@@ -19,6 +21,7 @@ from vs_search.registry import ACTION, Place, register, register_contributor
 from .constants import (
     PERM_CORRECTION_APPROVE,
     PERM_CORRECTION_CREATE,
+    PERM_REGISTER_MARK_ANY,
     PERM_REGISTER_VIEW,
     PERM_REPORT_VIEW,
 )
@@ -53,6 +56,13 @@ register(
         description="The registers you mark today.",
         keywords=("attendance", "mark register", "roll call"),
         screen="attendance.my_registers", permission=PERM_REGISTER_VIEW,
+        capability=CAPABILITY,
+    ),
+    Place(
+        kind=ACTION, key="attendance.lessons", label="Lesson registers",
+        description="Today's lessons in levels that mark them, and which are still unmarked.",
+        keywords=("attendance", "lesson", "period register", "missed a lesson"),
+        screen="attendance.lessons", permission=PERM_REGISTER_MARK_ANY,
         capability=CAPABILITY,
     ),
     Place(
