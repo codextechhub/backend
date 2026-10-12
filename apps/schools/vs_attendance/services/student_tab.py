@@ -24,6 +24,9 @@ their placements as of the date (:func:`~.roster._placement_in_force`) and their
 status log, never the class they are in now. A pupil who moved from JSS1 A to
 JSS1 B on the 20th has the first half of the term judged against JSS1 A's
 registers and calendar and the second against JSS1 B's.
+Every day the pupil was on the roll carries that class's ``class_id``, so a
+screen can open the register the day belongs to; a day off the roll carries
+none.
 
 **The counts.** ``present`` includes late and ``late`` is the part of it that
 arrived late. ``opened`` is the days the pupil was expected and the school was
@@ -182,8 +185,8 @@ def _cells(tenant, student, term, enrolments, end: dt.date):
 
 def _cell(day, enrolments, logs, calendar, student, submitted, marks_by_register) -> dict:
     cell = {
-        "date": day, "state": NOT_ON_ROLL, "mark": None, "arrived_at": None,
-        "closed_reason": None,
+        "date": day, "state": NOT_ON_ROLL, "class_id": None, "mark": None,
+        "arrived_at": None, "closed_reason": None,
     }
     placement = _placement_in_force(enrolments, day)
     status = status_on(logs, day)
@@ -191,6 +194,7 @@ def _cell(day, enrolments, logs, calendar, student, submitted, marks_by_register
         return cell
 
     school_class = placement.school_class
+    cell["class_id"] = school_class.pk
     branch = school_class.branch or student.branch
     status_of_day = calendar.status(school_class, branch, day)
     if not status_of_day.is_open:

@@ -146,6 +146,13 @@ class CountsTests(_Tab):
             {"2025-10-06": "P", "2025-10-08": "P", "2025-10-10": "A"},
         )
 
+    def test_each_day_names_the_class_whose_register_it_belongs_to(self):
+        days = {c["date"]: c["class_id"] for c in self.tab(self.admin, self.kelechi)["days"]}
+        self.assertEqual(days["2025-10-08"], self.jss1a.pk)
+        self.assertEqual(days["2025-10-10"], self.jss1b.pk)
+        off_roll = self.tab(self.admin, self.obinna)["days"]
+        self.assertEqual({c["class_id"] for c in off_roll}, {None})
+
     def test_a_suspended_pupil_is_counted_nowhere(self):
         body = self.tab(self.admin, self.amina)
         self.assertEqual(self.states(body), {

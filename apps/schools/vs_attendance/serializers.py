@@ -633,13 +633,16 @@ class StudentDaySerializer(FieldAccessMixin, serializers.Serializer):
 
     ``state`` says whether the day was marked, not taken, closed, a day the
     pupil was suspended or a day they were not on the roll; ``mark`` is the mark
-    itself and is the field Field Access hides.
+    itself and is the field Field Access hides. ``class_id`` is the class the
+    pupil was placed in that day, whose register the day belongs to: an
+    internal reference, not a field of the child's record.
     """
 
     field_resource = FIELD_RESOURCE
 
     date = serializers.DateField(read_only=True)
     state = serializers.CharField(read_only=True)
+    class_id = serializers.IntegerField(read_only=True, allow_null=True)
     mark = serializers.CharField(read_only=True, allow_null=True)
     arrived_at = serializers.TimeField(read_only=True, format="%H:%M", allow_null=True)
     closed_reason = serializers.CharField(read_only=True, allow_null=True)

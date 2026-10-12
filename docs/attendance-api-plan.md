@@ -325,7 +325,9 @@ written from this section where it disagrees with sections 2-7.
    over.
 7. **Student day cells** carry `state` (MARKED, NOT_TAKEN, CLOSED, SUSPENDED,
    NOT_ON_ROLL) and the mark separately, so hiding the mark hides it
-   everywhere. "School opened" counts the days the pupil was expected.
+   everywhere. "School opened" counts the days the pupil was expected. Each
+   day on the roll also carries `class_id`, the class the pupil was in that
+   day, so the screen can open the register the day belongs to.
 8. **Closed days honour calendar-event audiences**, so a closure for one level
    does not close another.
 9. **The register note is an ordinary field**, not sensitive: it is the
