@@ -5,6 +5,13 @@ from .views.corrections import (
     CorrectionListCreateView,
     CorrectionRejectView,
 )
+from .views.lessons import (
+    LessonFillPresentView,
+    LessonListView,
+    LessonMarkView,
+    LessonSubmitView,
+    LessonView,
+)
 from .views.registers import (
     FillPresentView,
     MarkView,
@@ -19,6 +26,12 @@ from .views.settings import (
     ReasonCodeRestoreView,
     ReasonCodeRetireView,
     SettingsView,
+)
+from .views.staff import (
+    StaffFillPresentView,
+    StaffMarkView,
+    StaffRegistersView,
+    StaffSubmitView,
 )
 from .views.students import StudentAttendanceView
 from .views.today import TodayMineView, TodayView
@@ -55,6 +68,39 @@ urlpatterns = [
     path(
         "corrections/<int:correction_id>/reject/",
         CorrectionRejectView.as_view(), name="attendance-correction-reject",
+    ),
+    path("lessons/", LessonListView.as_view(), name="attendance-lessons"),
+    path(
+        "lessons/<int:slot_id>/<str:on_date>/",
+        LessonView.as_view(), name="attendance-lesson",
+    ),
+    path(
+        "lessons/<int:slot_id>/<str:on_date>/marks/<int:student_id>/",
+        LessonMarkView.as_view(), name="attendance-lesson-mark",
+    ),
+    path(
+        "lessons/<int:slot_id>/<str:on_date>/fill-present/",
+        LessonFillPresentView.as_view(), name="attendance-lesson-fill-present",
+    ),
+    path(
+        "lessons/<int:slot_id>/<str:on_date>/submit/",
+        LessonSubmitView.as_view(), name="attendance-lesson-submit",
+    ),
+    path(
+        "staff-registers/<str:on_date>/",
+        StaffRegistersView.as_view(), name="attendance-staff-registers",
+    ),
+    path(
+        "staff-registers/<int:branch_id>/<str:on_date>/marks/<int:staff_id>/",
+        StaffMarkView.as_view(), name="attendance-staff-mark",
+    ),
+    path(
+        "staff-registers/<int:branch_id>/<str:on_date>/fill-present/",
+        StaffFillPresentView.as_view(), name="attendance-staff-fill-present",
+    ),
+    path(
+        "staff-registers/<int:branch_id>/<str:on_date>/submit/",
+        StaffSubmitView.as_view(), name="attendance-staff-submit",
     ),
     path("today/", TodayView.as_view(), name="attendance-today"),
     path("today/mine/", TodayMineView.as_view(), name="attendance-today-mine"),

@@ -31,6 +31,8 @@ PERM_SETTINGS_UPDATE = "attendance.settings.update"
 #: The resources whose registered fields Field Access governs.
 FIELD_RESOURCE = "attendance.register"
 CORRECTION_FIELD_RESOURCE = "attendance.correction"
+LESSON_FIELD_RESOURCE = "attendance.lesson"
+STAFF_FIELD_RESOURCE = "attendance.staff"
 
 # ── The school's attendance settings ───────────────────────────────────────
 # Four school-scoped ``vs_config`` definitions, declared by migration
@@ -84,6 +86,25 @@ class Mark(models.TextChoices):
     LATE = "L", "Late"
     ABSENT = "A", "Absent"
     EXCUSED = "E", "Excused"
+
+
+#: The marks a lesson register takes. A lesson has no Excused: an absence from
+#: one lesson is not something a family explains, and no reason code applies.
+LESSON_MARKS = (Mark.PRESENT, Mark.LATE, Mark.ABSENT)
+LESSON_MARK_CHOICES = [(mark.value, mark.label) for mark in LESSON_MARKS]
+
+#: The marks the staff register takes. Staff are marked on what an
+#: administrator saw: present, late (with a time) or absent. There is no
+#: Excused, because a member of staff who is away with permission is on leave.
+STAFF_MARKS = (Mark.PRESENT, Mark.LATE, Mark.ABSENT)
+STAFF_MARK_CHOICES = [(mark.value, mark.label) for mark in STAFF_MARKS]
+
+
+class StaffLock(models.TextChoices):
+    """Why a row on the staff register cannot be marked."""
+
+    ON_LEAVE = "ON_LEAVE", "On approved leave"
+    NO_HOME_BRANCH = "NO_HOME_BRANCH", "No home branch"
 
 
 class NoticeState(models.TextChoices):

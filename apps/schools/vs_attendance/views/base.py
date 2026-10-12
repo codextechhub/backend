@@ -25,7 +25,9 @@ from vs_rbac.scoping import caller_may_use_branch
 from vs_tenants.references import find_branch_in_tenant
 
 from ..exceptions import InvalidDate
-from ..serializers import RegisterSerializer
+from ..serializers import LessonRegisterSerializer, RegisterSerializer, StaffGroupSerializer
+from ..services import staff_register
+from ..services.lessons import LessonContext, lesson_payload, load_lesson
 from ..services.registers import RegisterContext, load_context, register_payload
 
 
@@ -91,3 +93,38 @@ class AttendanceViewMixin:
         return self.serialize(load_context(
             ctx.tenant, self.request.user, ctx.school_class.pk, ctx.date,
         ))
+
+    def lesson_context(self, slot_id, raw_date) -> LessonContext:
+        return load_lesson(self.tenant, self.request.user, slot_id, self.parse_date(raw_date))
+
+    def serialize_lesson(self, ctx: LessonContext) -> dict:
+        """The lesson register as the caller may read it."""
+        return dict(LessonRegisterSerializer(
+            lesson_payload(ctx), context={"request": self.request},
+        ).data)
+
+    def reread_lesson(self, ctx: LessonContext) -> dict:
+        """The lesson register re-read after a write, so it shows what was just written."""
+        return self.serialize_lesson(load_lesson(
+            ctx.tenant, self.request.user, ctx.slot.pk, ctx.date,
+        ))
+
+    def staff_context(self, branch_id, raw_date) -> staff_register.StaffContext:
+        return staff_register.load_context(
+            self.tenant, self.request.user, branch_id, self.parse_date(raw_date),
+        )
+
+    def serialize_staff_group(self, ctx: staff_register.StaffContext) -> dict:
+        """One branch's staff register as the caller may read it."""
+        return dict(StaffGroupSerializer(
+            staff_register.group_payload(
+                ctx, show_leave=staff_register.can_read_leave(self.request.user, ctx.tenant),
+            ),
+            context={"request": self.request},
+        ).data)
+
+    def reread_staff(self, ctx: staff_register.StaffContext) -> dict:
+        """The branch's staff register re-read after a write, so it shows what was just written."""
+        return self.serialize_staff_group(
+            staff_register.load_context(ctx.tenant, self.request.user, ctx.branch.pk, ctx.date),
+        )

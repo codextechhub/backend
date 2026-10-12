@@ -12,6 +12,11 @@ register of any class they can open. The holder of only ``mark`` takes the
 register of a class they are the class teacher of, which is a fact about the
 class and so cannot be a permission key.
 
+**Marking a lesson** follows the same shape with the lesson's teacher in place
+of the class teacher: a holder of ``mark_any`` marks any lesson of a class they
+can open, and a holder of only ``mark`` marks the lessons the timetable gives
+them.
+
 **Asking for a correction** follows the same shape: a holder of ``mark_any``
 asks for any class they can open, and a teacher holding only
 ``attendance.correction.create`` asks for the class they lead.
@@ -26,7 +31,7 @@ from vs_rbac.scoping import only_branch_id_or_several, visible_branch_ids
 from vs_tenants.models import Branch
 
 from ..constants import PERM_REGISTER_MARK, PERM_REGISTER_MARK_ANY
-from ..exceptions import ClassHasNoBranch, NotYourClass
+from ..exceptions import ClassHasNoBranch, NotYourClass, NotYourLesson
 
 
 def open_class(tenant, user, class_id) -> tuple[SchoolClass, Branch]:
@@ -38,7 +43,7 @@ def open_class(tenant, user, class_id) -> tuple[SchoolClass, Branch]:
     """
     school_class = (
         SchoolClass.objects.filter(tenant=tenant, pk=class_id)
-        .select_related("session", "branch", "class_teacher", "class_teacher__user")
+        .select_related("session", "level", "branch", "class_teacher", "class_teacher__user")
         .first()
     )
     if school_class is None:
@@ -97,4 +102,21 @@ def assert_may_request_correction(user, tenant, school_class) -> None:
     raise NotYourClass(
         f"You can ask for a correction only to the register of the class you "
         f"lead. Ask an administrator to ask for one in {school_class.name}.",
+    )
+
+
+def assert_may_mark_lesson(user, tenant, slot, school_class) -> bool:
+    """Refuse a caller who may not mark the lesson *slot* of *school_class*.
+
+    Returns whether the caller holds ``mark_any``, as :func:`assert_may_take`
+    does. The lesson's teacher is the person the timetable gives the slot to
+    now, so a lesson handed to another teacher is theirs to mark from then on.
+    """
+    if may_take_any(user, tenant):
+        return True
+    if slot.teacher_id == user.pk and has_permission(user, PERM_REGISTER_MARK, tenant=tenant):
+        return False
+    raise NotYourLesson(
+        f"You can mark only the lessons you teach. Ask an administrator to mark "
+        f"{slot.subject.name} for {school_class.name} for you.",
     )

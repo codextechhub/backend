@@ -56,7 +56,9 @@ SYNC = "vs_rbac.management.commands.sync_field_registry.all_declarations"
 #: Every resource with a registered field. Adding one is a deliberate change.
 EXPECTED_RESOURCES = {
     ("attendance", "correction"),
+    ("attendance", "lesson"),
     ("attendance", "register"),
+    ("attendance", "staff"),
     ("finance", "bankaccount"),
     ("finance", "interbranch"),
     ("finance", "payrollrun"),
@@ -82,6 +84,7 @@ EXPECTED_RESOURCES = {
 #: is what decides their scope, while a switch narrows it per role. A guardian
 #: is read with the student key because the guardian endpoints carry it.
 ENDPOINT_GUARDED_RESOURCES = {
+    ("attendance", "lesson"): "attendance.register.view",
     ("school", "guardians"): "school.students.view",
     ("school", "profile"): "school.profile.view",
     ("school", "teachers"): "school.teachers.view",
@@ -108,6 +111,22 @@ WRITE_PATH_ALLOWLIST = {
             "correction request carries its own reason, note and arrival time on the "
             "correction serializers."
         for name in ("arrived_at", "reason_code", "note")
+    },
+    ("schools.vs_attendance.serializers.MarkWriteSerializer", "mark"):
+        "The body of a mark on the class register, a surface of attendance.register; a "
+        "lesson mark is written through LessonMarkWriteSerializer, a surface of "
+        "attendance.lesson.",
+    **{
+        ("schools.vs_attendance.serializers.LessonMarkWriteSerializer", name):
+            "The body of a lesson mark, a surface of attendance.lesson; the class "
+            "register's own switches govern a mark taken on the class register."
+        for name in ("mark", "arrived_at", "note")
+    },
+    **{
+        ("schools.vs_attendance.serializers.StaffMarkWriteSerializer", name):
+            "The body of a staff mark, a surface of attendance.staff; the class register's "
+            "own switches govern a mark taken on a class register."
+        for name in ("mark", "arrived_at", "note")
     },
     **{
         ("schools.vs_attendance.serializers.CorrectionCreateSerializer", name):

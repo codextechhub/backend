@@ -334,6 +334,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 #: from the same two tables every other resource reads.
 FIELD_ONLY_RESOURCES: list[tuple[str, str]] = [
     ("school", "guardians"),
+    # A lesson register is read with attendance.register.view and marked with
+    # attendance.register.mark, so it needs no keys of its own; its mark, time
+    # and note are fields a school restricts per role.
+    ("attendance", "lesson"),
 ]
 
 #: Readable names for resources whose slug reads wrongly on screen.
@@ -388,6 +392,8 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "exam"):        "Exams, exam slots and their publication",
     ("attendance", "register"):   "Daily class registers: reading them, taking them and reminding a class teacher",
     ("attendance", "correction"): "Corrections to a mark after its day has closed",
+    # Fields only: a lesson register is read and marked with the register keys.
+    ("attendance", "lesson"):     "Lesson registers, and the details a lesson mark carries",
     ("attendance", "staff"):      "The staff attendance register",
     ("attendance", "report"):     "Attendance summaries, the chronic-absence list and their exports",
     ("attendance", "settings"):   "Attendance settings and the school's reasons for excusing an absence",

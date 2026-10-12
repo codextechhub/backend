@@ -18,6 +18,13 @@ from ..views.corrections import (
     CorrectionListCreateView,
     CorrectionRejectView,
 )
+from ..views.lessons import (
+    LessonFillPresentView,
+    LessonListView,
+    LessonMarkView,
+    LessonSubmitView,
+    LessonView,
+)
 from ..views.registers import (
     FillPresentView,
     MarkView,
@@ -32,6 +39,12 @@ from ..views.settings import (
     ReasonCodeRestoreView,
     ReasonCodeRetireView,
     SettingsView,
+)
+from ..views.staff import (
+    StaffFillPresentView,
+    StaffMarkView,
+    StaffRegistersView,
+    StaffSubmitView,
 )
 from ..views.students import StudentAttendanceView
 from ..views.today import TodayMineView, TodayView
@@ -53,6 +66,39 @@ OTHER_ROUTES = {
     ),
     "attendance-correction-reject": (
         CorrectionRejectView, "/v1/attendance/corrections/7/reject/", {"correction_id": 7},
+    ),
+    "attendance-lessons": (LessonListView, "/v1/attendance/lessons/", {}),
+    "attendance-lesson": (
+        LessonView, "/v1/attendance/lessons/12/2025-10-13/",
+        {"slot_id": 12, "on_date": "2025-10-13"},
+    ),
+    "attendance-lesson-mark": (
+        LessonMarkView, "/v1/attendance/lessons/12/2025-10-13/marks/9/",
+        {"slot_id": 12, "on_date": "2025-10-13", "student_id": 9},
+    ),
+    "attendance-lesson-fill-present": (
+        LessonFillPresentView, "/v1/attendance/lessons/12/2025-10-13/fill-present/",
+        {"slot_id": 12, "on_date": "2025-10-13"},
+    ),
+    "attendance-lesson-submit": (
+        LessonSubmitView, "/v1/attendance/lessons/12/2025-10-13/submit/",
+        {"slot_id": 12, "on_date": "2025-10-13"},
+    ),
+    "attendance-staff-registers": (
+        StaffRegistersView, "/v1/attendance/staff-registers/2025-10-13/",
+        {"on_date": "2025-10-13"},
+    ),
+    "attendance-staff-mark": (
+        StaffMarkView, "/v1/attendance/staff-registers/3/2025-10-13/marks/9/",
+        {"branch_id": 3, "on_date": "2025-10-13", "staff_id": 9},
+    ),
+    "attendance-staff-fill-present": (
+        StaffFillPresentView, "/v1/attendance/staff-registers/3/2025-10-13/fill-present/",
+        {"branch_id": 3, "on_date": "2025-10-13"},
+    ),
+    "attendance-staff-submit": (
+        StaffSubmitView, "/v1/attendance/staff-registers/3/2025-10-13/submit/",
+        {"branch_id": 3, "on_date": "2025-10-13"},
     ),
     "attendance-today": (TodayView, "/v1/attendance/today/", {}),
     "attendance-today-mine": (TodayMineView, "/v1/attendance/today/mine/", {}),
@@ -130,6 +176,8 @@ class MountTests(SimpleTestCase):
 class PendingTenantTests(AttendanceFixture):
     def test_a_school_still_being_set_up_is_refused_every_route(self):
         Tenant.objects.filter(pk=self.tenant.pk).update(status=Tenant.Status.PENDING)
+        lesson = {"slot_id": 1, "on_date": "2025-10-13"}
+        staff = {"branch_id": 1, "on_date": "2025-10-13"}
         responses = (
             self.read(self.admin, self.jss1a),
             self.mark(self.admin, self.jss1a, self.tunde, "P"),
@@ -140,6 +188,31 @@ class PendingTenantTests(AttendanceFixture):
             self.correct(self.admin, self.jss1a, self.tunde, "P"),
             self.decide(self.admin, 1, "approve"),
             self.today(self.admin),
+            TenantAPIClient(self.admin).get(reverse("attendance-lessons")),
+            TenantAPIClient(self.admin).get(reverse("attendance-lesson", kwargs=lesson)),
+            TenantAPIClient(self.admin).put(
+                reverse("attendance-lesson-mark", kwargs={**lesson, "student_id": 9}),
+                {"mark": "P"}, format="json",
+            ),
+            TenantAPIClient(self.admin).post(
+                reverse("attendance-lesson-fill-present", kwargs=lesson), {}, format="json",
+            ),
+            TenantAPIClient(self.admin).post(
+                reverse("attendance-lesson-submit", kwargs=lesson), {}, format="json",
+            ),
+            TenantAPIClient(self.admin).get(
+                reverse("attendance-staff-registers", kwargs={"on_date": "2025-10-13"}),
+            ),
+            TenantAPIClient(self.admin).put(
+                reverse("attendance-staff-mark", kwargs={**staff, "staff_id": 9}),
+                {"mark": "P"}, format="json",
+            ),
+            TenantAPIClient(self.admin).post(
+                reverse("attendance-staff-fill-present", kwargs=staff), {}, format="json",
+            ),
+            TenantAPIClient(self.admin).post(
+                reverse("attendance-staff-submit", kwargs=staff), {}, format="json",
+            ),
             self.today_mine(self.eze),
             self.student_tab(self.admin, self.tunde),
             TenantAPIClient(self.admin).get(reverse("attendance-reports")),

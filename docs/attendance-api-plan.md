@@ -340,3 +340,140 @@ but nothing reads it yet.
 screens, the student tab and the report files are not governed by the student
 record's name switches. A register is unusable without names: a teacher could
 not tell two Emekas apart.
+
+---
+
+## 10. As built (slice E, lesson registers)
+
+Slice E of build 2 ships R18-R21: the lesson-marking switch is now read, a lesson
+register is taken per lesson, and a student in school in the morning and absent
+from a lesson is shown as "missed a lesson". The staff register (R22-R23) is not
+built.
+
+**Routes** (under `/v1/attendance/`): `lessons/?date=&branch=` (the
+administrator's list of the day, `mark_any`), `lessons/<slot>/<date>/`,
+`…/marks/<student>/`, `…/fill-present/`, `…/submit/`.
+
+**Rules as built**
+
+1. A class has lessons only when its level code is in
+   `attendance.lesson_marking_levels`, its timetable is published, the school is
+   open to it that day, and the timetable has a slot for the weekday in a
+   teaching period that is still in use. Breaks, lunch and assemblies are not
+   lessons.
+2. A lesson register is Present, Late (with an arrival time) or Absent, with an
+   optional note. No Excused, no reason code, and it sends nothing to anyone.
+3. Each row carries the student's morning mark from the class register of the
+   same day, or null when that register is not submitted ("not taken").
+4. The lesson's teacher holding `attendance.register.mark`, or a holder of
+   `mark_any` for a class they can open, may mark. Anyone else is refused
+   `NOT_YOUR_LESSON`. The lesson's teacher is the timetable's teacher now; a
+   lesson handed to someone else is theirs from then on.
+5. Same lifecycle as a class register: unmarked rows block a submit, fill-present
+   fills unmarked unlocked rows, a submitted register changes in place within
+   `attendance.edit_window_days` by the submitter or a `mark_any` holder with each
+   change kept, and after the window a submitted lesson mark is frozen
+   (`LESSON_DAY_CLOSED`). There is deliberately no correction request for a lesson.
+   A register never submitted can still be taken late.
+6. Missed a lesson: the class register of the day is submitted and has the
+   student Present or Late, and the lesson register is submitted and has them
+   Absent. It is never part of a rate, a count of absences, a day cell or the
+   chronic list.
+
+**Refusals**: `LESSON_MARKING_OFF`, `TIMETABLE_NOT_PUBLISHED`,
+`LESSON_NOT_ON_THIS_DAY` (also a slot in a period that is not a teaching period),
+`NOT_YOUR_LESSON` (403), `LESSON_DAY_CLOSED`, plus the class register's
+`DATE_IN_FUTURE`, `DAY_CLOSED_NO_REGISTER`, `UNMARKED_ROWS`, `EMPTY_ROSTER`,
+`ALREADY_SUBMITTED`, `STUDENT_SUSPENDED`, `ARRIVAL_TIME_REQUIRED`,
+`ONLY_SUBMITTER_MAY_CHANGE` and `CLASS_HAS_NO_BRANCH`.
+
+**Additions to build 1 screens**: `today/` gains `kpis.missed_a_lesson` and
+`missed_lessons`; `today/mine/` gains `lessons` and `lesson_marking_on`;
+`students/<id>/` gains `lesson_absences`; `reports/` gains `lessons_missed`;
+`settings/` levels gain `has_published_timetable`. Each of the first, third and
+fourth is left out entirely when lesson marking is off for the scope.
+
+**Differences from the slice brief, all deliberate**
+
+1. **A lesson is identified by class, period and date, not by slot and date.**
+   Saving a class's timetable grid deletes and rewrites its slots, so a
+   register that protected its slot would block every later grid save, and one
+   unique over the slot would lose its lesson on the next save. `LessonRegister.slot`
+   is a pointer cleared when the slot goes (`SET_NULL`); the register is unique
+   over `(school_class, period, date)` and copies the period's label and times,
+   the subject and the teacher when it is created.
+2. **History is its own table**, `LessonMarkChange`, rather than `MarkChange`,
+   whose mark is a class mark.
+3. **List rows name the class `school_class`**, as the class register does, not
+   `class`.
+4. **The lessons list is the administrator's** (`mark_any`); a teacher is sent to
+   `today/mine/`, as the hub does.
+5. **A class with nobody placed in it has no lessons to mark** and is left off the
+   administrator's list.
+
+**Field Access**: a resource of its own, `attendance.lesson`, with `mark`,
+`arrived_at` and `note` (read and write), and `morning_mark`, `status`, `counts`
+and `taken_by` (read only). `morning_mark` is hidden when either its own switch or
+the class register's `mark` switch is off. The student lists need the lesson
+mark; the hub count and the report table need the lesson mark and the lesson
+counts.
+
+
+---
+
+## 11. As built (slice F, the staff register)
+
+Slice F finishes build 2: the staff register (R22-R23) and approval decision 2.
+
+**Routes** (under `/v1/attendance/`): `staff-registers/<date>/?branch=` (read),
+`staff-registers/<branch>/<date>/marks/<staff>/` (PUT),
+`staff-registers/<branch>/<date>/fill-present/` and `…/submit/`. `attendance.staff.view`
+reads and `attendance.staff.mark` writes. Models: `StaffDay`, `StaffMark`,
+`StaffMarkChange` (migration 0004).
+
+**Differences from the slice brief and the plan, all deliberate**
+
+1. **One mark per person per day is a database rule.** `StaffMark` carries the
+   day's `date` beside its register so that `(staff, date)` is unique. A person
+   whose home branch changed after they were marked keeps the one mark they have;
+   it follows them to the register they now belong to.
+2. **Counts** are `total`, `present` (late included, as on the class register),
+   `late`, `absent`, `on_leave` and `unmarked`. The people with no home branch
+   have no counts or status: they are a separate `no_home_branch` block of
+   `{count, rows}`, present only for a whole-school reader at a school with
+   several branches.
+3. **A branch-bound caller who writes for a person with no home branch gets a 404,**
+   not `NO_HOME_BRANCH`: the group is hidden from them, and the refusal would
+   reveal it. A whole-school caller gets `NO_HOME_BRANCH` (422) whichever branch
+   the write names.
+4. **Staff are not held to term time.** A day is closed for staff by a
+   non-teaching weekday or by a closing entry with no audience, for the whole
+   school or the branch. An entry limited to levels or classes does not close it.
+5. **Anyone holding `attendance.staff.mark` may change a submitted row** within
+   `attendance.edit_window_days`, not only the submitter; after the window,
+   `STAFF_DAY_CLOSED`. Changes are kept in `StaffMarkChange` and audited but are
+   not served: no screen shows them.
+6. **Staff Management switches.** The job title in the role line follows
+   `school.teachers.job_title`. The `exit` block follows
+   `school.teachers.employment_status` for its label and
+   `school.teachers.exit_date` for its day, each part omitted when unreadable
+   and the block omitted when neither is. The leave a locked row carries (id,
+   type, last day) has no switch in Staff Management; it is served only to a
+   caller who holds `school.leave.view` (checked once per request), and for anyone
+   else the locked row keeps `lock_reason: ON_LEAVE` with the `leave` key absent,
+   so the screen shows "On leave" with no link. Writes are unchanged: the
+   `ON_LEAVE` refusal applies to every caller. A locked row's sentence names
+   neither the kind of leave nor its dates.
+7. **Who is listed.** A hire still awaiting approval is not listed; somebody off
+   the roll with no last working day is not listed; Suspended, Invited and
+   Awaiting-go-live staff are listed and markable.
+8. **New refusals:** `NO_HOME_BRANCH`, `ON_LEAVE`, `STAFF_DAY_CLOSED`,
+   `EMPTY_STAFF_REGISTER` (a branch with nobody on it cannot be submitted), plus
+   the class register's `DATE_IN_FUTURE`, `DAY_CLOSED_NO_REGISTER`, `UNMARKED_ROWS`,
+   `ALREADY_SUBMITTED` and `ARRIVAL_TIME_REQUIRED`.
+9. **Seeded leave is written as a row,** as `seed_staff_scenarios` writes its own:
+   nothing in the staff services approves a leave request.
+
+**Field Access**: a resource of its own, `attendance.staff`, with `mark`,
+`arrived_at` and `note` (read and write) and `status`, `counts` and `taken_by`
+(read only).

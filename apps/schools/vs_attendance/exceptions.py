@@ -138,6 +138,99 @@ class UnmarkedRows(AttendanceError):
     )
 
 
+# ── Lessons ────────────────────────────────────────────────────────────────
+
+class NotYourLesson(AttendanceError):
+    error_code = "NOT_YOUR_LESSON"
+    default_message = (
+        "You can mark only the lessons you teach. Ask an administrator to mark "
+        "this one for you."
+    )
+    http_status = 403
+
+
+class LessonNotOnThisDay(AttendanceError):
+    """A lesson asked for on a date that is not one of its weekdays, or not a teaching period."""
+
+    error_code = "LESSON_NOT_ON_THIS_DAY"
+    default_message = "That lesson is not on the timetable for that day."
+
+
+class LessonMarkingOff(AttendanceError):
+    """The class's level does not mark lessons."""
+
+    error_code = "LESSON_MARKING_OFF"
+    default_message = (
+        "Lesson marking is off for this class's level. Switch it on in "
+        "Attendance settings to mark its lessons."
+    )
+
+
+class TimetableNotPublished(AttendanceError):
+    """The class's timetable is not published, so it has no lessons to mark."""
+
+    error_code = "TIMETABLE_NOT_PUBLISHED"
+    default_message = (
+        "This class's timetable is not published, so it has no lessons to "
+        "mark. Publish the timetable first."
+    )
+
+
+class LessonDayClosed(AttendanceError):
+    """A submitted lesson register asked to change after its day closed.
+
+    There is deliberately no correction request for a lesson: a lesson mark is
+    kept as it stood when the day closed.
+    """
+
+    error_code = "LESSON_DAY_CLOSED"
+    default_message = (
+        "This day is closed. Lesson marks cannot be corrected after the day closes."
+    )
+
+
+# ── The staff register ─────────────────────────────────────────────────────
+
+class NoHomeBranch(AttendanceError):
+    """A member of staff with no home branch, at a school that has several.
+
+    A staff register belongs to one branch, and a person is on the register of
+    the branch they are based at. Somebody based nowhere has no register to be
+    marked on until they are given one in Staff Management.
+    """
+
+    error_code = "NO_HOME_BRANCH"
+    default_message = "Give this person a home branch in Staff Management before marking them."
+
+
+class OnLeave(AttendanceError):
+    """A member of staff on approved leave, who is filled in from Staff Management."""
+
+    error_code = "ON_LEAVE"
+    default_message = (
+        "This person is on approved leave, which is filled in from Staff "
+        "Management and cannot be marked over."
+    )
+
+
+class StaffDayClosed(AttendanceError):
+    """A submitted staff register asked to change after its day closed.
+
+    There is deliberately no correction request for a staff mark: it is kept as
+    it stood when the day closed.
+    """
+
+    error_code = "STAFF_DAY_CLOSED"
+    default_message = (
+        "This day is closed. Staff marks cannot be changed after the day closes."
+    )
+
+
+class EmptyStaffRegister(AttendanceError):
+    error_code = "EMPTY_STAFF_REGISTER"
+    default_message = "Nobody is on this branch's staff register that day, so there is nothing to submit."
+
+
 # ── Reminders ──────────────────────────────────────────────────────────────
 
 class AlreadyReminded(AttendanceError):

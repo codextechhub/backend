@@ -2,11 +2,23 @@
 
 Every serializer carries the Field Access mixin for the resource whose fields it
 emits, so a field a role may not read is absent from what it is sent and a field
-it may not write is refused. Two resources are in play: ``attendance.register``
+it may not write is refused. Three resources are in play: ``attendance.register``
 for everything a register says about a child's day (the registers, the hubs and
-the student's tab), and ``attendance.correction`` for a request to change a mark
-after its day has closed. A history that mixes the two renders each entry with
-the serializer of the resource it came from.
+the student's tab), ``attendance.correction`` for a request to change a mark
+after its day has closed, and ``attendance.lesson`` for the lesson registers and
+for the lesson blocks the hubs, the student's tab and the report carry. A
+history that mixes resources renders each entry with the serializer of the
+resource it came from.
+
+**Lesson blocks inside a register-resource payload.** The teacher hub's
+``lessons`` are rendered by a lesson serializer, so each key is held to the
+lesson switches. The blocks that are made of lesson absences (the hub's
+``missed_lessons`` and ``kpis.missed_a_lesson``, the student's ``lesson_absences``,
+the report's ``lessons_missed``) are left out whole unless the caller may read
+the lesson mark, and the figures also need the lesson counts: each says that a
+lesson mark was Absent. ``morning_mark`` is the class register's mark under
+another name and is dropped for a caller who may not read it there
+(:class:`_MorningFollowsRegisterMark`).
 
 They are plain serializers over the dictionaries the services build, not over
 models, because these are documents assembled from rosters, marks and history
@@ -19,7 +31,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from schools.vs_students.serializers import GuardianSerializer
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .constants import (
     CHRONIC_THRESHOLD_MAX,
@@ -28,13 +40,70 @@ from .constants import (
     EDIT_WINDOW_MAX,
     EDIT_WINDOW_MIN,
     FIELD_RESOURCE,
+    LESSON_FIELD_RESOURCE,
+    LESSON_MARK_CHOICES,
     REASON_NAME_MAX,
+    STAFF_FIELD_RESOURCE,
+    STAFF_MARK_CHOICES,
     Mark,
 )
 
 #: What a method field returns for a block that is left out of the response
 #: rather than sent empty. Removed by the serializer that holds the field.
 _OMIT = object()
+
+#: The registry keys the lesson blocks are held to.
+_REGISTER_MARK = f"{FIELD_RESOURCE}.mark"
+_LESSON_MARK = f"{LESSON_FIELD_RESOURCE}.mark"
+_LESSON_COUNTS = f"{LESSON_FIELD_RESOURCE}.counts"
+
+#: The Staff Management switches a staff register row is held to for what it
+#: borrows from a staff record: the job title in the role line, and the exit
+#: block (the status and last working day of somebody about to leave).
+_STAFF_JOB_TITLE = "school.teachers.job_title"
+_STAFF_EXIT_DATE = "school.teachers.exit_date"
+_STAFF_EMPLOYMENT_STATUS = "school.teachers.employment_status"
+
+
+def _readable(serializer, *keys) -> bool:
+    """Whether the caller of *serializer*'s request may read every registry key in *keys*."""
+    request = serializer.context.get("request")
+    return all(can_read(request, key) for key in keys)
+
+
+class _MorningFollowsRegisterMark:
+    """Drops ``morning_mark`` for a caller who may not read the mark on the class register.
+
+    The morning mark beside a lesson is the class register's mark under another
+    name, and it has a switch of its own in the lesson resource. Hiding the mark
+    on the register has to hide it here as well, or a lesson row would hand a
+    role the one value its register switch withholds. Mixed in ahead of
+    :class:`FieldAccessMixin` and not a subclass of it, so it is not a surface.
+    """
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "morning_mark" in data and not _readable(self, _REGISTER_MARK):
+            data.pop("morning_mark")
+        return data
+
+
+class _LessonBlocks:
+    """Drops whole lesson blocks the caller may not read from a register-resource payload.
+
+    ``lesson_blocks`` maps a block's name to the registry keys that must all be
+    readable for the block to be sent. A block absent from the payload (lesson
+    marking is off) is left absent.
+    """
+
+    lesson_blocks: dict = {}
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for name, keys in self.lesson_blocks.items():
+            if name in data and not _readable(self, *keys):
+                data.pop(name)
+        return data
 
 
 # ── The register ───────────────────────────────────────────────────────────
@@ -106,6 +175,284 @@ class MarkWriteSerializer(FieldAccessMixin, serializers.Serializer):
     reason_code = serializers.IntegerField(
         source="reason_code_id", required=False, allow_null=True,
     )
+    note = serializers.CharField(required=False, allow_blank=True, max_length=300)
+
+
+# ── Lessons ────────────────────────────────────────────────────────────────
+
+class LessonRowSerializer(_MorningFollowsRegisterMark, FieldAccessMixin, serializers.Serializer):
+    """One student's line on a lesson register, with their morning mark beside it."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    student_id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    student_number = serializers.CharField(read_only=True)
+    locked = serializers.BooleanField(read_only=True)
+    mark = serializers.CharField(read_only=True, allow_null=True)
+    arrived_at = serializers.TimeField(read_only=True, format="%H:%M", allow_null=True)
+    note = serializers.CharField(read_only=True)
+    morning_mark = serializers.CharField(read_only=True, allow_null=True)
+
+
+class LessonChangeSerializer(FieldAccessMixin, serializers.Serializer):
+    """One entry in the history of a submitted lesson register."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    student_id = serializers.IntegerField(read_only=True)
+    student_name = serializers.CharField(read_only=True)
+    from_mark = serializers.CharField(read_only=True, allow_null=True)
+    to_mark = serializers.CharField(read_only=True)
+    changed_by_name = serializers.CharField(read_only=True)
+    changed_at = serializers.DateTimeField(read_only=True)
+    note = serializers.CharField(read_only=True)
+
+
+class LessonHeaderSerializer(serializers.Serializer):
+    """Which lesson a register is: its period, subject and teacher as they were taken."""
+
+    slot_id = serializers.IntegerField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    start_time = serializers.TimeField(read_only=True, format="%H:%M")
+    end_time = serializers.TimeField(read_only=True, format="%H:%M")
+    subject = serializers.CharField(read_only=True)
+    teacher_name = serializers.CharField(read_only=True, allow_null=True)
+
+
+class LessonRegisterSerializer(FieldAccessMixin, serializers.Serializer):
+    """A lesson's register for one day, as the lesson register screen reads it."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    lesson = LessonHeaderSerializer(read_only=True)
+    school_class = serializers.DictField(read_only=True)
+    date = serializers.DateField(read_only=True)
+    date_label = serializers.CharField(read_only=True)
+    closed = serializers.DictField(read_only=True, allow_null=True)
+    status = serializers.CharField(read_only=True)
+    roster_empty = serializers.BooleanField(read_only=True)
+    counts = serializers.DictField(read_only=True)
+    taken_by = serializers.DictField(read_only=True, allow_null=True)
+    edit_window_open = serializers.BooleanField(read_only=True, allow_null=True)
+    rows = LessonRowSerializer(many=True, read_only=True)
+    history = LessonChangeSerializer(many=True, read_only=True)
+
+
+class LessonMarkWriteSerializer(FieldAccessMixin, serializers.Serializer):
+    """The body of a lesson mark: Present, Late or Absent, with a time for Late.
+
+    Whether a Late mark carries its time is a rule of the register and is
+    answered by the service.
+    """
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    mark = serializers.ChoiceField(
+        choices=LESSON_MARK_CHOICES,
+        error_messages={
+            "invalid_choice": "Choose Present, Late or Absent. A lesson register has no Excused.",
+        },
+    )
+    arrived_at = serializers.TimeField(required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=300)
+
+
+class LessonListRowSerializer(FieldAccessMixin, serializers.Serializer):
+    """One lesson on the administrator's list of the day."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    slot_id = serializers.IntegerField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    start_time = serializers.TimeField(read_only=True, format="%H:%M")
+    end_time = serializers.TimeField(read_only=True, format="%H:%M")
+    school_class = serializers.DictField(read_only=True)
+    branch = serializers.DictField(read_only=True, allow_null=True)
+    subject = serializers.CharField(read_only=True)
+    teacher_name = serializers.CharField(read_only=True, allow_null=True)
+    status = serializers.CharField(read_only=True)
+    submitted_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    submitted_by_name = serializers.CharField(read_only=True, allow_null=True)
+
+
+class LessonListSerializer(serializers.Serializer):
+    """The lessons of one day. Each row is held to the lesson switches."""
+
+    date = serializers.DateField(read_only=True)
+    date_label = serializers.CharField(read_only=True)
+    closed = serializers.DictField(read_only=True, allow_null=True)
+    lesson_marking_on = serializers.BooleanField(read_only=True)
+    branch_dimension = serializers.BooleanField(read_only=True)
+    lessons = LessonListRowSerializer(many=True, read_only=True)
+
+
+class LessonCardSerializer(FieldAccessMixin, serializers.Serializer):
+    """One lesson a teacher holds on the day and where its register stands."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    slot_id = serializers.IntegerField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    start_time = serializers.TimeField(read_only=True, format="%H:%M")
+    subject = serializers.CharField(read_only=True)
+    class_name = serializers.CharField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    submitted_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+class LessonMissedRowSerializer(_MorningFollowsRegisterMark, FieldAccessMixin, serializers.Serializer):
+    """A student who was in school in the morning and absent from a lesson."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    student = serializers.DictField(read_only=True)
+    class_name = serializers.CharField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    subject = serializers.CharField(read_only=True)
+    lesson_submitted_at = serializers.DateTimeField(read_only=True)
+    morning_mark = serializers.CharField(read_only=True, allow_null=True)
+
+
+class LessonAbsenceSerializer(_MorningFollowsRegisterMark, FieldAccessMixin, serializers.Serializer):
+    """A lesson a student was absent from, on their Attendance tab."""
+
+    field_resource = LESSON_FIELD_RESOURCE
+
+    date = serializers.DateField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    subject = serializers.CharField(read_only=True)
+    morning_mark = serializers.CharField(read_only=True, allow_null=True)
+
+
+class ReportLessonsMissedRowSerializer(serializers.Serializer):
+    """One subject, class and teacher in the report's table of lessons missed."""
+
+    subject = serializers.CharField(read_only=True)
+    class_name = serializers.CharField(read_only=True)
+    teacher_name = serializers.CharField(read_only=True, allow_null=True)
+    missed = serializers.IntegerField(read_only=True)
+    students = serializers.ListField(child=serializers.CharField(), read_only=True)
+
+
+# ── The staff register ─────────────────────────────────────────────────────
+
+class StaffRowSerializer(FieldAccessMixin, serializers.Serializer):
+    """One member of staff's line on a branch's staff register.
+
+    The role line is made of the job title, which is Staff Management's field and
+    is held to its switch, and the classes the person leads, which are not. The
+    exit block says what the person's employment status is and when they last
+    work, which are Staff Management's employment status and exit date under other
+    names: each part is sent only to a caller who may read the field it comes from,
+    and the block is left out entirely when they may read neither.
+    """
+
+    field_resource = STAFF_FIELD_RESOURCE
+
+    staff = serializers.DictField(read_only=True)
+    role = serializers.SerializerMethodField()
+    locked = serializers.BooleanField(read_only=True)
+    lock_reason = serializers.CharField(read_only=True, allow_null=True)
+    lock_note = serializers.CharField(read_only=True, allow_null=True)
+    mark = serializers.CharField(read_only=True, allow_null=True)
+    arrived_at = serializers.TimeField(read_only=True, format="%H:%M", allow_null=True)
+    note = serializers.CharField(read_only=True)
+    leave = serializers.DictField(read_only=True, allow_null=True)
+    exit = serializers.DictField(read_only=True, allow_null=True)
+
+    def get_role(self, obj):
+        parts = []
+        if obj.get("job_title") and _readable(self, _STAFF_JOB_TITLE):
+            parts.append(obj["job_title"])
+        if obj.get("leads"):
+            parts.append("Class teacher \u00b7 " + ", ".join(obj["leads"]))
+        return " \u00b7 ".join(parts) if parts else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "leave" not in instance:
+            data.pop("leave", None)
+        if "exit" in data:
+            data["exit"] = self._exit_block(data["exit"])
+            if data["exit"] is _OMIT:
+                data.pop("exit")
+        return data
+
+    def _exit_block(self, block):
+        """*block* cut down to the parts the caller may read, or ``_OMIT`` for none of it."""
+        status = _readable(self, _STAFF_EMPLOYMENT_STATUS)
+        day = _readable(self, _STAFF_EXIT_DATE)
+        if not (status or day):
+            return _OMIT
+        if block is None:
+            return None
+        when = block["last_working_day_label"]
+        if status and day:
+            text = f"{block['label']} \u00b7 last working day {when}"
+        elif day:
+            text = f"Last working day {when}"
+        else:
+            text = block["label"]
+        shown = {"text": text}
+        if status:
+            shown["label"] = block["label"]
+        if day:
+            shown["last_working_day"] = block["last_working_day"]
+            shown["last_working_day_label"] = when
+        return shown
+
+
+class StaffGroupSerializer(FieldAccessMixin, serializers.Serializer):
+    """One branch's staff register for the day."""
+
+    field_resource = STAFF_FIELD_RESOURCE
+
+    branch = serializers.DictField(read_only=True)
+    closed = serializers.DictField(read_only=True, allow_null=True)
+    status = serializers.CharField(read_only=True)
+    submitted_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    submitted_by_name = serializers.CharField(read_only=True, allow_null=True)
+    edit_window_open = serializers.BooleanField(read_only=True, allow_null=True)
+    counts = serializers.DictField(read_only=True)
+    rows = StaffRowSerializer(many=True, read_only=True)
+
+
+class StaffNoHomeBranchSerializer(serializers.Serializer):
+    """The people based at no branch, locked until Staff Management gives them one."""
+
+    count = serializers.IntegerField(read_only=True)
+    rows = StaffRowSerializer(many=True, read_only=True)
+
+
+class StaffRegisterSerializer(serializers.Serializer):
+    """A day's staff registers. Each group and row is held to the staff switches."""
+
+    date = serializers.DateField(read_only=True)
+    date_label = serializers.CharField(read_only=True)
+    closed = serializers.DictField(read_only=True, allow_null=True)
+    branch_dimension = serializers.BooleanField(read_only=True)
+    groups = StaffGroupSerializer(many=True, read_only=True)
+    no_home_branch = StaffNoHomeBranchSerializer(read_only=True, allow_null=True)
+
+
+class StaffMarkWriteSerializer(FieldAccessMixin, serializers.Serializer):
+    """The body of a staff mark: Present, Late or Absent, with a time for Late.
+
+    Whether a Late mark carries its time is a rule of the register and is
+    answered by the service.
+    """
+
+    field_resource = STAFF_FIELD_RESOURCE
+
+    mark = serializers.ChoiceField(
+        choices=STAFF_MARK_CHOICES,
+        error_messages={
+            "invalid_choice": "Choose Present, Late or Absent. A member of staff "
+                              "away with permission is on leave, which is filled in for you.",
+        },
+    )
+    arrived_at = serializers.TimeField(required=False, allow_null=True)
     note = serializers.CharField(required=False, allow_blank=True, max_length=300)
 
 
@@ -219,10 +566,16 @@ class HubAbsentRowSerializer(FieldAccessMixin, serializers.Serializer):
     notice_sent_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
 
-class HubSerializer(FieldAccessMixin, serializers.Serializer):
-    """The administrator's view of one day across the classes in scope."""
+class HubSerializer(_LessonBlocks, FieldAccessMixin, serializers.Serializer):
+    """The administrator's view of one day across the classes in scope.
+
+    ``missed_lessons`` and ``kpis.missed_a_lesson`` are present only when a class
+    in scope marks lessons. The list needs the lesson mark to be readable and
+    the count needs the lesson counts as well.
+    """
 
     field_resource = FIELD_RESOURCE
+    lesson_blocks = {"missed_lessons": (_LESSON_MARK,)}
 
     date = serializers.DateField(read_only=True)
     date_label = serializers.CharField(read_only=True)
@@ -235,6 +588,16 @@ class HubSerializer(FieldAccessMixin, serializers.Serializer):
     classes_without_branch = serializers.ListField(
         child=serializers.CharField(), read_only=True,
     )
+    missed_lessons = LessonMissedRowSerializer(many=True, read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        kpis = data.get("kpis")
+        if kpis and "missed_a_lesson" in kpis and not _readable(
+            self, _LESSON_MARK, _LESSON_COUNTS,
+        ):
+            kpis.pop("missed_a_lesson")
+        return data
 
 
 class TeacherCardSerializer(FieldAccessMixin, serializers.Serializer):
@@ -259,6 +622,8 @@ class TeacherHubSerializer(FieldAccessMixin, serializers.Serializer):
     date_label = serializers.CharField(read_only=True)
     closed = serializers.DictField(read_only=True, allow_null=True)
     classes = TeacherCardSerializer(many=True, read_only=True)
+    lesson_marking_on = serializers.BooleanField(read_only=True)
+    lessons = LessonCardSerializer(many=True, read_only=True)
 
 
 # ── The student's tab ──────────────────────────────────────────────────────
@@ -310,7 +675,7 @@ class StudentChangeSerializer(FieldAccessMixin, serializers.Serializer):
     note = serializers.CharField(read_only=True)
 
 
-class StudentAttendanceSerializer(FieldAccessMixin, serializers.Serializer):
+class StudentAttendanceSerializer(_LessonBlocks, FieldAccessMixin, serializers.Serializer):
     """A student's Attendance tab for one term.
 
     The primary guardian is read through the student module's own guardian
@@ -322,6 +687,7 @@ class StudentAttendanceSerializer(FieldAccessMixin, serializers.Serializer):
     """
 
     field_resource = FIELD_RESOURCE
+    lesson_blocks = {"lesson_absences": (_LESSON_MARK,)}
 
     student = serializers.DictField(read_only=True)
     primary_guardian = serializers.SerializerMethodField()
@@ -330,6 +696,7 @@ class StudentAttendanceSerializer(FieldAccessMixin, serializers.Serializer):
     counts = serializers.DictField(read_only=True)
     days = StudentDaySerializer(many=True, read_only=True)
     absences = StudentAbsenceSerializer(many=True, read_only=True)
+    lesson_absences = LessonAbsenceSerializer(many=True, read_only=True)
     history = serializers.SerializerMethodField()
 
     def get_primary_guardian(self, obj):
@@ -431,16 +798,19 @@ class ReportRangeSerializer(FieldAccessMixin, serializers.Serializer):
     school_days = serializers.IntegerField(read_only=True)
 
 
-class ReportSerializer(FieldAccessMixin, serializers.Serializer):
+class ReportSerializer(_LessonBlocks, FieldAccessMixin, serializers.Serializer):
     """The attendance report for one term.
 
     The weekly trend, the by-level table and the chronic list are made of
     figures (the chronic list is who falls below a rate), so they follow the
     switch on the register's counts, and the list of registers not taken
-    follows the one on the register's status.
+    follows the one on the register's status. The table of lessons missed (present
+    only when a class in scope marks lessons) is made of figures about lesson
+    absences and needs both the lesson mark and the lesson counts.
     """
 
     field_resource = FIELD_RESOURCE
+    lesson_blocks = {"lessons_missed": (_LESSON_MARK, _LESSON_COUNTS)}
 
     term = serializers.DictField(read_only=True, allow_null=True)
     terms = serializers.ListField(child=serializers.DictField(), read_only=True)
@@ -452,6 +822,7 @@ class ReportSerializer(FieldAccessMixin, serializers.Serializer):
     threshold = serializers.IntegerField(read_only=True)
     not_taken = ReportNotTakenRowSerializer(many=True, read_only=True)
     branch_dimension = serializers.BooleanField(read_only=True)
+    lessons_missed = ReportLessonsMissedRowSerializer(many=True, read_only=True)
 
 
 # ── Settings and reasons ───────────────────────────────────────────────────

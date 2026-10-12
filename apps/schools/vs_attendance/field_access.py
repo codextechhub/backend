@@ -57,6 +57,37 @@ by a caller whose reach is the whole school, as the calendar's rooms, bell
 schedule and rules and the academic structure are. They carry no record of any
 child, so they have no switch of their own.
 
+**Lessons are a resource of their own,** ``attendance.lesson``. A lesson register
+is a different record from the morning register: a child can be present in the
+morning and absent from a lesson, and a role may be given one and not the other.
+It has its own switches for the lesson mark, the arrival time and the note
+(each readable and writable), for the morning mark shown beside a lesson row, for
+a lesson's status and counts, and for who took it. The morning mark is the class
+register's mark under another name, so it follows both switches: a role that may
+not read the mark on the register never sees it beside a lesson either. The
+lists of students who missed a lesson (the hub's list, a student's lesson
+absences) follow the lesson mark, because each row says the lesson mark was
+Absent, and the figures (the hub's count, the report's table) follow the lesson
+mark and the lesson counts.
+
+**The staff register is a resource of its own,** ``attendance.staff``. It records
+what an administrator saw of a colleague, a different record from a child's day.
+The mark, the arrival time and the note each have a Read and a Write switch;
+the group's status, its counts and who submitted it are derived or kept by the
+system and are read only. A staff member's name and number on a row are left
+open, as a student's name and number are on a class register: a register is
+unusable without names. What a row borrows from a staff record obeys Staff
+Management's own switches rather than a copy of them: the job title in the
+role line follows ``school.teachers.job_title``, and the exit block (the status
+and last working day of somebody about to leave) follows
+``school.teachers.employment_status`` for the status and
+``school.teachers.exit_date`` for the day, each part sent only to a caller who
+may read its field and the whole block left out when neither can be read.
+The leave a locked row carries comes from the leave records, which have no field
+switch in Staff Management: it is sent only to a caller who holds
+``school.leave.view`` and the key is absent for anyone else. Nothing about a person's sign-in (a lockout, a suspended
+account) is a field here or anywhere on the register.
+
 **Corrections are a resource of their own,** ``attendance.correction``. A
 request to change a mark after its day has closed names the mark asked for, why,
 and a note, and a decision carries its own note. The mark asked for, the reason,
@@ -89,6 +120,27 @@ SURFACES = (
     "schools.vs_attendance.serializers.ReportRangeSerializer",
     "schools.vs_attendance.serializers.ReportClassRowSerializer",
     "schools.vs_attendance.serializers.ReasonCodeSerializer",
+)
+
+#: The surfaces that emit a lesson register's fields. Those the hubs, the
+#: student's tab and the report nest are rendered by the register-resource
+#: surface that holds them.
+LESSON_SURFACES = (
+    "schools.vs_attendance.serializers.LessonRegisterSerializer",
+    "schools.vs_attendance.serializers.LessonRowSerializer",
+    "schools.vs_attendance.serializers.LessonChangeSerializer",
+    "schools.vs_attendance.serializers.LessonMarkWriteSerializer",
+    "schools.vs_attendance.serializers.LessonListRowSerializer",
+    "schools.vs_attendance.serializers.LessonCardSerializer",
+    "schools.vs_attendance.serializers.LessonMissedRowSerializer",
+    "schools.vs_attendance.serializers.LessonAbsenceSerializer",
+)
+
+#: The surfaces that emit a staff register's fields.
+STAFF_SURFACES = (
+    "schools.vs_attendance.serializers.StaffGroupSerializer",
+    "schools.vs_attendance.serializers.StaffRowSerializer",
+    "schools.vs_attendance.serializers.StaffMarkWriteSerializer",
 )
 
 #: The surfaces that emit a correction request's fields.
@@ -188,5 +240,72 @@ def register():
             FieldSpec("decision_note", "Decision note", group="Decision",
                       scope=_TENANT, sort_order=30,
                       description="Why the correction was approved or rejected."),
+        ),
+    )
+    register_fields(
+        "attendance",
+        "lesson",
+        surfaces=LESSON_SURFACES,
+        fields=(
+            FieldSpec("mark", "Lesson mark", group="Marks", scope=_TENANT, sort_order=10,
+                      api_names=("mark", "from_mark", "to_mark"),
+                      description="Present, late or absent from a lesson, on a row "
+                                  "and in the history of a change."),
+            FieldSpec("arrived_at", "Lesson arrival time", group="Marks", scope=_TENANT,
+                      sort_order=20,
+                      description="When a student who was late to a lesson arrived."),
+            FieldSpec("note", "Lesson note", group="Marks", scope=_TENANT,
+                      sort_order=30,
+                      description="The teacher's working note beside a lesson mark."),
+            FieldSpec("morning_mark", "Morning mark beside a lesson", group="Marks",
+                      scope=_TENANT, sort_order=40, writable=False,
+                      description="The student's mark in the class register of the "
+                                  "same day, shown beside the lesson mark. A role "
+                                  "that may not read the mark on the class register "
+                                  "never sees it here either."),
+            FieldSpec("status", "Lesson register status", group="Summary", scope=_TENANT,
+                      sort_order=10, writable=False,
+                      description="Not started, in progress, ready, submitted or "
+                                  "closed, for a lesson on the lessons list, a "
+                                  "teacher's day and the lesson register."),
+            FieldSpec("counts", "Lesson register counts", group="Summary", scope=_TENANT,
+                      sort_order=20, writable=False,
+                      description="Present, late, absent and unmarked totals of a "
+                                  "lesson register, and with the lesson mark the "
+                                  "figures of lessons missed on the hub and in "
+                                  "the report."),
+            FieldSpec("taken_by", "Who took the lesson register", group="Summary",
+                      scope=_TENANT, sort_order=30, writable=False,
+                      api_names=("taken_by", "submitted_at", "submitted_by_name"),
+                      description="Who submitted the lesson register and when."),
+        ),
+    )
+    register_fields(
+        "attendance",
+        "staff",
+        surfaces=STAFF_SURFACES,
+        fields=(
+            FieldSpec("mark", "Staff mark", group="Marks", scope=_TENANT, sort_order=10,
+                      description="Present, late or absent, on a member of staff's "
+                                  "row."),
+            FieldSpec("arrived_at", "Staff arrival time", group="Marks", scope=_TENANT,
+                      sort_order=20,
+                      description="When a member of staff who was late arrived."),
+            FieldSpec("note", "Staff mark note", group="Marks", scope=_TENANT,
+                      sort_order=30,
+                      description="The administrator's working note beside a "
+                                  "staff mark."),
+            FieldSpec("status", "Staff register status", group="Summary", scope=_TENANT,
+                      sort_order=10, writable=False,
+                      description="Not started, in progress, ready, submitted or "
+                                  "closed, for a branch's staff register."),
+            FieldSpec("counts", "Staff register counts", group="Summary", scope=_TENANT,
+                      sort_order=20, writable=False,
+                      description="Present, late, absent, on leave and unmarked "
+                                  "totals of a branch's staff register."),
+            FieldSpec("taken_by", "Who took the staff register", group="Summary",
+                      scope=_TENANT, sort_order=30, writable=False,
+                      api_names=("submitted_at", "submitted_by_name"),
+                      description="Who submitted the staff register and when."),
         ),
     )

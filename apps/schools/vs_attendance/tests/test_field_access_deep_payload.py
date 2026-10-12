@@ -13,6 +13,18 @@ fields, rendered by the serializer of the correction resource. Those entries are
 governed by the correction switches, and each key of one that shares a name with
 a register field is listed below with that reason.
 
+The lesson registers are a resource of their own, ``attendance.lesson``, and have
+their own case below: every lesson surface is rendered on a submitted lesson
+register with a late arrival, a note, a changed row and a missed lesson. The
+teacher's hub carries the caller's lessons beside the classes they lead, and each
+key of a lesson card that shares a name with a register field is listed with that
+reason.
+
+The staff register is a resource of its own, ``attendance.staff``, and has its
+own case below: every staff surface is rendered on a submitted register with a
+late arrival, a note, a person on leave, somebody leaving, and (at the school
+with two branches) a person with no home branch.
+
 Both shapes of school: Brightfield has two branches and Sunrise has one.
 """
 from __future__ import annotations
@@ -22,13 +34,29 @@ import datetime as dt
 from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
 
 from ..constants import ChangeVia, CorrectionStatus, NoticeState
-from ..models import ClassRegister, CorrectionRequest, MarkChange, ReasonCode, StudentMark
+from ..models import (
+    ClassRegister,
+    CorrectionRequest,
+    LessonMark,
+    LessonMarkChange,
+    LessonRegister,
+    MarkChange,
+    ReasonCode,
+    StaffDay,
+    StaffMark,
+    StudentMark,
+)
 from ..services import corrections, hub
+from ..services.lesson_list import lessons_list
+from ..services.lessons import lesson_payload, load_lesson
 from ..services.reasons import ensure_default_reason_codes, reason_code_rows
 from ..services.report import build_report
 from ..services.registers import load_context, register_payload
+from ..services.staff_register import read_staff_registers
 from ..services.student_tab import student_tab
 from .base import NOW, TODAY, AttendanceFixture
+from .lesson_base import LessonFixture
+from .staff_base import StaffFixture
 
 _SURFACE = "schools.vs_attendance.serializers."
 
@@ -38,7 +66,7 @@ _CORRECTION_KEYS = (
 )
 
 
-class AttendanceDeepPayloadTests(DeepPayloadChecks, AttendanceFixture):
+class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
     resources = frozenset({"attendance.register"})
     covers = frozenset({
         _SURFACE + "RegisterSerializer",
@@ -70,6 +98,12 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, AttendanceFixture):
                 "A decided correction in the student's history, rendered by the "
                 "correction serializer and governed by attendance.correction."
             for key in _CORRECTION_KEYS
+        },
+        **{
+            (_SURFACE + "TeacherHubSerializer", f"lessons[].{key}"):
+                "A lesson the teacher holds today, rendered by the lesson card "
+                "serializer and governed by attendance.lesson."
+            for key in ("status", "submitted_at")
         },
     }
 
@@ -262,5 +296,147 @@ class AttendanceCorrectionDeepPayloadTests(DeepPayloadChecks, AttendanceFixture)
                     {"decision_note": "Seen the letter"}, tenant=tenant,
                 ),
                 Sample(_SURFACE + "StudentCorrectionSerializer", entries, many=True, tenant=tenant),
+            ]
+        return samples
+
+
+class AttendanceLessonDeepPayloadTests(DeepPayloadChecks, LessonFixture):
+    resources = frozenset({"attendance.lesson"})
+    covers = frozenset({
+        _SURFACE + "LessonRegisterSerializer",
+        _SURFACE + "LessonRowSerializer",
+        _SURFACE + "LessonChangeSerializer",
+        _SURFACE + "LessonMarkWriteSerializer",
+        _SURFACE + "LessonListRowSerializer",
+        _SURFACE + "LessonCardSerializer",
+        _SURFACE + "LessonMissedRowSerializer",
+        _SURFACE + "LessonAbsenceSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.cases = [
+            cls.submitted(
+                cls.tenant, cls.admin, cls.eze, cls.a_english, cls.lekki, cls.jss1a,
+                late=cls.tunde, missed=cls.kelechi,
+            ),
+            cls.submitted(
+                cls.solo, cls.solo_admin, cls.solo_teacher, cls.solo_slot, cls.solo_branch,
+                cls.solo_class, late=None, missed=cls.solo_pupil,
+            ),
+        ]
+
+    @classmethod
+    def submitted(cls, tenant, admin, teacher, slot, branch, school_class, *, late, missed):
+        """A submitted morning register and lesson register with every field filled in."""
+        morning = ClassRegister.objects.create(
+            tenant=tenant, school_class=school_class, date=TODAY, branch=branch,
+            session=school_class.session, term=None, submitted_at=NOW, submitted_by=teacher,
+        )
+        register = LessonRegister.objects.create(
+            tenant=tenant, slot=slot, period=slot.period, school_class=school_class,
+            date=TODAY, branch=branch, session=school_class.session,
+            period_label=slot.period.label, starts_at=slot.period.start_time,
+            ends_at=slot.period.end_time, subject=slot.subject, teacher=teacher,
+            submitted_at=NOW, submitted_by=teacher,
+        )
+        base = {"tenant": tenant, "register": register, "marked_by": teacher}
+        StudentMark.objects.create(
+            tenant=tenant, register=morning, student=missed, mark="P", marked_by=teacher,
+        )
+        absent = LessonMark.objects.create(
+            student=missed, mark="A", note="Left the school", **base,
+        )
+        LessonMarkChange.objects.create(
+            tenant=tenant, mark=absent, from_mark="P", to_mark="A", changed_by=teacher,
+            note="Left the school",
+        )
+        if late is not None:
+            LessonMark.objects.create(
+                student=late, mark="L", arrived_at=dt.time(8, 20), note="Bus broke down", **base,
+            )
+        return tenant, admin, teacher, slot, missed, absent
+
+    def samples(self):
+        samples = []
+        for tenant, admin, teacher, slot, pupil, mark in self.cases:
+            payload = lesson_payload(load_lesson(tenant, admin, slot.pk, TODAY))
+            samples += [
+                Sample(_SURFACE + "LessonRegisterSerializer", payload, tenant=tenant),
+                Sample(_SURFACE + "LessonRowSerializer", payload["rows"], many=True, tenant=tenant),
+                Sample(
+                    _SURFACE + "LessonChangeSerializer", payload["history"], many=True,
+                    tenant=tenant,
+                ),
+                Sample(_SURFACE + "LessonMarkWriteSerializer", mark, tenant=tenant),
+                Sample(
+                    _SURFACE + "LessonListRowSerializer",
+                    lessons_list(tenant, admin, on_date=TODAY)["lessons"], many=True,
+                    tenant=tenant,
+                ),
+                Sample(
+                    _SURFACE + "LessonCardSerializer",
+                    hub.teacher_hub(tenant, teacher, on_date=TODAY)["lessons"], many=True,
+                    tenant=tenant,
+                ),
+                Sample(
+                    _SURFACE + "LessonMissedRowSerializer",
+                    hub.admin_hub(tenant, admin, on_date=TODAY, can_decide=True)["missed_lessons"],
+                    many=True, tenant=tenant,
+                ),
+                Sample(
+                    _SURFACE + "LessonAbsenceSerializer",
+                    student_tab(tenant, admin, pupil.pk)["lesson_absences"], many=True,
+                    tenant=tenant,
+                ),
+            ]
+        return samples
+
+
+class AttendanceStaffDeepPayloadTests(DeepPayloadChecks, StaffFixture):
+    resources = frozenset({"attendance.staff"})
+    covers = frozenset({
+        _SURFACE + "StaffGroupSerializer",
+        _SURFACE + "StaffRowSerializer",
+        _SURFACE + "StaffMarkWriteSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.approve_leave(cls.bello_staff, TODAY, TODAY)
+        cls.funke.employment_status = "RESIGNED"
+        cls.funke.exit_date = dt.date(2025, 10, 20)
+        cls.funke.save(update_fields=["employment_status", "exit_date"])
+        cls.late = cls.stage(cls.tenant, cls.registrar, cls.lekki, cls.peter, cls.eze_staff)
+        cls.solo_late = cls.stage(
+            cls.solo, cls.solo_registrar, cls.solo_branch, cls.halima, cls.kola,
+        )
+
+    @classmethod
+    def stage(cls, tenant, viewer, branch, late, absent):
+        """A late mark with a note and an absence, on a submitted register."""
+        staff_day = StaffDay.objects.create(
+            tenant=tenant, branch=branch, date=TODAY, submitted_at=NOW, submitted_by=viewer,
+        )
+        base = {"tenant": tenant, "staff_day": staff_day, "date": TODAY, "marked_by": viewer}
+        mark = StaffMark.objects.create(
+            staff=late, mark="L", arrived_at=dt.time(8, 40), note="Bus broke down", **base,
+        )
+        StaffMark.objects.create(staff=absent, mark="A", note="Phoned in", **base)
+        return tenant, viewer, mark
+
+    def samples(self):
+        samples = []
+        for tenant, viewer, mark in (self.late, self.solo_late):
+            body = read_staff_registers(tenant, viewer, on_date=TODAY)
+            rows = [row for group in body["groups"] for row in group["rows"]]
+            if body["no_home_branch"]:
+                rows += body["no_home_branch"]["rows"]
+            samples += [
+                Sample(_SURFACE + "StaffGroupSerializer", body["groups"], many=True, tenant=tenant),
+                Sample(_SURFACE + "StaffRowSerializer", rows, many=True, tenant=tenant),
+                Sample(_SURFACE + "StaffMarkWriteSerializer", mark, tenant=tenant),
             ]
         return samples

@@ -25,6 +25,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from schools.vs_academics.models import AcademicSession, AcademicTerm, Level, SessionStatus
+from schools.vs_calendar.models import ClassTimetable, PublishState
 from vs_config.clock import tenant_today
 
 from ..constants import (
@@ -54,8 +55,25 @@ def _active_session(tenant):
     )
 
 
+def _published_codes(tenant) -> set:
+    """The codes, lower-cased, of the levels with a class whose timetable is published this year."""
+    return {
+        code.lower()
+        for code in ClassTimetable.objects.filter(
+            tenant=tenant, session__status=SessionStatus.ACTIVE,
+            status=PublishState.PUBLISHED, school_class__is_active=True,
+        ).values_list("school_class__level__code", flat=True).distinct()
+    }
+
+
 def _levels_offered(tenant, marking) -> list:
-    """The active year's levels, one entry per code, in programme and level order."""
+    """The active year's levels, one entry per code, in programme and level order.
+
+    ``has_published_timetable`` says whether any class at the level has a
+    published timetable this year, which is what lesson marking needs before it
+    has a lesson to mark.
+    """
+    published = _published_codes(tenant)
     rows = (
         Level.objects.filter(
             tenant=tenant, session__status=SessionStatus.ACTIVE, is_active=True,
@@ -75,6 +93,7 @@ def _levels_offered(tenant, marking) -> list:
             "program_id": level.program_id,
             "program_name": level.program.name,
             "lesson_marking": level.code in marking,
+            "has_published_timetable": key in published,
         })
     return out
 

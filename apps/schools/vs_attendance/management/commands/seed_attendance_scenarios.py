@@ -30,21 +30,45 @@ TENANT_NOT_LIVE to a school still onboarding.
   second branch alone;
 * three corrections on closed days in C1: one waiting, one approved, one
   rejected;
-* one retired reason code.
+* one retired reason code;
+* at the school with two branches, lesson marking switched on for C1's level
+  and C1 given a published timetable (two lessons a teaching day, the class
+  teachers of C1 and C2 teaching them, a room, and a bell schedule if the school
+  has none): C1's first lesson was taken on its last two school days and today,
+  with one child who was in school in the morning absent from it (a missed
+  lesson), and today's second lesson is left unmarked;
+* a staff register: today's, with one person Present, one Late (with the time
+  they arrived), one Absent and the rest not yet marked, so it is neither new nor
+  finished; a submitted one for the school's latest open day before today
+  (Present, one Late, one Absent); somebody on approved leave covering today, whom
+  the register fills in and will not let anyone mark over; somebody who has
+  resigned with a last working day still to come, listed with a note saying so;
+  and, at the school with two branches, somebody with no home branch, locked in
+  a group of their own. At the school with one branch every person is on the
+  one register, including anyone with no branch.
 
 Classes are chosen by size, the largest of each branch first, from the roll
 ``seed_student_scenarios`` builds; classes outside the cast have taken no
 register this term and so read as "not taken" on every day of it.
 
 **Everything goes through the real services.** Marks come from
-``marks.set_mark``, ``fill_present`` and ``submit``, corrections from
-``corrections.request_correction`` and ``decide``, reminders from
-``reminders.remind``, the suspension from ``status.transition``, the teachers
-from the staff module's own invitation path. A state that cannot be reached
+``marks.set_mark``, ``fill_present`` and ``submit``, lesson marks from the same
+three in ``lesson_marks``, corrections from ``corrections.request_correction``
+and ``decide``, reminders from ``reminders.remind``, the suspension from
+``status.transition``, the lesson-marking switch from
+``configuration.write_settings``, the lessons from ``validate_slot`` and the
+timetable's publication from ``publish_class_timetable``, the teachers from the
+staff module's own invitation path. A state that cannot be reached
 honestly fails loudly here instead of being written as a row and believed.
-The one deliberate exception is the closure, which is written as a calendar row
-exactly as ``seed_timetable_scenarios`` writes its events: the calendar has no
-service to call.
+Staff marks come from ``staff_marks``, the colleague who leaves from
+``employment.change_status``, and the person with no home branch from the staff
+module's own invitation path. The deliberate exceptions are the closure, which is
+written as a calendar row exactly as ``seed_timetable_scenarios`` writes its
+events (the calendar has no service to call), the bell schedule and the room,
+which are written as rows exactly as that seeder writes them, and the approved
+leave, which is written as a row exactly as ``seed_staff_scenarios`` writes its
+own: approving honestly needs a second person to vote through the workflow
+engine, and nothing in the staff module's services approves a request.
 
 **Idempotent.** Every step looks before it acts: a register already submitted,
 a teacher already invited, a pupil already enrolled, a correction already filed
@@ -75,37 +99,67 @@ import datetime as dt
 
 from django.core.management.base import BaseCommand, CommandError
 from django.test.utils import override_settings
+from django.utils import timezone
 
-from schools.vs_academics.models import AcademicSession, SchoolClass, SessionStatus
-from schools.vs_calendar.models import CalendarEvent, EventType
+from schools.vs_academics.models import AcademicSession, SchoolClass, SessionStatus, Subject
+from schools.vs_calendar.models import (
+    CalendarEvent,
+    ClassTimetable,
+    EventType,
+    Period,
+    PeriodType,
+    PublishState,
+    Room,
+    RoomType,
+    TimetableSlot,
+)
 from schools.vs_calendar.services.calendar import term_of
-from schools.vs_staff.constants import EmploymentStatus
+from schools.vs_calendar.services.calendar_rules import read_teaching_days
+from schools.vs_calendar.services.publishing import publish_class_timetable
+from schools.vs_calendar.services.timetable import validate_slot
+from schools.vs_staff.constants import EmploymentStatus, LeaveStatus, OFF_ROLL_STATUSES
 from schools.vs_staff.management.commands.seed_staff_scenarios import (
     Command as StaffSeeder,
 )
-from schools.vs_staff.models import StaffProfile
-from schools.vs_staff.services import teaching
+from schools.vs_staff.models import LeaveRequest, StaffProfile
+from schools.vs_staff.services import employment, teaching
+from schools.vs_staff.services import leave as leave_service
 from schools.vs_students.constants import Gender, Relationship, StudentStatus
 from schools.vs_students.models import Student
 from schools.vs_students.services import enrolment as enrolment_service
 from schools.vs_students.services.status import transition
 from vs_audit.models import AuditEvent
 from vs_config.clock import branch_today, tenant_today
+from vs_rbac.scoping import WHOLE_TENANT
 
 from schools.vs_attendance.constants import ChangeVia, CorrectionStatus, Mark, NoticeState
 from schools.vs_attendance.models import (
     ClassRegister,
     CorrectionRequest,
+    LessonRegister,
     MarkChange,
     ReasonCode,
     RegisterReminder,
+    StaffDay,
+    StaffMark,
     StudentMark,
 )
-from schools.vs_attendance.services import corrections, marks, reasons, reminders
+from schools.vs_attendance.services import (
+    configuration,
+    corrections,
+    lesson_marks,
+    lessons,
+    marks,
+    reasons,
+    reminders,
+    staff_marks,
+    staff_register,
+)
 from schools.vs_attendance.services.days import DayCalendar
 from schools.vs_attendance.services.registers import load_context
 from schools.vs_attendance.services.report import build_report
 from schools.vs_attendance.services.roster import roster_as_at
+from schools.vs_attendance.services.rules import read_attendance_rules
 
 CAST = ("sunrise-academy", "lagoon-view")
 
@@ -127,6 +181,30 @@ TEACHERS = (
 
 #: The household with no email address: the child the NO_EMAIL notice is for.
 NO_EMAIL_CHILD = ("Temitope", "Adegoke")
+
+#: The small bell schedule a school with none is given: ``(label, start, end, type)``.
+BELLS = (
+    ("Period 1", dt.time(8, 0), dt.time(8, 45), PeriodType.LESSON),
+    ("Period 2", dt.time(8, 45), dt.time(9, 30), PeriodType.LESSON),
+    ("Break", dt.time(9, 30), dt.time(10, 0), PeriodType.BREAK),
+    ("Period 3", dt.time(10, 0), dt.time(10, 45), PeriodType.LESSON),
+)
+LESSON_ROOM = "Lesson Room 1"
+
+#: The colleagues the staff register needs beyond the class teachers, in the
+#: order they are invited: ``(first, last, gender, job title, staff number)``.
+#: The first is on leave, the second is leaving.
+STAFF_EXTRAS = (
+    ("Ifeoma", "Adewale", "FEMALE", "Bursar", 960),
+    ("Segun", "Balogun", "MALE", "Teacher", 961),
+)
+
+#: The registrar a school with two branches needs when nobody there is based nowhere.
+REGISTRAR = ("Adaeze", "Nwankwo", "FEMALE", "Registrar", 962)
+
+#: Days from today to a leaving colleague's last working day, and the length of the leave.
+LEAVING_IN_DAYS = 14
+LEAVE_BEFORE, LEAVE_AFTER = 1, 3
 
 CLOSURE_NAME = "Staff Development Day"
 BRANCH_CLOSURE_NAME = "Second Branch Open Day"
@@ -248,6 +326,9 @@ class Command(BaseCommand):
         self._corrections(tenant, admin, c1, no_email)
         self._reminders(tenant, admin, cast, today)
         self._retire_a_reason(tenant, admin)
+        if len(branches) > 1:
+            self._lessons(tenant, admin, year, cast, today)
+        self._staff_registers(tenant, admin, slug, branches, today)
         self._summary(tenant, admin, cast, today, branches)
 
         branch_admin = f"branch.admin@{slug}.example.com"
@@ -645,7 +726,361 @@ class Command(BaseCommand):
         reasons.retire_reason_code(tenant, admin, code)
         self._made(f"reason code {RETIRED_REASON} retired")
 
+    # ── lessons ───────────────────────────────────────────────────────────
+
+    def _lessons(self, tenant, admin, year, cast, today):
+        """Lesson marking for C1's level, a published timetable for C1, and lessons taken.
+
+        C1's class teacher teaches the first lesson of each school day and C2's
+        class teacher the second, in the same room. The lessons are validated as
+        the timetable validates them and the week is published through the
+        publishing service, so a state the timetable would refuse fails here
+        loudly. On C1's last two school days, and today when it is a school day,
+        its first lesson is taken with one child who was in school in the
+        morning marked absent from it; today's second lesson is left unmarked.
+        """
+        c1, c2 = cast[0], cast[1]
+        if c1.school_class.class_teacher_id is None or c2.school_class.class_teacher_id is None:
+            return
+        self._switch_lessons_on(tenant, admin, c1)
+        first, second = self._bell_schedule(tenant, year)
+        subjects = list(Subject.all_objects.filter(tenant=tenant).order_by("name")[:2])
+        if len(subjects) < 2:
+            raise CommandError(f"{tenant.slug} needs two subjects. Run seed_academic_scenarios.")
+        room = self._room(tenant, c1)
+        self._grid(tenant, admin, year, c1, c2, (first, second), subjects, room)
+        self._take_lessons(tenant, c1, today)
+
+    def _switch_lessons_on(self, tenant, admin, c1):
+        code = c1.school_class.level.code
+        current = list(read_attendance_rules(tenant).lesson_marking_levels)
+        if code.lower() in {c.lower() for c in current}:
+            return
+        configuration.write_settings(
+            tenant, admin, {"lesson_marking_levels": current + [code]},
+        )
+        self._made(f"lesson marking switched on for {c1.school_class.level.name}")
+
+    def _bell_schedule(self, tenant, year):
+        """The school's first two teaching periods, creating the small bell schedule if it has none."""
+        if not Period.all_objects.filter(tenant=tenant, session=year).exists():
+            for order, (label, start, end, kind) in enumerate(BELLS, start=1):
+                Period.all_objects.create(
+                    tenant=tenant, session=year, branch=None, day_of_week=None,
+                    order_index=order, label=label, period_type=kind,
+                    start_time=start, end_time=end,
+                )
+            self._made("bell schedule: Period 1, Period 2, Break, Period 3")
+        periods = list(
+            Period.all_objects.filter(
+                tenant=tenant, session=year, is_active=True, period_type=PeriodType.LESSON,
+                branch__isnull=True, day_of_week__isnull=True,
+            ).order_by("start_time", "order_index")[:2],
+        )
+        if len(periods) < 2:
+            raise CommandError(
+                f"{tenant.slug} needs two teaching periods in its everyday bell schedule "
+                f"to carry the lesson scenario.",
+            )
+        return periods
+
+    def _room(self, tenant, c1):
+        room, created = Room.all_objects.get_or_create(
+            tenant=tenant, branch=c1.home, name=LESSON_ROOM,
+            defaults={"code": "LR-1", "room_type": RoomType.CLASSROOM, "capacity": 40},
+        )
+        if created:
+            self._made(f"room {LESSON_ROOM} at {c1.home.name}")
+        return room
+
+    def _grid(self, tenant, admin, year, c1, c2, periods, subjects, room):
+        """C1's week: two lessons every teaching day, validated and published."""
+        teachers = (c1.teacher_user, c2.teacher_user)
+        made = 0
+        for day in read_teaching_days(tenant):
+            for period, subject, teacher in zip(periods, subjects, teachers):
+                if TimetableSlot.all_objects.filter(
+                    tenant=tenant, session=year, school_class=c1.school_class,
+                    day_of_week=day, period=period,
+                ).exists():
+                    continue
+                validate_slot(
+                    tenant, year, school_class=c1.school_class, day_of_week=day,
+                    period=period, subject=subject, teacher=teacher, room=room,
+                )
+                TimetableSlot.all_objects.create(
+                    tenant=tenant, session=year, school_class=c1.school_class,
+                    day_of_week=day, period=period, subject=subject, teacher=teacher,
+                    room=room, created_by=admin,
+                )
+                made += 1
+        if made:
+            self._made(f"{made} lessons on {c1.name}'s timetable")
+        record = ClassTimetable.all_objects.filter(
+            tenant=tenant, session=year, school_class=c1.school_class,
+        ).first()
+        if record is None or record.status != PublishState.PUBLISHED:
+            publish_class_timetable(
+                tenant, year, c1.school_class, actor=admin, visible=WHOLE_TENANT,
+            )
+            self._made(f"{c1.name}'s timetable published")
+
+    def _take_lessons(self, tenant, c1, today):
+        """Take C1's lessons on its last two school days and today, as described above."""
+        days = [(day, True) for day in c1.past[:2]]
+        if self._owed_today(tenant, c1, today):
+            days.insert(0, (today, False))
+        for day, both in days:
+            todays = lessons.day_lessons(
+                tenant, [(c1.school_class, c1.home)], {c1.school_class.pk: self._day(
+                    tenant, c1, day,
+                )}, day, lessons.marking_levels(tenant),
+            )
+            if not todays:
+                continue
+            absent = self._present_in_the_morning(tenant, c1, day)
+            for index, lesson in enumerate(todays[:2]):
+                if index == 1 and not both:
+                    continue
+                taker = lesson.slot.teacher
+                spec = {absent: Mark.ABSENT} if index == 0 and absent is not None else {}
+                self._take_lesson(tenant, lesson, day, taker, spec)
+
+    @staticmethod
+    def _day(tenant, c1, day):
+        return DayCalendar(tenant, [c1.school_class.session], day, day).status(
+            c1.school_class, c1.home, day,
+        )
+
+    @staticmethod
+    def _present_in_the_morning(tenant, c1, day):
+        """The first child of C1 whose submitted class register of *day* has them Present or Late."""
+        return (
+            StudentMark.objects.filter(
+                tenant=tenant, register__school_class=c1.school_class, register__date=day,
+                register__submitted_at__isnull=False, mark__in=[Mark.PRESENT, Mark.LATE],
+            ).order_by("student_id").values_list("student_id", flat=True).first()
+        )
+
+    def _take_lesson(self, tenant, lesson, day, taker, marked):
+        """Take one lesson register through the services. A register already submitted is left alone."""
+        slot = lesson.slot
+        existing = LessonRegister.objects.filter(
+            tenant=tenant, school_class=lesson.school_class, period_id=slot.period_id,
+            date=day,
+        ).first()
+        if existing is not None and existing.is_submitted:
+            return
+        for student_id, mark in marked.items():
+            ctx = lessons.load_lesson(tenant, taker, slot.pk, day)
+            lesson_marks.set_mark(ctx, taker, student_id, mark=mark)
+        lesson_marks.fill_present(lessons.load_lesson(tenant, taker, slot.pk, day), taker)
+        lesson_marks.submit(lessons.load_lesson(tenant, taker, slot.pk, day), taker)
+        self._made(
+            f"lesson register {lesson.school_class.name} {slot.period.label} "
+            f"{slot.subject.name} {day} taken by {taker.full_name}"
+            f"{', one child absent after a morning present' if marked else ''}",
+        )
+
     # ── what now exists ───────────────────────────────────────────────────
+
+    # ── the staff register ────────────────────────────────────────────────
+
+    def _staff_registers(self, tenant, admin, slug, branches, today):
+        """Staff to look at, then today's register and the latest finished one."""
+        several = len(branches) > 1
+        people = self._staff_people(tenant, admin, slug, branches)
+        self._someone_leaving(tenant, admin, people["leaving"], today)
+        self._someone_on_leave(tenant, admin, people["on_leave"], today)
+        if several:
+            self._someone_without_a_branch(tenant, admin, slug)
+        self._finished_staff_day(tenant, admin, branches[0], today)
+        for branch in branches:
+            self._staff_day_today(tenant, admin, branch, today)
+
+    def _staff_people(self, tenant, admin, slug, branches):
+        """The colleague who goes on leave and the one who is leaving, invited if missing.
+
+        The first is based at the main branch and the second at the second
+        branch where there is one, so each branch's register has someone worth
+        looking at.
+        """
+        staff_seeder = StaffSeeder()
+        staff_seeder.stdout = self.stdout
+        found = {}
+        for (first, last, gender, title, number), key, branch in zip(
+            STAFF_EXTRAS, ("on_leave", "leaving"), (branches[0], branches[-1]),
+        ):
+            email = f"{first}.{last}@{slug}.example.com".lower()
+            profile = StaffProfile.objects.filter(tenant=tenant, user__email=email).first()
+            if profile is None:
+                profile = staff_seeder._invite(
+                    tenant=tenant, actor=admin, first=first, last=last, gender=gender,
+                    job_title=title, branch=branch, email=email, number=number, slug=slug,
+                )
+                if profile is None:
+                    raise CommandError(f"Could not invite {email}.")
+                staff_seeder._drive_to(profile, EmploymentStatus.ACTIVE, admin)
+                self._made(f"colleague {first} {last} ({email}), {branch.name}")
+            found[key] = profile
+        return found
+
+    def _someone_leaving(self, tenant, admin, profile, today):
+        """Resign the colleague with a last working day still to come."""
+        if profile.employment_status in OFF_ROLL_STATUSES:
+            return
+        last_day = today + dt.timedelta(days=LEAVING_IN_DAYS)
+        employment.change_status(
+            profile, to_status=EmploymentStatus.RESIGNED, actor=admin,
+            reason="Taking up a new post.", last_working_day=last_day,
+        )
+        self._made(f"{profile.user.full_name} resigned, last working day {last_day}")
+
+    def _someone_on_leave(self, tenant, admin, profile, today):
+        """Somebody on approved leave covering today, if nobody on a register is.
+
+        A school whose staff seeder already put a colleague on leave is left as
+        it is.
+        """
+        covering = LeaveRequest.objects.filter(
+            tenant=tenant, status=LeaveStatus.APPROVED,
+            start_date__lte=today, end_date__gte=today,
+            staff__employment_status__in=[
+                EmploymentStatus.ACTIVE, EmploymentStatus.INVITED,
+                EmploymentStatus.AWAITING_GO_LIVE, EmploymentStatus.SUSPENDED,
+            ],
+        ).exists()
+        if covering:
+            return
+        start = today - dt.timedelta(days=LEAVE_BEFORE)
+        end = today + dt.timedelta(days=LEAVE_AFTER)
+        LeaveRequest.objects.create(
+            tenant=tenant, staff=profile, leave_type="SICK", start_date=start,
+            end_date=end, days=leave_service.count_days(profile, start, end) or 1,
+            status=LeaveStatus.APPROVED, decided_at=timezone.now(), requested_by=admin,
+            note="Recovering from a minor operation.",
+        )
+        self._made(f"{profile.user.full_name} on approved leave until {end}")
+
+    def _someone_without_a_branch(self, tenant, admin, slug):
+        """A person based nowhere, if a school with several branches has none.
+
+        The whole-school account that opened the school is already such a
+        person, so most schools need nothing here.
+        """
+        if StaffProfile.objects.filter(
+            tenant=tenant, branch__isnull=True,
+        ).exclude(employment_status__in=list(OFF_ROLL_STATUSES)).exists():
+            return
+        staff_seeder = StaffSeeder()
+        staff_seeder.stdout = self.stdout
+        first, last, gender, title, number = REGISTRAR
+        email = f"{first}.{last}@{slug}.example.com".lower()
+        profile = staff_seeder._invite(
+            tenant=tenant, actor=admin, first=first, last=last, gender=gender,
+            job_title=title, branch=None, email=email, number=number, slug=slug,
+        )
+        if profile is None:
+            raise CommandError(f"Could not invite {email}.")
+        staff_seeder._drive_to(profile, EmploymentStatus.ACTIVE, admin)
+        self._made(f"{first} {last}, {title}, with no home branch")
+
+    def _staff_context(self, tenant, admin, branch, day):
+        return staff_register.load_context(tenant, admin, branch.pk, day)
+
+    def _open_staff_day(self, tenant, branch, day) -> bool:
+        return staff_register.branch_days(tenant, [branch], day)[branch.pk].is_open
+
+    def _finished_staff_day(self, tenant, admin, branch, today):
+        """The latest open day before today, everyone Present but one Late and one Absent, submitted."""
+        day = today - dt.timedelta(days=1)
+        floor = today - dt.timedelta(days=21)
+        while day >= floor and not self._open_staff_day(tenant, branch, day):
+            day -= dt.timedelta(days=1)
+        if day < floor:
+            return
+        if StaffDay.objects.filter(
+            tenant=tenant, branch=branch, date=day, submitted_at__isnull=False,
+        ).exists():
+            return
+        if not self._has_staff_marks(tenant, branch, day):
+            self._mark_a_few(tenant, admin, branch, day, late=1, absent=1)
+        ctx = self._staff_context(tenant, admin, branch, day)
+        staff_marks.fill_present(ctx, admin)
+        staff_marks.submit(self._staff_context(tenant, admin, branch, day), admin)
+        self._made(f"staff register {branch.name} {day} submitted")
+
+    def _staff_day_today(self, tenant, admin, branch, today):
+        """Today: one Present, one Late, one Absent, and the rest left for the screen."""
+        if branch_today(tenant, branch) != today:
+            return
+        if not self._open_staff_day(tenant, branch, today):
+            self.stdout.write(
+                f"  today ({today}) is not a staff day at {branch.name}; "
+                f"its staff register is skipped.",
+            )
+            return
+        if StaffDay.objects.filter(
+            tenant=tenant, branch=branch, date=today, submitted_at__isnull=False,
+        ).exists():
+            return
+        if not self._has_staff_marks(tenant, branch, today):
+            self._mark_a_few(tenant, admin, branch, today, present=1, late=1, absent=1)
+
+    @staticmethod
+    def _has_staff_marks(tenant, branch, day) -> bool:
+        return StaffMark.objects.filter(
+            tenant=tenant, staff_day__branch=branch, date=day,
+        ).exists()
+
+    def _mark_a_few(self, tenant, admin, branch, day, *, present=0, late=0, absent=0):
+        """Mark the first unmarked people on the register: Present, then Late, then Absent.
+
+        A person already marked is left alone, so a second run marks nobody.
+        """
+        plan = [(Mark.PRESENT, {})] * present
+        plan += [(Mark.LATE, {"arrived_at": dt.time(8, 25)})] * late
+        plan += [(Mark.ABSENT, {"note": "Did not report for duty."})] * absent
+        ctx = self._staff_context(tenant, admin, branch, day)
+        free = [e for e in ctx.entries if e.lock is None and e.mark is None]
+        for entry, (kind, extra) in zip(free, plan):
+            staff_marks.set_mark(
+                self._staff_context(tenant, admin, branch, day), admin, entry.staff.pk,
+                mark=kind, **extra,
+            )
+            self._made(f"staff mark {entry.name} {Mark(kind).label} on {day}")
+
+    def _staff_summary(self, tenant, today):
+        marks_ = StaffMark.objects.filter(tenant=tenant)
+        submitted = StaffDay.objects.filter(tenant=tenant, submitted_at__isnull=False).count()
+        self.stdout.write(
+            f"    staff registers: {StaffDay.objects.filter(tenant=tenant).count()} "
+            f"({submitted} submitted); marks: "
+            + ", ".join(f"{Mark(code).label.lower()} {marks_.filter(mark=code).count()}"
+                        for code in (Mark.PRESENT, Mark.LATE, Mark.ABSENT)),
+        )
+        on_leave = LeaveRequest.objects.filter(
+            tenant=tenant, status=LeaveStatus.APPROVED,
+            start_date__lte=today, end_date__gte=today,
+        ).select_related("staff__user")
+        self.stdout.write(
+            "    on approved leave today: "
+            + (", ".join(f"{l.staff.user.full_name} until {l.end_date}" for l in on_leave) or "none"),
+        )
+        leaving = StaffProfile.objects.filter(
+            tenant=tenant, exit_date__gte=today,
+        ).select_related("user")
+        self.stdout.write(
+            "    leaving: "
+            + (", ".join(f"{p.user.full_name} on {p.exit_date}" for p in leaving) or "none"),
+        )
+        unhomed = StaffProfile.objects.filter(
+            tenant=tenant, branch__isnull=True,
+        ).exclude(employment_status__in=list(OFF_ROLL_STATUSES)).select_related("user")
+        self.stdout.write(
+            "    with no home branch: "
+            + (", ".join(p.user.full_name for p in unhomed) or "none"),
+        )
 
     def _summary(self, tenant, admin, cast, today, branches):
         several = len(branches) > 1
@@ -705,6 +1140,19 @@ class Command(BaseCommand):
             tenant=tenant, retired_at__isnull=False,
         ).values_list("name", flat=True)
         self.stdout.write(f"    retired reason codes: {', '.join(retired) or 'none'}")
+        if len(branches) > 1:
+            taken = LessonRegister.objects.filter(
+                tenant=tenant, submitted_at__isnull=False,
+            ).count()
+            drafts = LessonRegister.objects.filter(
+                tenant=tenant, submitted_at__isnull=True,
+            ).count()
+            self.stdout.write(
+                f"    lesson registers: {taken} submitted, {drafts} unfinished; "
+                f"lesson marking on for "
+                f"{', '.join(read_attendance_rules(tenant).lesson_marking_levels) or 'no level'}",
+            )
+        self._staff_summary(tenant, today)
         report = build_report(tenant, admin)
         self.stdout.write(
             f"    below the {report['threshold']}% line this term: "

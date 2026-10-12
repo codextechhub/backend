@@ -35,6 +35,13 @@ than counted against the pupil (:mod:`.rates`).
 term, and every correction decided, approved or rejected. An approved
 correction is one entry, the decision, and not also the mark change it caused.
 
+**Lesson absences.** When lesson marking is on for the level of the pupil's class,
+the tab also lists the lessons they were marked Absent from in the term
+(``lesson_absences``, newest first), each with the pupil's morning mark beside
+it. This is information beside the day cells and never inside them: a lesson
+mark changes no count, no rate and no cell. The key is left out when the
+pupil's level does not mark lessons.
+
 **Bounded cost.** The calendar of the whole term is read once
 (:class:`.days.DayCalendar`) and so are the pupil's placements, status log,
 registers, marks, changes and corrections, so the queries do not grow with the
@@ -51,7 +58,7 @@ from vs_config.clock import branch_today
 
 from ..constants import ChangeVia, CorrectionStatus, Mark
 from ..models import ClassRegister, CorrectionRequest, MarkChange, StudentMark
-from . import notices
+from . import lessons, missed, notices
 from .days import DayCalendar
 from .rates import rate_percent
 from .roster import _placement_in_force, status_on
@@ -110,9 +117,15 @@ def student_tab(tenant, user, student_id, term_id=None) -> dict:
     end = min(term.end_date, today)
     enrolments = list(
         ClassEnrolment.objects.filter(tenant=tenant, student=student, session=term.session)
-        .select_related("school_class", "school_class__branch"),
+        .select_related("school_class", "school_class__branch", "school_class__level"),
     )
-    body["student"]["class_name"] = _class_name(enrolments, min(today, term.end_date))
+    current = _current_class(enrolments, min(today, term.end_date))
+    body["student"]["class_name"] = current.name if current is not None else None
+    marks_lessons = current is not None and lessons.level_marks_lessons(
+        current, lessons.marking_levels(tenant),
+    )
+    if marks_lessons:
+        body["lesson_absences"] = []
     if end < term.start_date:
         return body
 
@@ -121,14 +134,15 @@ def student_tab(tenant, user, student_id, term_id=None) -> dict:
     body["counts"] = _counts(cells)
     body["absences"] = _absences(cells, marks)
     body["history"] = _history(tenant, student, term.start_date, end)
+    if marks_lessons:
+        body["lesson_absences"] = _lesson_absences(tenant, student, term.start_date, end)
     return body
 
 
-def _class_name(enrolments, as_at: dt.date):
+def _current_class(enrolments, as_at: dt.date):
+    """The class the pupil was placed in on *as_at*, or None."""
     current = _placement_in_force(enrolments, as_at)
-    if current is not None:
-        return current.school_class.name
-    return None
+    return current.school_class if current is not None else None
 
 
 def _cells(tenant, student, term, enrolments, end: dt.date):
@@ -237,6 +251,28 @@ def _absences(cells, marks) -> list:
             "notice_sent_at": mark.notice_sent_at,
         })
     return rows
+
+
+def _lesson_absences(tenant, student, start: dt.date, end: dt.date) -> list:
+    """The lessons the pupil was marked Absent from, newest first.
+
+    ``morning_mark`` is their mark in the class register of the same day, null
+    when that register was not submitted.
+    """
+    rows = list(
+        missed.lesson_absences(tenant, start=start, end=end, student=student)
+        .select_related("register", "register__subject"),
+    )
+    rows.sort(key=lambda row: (row.register.date, row.register.starts_at), reverse=True)
+    return [
+        {
+            "date": row.register.date,
+            "period_label": row.register.period_label,
+            "subject": row.register.subject.name,
+            "morning_mark": row.morning,
+        }
+        for row in rows
+    ]
 
 
 def _history(tenant, student, start: dt.date, end: dt.date) -> list:

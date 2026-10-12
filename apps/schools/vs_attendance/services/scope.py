@@ -9,9 +9,16 @@ one.
 """
 from __future__ import annotations
 
+from schools.vs_academics.models import SchoolClass, SessionStatus
+from vs_config.clock import branch_today, tenant_today
 from vs_rbac.scoping import WHOLE_TENANT
 from vs_tenants.exceptions import BranchlessTenantError
 from vs_tenants.models import Branch
+
+from ..exceptions import DateInFuture
+from .days import DayCalendar
+
+CLASS_RELATIONS = ("session", "level", "branch", "class_teacher", "class_teacher__user")
 
 
 def school_branches(tenant) -> list:
@@ -41,3 +48,34 @@ def placed_classes(classes, branches, visible, branch=None):
             continue
         placed.append((school_class, home))
     return placed, unplaced
+
+
+def active_classes(tenant, **extra) -> list:
+    """The active classes of the active school year, with what the screens read of them."""
+    return list(
+        SchoolClass.objects.filter(
+            tenant=tenant, is_active=True, session__status=SessionStatus.ACTIVE, **extra,
+        ).select_related(*CLASS_RELATIONS),
+    )
+
+
+def resolve_day(tenant, placed, on_date, default_today) -> tuple:
+    """``(date, {branch_id: today}, calendar)`` for the classes, refusing a day not yet come."""
+    today_by_branch = {
+        home.pk: branch_today(tenant, home) for _, home in placed
+    }
+    if on_date is None:
+        on_date = default_today or tenant_today(tenant)
+    latest = max(today_by_branch.values(), default=tenant_today(tenant))
+    if on_date > latest:
+        raise DateInFuture()
+    sessions = {school_class.session_id: school_class.session for school_class, _ in placed}
+    calendar = DayCalendar(tenant, sessions.values(), on_date, on_date)
+    return on_date, today_by_branch, calendar
+
+
+def whole_day_closed(placed, days):
+    """The ``closed`` block when every class in scope is closed, else None."""
+    if placed and all(not days[c.pk].is_open for c, _ in placed):
+        return days[placed[0][0].pk].payload()
+    return None

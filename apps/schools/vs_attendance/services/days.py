@@ -15,6 +15,13 @@ When the day is closed the answer carries the reason a person would read on a
 screen, which is the name of the entry that closed it. No register is due on a
 closed day and none is ever reported missing for it.
 
+**Staff days.** The staff register asks :meth:`DayCalendar.staff_status`, which
+applies the same teaching days and the same closing entries to a branch rather
+than a class. An entry narrowed to certain levels or classes closes those pupils'
+day and not the staff's, so only an entry with no audience closes a staff day;
+and staff are not held to term time, since a school's staff work through a
+holiday the pupils do not.
+
 **One rule, two ways to ask it.** :func:`school_day` answers for one class on one
 date. :class:`DayCalendar` loads the school's teaching days, terms and closing
 entries once for a range of dates and every school year in play, then answers
@@ -105,6 +112,24 @@ class DayCalendar:
             if audience is None or _audience_covers(audience, school_class):
                 return DayStatus(False, event.name, CODE_CLOSED_BY_EVENT)
         return DayStatus(True, term=term)
+
+
+    def staff_status(self, branch, on_date: dt.date) -> DayStatus:
+        """Whether the staff of *branch* owe a register on *on_date*, with the reason if not."""
+        if on_date.isoweekday() not in self.teaching_days:
+            return DayStatus(
+                False, f"{on_date.strftime('%A')} is not a teaching day.",
+                CODE_NOT_TEACHING_DAY,
+            )
+        for events in self._events.values():
+            for event, audience in events:
+                if not (event.start_date <= on_date <= event.end_date):
+                    continue
+                if event.branch_id is not None and event.branch_id != branch.pk:
+                    continue
+                if audience is None:
+                    return DayStatus(False, event.name, CODE_CLOSED_BY_EVENT)
+        return DayStatus(True)
 
 
 def _audience_of(event):

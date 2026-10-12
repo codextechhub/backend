@@ -31,7 +31,13 @@ who moved class mid-term is judged against each class for its own stretch.
   a pupil exactly at the threshold is not listed. The rate compared is the one
   printed, so the list never shows a pupil at or above the line;
 * ``not_taken``: the days a class owed a register and none was submitted,
-  newest first.
+  newest first;
+* ``lessons_missed``: only when a class in scope is in a level that marks
+  lessons, one row per subject, class and teacher with a submitted lesson
+  register in the term: how many times a student was in school in the morning
+  and absent from the lesson, and who (:mod:`.missed`). It sits beside the
+  rest of the report and feeds none of it: no rate, count or chronic figure
+  reads a lesson mark.
 
 **Where the work is done.** Nothing is read per class or per day:
 
@@ -69,6 +75,7 @@ from vs_rbac.scoping import visible_branch_ids
 
 from ..constants import CFG_CHRONIC_THRESHOLD, Mark
 from ..models import ClassRegister, StudentMark
+from . import lessons, missed
 from .days import DayCalendar
 from .rates import rate_percent
 from .roster import _placement_in_force, status_on
@@ -381,6 +388,12 @@ def build_report(tenant, user, *, term_id=None, branch=None) -> dict:
         tenant, by_student, expected, latest_class, threshold,
     )
     body["not_taken"] = _not_taken_rows(not_taken_rows, start, several)
+    levels = lessons.marking_levels(tenant)
+    marking = [c.pk for c, _ in placed if lessons.level_marks_lessons(c, levels)]
+    if marking:
+        body["lessons_missed"] = missed.lessons_missed_rows(
+            tenant, start=start, end=overall_end, class_ids=marking, marking_codes=levels,
+        )
     return body
 
 
