@@ -187,7 +187,7 @@ class BranchMoveView(_BranchMoveBase):
             school_class_id=data.get("school_class"),
             allow_over_capacity=data.get("allow_over_capacity", False),
         )
-        message = f"{student.full_name} now attends {to_branch.name}."
+        message = f"{self.name_of(student)} now attends {to_branch.name}."
         if result.accounts:
             message += " Their fee account moved with them."
         if result.over_capacity:

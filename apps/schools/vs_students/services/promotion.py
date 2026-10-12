@@ -122,6 +122,9 @@ class Plan:
     class_exceptions: list = field(default_factory=list)
     #: Per-student causes, one entry each.
     student_exceptions: list = field(default_factory=list)
+    #: The pupils behind ``student_exceptions``, by id, so a view rendering the
+    #: plan for a reader can name them through that reader's name switches.
+    excepted_students: dict = field(default_factory=dict)
     level_map: list = field(default_factory=list)
     #: Target classes the run would fill past their capacity, one entry each.
     over_capacity: list = field(default_factory=list)
@@ -322,6 +325,7 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
         # Derived from the roll, not from the candidate set: a student excluded
         # from candidacy is exactly the one who most needs naming here.
         if enrolment is None:
+            plan.excepted_students[student.pk] = student
             plan.student_exceptions.append({
                 "student": student.pk, "name": student.full_name,
                 "class": None, "cause": EXC_NO_CLASS_ASSIGNED,
@@ -334,6 +338,7 @@ def classify(tenant, user, *, from_session, to_session, overrides=None,
             student.status == StudentStatus.SUSPENDED
             and rules.suspended == PromotionSuspended.HOLD
         ):
+            plan.excepted_students[student.pk] = student
             plan.student_exceptions.append({
                 "student": student.pk, "name": student.full_name,
                 "class": enrolment.school_class.name,

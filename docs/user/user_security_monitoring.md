@@ -153,13 +153,6 @@ working. Passing a session id that is not the caller's own active session answer
   `previous_email`/`new_email` in the metadata. Compare `vs_audit`'s own views,
   which all require `platform.audit.view` (`vs_audit/views.py:95-96`). This is the
   one item in this slice worth fixing before anything else.
-- **`platform.security.view` does not exist as a seeded permission.** The sessions
-  and auth-attempts admin lists require it, but the platform seed catalogue has no
-  `security` resource, so no role can be granted the key and only the Vision Super
-  Admin - who bypasses RBAC entirely - can use those lists
-  (`views/security.py:80,284` against
-  `core/management/commands/seed_platform_permissions.py:26-149` and
-  `vs_rbac/permissions.py:168-170`). Every other key these views use is seeded.
 - **The attempts that matter most are invisible.** A failed login for an unknown
   email is recorded with `user=None` and `tenant=None`
   (`services/auth.py:211-218`), but `AuthAttempt.objects` is tenant-aware

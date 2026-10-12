@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_rbac.field_enforcement import assert_writable
+from vs_rbac.field_enforcement import visible as visible_fields
 
 from ..constants import PERM_SETTINGS_UPDATE, PERM_UPDATE, PERM_VIEW
 from ..models import Guardian, Student, StudentGuardian
@@ -16,11 +17,13 @@ from ..serializers import (
     GuardianDirectorySerializer,
     GuardianLinkSerializer,
     GuardianRulesSerializer,
+    GuardianSearchHitSerializer,
     GuardianSerializer,
     GuardianUpdateSerializer,
     GuardianWriteSerializer,
     PhotoUploadSerializer,
     StudentListSerializer,
+    readable_name,
 )
 from ..services import documents as document_service
 from ..services import guardians as guardian_service
@@ -28,8 +31,12 @@ from ..services.scoping import scope_students
 from .base import StudentsViewMixin
 
 
-def _wards_by_guardian(tenant, user, guardian_ids):
-    """Ward names per guardian, narrowed to the caller's branches.
+#: The Field Access resource a ward's own fields belong to.
+STUDENT_FIELDS = "school.students"
+
+
+def _wards_by_guardian(request, tenant, guardian_ids):
+    """Ward names per guardian, narrowed to the caller's branches and name switches.
 
     The narrowing is here rather than on the guardian row because Guardian
     carries no branch. A branch-bound caller sees a guardian with the children
@@ -37,7 +44,12 @@ def _wards_by_guardian(tenant, user, guardian_ids):
     module where a row is visible while part of its content is not, and it
     follows directly from a school-level guardian serving branch-level
     children.
+
+    Each name is a pupil's, so it is built from the pupil's name parts the
+    caller may read (:func:`~..serializers.readable_name`): a reader who may not
+    read a pupil's first name does not meet it beside the guardian either.
     """
+    user = request.user
     links = StudentGuardian.objects.filter(
         tenant=tenant, guardian_id__in=guardian_ids,
     ).select_related("student")
@@ -48,8 +60,23 @@ def _wards_by_guardian(tenant, user, guardian_ids):
     out: dict[int, list] = {}
     for link in links:
         if link.student_id in visible:
-            out.setdefault(link.guardian_id, []).append(link.student.full_name)
+            out.setdefault(link.guardian_id, []).append(
+                readable_name(request, STUDENT_FIELDS, link.student),
+            )
     return out
+
+
+def ward_row(request, student, row):
+    """One ward of a guardian's record, with the pupil's fields the caller may not read removed.
+
+    The record's ward list is built by hand, so the pupil's registered fields
+    in it (the admission number) go through
+    :func:`~vs_rbac.field_enforcement.visible` and the name is rebuilt from the
+    readable parts, exactly as the pupil's own row would be.
+    """
+    return visible_fields(request, STUDENT_FIELDS, {
+        **row, "name": readable_name(request, STUDENT_FIELDS, student),
+    })
 
 
 class StudentGuardiansView(StudentsViewMixin, APIView):
@@ -162,7 +189,8 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
             is_primary=data.get("is_primary", False), actor=request.user,
         )
         return success_response(
-            f"{guardian.full_name} linked to {student.full_name}.",
+            f"{self.name_of(guardian, 'school.guardians')} linked to "
+            f"{self.name_of(student)}.",
             data=GuardianSerializer(guardian, context={"request": request}).data, status=201,
         )
 
@@ -220,7 +248,7 @@ class StudentGuardianDetailView(StudentsViewMixin, APIView):
             ])
         if request.data.get("is_primary"):
             guardian_service.set_primary(student, guardian, actor=request.user)
-        return success_response(f"{guardian.full_name} updated.")
+        return success_response(f"{self.name_of(guardian, 'school.guardians')} updated.")
 
     @transaction.atomic
     def delete(self, request, pk, guardian_id):
@@ -231,7 +259,38 @@ class StudentGuardianDetailView(StudentsViewMixin, APIView):
         guardian_service.unlink(
             student, guardian, actor=request.user, promote=promote,
         )
-        return success_response(f"{guardian.full_name} unlinked.")
+        return success_response(f"{self.name_of(guardian, 'school.guardians')} unlinked.")
+
+
+def search_guardian_hits(request, tenant, query, limit):
+    """The guardians matching *query* that the request's caller may see, with their wards.
+
+    The one matcher behind the command palette and the product-wide search bar
+    (``search_places.py``), so the two can never disagree about who is found:
+    :func:`~..services.guardians.guardian_directory`'s scoping and ranking,
+    with each guardian's wards narrowed to the branches the caller covers.
+    The wards are what tell two households with one surname apart.
+
+    Rendered with the request (:class:`~..serializers.GuardianSearchHitSerializer`),
+    so the caller's switches on a guardian's name parts apply to ``full_name``
+    and its parts, and their switches on a pupil's name parts to
+    ``ward_names``, as they do in the directory. A guardian whose every name
+    part is hidden stays a hit with an empty ``full_name``, as the directory
+    keeps that row. The query is matched only against the fields the caller
+    may read (:func:`~..services.guardians.readable_guardian_search_fields`).
+
+    The caller's read permission is the caller's to check first.
+    """
+    rows = list(
+        guardian_service.guardian_directory(
+            tenant, request.user, search=query,
+            search_fields=guardian_service.readable_guardian_search_fields(request),
+        )[:limit],
+    )
+    wards = _wards_by_guardian(request, tenant, [row.pk for row in rows])
+    return GuardianSearchHitSerializer(
+        rows, many=True, context={"request": request, "wards": wards},
+    ).data
 
 
 class GuardianSearchView(StudentsViewMixin, APIView):
@@ -268,26 +327,9 @@ class GuardianSearchView(StudentsViewMixin, APIView):
         if len(query) < self.MIN_QUERY:
             return success_response(data=[])
 
-        rows = guardian_service.guardian_directory(
-            self.tenant, request.user, search=query,
-        )[: self.LIMIT]
-
-        rows = list(rows)
-        # Names already, and narrowed to the branches this caller covers.
-        wards = _wards_by_guardian(
-            self.tenant, request.user, [row.pk for row in rows],
+        return success_response(
+            data=search_guardian_hits(request, self.tenant, query, self.LIMIT),
         )
-        return success_response(data=[
-            {
-                "id": row.pk,
-                "full_name": row.full_name,
-                # Which children, because two guardians share a surname far more
-                # often than two children do, and the ward is what tells them
-                # apart at a glance.
-                "ward_names": wards.get(row.pk, []),
-            }
-            for row in rows
-        ])
 
 
 class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
@@ -314,13 +356,14 @@ class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
             branch=self.branch_filter,
             session=self.session_filter,
             name_review=(params.get("name_review") or "").lower() == "true",
+            search_fields=guardian_service.readable_guardian_search_fields(self.request),
         ).annotate(ward_count=Count("student_links", distinct=True))
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
         page = getattr(self, "_page_rows", None)
         context["wards"] = _wards_by_guardian(
-            self.tenant, self.request.user,
+            self.request, self.tenant,
             [g.pk for g in page] if page else [],
         )
         return context
@@ -375,9 +418,9 @@ class GuardianDetailView(StudentsViewMixin, APIView):
             guardian, actor=request.user, **writer.validated_data,
         )
         if changed == ["name_needs_review"]:
-            message = f"{guardian.full_name}'s name confirmed."
+            message = f"{self.name_of(guardian, 'school.guardians')}'s name confirmed."
         elif changed:
-            message = f"{guardian.full_name} updated."
+            message = f"{self.name_of(guardian, 'school.guardians')} updated."
         else:
             message = "Nothing to change."
         return success_response(
@@ -405,7 +448,10 @@ class GuardianDetailView(StudentsViewMixin, APIView):
             )
             return success_response(data={
                 **GuardianSerializer(record, context={"request": request}).data,
-                "wards": past.wards_at(guardian.pk, visible, as_at),
+                "wards": [
+                    ward_row(request, student, row)
+                    for student, row in past.wards_at(guardian.pk, visible, as_at)
+                ],
                 "history_starts": meta["history_starts"],
                 "as_at": meta,
             })
@@ -426,7 +472,7 @@ class GuardianDetailView(StudentsViewMixin, APIView):
             **GuardianSerializer(guardian, context={"request": request}).data,
             "history_starts": starts.isoformat() if starts else None,
             "wards": [
-                {
+                ward_row(request, s, {
                     "id": s.pk, "name": s.full_name,
                     "student_number": s.student_number,
                     "status": s.status, "status_label": s.get_status_display(),
@@ -436,7 +482,7 @@ class GuardianDetailView(StudentsViewMixin, APIView):
                         links[s.pk].relationship_label if s.pk in links else ""
                     ),
                     "is_primary": links[s.pk].is_primary if s.pk in links else False,
-                }
+                })
                 for s in wards
             ],
         })
@@ -472,7 +518,7 @@ class GuardianPhotoView(StudentsViewMixin, APIView):
             guardian, upload=writer.validated_data["photo"], actor=request.user,
         )
         return success_response(
-            f"{guardian.full_name}'s photograph saved.",
+            f"{self.name_of(guardian, 'school.guardians')}'s photograph saved.",
             data=GuardianSerializer(guardian, context={"request": request}).data,
         )
 
@@ -483,7 +529,7 @@ class GuardianPhotoView(StudentsViewMixin, APIView):
             raise NotFound("This guardian has no photograph.")
         guardian = guardian_service.clear_photo(guardian, actor=request.user)
         return success_response(
-            f"{guardian.full_name}'s photograph removed.",
+            f"{self.name_of(guardian, 'school.guardians')}'s photograph removed.",
             data=GuardianSerializer(guardian, context={"request": request}).data,
         )
 

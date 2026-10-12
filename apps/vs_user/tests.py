@@ -4434,6 +4434,9 @@ class ScopedEmailLookupSchoolCreateTests(TestCase):
         return {
             "name": "Greenfield Academy",
             "slug": slug,
+            "email": "office@greenfield.test",
+            "phone": "+2348000000000",
+            "address": "1 School Road, Ikeja",
             "primary_admin_data": {
                 "full_name": "Ada Okoye",
                 "email": "ada.okoye@example.test",
@@ -4518,6 +4521,9 @@ class SchoolAuditEventsCarryTheTenantTests(TestCase):
             data={
                 "name": "Bright Star School",
                 "slug": "bright-star",
+                "email": "office@bright-star.test",
+                "phone": "+2348000000000",
+                "address": "1 School Road, Ikeja",
                 "branches": [{"name": "Main Branch", "is_main": True,
                               "primary_admin_data": {
                                   "full_name": "Bola Adeniyi",

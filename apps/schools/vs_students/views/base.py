@@ -207,6 +207,20 @@ class StudentsViewMixin:
 
     # ── shared resolvers ───────────────────────────────────────────────────
 
+    def name_of(self, person, resource="school.students") -> str:
+        """*person*'s name as this request's reader may read it, for a sentence.
+
+        A confirmation message ("Adaora Okafor is suspended.") is a response
+        like any other, so a name in it follows the reader's switches on the
+        name parts (:func:`~..serializers.readable_name`). Where every part is
+        hidden the sentence names "The pupil" or "The guardian" instead.
+        """
+        from ..serializers import readable_name
+
+        return readable_name(self.request, resource, person) or (
+            "The guardian" if resource == "school.guardians" else "The pupil"
+        )
+
     def student(self, pk):
         from ..services.scoping import get_student_or_404
 

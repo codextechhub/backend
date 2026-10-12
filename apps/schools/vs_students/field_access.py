@@ -211,6 +211,8 @@ def register():
             # Carries the same details nested under ``guardian`` on a student's
             # guardian list.
             "schools.vs_students.serializers.GuardianLinkSerializer",
+            # The command palette's and the search bar's guardian hit.
+            "schools.vs_students.serializers.GuardianSearchHitSerializer",
         ),
         fields=(
             FieldSpec("first_name", "First name", group="Name", scope=_TENANT,

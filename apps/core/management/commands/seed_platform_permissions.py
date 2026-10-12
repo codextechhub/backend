@@ -2,8 +2,8 @@
 
 This is the single source of truth for the platform-administration permissions
 (permissions registry, roles, team, staff profiles, organogram, schools,
-branches, audit, dashboard, documents). Both ``create_superuser`` and
-``seed_all_permissions`` run this - keeping the keys defined in exactly one
+branches, audit, sign-in monitoring, dashboard, documents). Both
+``create_superuser`` and ``seed_all_permissions`` run this - keeping the keys defined in exactly one
 place so a new resource (e.g. organogram) can never again be wired into views
 but forgotten by the seed.
 
@@ -165,6 +165,16 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("create", "Create compliance rules", True, _SENSITIVE),
             ("update", "Edit compliance rules", True, _SENSITIVE),
             ("delete", "Delete compliance rules", True, _SENSITIVE),
+        ],
+    ),
+    (
+        "security",
+        "Sign-in monitoring - live sessions and login attempts across every tenant",
+        [
+            # Reads every account's devices, IP addresses and failed sign-ins,
+            # so it is SENSITIVE; it changes nothing, so it is not restricted.
+            # Ending a session is ``platform.team.suspend``, not this key.
+            ("view", "View live sessions and login attempts", False, _SENSITIVE),
         ],
     ),
     (

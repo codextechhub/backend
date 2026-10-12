@@ -5,6 +5,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.field_enforcement import can_read
 
 from ..constants import (
     PERM_CLASS_ASSIGN,
@@ -19,6 +20,7 @@ from ..serializers import (
     PromotionBatchSerializer,
     PromotionRulesSerializer,
     PromotionRunSerializer,
+    readable_name,
 )
 from ..services import promotion as promotion_service
 from ..services.scoping import scope_to_visible_branches
@@ -34,8 +36,39 @@ def _session(tenant, pk, *, label):
     return row
 
 
-def _plan_payload(plan):
+#: What a per-student exception calls a pupil whose first name the reader may not read.
+UNNAMED_PUPIL = "This pupil"
+
+
+def _named_exception(request, entry, student):
+    """One per-student exception, its name and sentence built for *request*'s reader.
+
+    The service writes the stored name into both; a reader with a name part
+    switched off gets the parts they may read in ``name`` and, in ``reason``,
+    the first name only where they may read it.
+    """
+    from ..services.promotion import EXCEPTION_TEXT
+
+    first = (
+        student.first_name if can_read(request, "school.students.first_name") else ""
+    ) or UNNAMED_PUPIL
+    template = EXCEPTION_TEXT.get(entry["cause"], "")
+    return {
+        **entry,
+        "name": readable_name(request, "school.students", student),
+        "reason": template.format(name=first) if "{name}" in template else entry["reason"],
+    }
+
+
+def _plan_payload(plan, request):
+    """The preview body, with every pupil named through the reader's switches.
+
+    A pupil's name is built by :func:`~..serializers.readable_name`, the same
+    rule a serialized name follows, and the admission number is absent where
+    the reader may not read it.
+    """
     counts = plan.counts()
+    number_open = can_read(request, "school.students.student_number")
     return {
         "counts": {
             "promote": counts[PromotionOutcome.PROMOTE],
@@ -60,13 +93,16 @@ def _plan_payload(plan):
         # under the rows that do not.
         "exceptions": {
             "by_class": plan.class_exceptions,
-            "by_student": plan.student_exceptions,
+            "by_student": [
+                _named_exception(request, entry, plan.excepted_students[entry["student"]])
+                for entry in plan.student_exceptions
+            ],
         },
         "students": [
             {
                 "id": c.student.pk,
-                "name": c.student.full_name,
-                "student_number": c.student.student_number,
+                "name": readable_name(request, "school.students", c.student),
+                **({"student_number": c.student.student_number} if number_open else {}),
                 "from_class": c.enrolment.school_class.name,
                 "from_class_id": c.enrolment.school_class_id,
                 "to_class": c.target_class.name if c.target_class else None,
@@ -182,7 +218,7 @@ class PromotionPreviewView(_PromotionBase):
         )
         return success_response(data={
             "from_session": str(from_session), "to_session": str(to_session),
-            **_plan_payload(plan),
+            **_plan_payload(plan, request),
         })
 
 

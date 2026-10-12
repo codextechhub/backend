@@ -62,6 +62,7 @@ urlpatterns = [
     path("v1/support/", include("vs_tickets.urls")),
     path("v1/health/", include("vs_health.urls")),
     path("v1/tenants/", include("vs_tenants.urls")),
+    path("v1/search/", include("vs_search.urls")),
 ]
 
 # Media is database-backed (core.storage.DatabaseStorage) and served with

@@ -300,7 +300,8 @@ def primary_for(student):
 
 
 def guardian_directory(tenant, user, *, search="", include_unlinked=False,
-                       branch=None, session=None, name_review=False):
+                       branch=None, session=None, name_review=False,
+                       search_fields=None):
     """The guardian list, with ward counts. Branch narrowing is on the wards.
 
     Guardian carries no branch, so the row itself is never narrowed. What is
@@ -315,6 +316,11 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
     *name_review* keeps only the guardians whose name was split from one line
     and not yet confirmed, the list an administrator works through to confirm
     them.
+
+    *search_fields* are the lookups *search* is matched against,
+    :data:`GUARDIAN_SEARCH_FIELDS` when not given. A view acting for a reader
+    passes :func:`readable_guardian_search_fields`, so a query is
+    matched only against what that reader may see.
     """
     from .scoping import scope_students
     from ..models import Student
@@ -324,7 +330,10 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
         qs = qs.filter(name_needs_review=True)
     # Loosely and ranked, like every other directory, so "ada okeye" typed the
     # other way round, or a surname and a first initial, still finds the row.
-    qs = core_search(qs, search, fields=GUARDIAN_SEARCH_FIELDS)
+    qs = core_search(
+        qs, search,
+        fields=GUARDIAN_SEARCH_FIELDS if search_fields is None else search_fields,
+    )
     if not include_unlinked:
         visible_students = scope_students(
             Student.objects.filter(tenant=tenant), user, tenant,
@@ -357,6 +366,38 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
 #: The phone number is in here because "who do we call about this family" is
 #: often asked from a missed call rather than from a name.
 GUARDIAN_SEARCH_FIELDS = ("full_name", "phone", "email")
+
+#: Each lookup a guardian search may match, mapped to the ``school.guardians``
+#: field (or fields) whose Read switch governs it. ``full_name`` is composed
+#: of all three name parts, so it is searched only by a reader who may read
+#: every one; otherwise the parts the reader may read are searched instead.
+_GUARDIAN_LOOKUPS = {
+    "full_name": ("first_name", "middle_name", "last_name"),
+    "phone": "phone",
+    "email": "email",
+}
+_GUARDIAN_PART_LOOKUPS = {
+    "first_name": "first_name",
+    "middle_name": "middle_name",
+    "last_name": "last_name",
+}
+
+
+def readable_guardian_search_fields(request) -> tuple[str, ...]:
+    """The guardian search lookups the request's caller may read.
+
+    :data:`GUARDIAN_SEARCH_FIELDS` for a reader who may read everything, so the
+    ranking is the one the directory has always had. A reader with a name part
+    hidden matches the parts left instead of the whole name, which would carry
+    the hidden one.
+    """
+    from vs_rbac.field_enforcement import readable_lookups
+
+    readable = readable_lookups(request, "school.guardians", _GUARDIAN_LOOKUPS)
+    if "full_name" in readable:
+        return readable
+    parts = readable_lookups(request, "school.guardians", _GUARDIAN_PART_LOOKUPS)
+    return parts + readable
 
 
 #: The guardian's own details, as opposed to their link to any one student.

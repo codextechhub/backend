@@ -201,8 +201,13 @@ def guardian_at(guardian, as_at: AsAt):
     return past, as_at_meta(as_at, starts, photo_retired=photo_retired)
 
 
-def wards_at(guardian_pk, visible_ids, as_at: AsAt) -> list[dict]:
-    """The guardian's wards at *as_at*, in the live detail response's shape."""
+def wards_at(guardian_pk, visible_ids, as_at: AsAt) -> list[tuple]:
+    """The guardian's wards at *as_at*, each as ``(student, row)``.
+
+    ``row`` is in the live detail response's shape. The student as it stood is
+    returned beside it so the view can apply the reader's switches on the
+    pupil's fields to the row, as it does to the live one.
+    """
     links = {
         link.student_id: link
         for link in instances_at(spec_for(StudentGuardian), GUARDIAN, guardian_pk, as_at)
@@ -213,7 +218,7 @@ def wards_at(guardian_pk, visible_ids, as_at: AsAt) -> list[dict]:
     rows = []
     for pk, student in sorted(students.items(), key=lambda item: item[1].full_name):
         link = links[pk]
-        rows.append({
+        rows.append((student, {
             "id": pk, "name": student.full_name,
             "student_number": student.student_number,
             "status": student.status, "status_label": student.get_status_display(),
@@ -221,5 +226,5 @@ def wards_at(guardian_pk, visible_ids, as_at: AsAt) -> list[dict]:
             "relationship": link.relationship,
             "relationship_label": link.relationship_label,
             "is_primary": link.is_primary,
-        })
+        }))
     return rows

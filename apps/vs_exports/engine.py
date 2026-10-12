@@ -13,6 +13,33 @@ file missing two columns is more use than no file, provided nothing is silent ab
 one query streams the whole result set; nothing here materialises model instances, and
 a 200k-row export costs one query rather than 200k.
 
+**A filter or sort reads only what the reader may read.** Matching rows on a
+column answers a question about it even when the column is left out of the file:
+a teacher who cannot see pupils' last names, typing "Okafor" into the students
+search, would learn from the row count that such a pupil exists. So filters
+follow the reader's Field Access the way columns do, by kind:
+
+* A **search** spans several columns and is narrowed to the ones the reader may
+  read, exactly as people search on the directories narrows its lookups
+  (:func:`vs_rbac.field_enforcement.readable_lookups`). With none left, a term
+  matches nothing. Narrowing rather than refusing, because the search box is
+  one control the reader did not split into columns, and what it searched is
+  read back in the review sentence and the file's Filters sheet.
+* A **single-column filter** (a choice, a date range, a number range, a text
+  match) on a hidden column is refused with :class:`FilterReadDenied`: 403
+  ``field_read_denied`` on the builder's routes, ``FILTER_FORBIDDEN`` on a run.
+  That is the staff directory's answer to ``?employment_status=`` from a reader
+  without Read on the employment status. Dropping the filter instead would
+  produce a file wider than asked for and show the distribution of the hidden
+  value; matching nothing would produce an empty file that reads as "there are
+  none". A refusal depends only on the reader's access, never on the data, so
+  it reveals nothing either.
+* A **sort** on a hidden column is dropped, as a withdrawn one is: row order
+  would otherwise rank rows by the hidden value.
+
+The reader is ``scope.user``, the person the export runs as. A scope with no
+user judges nobody, matching :func:`readable_fields`' escape for system work.
+
 **Failures carry a code.** :class:`ExportError` pairs a
 :class:`~vs_exports.constants.FailureCode` with a user-safe sentence. The view and the
 worker both render only the code, the sentence and the run reference - never a
@@ -26,6 +53,7 @@ from itertools import islice
 from django.db.models import Q
 
 from .catalogue import (
+    FILTER_SEARCH,
     FilterError,
     compile_filter,
     describe_filter,
@@ -52,6 +80,25 @@ class ExportError(Exception):
         self.code = code
         self.message = message
         self.detail = detail
+
+
+class FilterReadDenied(ExportError):
+    """A filter in the configuration reads a column the reader may not read.
+
+    ``filters`` maps each offending filter's id to its label, so the builder's
+    routes can answer with :class:`vs_rbac.field_enforcement.FieldReadDenied`
+    naming them, and a run can fail with one sentence naming them.
+    """
+
+    def __init__(self, filters: dict):
+        self.filters = dict(filters)
+        labels = _and_list(self.filters.values())
+        super().__init__(
+            FailureCode.FILTER_FORBIDDEN,
+            f"This export filters on {labels}, which you are not allowed to see. "
+            f"Remove that filter and run it again.",
+            detail=",".join(self.filters),
+        )
 
 
 class Omission:
@@ -125,6 +172,44 @@ def readable_fields(user, tenant):
 
     access = get_field_access(user, tenant=tenant)
     return access.can_read
+
+
+def scope_readable(scope):
+    """The Field Access predicate for the person *scope* runs as, or None for nobody."""
+    user = getattr(scope, "user", None)
+    if user is None:
+        return None
+    return readable_fields(user, getattr(scope, "tenant", None))
+
+
+# Whether a stored filter spec narrows anything at all.
+def _carries_value(spec) -> bool:
+    return any(
+        value is not None and value not in ("", [], {})
+        for key, value in (spec or {}).items() if key != "id"
+    )
+
+
+def assert_filters_readable(dataset, filters, readable):
+    """Refuse a single-column filter on a column the reader may not read.
+
+    A filter with nothing set narrows nothing and passes, so a builder that
+    sends every filter it offers, blank ones included, is not refused for
+    them. A search filter always passes here: it is narrowed instead
+    (:func:`~vs_exports.catalogue.compile_filter`). ``readable=None`` judges
+    nobody.
+    """
+    if readable is None:
+        return
+    denied = {}
+    for spec in filters or []:
+        fdef = dataset.filter_def(str((spec or {}).get("id") or ""))
+        if fdef is None or fdef.kind == FILTER_SEARCH or not _carries_value(spec):
+            continue
+        if not dataset.filter_readable(fdef, readable):
+            denied[fdef.id] = fdef.label
+    if denied:
+        raise FilterReadDenied(denied)
 
 
 def resolve_columns(user, dataset, column_ids, tenant):
@@ -296,15 +381,22 @@ def build_queryset(dataset, scope, filters, sort=None):
     it cannot be edited away by a caller and there is no code path that reads past it -
     another entity's books for an entity-scoped dataset, another tenant's rows for a
     tenant-scoped one.
+
+    Filters and sorts are judged against ``scope.user``'s Field Access as the
+    module docstring sets out: a hidden single-column filter raises
+    :class:`FilterReadDenied`, a search is narrowed to readable columns, and a
+    sort on a hidden column is dropped.
     """
     _check_required_filters(dataset, filters)
     _check_date_bounds(dataset, filters)
+    readable = scope_readable(scope)
+    assert_filters_readable(dataset, filters, readable)
 
     qs = dataset.base(scope)
     combined = Q()
     for spec in filters or []:
         try:
-            combined &= compile_filter(dataset, spec, scope)
+            combined &= compile_filter(dataset, spec, scope, readable=readable)
         except FilterError as exc:
             raise ExportError(
                 FailureCode.FILTER_INVALID, str(exc), detail=exc.filter_id,
@@ -316,6 +408,8 @@ def build_queryset(dataset, scope, filters, sort=None):
         field = dataset.field(str(item.get("field", "")))
         if field is None:
             continue                                  # a withdrawn sort is not fatal
+        if readable is not None and field.access and not readable(field.access):
+            continue                                  # a hidden column ranks nothing
         prefix = "-" if str(item.get("direction", "asc")).lower() == "desc" else ""
         order.append(f"{prefix}{field.path}")
     # A stable tiebreak keeps paging and previews reproducible between runs.
@@ -514,18 +608,43 @@ class Cancelled(Exception):
 
 # Describe what produced a file, for the workbook's Filters sheet and the run detail.
 def filters_summary(dataset, config, scope):
-    """``[(label, value)]`` - the provenance a reader needs six weeks later."""
+    """``[(label, value)]`` - the provenance a reader needs six weeks later.
+
+    Filters are described as :func:`_described_filters` reads them for the
+    person the export runs as.
+    """
     rows = [
         ("Dataset", dataset.name),
         ("Scope", scope.label),
         ("Values", "For people to read" if (config.get("values_mode") or ValuesMode.PEOPLE) == ValuesMode.PEOPLE
          else "For another system to import"),
     ]
-    for spec in config.get("filters") or []:
-        rows.append(("Filter", describe_filter(dataset, spec, tenant=scope.tenant)))
-    if not config.get("filters"):
+    described = _described_filters(dataset, config, scope)
+    for sentence in described:
+        rows.append(("Filter", sentence))
+    if not described:
         rows.append(("Filter", f"None - the whole dataset for {scope.label}"))
     return rows
+
+
+def _described_filters(dataset, config, scope) -> list:
+    """Each filter as a sentence, read for the person *scope* runs as.
+
+    A single-column filter on a column they may not read is left out, so a
+    value set on a hidden field is never written back to them; a search names
+    only the columns it was matched against.
+    """
+    readable = scope_readable(scope)
+    out = []
+    for spec in config.get("filters") or []:
+        fdef = dataset.filter_def(str((spec or {}).get("id") or ""))
+        if (
+            fdef is not None and fdef.kind != FILTER_SEARCH
+            and not dataset.filter_readable(fdef, readable)
+        ):
+            continue
+        out.append(describe_filter(dataset, spec, tenant=scope.tenant, readable=readable))
+    return out
 
 
 # Build the plain sentence the review step reads back.
@@ -535,7 +654,7 @@ def plain_sentence(dataset, config, scope, *, rows=None) -> str:
     fmt = "an Excel file" if (config.get("format") or "xlsx") == "xlsx" else "a CSV file"
     where = scope.label
     count = f"about {rows:,} rows" if rows is not None else "an unknown number of rows"
-    filters = [describe_filter(dataset, s, tenant=scope.tenant) for s in config.get("filters") or []]
+    filters = _described_filters(dataset, config, scope)
     scope = f" where {'; '.join(filters)}" if filters else ""
     return (
         f"{dataset.name} in {where}{scope} - {columns} columns, {count} - as {fmt}. "

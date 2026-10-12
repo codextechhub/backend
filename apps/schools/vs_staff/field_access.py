@@ -24,6 +24,15 @@ parts a caller may read. The exit date is written only by the status change
 that ends employment, so it has a Read switch and nothing can write it here.
 The photograph is sent as ``photo`` and read back as ``photo_url``.
 
+The employment status has one switch for every form it takes (see
+:data:`EMPLOYMENT_STATUS_NAMES`). It moves only through the lifecycle endpoint,
+behind ``school.teachers.transition``, never through the record's edit form,
+and that endpoint asks the Write switch as well, as the email change endpoint
+asks the email's: a role holding the key with the status read-only is refused.
+A reader who may not read it gets no status column, chip or filter on the
+directory, no status breakdown in its header, and no employment half on a
+person's history.
+
 The email is the one field the Add form requires and the edit form does not
 carry at all: an account's sign-in address changes on an endpoint of its own,
 behind its own key. It is therefore declared open on create, so a role that may
@@ -35,6 +44,21 @@ form, so each is governed by its switch on both paths.
 from vs_rbac.field_registry import FieldSpec, register_fields
 
 _TENANT = "TENANT"
+
+#: The employment status switch, under its full registry key.
+EMPLOYMENT_STATUS_FIELD = "school.teachers.employment_status"
+
+#: Every name the employment status reaches a client under. The stored value,
+#: its label, what a row reads as (On Leave laid over Active), whether the
+#: person is still on the roll or has left, and the lifecycle strip on a
+#: record are all the same fact, so one switch covers them all. The employment
+#: events on a person's history are status changes from end to end, so a
+#: reader without the switch gets none of them (``StaffHistoryView``).
+EMPLOYMENT_STATUS_NAMES = (
+    "employment_status", "employment_status_label",
+    "display_employment_status", "display_employment_status_label",
+    "on_roll", "is_exited", "lifecycle",
+)
 
 
 def register():
@@ -50,6 +74,8 @@ def register():
             # The account block nested in a staff record, which carries the
             # sign-in address a second time.
             "schools.vs_staff.serializers.AccountStateSerializer",
+            # The command palette's and the search bar's staff hit.
+            "schools.vs_staff.serializers.StaffSearchHitSerializer",
         ),
         fields=(
             FieldSpec("first_name", "First name", group="Name", scope=_TENANT,
@@ -68,6 +94,10 @@ def register():
                       scope=_TENANT, sort_order=30),
             FieldSpec("hire_date", "Hire date", group="Employment", scope=_TENANT,
                       sort_order=40),
+            FieldSpec("employment_status", "Employment status", group="Employment",
+                      scope=_TENANT, sort_order=45, api_names=EMPLOYMENT_STATUS_NAMES,
+                      description="Active, on leave, suspended or left, and "
+                                  "whether they are still on the roll."),
             FieldSpec("exit_date", "Exit date", group="Employment", scope=_TENANT,
                       sort_order=50, writable=False,
                       description="Set by the status change that ends employment."),

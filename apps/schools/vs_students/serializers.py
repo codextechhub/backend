@@ -97,6 +97,30 @@ PERSON_NAME_PARTS = {
 GUARDIAN_NAME_PARTS = PERSON_NAME_PARTS
 
 
+def readable_name(request, resource, person, parts=PERSON_NAME_PARTS) -> str:
+    """*person*'s one-line name, built from the parts *request*'s caller may read.
+
+    For a name a view places inside a value of its own rather than serializing
+    as a field, such as the wards listed beside a guardian: there is no key
+    :func:`~vs_rbac.field_enforcement.visible` could match, so each part is
+    asked by its registry key (``school.students.first_name``) through
+    :func:`~vs_rbac.field_enforcement.can_read`. The answer matches what
+    ``field_composites`` gives a serializer: the stored name when every part
+    is readable, otherwise the readable parts in order, and ``""`` when none
+    is. ``request=None`` reads every part, as a serializer with no request does.
+    """
+    readable = []
+    hidden = False
+    for part, path in parts.items():
+        if not can_read(request, f"{resource}.{part}"):
+            hidden = True
+            continue
+        value = (getattr(person, path, "") or "").strip()
+        if value:
+            readable.append(value)
+    return " ".join(readable) if hidden else person.full_name
+
+
 # ── guardians ──────────────────────────────────────────────────────────────
 
 class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
@@ -207,7 +231,9 @@ class GuardianLinkSerializer(serializers.ModelSerializer):
     def get_siblings(self, obj):
         rows = self.context.get("siblings", {}).get(obj.guardian_id, [])
         return [
-            {"id": s.pk, "name": s.full_name, "class": self.context
+            {"id": s.pk,
+             "name": readable_name(self.context.get("request"), "school.students", s),
+             "class": self.context
              .get("class_names", {}).get(s.pk, "")}
             for s in rows
         ]
@@ -226,6 +252,31 @@ def guardian_photo_url(guardian, *, request=None):
         signed_url(guardian.photo.name, absolute_for=request)
         if guardian.photo else ""
     )
+
+
+class GuardianSearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One guardian in the command palette and the search bar.
+
+    A name and the wards it belongs to, which is what tells two households
+    with one surname apart, and nothing a reader could contact them by. The
+    name parts are the registered fields of ``school.guardians``, so a hidden
+    part is absent and ``full_name`` is rebuilt without it. ``ward_names`` is
+    the context's ``wards`` map, whose names already follow the reader's
+    switches on the pupils' own name parts (``views/guardians.py``).
+    """
+
+    field_resource = "school.guardians"
+    field_composites = {"full_name": GUARDIAN_NAME_PARTS}
+
+    ward_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Guardian
+        fields = ["id", "full_name", "first_name", "middle_name", "last_name", "ward_names"]
+        read_only_fields = fields
+
+    def get_ward_names(self, obj):
+        return self.context.get("wards", {}).get(obj.pk, [])
 
 
 class GuardianDirectorySerializer(FieldAccessMixin, serializers.ModelSerializer):

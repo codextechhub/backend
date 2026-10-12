@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import success_response
-from vs_rbac.field_enforcement import assert_writable
+from vs_rbac.field_enforcement import FieldReadDenied, assert_writable, can_read
 
 from ..constants import (
     PERM_ACCOUNT_REACTIVATE,
@@ -30,6 +30,7 @@ from ..serializers import (
     StaffDetailSerializer,
     StatusChangeSerializer,
 )
+from ..field_access import EMPLOYMENT_STATUS_FIELD
 from ..services import accounts, employment, invitations
 from ..services.visibility import GROUP_HISTORY
 from .base import StaffViewMixin
@@ -40,6 +41,13 @@ class StaffStatusView(StaffViewMixin, APIView):
 
     Closed before go-live. Nobody resigns during onboarding, and a closed
     surface is the safer default for a SENSITIVE key.
+
+    The employment status is a Field Access field of ``school.teachers``, and
+    this endpoint is the only way it changes, so the key alone does not decide:
+    reading the options asks the status's Read switch (403
+    ``field_read_denied`` without it), and a move asks its Write switch (403
+    ``field_write_denied``), exactly as the email change endpoint asks the
+    email's.
 
     The response carries the classes that now need cover, **named and not
     counted**. "3 classes need cover" sends a head teacher hunting through a
@@ -58,6 +66,10 @@ class StaffStatusView(StaffViewMixin, APIView):
         rule changed in the service reaches the screen without a release.
         """
         staff = self.get_staff(pk)
+        if staff.user_id != request.user.pk and not can_read(request, EMPLOYMENT_STATUS_FIELD):
+            raise FieldReadDenied(
+                ["employment_status"], labels={"employment_status": "Employment status"},
+            )
         return success_response(data={
             "employment_status": staff.employment_status,
             "account_status": staff.user.account_state,
@@ -86,6 +98,7 @@ class StaffStatusView(StaffViewMixin, APIView):
         payload = StatusChangeSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
+        assert_writable(request, "school.teachers", {"employment_status": data["to_status"]})
 
         # Read before the move: afterwards a terminated person's assignments are
         # still theirs, but the list is what the confirmation promised.
@@ -126,6 +139,12 @@ class StaffHistoryView(StaffViewMixin, APIView):
     ``?as_at=YYYY-MM-DD`` answers as at the end of that day (``as_at.py``), for
     the person themselves and a reader whose key reaches them.
 
+    The employment half is left out for a reader who may not read the
+    employment status (``school.teachers.employment_status``): every one of
+    those entries is a status change, and its date and reason say what the
+    status became even with the status itself removed. The person themselves
+    always reads their own.
+
     docstring-name: A staff member's history
     """
 
@@ -163,6 +182,8 @@ class StaffHistoryView(StaffViewMixin, APIView):
         if as_at is not None:
             past.staff_at(staff, as_at)
             rows = rows.filter(created_at__lt=as_at.moment)
+        if staff.user_id != request.user.pk and not can_read(request, EMPLOYMENT_STATUS_FIELD):
+            rows = rows.none()
         events = []
         for row in rows:
             detail = dict(EmploymentEventSerializer(row).data)
@@ -425,6 +446,9 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
     finds the person who should not be on it; left closed, the one way to stop
     their invitation would be to go live and send it.
 
+    Closing the record writes the employment status, so the status's Write
+    switch is asked as well as the key, as on the lifecycle endpoint.
+
     docstring-name: Revoke a staff invitation
     """
 
@@ -437,6 +461,9 @@ class StaffInvitationRevokeView(StaffViewMixin, APIView):
         staff = self.get_staff_for_write(pk)
         payload = RevokeInvitationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        assert_writable(
+            request, "school.teachers", {"employment_status": EmploymentStatus.TERMINATED},
+        )
         status_before = staff.employment_status
         invitations.revoke(
             staff, reason=payload.validated_data["reason"],

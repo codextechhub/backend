@@ -342,6 +342,39 @@ def can_read(request, key: str) -> bool:
     return _access_for(request).can_read(key)
 
 
+def readable_lookups(request, resource: str, lookups: Mapping[str, object]) -> tuple[str, ...]:
+    """The search lookups whose fields the request's caller may read, in order.
+
+    A search that matches on a field the caller cannot read answers a question
+    about it: a hit for "Okafor" from a reader who cannot see last names says
+    the name is there, even with the name blanked out of the hit. Narrow the
+    fields a query is matched against to these before matching, and match
+    nothing when none is left.
+
+    *lookups* maps each queryset lookup (``user__last_name``) to the
+    registered client name of *resource* that governs it, a tuple of names
+    that must all be readable (a stored ``full_name`` composed of three name
+    parts), or None for a lookup no switch governs. A name that is not a
+    registered, active field reads as readable, as it does everywhere else.
+    ``request=None`` is the escape hatch the module docstring names.
+    """
+    if request is None:
+        return tuple(lookups)
+    access = _access_for(request)
+    entries = _entries_for(request, resource)
+
+    def readable(name) -> bool:
+        entry = entries.get(name)
+        return entry is None or access.can_read(entry.key)
+
+    out = []
+    for lookup, governs in lookups.items():
+        names = () if governs is None else (governs,) if isinstance(governs, str) else governs
+        if all(readable(name) for name in names):
+            out.append(lookup)
+    return tuple(out)
+
+
 def field_access_payload(user, tenant) -> dict:
     """What *user* may not read or change, keyed by ``module.resource``.
 

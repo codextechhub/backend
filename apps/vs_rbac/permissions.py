@@ -471,11 +471,23 @@ class HasAnyModuleAccess(BasePermission):
             or getattr(request, "tenant", None)
             or getattr(u, "tenant", None)
         )
-        # As in HasRBACPermission: no branch is named, so every grant this user
-        # holds counts towards module membership.
-        keys = get_effective_permissions(u, tenant=tenant)
-        prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
-        return any(key.startswith(prefixes) for key in keys)
+        return holds_any_module_key(u, tenant, modules)
+
+
+def holds_any_module_key(user, tenant, modules) -> bool:
+    """Whether *user* holds any permission key in one of *modules* at *tenant*.
+
+    The membership test :class:`HasAnyModuleAccess` applies at its door, for a
+    caller deciding whether a module's landing screen exists for somebody (the
+    search bar) without a view to hand it. No branch is named, so every grant
+    the user holds counts, as in :class:`HasRBACPermission`. The Vision super
+    admin holds every module.
+    """
+    if is_vision_super_admin(user):
+        return True
+    keys = get_effective_permissions(user, tenant=tenant)
+    prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
+    return any(key.startswith(prefixes) for key in keys)
 
 
 # Permit safe HTTP methods on read-only endpoints.

@@ -41,6 +41,7 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
         _SURFACE + "GuardianUpdateSerializer",
         _SURFACE + "GuardianWriteSerializer",
         _SURFACE + "GuardianLinkSerializer",
+        _SURFACE + "GuardianSearchHitSerializer",
         _SURFACE + "SearchHitSerializer",
         _SURFACE + "StatusLogSerializer",
     })
@@ -144,6 +145,9 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
                        tenant=tenant),
                 Sample(_SURFACE + "GuardianLinkSerializer", [link],
                        {**context, "siblings": {}, "class_names": {}},
+                       many=True, tenant=tenant),
+                Sample(_SURFACE + "GuardianSearchHitSerializer", [guardian],
+                       {**context, "wards": {guardian.pk: [pupil.full_name]}},
                        many=True, tenant=tenant),
                 Sample(_SURFACE + "SearchHitSerializer", pupils, context,
                        many=True, tenant=tenant),

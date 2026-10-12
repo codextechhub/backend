@@ -42,8 +42,13 @@ def lacking_documents(required):
     return condition
 
 
-def counts(queryset, tenant, *, by_branch=None, lacking=None):
+def counts(queryset, tenant, *, by_branch=None, lacking=None, status_readable=True):
     """Everything the directory header shows, from three queries.
+
+    ``status_readable=False`` is for a reader who may not read the employment
+    status: ``currently_employed`` and ``by_employment_status`` are then
+    absent, because a count per status is the status read in aggregate.
+    ``total`` is still the number of people listed.
 
     ``queryset`` is the caller's already-scoped staff queryset, so every figure
     here counts the same people the list does. A header that counted the school
@@ -119,6 +124,8 @@ def counts(queryset, tenant, *, by_branch=None, lacking=None):
             if lacking is not None else None
         ),
     }
+    if not status_readable:
+        del payload["currently_employed"], payload["by_employment_status"]
     payload.update(_side_breakdown(countable, tenant, by_branch=by_branch))
     return payload
 

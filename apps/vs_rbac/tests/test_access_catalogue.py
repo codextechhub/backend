@@ -482,7 +482,7 @@ class RealFieldOnlyResourceTests(TestCase):
                 "first_name", "middle_name", "last_name", "photo",
                 "date_of_birth", "gender", "phone", "email",
                 "staff_number", "job_title", "employment_type", "hire_date",
-                "exit_date",
+                "employment_status", "exit_date",
             },
         )
         self.assertTrue(teachers["permissions"])

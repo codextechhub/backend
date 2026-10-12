@@ -37,7 +37,7 @@ school or health dataset never touches vs_exports, and vs_exports never grows a
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ImproperlyConfigured
@@ -221,6 +221,16 @@ class FilterDef:
     screen's translator has to know it. ``from_screen`` is ``(raw value) ->
     spec`` and refuses a value by raising the error the list itself raises
     for it, which the screen endpoint returns unchanged.
+
+    **Which Field Access field governs a filter** is read from the dataset's
+    columns (:meth:`Dataset.filter_access`): a filter on ``last_name`` is
+    governed by whatever key the ``last_name`` column carries, and each path a
+    search filter matches is governed by the column at that path. A dataset
+    author who gives a column its key has therefore governed every filter on
+    it as well. ``access`` (one path) and ``access_by_path`` (a search, path to
+    key) name the key outright where the column carries none: a path that is
+    not a column, or a column whose own gate is the sensitive-export key
+    rather than a Field Access key.
     """
 
     id: str
@@ -240,6 +250,12 @@ class FilterDef:
     compiles: object = None
     screen_param: str = ""
     from_screen: object = None
+    #: The Field Access key governing a single-path filter whose column carries
+    #: none. Blank means "read it from the column".
+    access: str = ""
+    #: For :data:`FILTER_SEARCH` only - ``{path: key}`` for a searched path
+    #: whose column carries no key. A path not named reads it from the column.
+    access_by_path: dict = dc_field(default_factory=dict)
 
     @property
     def path(self) -> str:
@@ -395,6 +411,55 @@ class Dataset:
                 return f
         return None
 
+    # The Field Access key of the column read at *path*, or "".
+    def column_access(self, path: str) -> str:
+        for f in self.fields:
+            if f.access and f.path == path:
+                return f.access
+        return ""
+
+    def filter_access(self, fdef: FilterDef) -> str:
+        """The Field Access key governing a single-path filter, or "" when none does.
+
+        The filter's own ``access`` first, then the key of the column the filter
+        reads. A search filter spans several paths and is answered per path by
+        :meth:`readable_searches` instead.
+        """
+        if fdef.access:
+            return fdef.access
+        if fdef.kind == FILTER_SEARCH:
+            return ""
+        return self.column_access(fdef.paths[0])
+
+    def readable_searches(self, fdef: FilterDef, readable=None) -> tuple:
+        """The ``(path, label)`` pairs of a search filter the reader may match against.
+
+        A search over a column the reader cannot read would answer a question
+        about it, so the hidden paths are dropped before matching, the way
+        :func:`vs_rbac.field_enforcement.readable_lookups` narrows people
+        search. ``readable=None`` judges nobody and keeps every path.
+        """
+        if readable is None:
+            return tuple(fdef.searches)
+        return tuple(
+            (path, label) for path, label in fdef.searches
+            if not (key := fdef.access_by_path.get(path) or self.column_access(path))
+            or readable(key)
+        )
+
+    def filter_readable(self, fdef: FilterDef, readable=None) -> bool:
+        """Whether the reader may use *fdef* at all.
+
+        A single-path filter is usable when its governing field is readable; a
+        search filter when at least one of its paths is.
+        """
+        if readable is None:
+            return True
+        if fdef.kind == FILTER_SEARCH:
+            return bool(self.readable_searches(fdef, readable))
+        key = self.filter_access(fdef)
+        return not key or readable(key)
+
     @property
     def locked_field_ids(self) -> tuple:
         """Fields that are always exported whatever the caller selected."""
@@ -418,6 +483,10 @@ class Dataset:
 
         ``readable=None`` applies no Field Access gate, for a caller that has
         already reduced the columns or has nobody to judge.
+
+        The same gate shapes the filters: a filter on a column the caller
+        cannot read is not offered, and a search filter offers only the
+        columns it would actually match for them.
         """
         fields = [
             f for f in self.fields
@@ -435,7 +504,10 @@ class Dataset:
             "field_count": len(fields),
             "default_columns": list(self.default_columns or self.locked_field_ids),
             "required_filters": list(self.required_filter_ids),
-            "filters": [f.describe() for f in self.filters],
+            "filters": [
+                replace(f, searches=self.readable_searches(f, readable)).describe()
+                for f in self.filters if self.filter_readable(f, readable)
+            ],
             "supported_formats": [str(f) for f in self.formats],
             "format_options": FORMAT_OPTION_SCHEMA,
             "max_date_span_days": self.max_date_span_days,
@@ -844,13 +916,19 @@ def _naira_or_raw(raw) -> str:
 
 
 # Compile one saved filter into a Q object.
-def compile_filter(dataset: Dataset, spec: dict, scope=None) -> Q:
+def compile_filter(dataset: Dataset, spec: dict, scope=None, *, readable=None) -> Q:
     """Turn one stored filter dict into a ``Q``.
 
     Raises :class:`FilterError` when the filter refers to something the dataset no
     longer has - the withdrawn-filter failure the design calls out by name. The error
     message is the one a finance user reads, so it names the filter, not a column.
     ``scope`` reaches a filter that compiles itself (:attr:`FilterDef.compiles`).
+
+    ``readable`` is the reader's Field Access predicate. A search is matched
+    only against the columns it allows (:meth:`Dataset.readable_searches`),
+    and a search with a term but no readable column matches nothing. A
+    single-path filter on a hidden column is refused before it gets here
+    (:func:`vs_exports.engine.assert_filters_readable`).
     """
     filter_id = str(spec.get("id") or "")
     fdef = dataset.filter_def(filter_id)
@@ -902,10 +980,13 @@ def compile_filter(dataset: Dataset, spec: dict, scope=None) -> Q:
                 f"“{fdef.label}” does not say which columns to search.",
                 filter_id=filter_id,
             )
+        searches = dataset.readable_searches(fdef, readable)
+        if not searches:
+            return Q(pk__in=[])
         # OR, not AND: a search box means "mentioned anywhere", and ANDing the columns
         # would return nothing at all.
         combined = Q()
-        for search_path, _ in fdef.searches:
+        for search_path, _ in searches:
             combined |= Q(**{f"{search_path}__icontains": value})
         return combined
 
@@ -936,10 +1017,12 @@ def compile_filter(dataset: Dataset, spec: dict, scope=None) -> Q:
 
 
 # Describe a filter in the plain language the review step reads back.
-def describe_filter(dataset: Dataset, spec: dict, *, tenant=None) -> str:
+def describe_filter(dataset: Dataset, spec: dict, *, tenant=None, readable=None) -> str:
     """One sentence a person can check - "Invoice date is 1 Jul 2026 to 31 Jul 2026".
 
     Dates are written in *tenant*'s date format; ``None`` reads the platform's.
+    A search names only the columns *readable* lets it match, because those
+    are the only ones it was matched against.
     """
     fdef = dataset.filter_def(str(spec.get("id") or ""))
     if fdef is None:
@@ -952,7 +1035,12 @@ def describe_filter(dataset: Dataset, spec: dict, *, tenant=None) -> str:
         values = [fdef.choices.get(str(v), str(v)) for v in (spec.get("values") or [])]
         return f"{fdef.label} is any of {', '.join(values)}" if values else f"{fdef.label} is any"
     if fdef.kind == FILTER_SEARCH:
-        columns = ", ".join(label for _, label in fdef.searches)
+        columns = ", ".join(label for _, label in dataset.readable_searches(fdef, readable))
+        if not columns:
+            return (
+                f"{fdef.label} for “{spec.get('value')}” has no column you can read, "
+                f"so nothing matches"
+            )
         return f"{columns} mentions “{spec.get('value')}”"
 
     if fdef.kind == FILTER_TEXT:

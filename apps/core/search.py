@@ -137,10 +137,17 @@ def search(queryset, query, *, fields, blob="search_blob", then=()):
 
     ``then`` is the ordering to apply after the rank - the list's own order, so
     equally-good matches still come back in the order the screen expects.
+
+    A query matched against no field at all finds nobody, rather than
+    everybody: that is what a caller narrowing ``fields`` to the ones its
+    reader may read (``vs_rbac.field_enforcement.readable_lookups``) is left
+    with when every one of them is hidden.
     """
     condition, rank = loose_match(query, fields=fields, blob=blob)
     if condition is None:
         return queryset
+    if not fields:
+        return queryset.none()
     return (
         annotate_blob(queryset, fields, blob=blob)
         .annotate(**{f"{blob}_rank": rank})

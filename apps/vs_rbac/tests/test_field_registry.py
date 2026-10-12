@@ -401,7 +401,15 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
                     self.assertEqual(spec.sensitive, key in hidden_before or closed)
         self.assertEqual(set(SENSITIVE_BEYOND_THE_CONVERSION) - deliberate, set())
 
-    def test_every_export_link_names_a_registered_field_of_the_same_sensitivity(self):
+    def test_every_export_link_names_a_registered_field_no_looser_than_it(self):
+        """An export column is never looser than the field it links to.
+
+        A sensitive field's column must be sensitive too, or the export would
+        hand out what the screen keeps closed. A column may be stricter than
+        its field: a pupil's name is open on screen but still needs the
+        sensitive-export permission to leave the building in a file, and the
+        link is what makes the column follow the reader's switch as well.
+        """
         registry = {
             declaration.key_for(spec): spec
             for declaration in all_declarations()
@@ -415,7 +423,8 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
                 linked += 1
                 with self.subTest(dataset=dataset.key, column=column.id):
                     self.assertIn(column.access, registry)
-                    self.assertEqual(column.sensitive, registry[column.access].sensitive)
+                    if registry[column.access].sensitive:
+                        self.assertTrue(column.sensitive)
         self.assertGreater(linked, 0)
 
 

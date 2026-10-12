@@ -32,6 +32,7 @@ class StaffDeepPayloadTests(DeepPayloadChecks, StaffFixture):
         _SURFACE + "StaffUpdateSerializer",
         _SURFACE + "StaffCreateSerializer",
         _SURFACE + "AccountStateSerializer",
+        _SURFACE + "StaffSearchHitSerializer",
     })
 
     @classmethod
@@ -65,6 +66,8 @@ class StaffDeepPayloadTests(DeepPayloadChecks, StaffFixture):
                 Sample(_SURFACE + "StaffDetailSerializer", staff, context, tenant=tenant),
                 Sample(_SURFACE + "StaffUpdateSerializer", staff, context, tenant=tenant),
                 Sample(_SURFACE + "AccountStateSerializer", user, context, tenant=tenant),
+                Sample(_SURFACE + "StaffSearchHitSerializer", [staff], context,
+                       many=True, tenant=tenant),
                 # The Add form is never rendered from a record, so it is given
                 # the values an Add form for this person would carry.
                 Sample(_SURFACE + "StaffCreateSerializer", {

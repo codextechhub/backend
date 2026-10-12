@@ -14,6 +14,13 @@ building, and there is no way to un-send it. The same reasoning removes the
 emergency contact, which is ungated on the profile precisely because somebody
 may need to read it in a hurry - a need a spreadsheet does not have.
 
+**Field Access governs the filters as it does on screen.** A column whose
+field is open by default names its ``school.students`` key, so a reader whose
+role hides it gets neither the column nor a filter on it. The names and
+contact columns are gated by the sensitive-export key instead, so the search
+names its keys for the name paths itself: it matches only the names and number
+the reader may read (:mod:`vs_exports.engine`).
+
 FRD M11 v2.4 section 8.5 and FR-014.
 """
 from __future__ import annotations
@@ -86,22 +93,34 @@ def register_datasets():
             Field("id", "Student ID", "Student", KIND_TEXT, locked=True,
                   description="The row's identity. Present on every student."),
             Field("student_number", "Admission no.", "Student", KIND_TEXT,
-                  description="The school's own number. Blank where none was given."),
+                  description="The school's own number. Blank where none was given.",
+                  access="school.students.student_number"),
             Field("first_name", "First name", "Student", KIND_TEXT, sensitive=True,
-                  description="A child's name. Including it is audited."),
-            Field("middle_name", "Middle name", "Student", KIND_TEXT, sensitive=True),
-            Field("last_name", "Last name", "Student", KIND_TEXT, sensitive=True),
+                  description="A child's name. Including it is audited.",
+                  access="school.students.first_name"),
+            Field("middle_name", "Middle name", "Student", KIND_TEXT, sensitive=True,
+                  access="school.students.middle_name"),
+            Field("last_name", "Last name", "Student", KIND_TEXT, sensitive=True,
+                  access="school.students.last_name"),
             Field("date_of_birth", "Date of birth", "Student", KIND_DATE,
                   sensitive=True,
-                  description="A child's date of birth. Including it is audited."),
-            Field("gender", "Gender", "Student", KIND_CHOICE, choices=_GENDER),
-            Field("nationality", "Nationality", "Student", KIND_TEXT),
-            Field("state_of_origin", "State of origin", "Student", KIND_TEXT),
+                  description="A child's date of birth. Including it is audited.",
+                  access="school.students.date_of_birth"),
+            Field("gender", "Gender", "Student", KIND_CHOICE, choices=_GENDER,
+                  access="school.students.gender"),
+            Field("nationality", "Nationality", "Student", KIND_TEXT,
+                  access="school.students.nationality"),
+            Field("state_of_origin", "State of origin", "Student", KIND_TEXT,
+                  access="school.students.state_of_origin"),
             Field("address", "Home address", "Contact", KIND_TEXT, sensitive=True,
-                  description="A child's home address. Including it is audited."),
-            Field("phone", "Student phone", "Contact", KIND_TEXT, sensitive=True),
-            Field("email", "Student email", "Contact", KIND_TEXT, sensitive=True),
-            Field("previous_school", "Previous school", "Student", KIND_TEXT),
+                  description="A child's home address. Including it is audited.",
+                  access="school.students.address"),
+            Field("phone", "Student phone", "Contact", KIND_TEXT, sensitive=True,
+                  access="school.students.phone"),
+            Field("email", "Student email", "Contact", KIND_TEXT, sensitive=True,
+                  access="school.students.email"),
+            Field("previous_school", "Previous school", "Student", KIND_TEXT,
+                  access="school.students.previous_school"),
             Field("status", "Status", "Lifecycle", KIND_CHOICE, choices=_STATUS),
             Field("enrolment_date", "Enrolled", "Lifecycle", KIND_DATE,
                   access="school.students.enrolment_date"),
@@ -116,7 +135,10 @@ def register_datasets():
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
                 ("first_name", "First name"), ("last_name", "Last name"),
                 ("student_number", "Admission no."),
-            ), description="Matches any one of these, the way the search box does."),
+            ), access_by_path={
+                "first_name": "school.students.first_name",
+                "last_name": "school.students.last_name",
+            }, description="Matches any one of these, the way the search box does."),
         ),
     ))
 

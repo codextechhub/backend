@@ -89,7 +89,7 @@ class ConfirmApplicantView(_StudentAction):
             effective_date=data.get("effective_date"),
             number=data.get("student_number") or None,
         )
-        return self.done(student, f"{student.full_name} is now enrolled.")
+        return self.done(student, f"{self.name_of(student)} is now enrolled.")
 
 
 class StageMoveView(_StudentAction):
@@ -140,7 +140,7 @@ class StageMoveView(_StudentAction):
         row = _list_queryset(self.tenant).get(pk=moved.pk)
         where = stage.name if stage is not None else "no stage"
         return success_response(
-            f"{moved.full_name} is at {where}.",
+            f"{self.name_of(moved)} is at {where}.",
             data=StudentListSerializer(
                 row, context=self.get_serializer_context(),
             ).data,
@@ -168,7 +168,7 @@ class RejectApplicantView(_StudentAction):
             student, StudentStatus.REJECTED, actor=request.user,
             reason=data["reason"], effective_date=data.get("effective_date"),
         )
-        return self.done(student, f"{student.full_name}'s application is closed.")
+        return self.done(student, f"{self.name_of(student)}'s application is closed.")
 
 
 class WithdrawStudentView(_StudentAction):
@@ -187,7 +187,7 @@ class WithdrawStudentView(_StudentAction):
             student, StudentStatus.WITHDRAWN, actor=request.user,
             reason=data["reason"], effective_date=data.get("effective_date"),
         )
-        return self.done(student, f"{student.full_name} has been withdrawn.")
+        return self.done(student, f"{self.name_of(student)} has been withdrawn.")
 
 
 class SuspendStudentView(_StudentAction):
@@ -221,7 +221,7 @@ class SuspendStudentView(_StudentAction):
             return_date=data.get("return_date"),
             send_reason=data.get("send_reason", False),
         )
-        return self.done(student, f"{student.full_name} is suspended.")
+        return self.done(student, f"{self.name_of(student)} is suspended.")
 
 
 class TransferOutView(_StudentAction):
@@ -244,7 +244,7 @@ class TransferOutView(_StudentAction):
         )
         return self.done(
             student,
-            f"{student.full_name} has transferred to {data['destination_school']}.",
+            f"{self.name_of(student)} has transferred to {data['destination_school']}.",
         )
 
 
@@ -272,7 +272,7 @@ class ReactivateStudentView(_StudentAction):
                 reason=data["reason"],
                 effective_date=data.get("effective_date"),
             )
-            return self.done(student, f"{student.full_name} is active again.")
+            return self.done(student, f"{self.name_of(student)} is active again.")
 
         class_id = data.get("school_class")
         if not class_id:
@@ -290,7 +290,7 @@ class ReactivateStudentView(_StudentAction):
             allow_over_capacity=data.get("allow_over_capacity", False),
         )
         return self.done(
-            student, f"{student.full_name} is back on the roll in {school_class.name}.",
+            student, f"{self.name_of(student)} is back on the roll in {school_class.name}.",
         )
 
 
@@ -317,7 +317,7 @@ class ChangeStatusView(_StudentAction):
         )
         return self.done(
             student,
-            f"{student.full_name} is now "
+            f"{self.name_of(student)} is now "
             f"{StudentStatus(data['to_status']).label.lower()}.",
         )
 
@@ -339,7 +339,7 @@ class AssignClassView(_StudentAction):
             StudentStatus.ENROLLED, StudentStatus.ACTIVE, StudentStatus.SUSPENDED,
         ):
             raise NothingToMove(
-                f"{student.first_name} is "
+                f"{self.name_of(student)} is "
                 f"{StudentStatus(student.status).label.lower()}, so there is "
                 f"no class to move.",
             )
@@ -351,7 +351,7 @@ class AssignClassView(_StudentAction):
             allow_over_capacity=data.get("allow_over_capacity", False),
         )
         verb = "moved to" if was_transfer else "assigned to"
-        message = f"{student.full_name} {verb} {school_class.name}."
+        message = f"{self.name_of(student)} {verb} {school_class.name}."
         if over:
             message += " The class is now over capacity."
         return self.done(student, message)
@@ -444,11 +444,15 @@ class _BulkAction(StudentsViewMixin, APIView):
                 out.append((sid, None))
         return out
 
-    @staticmethod
-    def _row(sid, student, ok, code="", message=""):
+    def _row(self, sid, student, ok, code="", message=""):
+        from ..serializers import readable_name
+
         return {
             "student": sid,
-            "name": student.full_name if student is not None else "",
+            "name": (
+                readable_name(self.request, "school.students", student)
+                if student is not None else ""
+            ),
             "ok": ok, "code": code, "message": message,
         }
 

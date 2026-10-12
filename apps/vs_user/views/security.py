@@ -53,9 +53,9 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     Vision Staff see all sessions across the platform.
 
     Permission: IsAuthenticatedAndActive
-    RBAC (list own):    system.session.view
-    RBAC (list all):    system.session.view (Vision Staff only)
-    RBAC (force-logout): system.session.force_logout + identity.user_logout.force
+    RBAC (own, ``mine`` and the ``end-*`` actions): none beyond an active account
+    RBAC (list):         platform.security.view
+    RBAC (force-logout): platform.team.suspend
 
     docstring-name: Login sessions
     """
@@ -275,8 +275,8 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     GET /auth-attempts/
     Vision Staff only. Shows all login attempts across the platform.
 
-    Permission: IsAuthenticatedAndActive, IsVisionStaff
-    RBAC: identity.authentication_events.log + system.audit.view
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC (list): platform.security.view; ``mine`` needs only an active account
 
     docstring-name: Auth attempts
     """
@@ -514,8 +514,8 @@ class AuthEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     # key here would mean two different answers to "who may read this row",
     # decided by which URL it was asked for. ``platform.security.view``, which
     # the sessions and attempts viewsets above name, is deliberately not reused:
-    # no seeder defines it, so it can be granted to nobody and would shut a
-    # school's own auditor out of their own trail.
+    # it is a platform-scoped key, so it would shut a school's own auditor out
+    # of their own trail.
     #
     # The key is ``PermissionScope.TENANT`` on purpose - audit officers hold it
     # inside a tenant - so the key alone does not decide isolation. The queryset

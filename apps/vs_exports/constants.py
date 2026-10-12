@@ -78,6 +78,7 @@ class FailureCode(models.TextChoices):
     DATASET_FORBIDDEN = "DATASET_FORBIDDEN", "No longer allowed to export this dataset"
     ENTITY_FORBIDDEN = "ENTITY_FORBIDDEN", "No longer allowed to use this entity"
     FILTER_INVALID = "FILTER_INVALID", "A filter this export uses no longer exists"
+    FILTER_FORBIDDEN = "FILTER_FORBIDDEN", "A filter this export uses reads a field you cannot see"
     REQUIRED_FILTER_MISSING = "REQUIRED_FILTER_MISSING", "A required filter is not set"
     NO_COLUMNS = "NO_COLUMNS", "Every selected column has become unavailable"
     ROW_CAP_EXCEEDED = "ROW_CAP_EXCEEDED", "The result is larger than the row cap"
@@ -110,6 +111,11 @@ FAILURE_GUIDANCE = {
     ),
     FailureCode.FILTER_INVALID: (
         "Edit the export and replace the filter that no longer exists, then run it "
+        "again."
+    ),
+    FailureCode.FILTER_FORBIDDEN: (
+        "A filter in this export reads a field you are not allowed to see. Edit the "
+        "export and remove that filter, or request access to the field, then run it "
         "again."
     ),
     FailureCode.REQUIRED_FILTER_MISSING: (

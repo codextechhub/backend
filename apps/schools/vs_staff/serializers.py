@@ -154,6 +154,43 @@ STAFF_LIST_PREFETCH = (
 )
 
 
+class StaffSearchHitSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One member of staff in the command palette and the search bar.
+
+    A name, the job title and staff number, and the employment status, and
+    nothing a reader could contact them by. The name parts, the job title and
+    the staff number are registered fields of ``school.teachers``, filtered by
+    the same switches and owner rule as the directory row: a hidden name part
+    is left out of ``name``, and a hidden title or number is absent.
+
+    ``meta`` is the short line under the name: the job title, or the staff
+    number where there is no title, chosen only among the two the caller may
+    read, and empty when they may read neither. It is built after the filter,
+    so a hidden title never travels inside it.
+    """
+
+    field_resource = "school.teachers"
+    owner_rule = staticmethod(_is_own_record)
+    field_composites = {
+        "name": {"first_name": "user.first_name", "last_name": "user.last_name"},
+    }
+
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffProfile
+        fields = ["id", "name", "job_title", "staff_number", "employment_status"]
+        read_only_fields = fields
+
+    def get_name(self, obj) -> str:
+        return _full_name(obj.user)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["meta"] = data.get("job_title") or data.get("staff_number") or ""
+        return data
+
+
 class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One row of the directory.
 
@@ -376,9 +413,16 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
         Silent in the ordinary case, so the one row that needs reading stands
         out instead of being lost among fifty that say Active twice.
+
+        For a reader who may not read the employment status the comparison
+        would answer it ("they still work here" says they are not suspended),
+        so the account is reported on its own: a suspended or unactivated
+        account is flagged whatever the employment record says, and the note
+        says only what the account means.
         """
         from vs_user.models import User
 
+        status_open = self.can_read_field("employment_status", obj)
         # The lockout is read from its own row, which expires by itself. A chip
         # drawn from the status column stayed up all week.
         status = obj.user.account_state
@@ -391,6 +435,20 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
                     "is unaffected."
                 ),
             }
+        if not status_open:
+            if status == User.Status.SUSPENDED:
+                return {
+                    "code": "ACCOUNT_SUSPENDED",
+                    "label": "Account suspended",
+                    "note": "They cannot sign in.",
+                }
+            if status == User.Status.PENDING:
+                return {
+                    "code": "NOT_ACTIVATED",
+                    "label": "Invitation not accepted",
+                    "note": "They have not set a password yet, so they cannot sign in.",
+                }
+            return None
         if status == User.Status.SUSPENDED and (
             obj.employment_status != EmploymentStatus.SUSPENDED
         ):
@@ -1429,8 +1487,15 @@ def staff_holder(staff, context) -> dict:
     ``is_exited`` comes only from the employment record. ``is_suspended`` is
     true while their employment or account is suspended: they keep their post
     on the chart and the chart says so.
+
+    Built by hand, so the reader's switches on ``school.teachers`` are applied
+    here (:func:`vs_rbac.field_enforcement.visible`): a hidden name part, job
+    title or employment status is absent, ``full_name`` is made of the name
+    parts left, and ``is_suspended`` then answers for the account alone. The
+    person themselves reads their own whole.
     """
     from core.media import signed_url
+    from vs_rbac.field_enforcement import visible
     from vs_user.models import User
 
     user = staff.user
@@ -1438,19 +1503,30 @@ def staff_holder(staff, context) -> dict:
     photo = None
     if staff.photo and _photos_readable(context):
         photo = signed_url(staff.photo.name, absolute_for=request) or None
-    return {
-        "id": str(user.pk),
-        "staff_id": staff.pk,
+    row = {
         "first_name": user.first_name,
         "last_name": user.last_name,
-        "full_name": _full_name(user),
-        "photo": photo,
         "job_title": staff.job_title,
         "is_exited": staff.employment_status in (
             EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED,
         ),
+    }
+    own = request is not None and staff.user_id == getattr(request.user, "pk", None)
+    if not own:
+        row = visible(request, "school.teachers", row)
+    status_open = "is_exited" in row
+    return {
+        "id": str(user.pk),
+        "staff_id": staff.pk,
+        **{key: row[key] for key in ("first_name", "last_name") if key in row},
+        "full_name": " ".join(
+            part for part in (row.get("first_name"), row.get("last_name")) if part
+        ).strip(),
+        "photo": photo,
+        **({"job_title": row["job_title"]} if "job_title" in row else {}),
+        **({"is_exited": row["is_exited"]} if status_open else {}),
         "is_suspended": (
-            staff.employment_status == EmploymentStatus.SUSPENDED
+            (status_open and staff.employment_status == EmploymentStatus.SUSPENDED)
             or user.status == User.Status.SUSPENDED
         ),
     }

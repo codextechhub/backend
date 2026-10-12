@@ -31,6 +31,7 @@ from vs_config.display import format_date
 from vs_finance.views import resolve_entity
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
+from vs_rbac.field_enforcement import FieldReadDenied
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from . import analytics, audit, services
@@ -52,6 +53,8 @@ from .constants import (
 )
 from .engine import (
     ExportError,
+    FilterReadDenied,
+    assert_filters_readable,
     estimate,
     may_export_dataset,
     plain_sentence,
@@ -210,6 +213,24 @@ class _ExportBase(APIView):
             tenant=self.tenant, entity=resolve_entity(self.request), user=user,
         )
 
+    def refuse_hidden_filters(self, dataset, filters):
+        """403 for a filter on a column the caller may not read, before it is saved or queued.
+
+        The builder's routes answer the way the people directories do for a
+        filter on a hidden field, so a refused filter reads the same wherever
+        it is set. See :mod:`vs_exports.engine` for the rule.
+        """
+        user = getattr(self.request, "effective_user", None) or self.request.user
+        try:
+            assert_filters_readable(dataset, filters, readable_fields(user, self.tenant))
+        except FilterReadDenied as exc:
+            raise _field_read_denied(exc)
+
+
+# The builder's 403 for a refused filter, naming each one by its label.
+def _field_read_denied(exc: FilterReadDenied) -> FieldReadDenied:
+    return FieldReadDenied(list(exc.filters), labels=exc.filters)
+
 
 # --------------------------------------------------------------------------- #
 # Catalogue                                                                   #
@@ -307,6 +328,8 @@ class PreviewView(_ExportBase):
         try:
             figures = estimate(request.user, dataset, scope, config, self.tenant)
             headers, rows = sample_rows(request.user, dataset, scope, config, self.tenant)
+        except FilterReadDenied as exc:
+            raise _field_read_denied(exc)
         except ExportError as exc:
             # A configuration problem is the caller's to fix, so it is a 400 with the
             # same user-safe sentence a failed run would show.
@@ -366,6 +389,7 @@ class DefinitionListView(_ExportBase):
         if not may_export_dataset(request.user, dataset, self.tenant):
             raise PermissionDenied(f"You cannot export the {dataset.name} dataset.")
         scope = self.resolve_scope(dataset)
+        self.refuse_hidden_filters(dataset, payload.validated_data.get("filters"))
 
         # tenant/entity/owner come from the request, never from the body.
         definition = payload.save(
@@ -407,6 +431,9 @@ class DefinitionDetailView(_ExportBase):
         }
         payload = ExportDefinitionWriteSerializer(definition, data=request.data, partial=True)
         payload.is_valid(raise_exception=True)
+        target = get_dataset(payload.validated_data.get("dataset_key", definition.dataset_key))
+        if "filters" in payload.validated_data and target is not None:
+            self.refuse_hidden_filters(target, payload.validated_data["filters"])
         definition = payload.save()
         audit.record(
             AuditAction.DEFINITION_UPDATED, actor=request.user, tenant=self.tenant,
@@ -606,6 +633,8 @@ class FromScreenView(_ExportBase):
         try:
             figures = estimate(request.user, dataset, scope, config, self.tenant)
             headers, rows = sample_rows(request.user, dataset, scope, config, self.tenant)
+        except FilterReadDenied as exc:
+            raise _field_read_denied(exc)
         except ExportError as exc:
             raise ValidationError({"detail": exc.message, "code": exc.code})
 
@@ -678,6 +707,7 @@ class QuickExportView(_ExportBase):
         # The server decides, by re-running its own estimate. The drawer's claim
         # that the file will be small is a hint, not an authorisation, and an
         # inline run holds a web worker for its whole duration.
+        self.refuse_hidden_filters(dataset, config.get("filters"))
         run_inline = False
         if wants_sync:
             try:

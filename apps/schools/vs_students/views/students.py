@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 from core.search import search as core_search
+from vs_rbac.field_enforcement import can_read, readable_lookups
 from vs_history.as_at import parse_as_at, request_zone
 from vs_audit.models import AuditActionType
 from vs_audit.services import emit_audit_event
@@ -83,14 +84,31 @@ def _list_queryset(tenant, session=None):
     )
 
 
-#: What a typed query is matched against, joined into one string.
+#: What a typed query is matched against, joined into one string, each lookup
+#: mapped to the ``school.students`` field whose Read switch governs it.
 #:
 #: The admission number sits with the names because a registrar holding a
 #: paper form types the number, and a box that searched only names would
 #: answer nothing for them.
-STUDENT_SEARCH_FIELDS = (
-    "first_name", "middle_name", "last_name", "student_number",
-)
+STUDENT_SEARCH_FIELDS = {
+    "first_name": "first_name",
+    "middle_name": "middle_name",
+    "last_name": "last_name",
+    "student_number": "student_number",
+}
+
+#: The fields the command palette matches a query inside, of the same four.
+PALETTE_SEARCH_FIELDS = ("first_name", "last_name", "student_number")
+
+
+def readable_search_fields(request) -> tuple[str, ...]:
+    """The :data:`STUDENT_SEARCH_FIELDS` lookups the caller may read.
+
+    A query is matched only against what the reader may see, so a reader who
+    cannot read last names finds no pupil by typing one; with every field
+    hidden a query finds nobody.
+    """
+    return readable_lookups(request, "school.students", STUDENT_SEARCH_FIELDS)
 
 
 class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
@@ -133,7 +151,8 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
         # number is still findable rather than dropping out of every search.
         qs = core_search(
             qs, params.get("search"),
-            fields=STUDENT_SEARCH_FIELDS, then=("first_name", "last_name", "pk"),
+            fields=readable_search_fields(self.request),
+            then=("first_name", "last_name", "pk"),
         )
 
         klass = (params.get("class") or "").strip()
@@ -244,10 +263,15 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
             confirm_duplicate=data.pop("confirm_duplicate", False),
             documents=documents,
         )
+        named = self.name_of(student)
+        number = (
+            student.student_number
+            if can_read(request, "school.students.student_number") else ""
+        )
         message = (
-            f"{student.full_name} saved as an applicant." if as_applicant
-            else f"{student.full_name} enrolled"
-            + (f" as {student.student_number}" if student.student_number else "")
+            f"{named} saved as an applicant." if as_applicant
+            else f"{named} enrolled"
+            + (f" as {number}" if number else "")
             + (f" in {school_class.name}." if school_class else ".")
         )
         return success_response(
@@ -352,7 +376,7 @@ class StudentDetailView(StudentsViewMixin, generics.RetrieveUpdateAPIView):
             before_data=before, diff_data=changed,
         )
         return success_response(
-            f"{updated.full_name}'s record updated.", data=after,
+            f"{self.name_of(updated)}'s record updated.", data=after,
         )
 
 
@@ -395,6 +419,34 @@ class UnplacedStudentsView(StudentsViewMixin, generics.ListAPIView):
         ).distinct()
 
 
+def search_student_hits(request, tenant, query, limit):
+    """The students matching *query* that the request's caller may see, serialized.
+
+    The one matcher behind the command palette and the product-wide search bar
+    (``search_places.py``), so the two can never disagree about who is found.
+    Scoped to the caller's branches by :func:`scope_students`. The hits are
+    rendered with the request in context, so the caller's Field Access applies
+    to the admission number and the name parts behind ``full_name``, exactly
+    as it does in the directory. The query is matched only inside the fields
+    of :data:`PALETTE_SEARCH_FIELDS` the caller may read, so a hidden last
+    name finds nobody, and with all three hidden nothing is found.
+
+    The caller's read permission is the caller's to check first.
+    """
+    readable = set(readable_search_fields(request))
+    condition = Q()
+    for field in PALETTE_SEARCH_FIELDS:
+        if field in readable:
+            condition |= Q(**{f"{field}__icontains": query})
+    if not condition:
+        return []
+    rows = scope_students(
+        _list_queryset(tenant).filter(condition),
+        request.user, tenant,
+    ).distinct()[:limit]
+    return SearchHitSerializer(rows, many=True, context={"request": request}).data
+
+
 class StudentSearchView(StudentsViewMixin, APIView):
     """GET /v1/students/search/?q=
 
@@ -414,15 +466,9 @@ class StudentSearchView(StudentsViewMixin, APIView):
             # Deliberately empty rather than the whole roll: a one-character
             # query is a keystroke, not a search.
             return success_response(data=[])
-        rows = scope_students(
-            _list_queryset(self.tenant).filter(
-                Q(first_name__icontains=query)
-                | Q(last_name__icontains=query)
-                | Q(student_number__icontains=query),
-            ),
-            request.user, self.tenant,
-        ).distinct()[:SEARCH_LIMIT]
-        return success_response(data=SearchHitSerializer(rows, many=True).data)
+        return success_response(
+            data=search_student_hits(request, self.tenant, query, SEARCH_LIMIT),
+        )
 
 
 class StudentSummaryView(StudentsViewMixin, APIView):

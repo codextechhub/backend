@@ -15,11 +15,13 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.views import APIView
 
 from core.response import success_response
-from vs_rbac.permissions import IsAuthenticatedAndActive
 from core.search import search as core_search
+from vs_rbac.field_enforcement import FieldReadDenied, can_read, readable_lookups
+from vs_rbac.permissions import IsAuthenticatedAndActive
 
 from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW, EmploymentStatus
 from ..exceptions import FieldNotSelfEditable
+from ..field_access import EMPLOYMENT_STATUS_FIELD
 from ..serializers import (
     StaffCreateSerializer,
     StaffDetailSerializer,
@@ -32,15 +34,29 @@ from ..services.scoping import guard_postings, is_self
 from ..services.visibility import GROUP_CONTACT, PROFILE_FULL
 from .base import StaffViewMixin
 
-#: What a typed query is matched against, joined into one string.
+#: What a typed query is matched against, joined into one string, each lookup
+#: mapped to the ``school.teachers`` field whose Read switch governs it.
 #:
 #: The staff number is in here with the names on purpose: a school that files by
 #: number types a number, and a box that only searched names would answer
 #: nothing for the half of a school that does.
-SEARCH_FIELDS = (
-    "user__first_name", "middle_name", "user__last_name", "user__email",
-    "staff_number",
-)
+SEARCH_FIELDS = {
+    "user__first_name": "first_name",
+    "middle_name": "middle_name",
+    "user__last_name": "last_name",
+    "user__email": "email",
+    "staff_number": "staff_number",
+}
+
+
+def readable_search_fields(request) -> tuple[str, ...]:
+    """The :data:`SEARCH_FIELDS` lookups the caller may read.
+
+    A query is matched only against what the reader may see, so a reader who
+    cannot read last names finds nobody by typing one; with every field hidden
+    a query finds nobody (``core.search.search``).
+    """
+    return readable_lookups(request, "school.teachers", SEARCH_FIELDS)
 
 #: The only roles a school may hand out before it goes live; see ``services.roles``.
 ONBOARDING_ROLE_KEYS = roles.ONBOARDING_ROLE_KEYS
@@ -58,6 +74,12 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
     ``missing_documents=true``, the people lacking a document type the school
     expects. The last needs a records key, as does the ``missing_documents``
     count beside the page, which is null without one.
+
+    ``employment_status`` is the reader's to ask only where they may read the
+    employment status: filtering on a value somebody cannot see would let them
+    read it back by elimination, so the filter is refused with 403
+    (``field_read_denied``) and the header carries no ``currently_employed``
+    and no ``by_employment_status`` for them.
 
     docstring-name: My school's staff
     """
@@ -89,9 +111,10 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         # returned nothing, because "Sunday Ekpo" sits in no single field.
         queryset = core_search(
             queryset, params.get("search"),
-            fields=SEARCH_FIELDS, then=("-created_at", "-id"),
+            fields=readable_search_fields(self.request), then=("-created_at", "-id"),
         )
         if value := params.get("employment_status"):
+            self._assert_status_readable()
             # Filtered on what the row READS as, not on what the column holds,
             # or the facet would disagree with the chip beside every name.
             # Asking for On Leave asks whose leave is running; asking for
@@ -162,6 +185,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         response.data["counts"] = counts(
             queryset, self.tenant, by_branch=self.multi_branch,
             lacking=self._lacking_documents(),
+            status_readable=can_read(request, EMPLOYMENT_STATUS_FIELD),
         )
         invitable = list(self._invitable_roles().prefetch_related("additional_branches"))
         response.data["role_options"] = [
@@ -171,6 +195,13 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         response.data["starting_role"] = self._starting_role_option(invitable)
         response.data["multi_branch"] = self.multi_branch
         return response
+
+    def _assert_status_readable(self):
+        """Refuse a status filter from a reader who may not read the status."""
+        if not can_read(self.request, EMPLOYMENT_STATUS_FIELD):
+            raise FieldReadDenied(
+                ["employment_status"], labels={"employment_status": "Employment status"},
+            )
 
     def _lacking_documents(self):
         """The missing-documents condition, for a reader who may read records.
@@ -589,16 +620,59 @@ class StaffMineView(StaffViewMixin, APIView):
     pending_tenant_surface = True
 
     def get(self, request):
-        from ..models import StaffProfile
-
-        row = (
-            StaffProfile.all_objects.filter(tenant=self.tenant, user_id=request.user.pk)
-            .values("id")
-            .first()
-        )
-        if row is None:
+        pk = own_staff_record_id(self.tenant, request.user)
+        if pk is None:
             raise NotFound("You have no staff record at this school.")
-        return success_response(data={"id": row["id"]})
+        return success_response(data={"id": pk})
+
+
+def own_staff_record_id(tenant, user):
+    """The id of *user*'s own staff record at *tenant*, or None when they have none.
+
+    What decides whether "My staff record" exists for somebody, asked by its
+    endpoint and by the search bar alike.
+    """
+    from ..models import StaffProfile
+
+    if tenant is None or not getattr(user, "pk", None):
+        return None
+    return (
+        StaffProfile.all_objects.filter(tenant=tenant, user_id=user.pk)
+        .values_list("id", flat=True)
+        .first()
+    )
+
+
+def search_staff_hits(request, tenant, query, limit):
+    """The staff matching *query* that the request's caller may see, as palette hits.
+
+    The one matcher behind the command palette and the product-wide search bar
+    (``search_places.py``): the directory's :data:`SEARCH_FIELDS`, narrowed to
+    the ones the caller may read, and ranking over the directory's scoping
+    (:func:`~..services.scoping.scope_staff`), so neither can find somebody
+    the directory cannot, nor miss somebody it would find.
+
+    Rendered with the request (:class:`~..serializers.StaffSearchHitSerializer`),
+    so the caller's switches on the name parts, the job title and the staff
+    number apply exactly as they do to the directory row, owner rule included.
+    A member of staff whose every name part is hidden stays a hit with an
+    empty ``name``, as the directory keeps that row with an empty name.
+
+    The caller's read permission is the caller's to check first.
+    """
+    from ..models import StaffProfile
+    from ..serializers import StaffSearchHitSerializer
+    from ..services.scoping import scope_staff
+
+    staff = scope_staff(
+        StaffProfile.objects.filter(tenant=tenant).select_related("user"),
+        request.user, tenant,
+    )
+    rows = core_search(
+        staff, query,
+        fields=readable_search_fields(request), then=("user__first_name", "user__last_name"),
+    )[:limit]
+    return StaffSearchHitSerializer(rows, many=True, context={"request": request}).data
 
 
 class StaffSearchView(StaffViewMixin, APIView):
@@ -626,21 +700,6 @@ class StaffSearchView(StaffViewMixin, APIView):
         if len(query) < self.MIN_QUERY:
             return success_response(data=[])
 
-        # The same matcher the directory uses, so the palette can never find
-        # somebody the directory cannot, and never fail to find somebody it can.
-        rows = core_search(
-            self.scoped_staff(), query,
-            fields=SEARCH_FIELDS, then=("user__first_name", "user__last_name"),
-        )[: self.LIMIT]
-
-        return success_response(data=[
-            {
-                "id": row.pk,
-                "name": " ".join(
-                    part for part in (row.user.first_name, row.user.last_name) if part
-                ).strip(),
-                "meta": row.job_title or row.staff_number or "",
-                "employment_status": row.employment_status,
-            }
-            for row in rows
-        ])
+        return success_response(
+            data=search_staff_hits(request, self.tenant, query, self.LIMIT),
+        )

@@ -363,6 +363,7 @@ INSTALLED_APPS = [
     'vs_todo',
     'vs_tickets',
     'vs_health',
+    'vs_search',
 ]
 
 # The client address every later reader sees. See core.client_ip.
