@@ -194,6 +194,14 @@ class AdminHubTests(_Hub):
         self.assertEqual(self.get(self.ikeja_admin)["kpis"]["corrections_waiting"], 0)
         self.assertIsNone(self.get(self.ikeja_admin)["pending_corrections_preview"])
 
+    def test_a_correction_you_asked_for_is_not_waiting_on_you(self):
+        self.take(self.eze, self.jss1a, LAST_FRIDAY, tunde="A")
+        self.correct(self.admin, self.jss1a, self.tunde, "P", reason_code=self.reason_id())
+        mine = self.get(self.admin)
+        self.assertEqual(mine["kpis"]["corrections_waiting"], 0)
+        self.assertIsNone(mine["pending_corrections_preview"])
+        self.assertEqual(self.get(self.lekki_admin)["kpis"]["corrections_waiting"], 1)
+
     def test_a_registrar_who_cannot_decide_sees_neither_the_count_nor_the_correction(self):
         role = make_key_role(
             self.tenant, "Registrar", "registrar",

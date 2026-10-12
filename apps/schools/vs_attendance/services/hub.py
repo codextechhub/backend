@@ -116,10 +116,10 @@ def admin_hub(tenant, user, *, on_date=None, branch=None, can_decide: bool) -> d
         body["kpis"]["corrections_waiting"] = corrections.pending_count(
             user, tenant, branch=branch,
         )
-        first = (
+        first = corrections.awaiting(user, (
             corrections.corrections_visible_to(user, tenant, only_own=False)
             .filter(status=CorrectionStatus.PENDING)
-        )
+        ))
         if branch is not None:
             first = first.filter(mark__register__branch=branch)
         first = first.first()

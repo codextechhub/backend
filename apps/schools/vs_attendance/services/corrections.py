@@ -164,11 +164,23 @@ def corrections_visible_to(user, tenant, *, only_own: bool):
     return queryset.order_by("-requested_at", "-id")
 
 
+def awaiting(user, queryset):
+    """*queryset* without the corrections *user* asked for.
+
+    Nobody decides their own request (:class:`SelfDecision`), so a request is
+    waiting on everyone who may decide it except the person who made it. Every
+    count and preview of "corrections waiting on you" goes through here, or a
+    sole administrator who asked for one would be told it needs their decision
+    and then be refused when they tried to give it.
+    """
+    return queryset.exclude(requested_by=user)
+
+
 def pending_count(user, tenant, *, branch=None) -> int:
-    """How many corrections wait for a decision, in the caller's branches."""
-    queryset = CorrectionRequest.objects.filter(
+    """How many corrections wait for this caller's decision, in their branches."""
+    queryset = awaiting(user, CorrectionRequest.objects.filter(
         tenant=tenant, status=CorrectionStatus.PENDING,
-    ).filter(transaction_branch_q_for_user(user, "mark__register__"))
+    ).filter(transaction_branch_q_for_user(user, "mark__register__")))
     if branch is not None:
         queryset = queryset.filter(mark__register__branch=branch)
     return queryset.count()

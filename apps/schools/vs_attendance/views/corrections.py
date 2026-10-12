@@ -58,6 +58,10 @@ class CorrectionListCreateView(_CorrectionView):
     waiting corrections by when they were asked for, decided ones by when they
     were decided.
 
+    ``?awaiting=me`` leaves out the corrections the caller asked for, which
+    another administrator decides: what is left is the work waiting on them,
+    and its ``totalItems`` is the count a badge shows.
+
     docstring-name: Corrections
     """
 
@@ -78,6 +82,11 @@ class CorrectionListCreateView(_CorrectionView):
         branch = self.branch_filter()
         if branch is not None:
             queryset = queryset.filter(mark__register__branch=branch)
+        awaiting = request.query_params.get("awaiting")
+        if awaiting not in (None, "", "me"):
+            raise ValidationError({"awaiting": "Ask for awaiting=me, or leave it out."})
+        if awaiting == "me":
+            queryset = corrections.awaiting(request.user, queryset)
         if wanted == "pending":
             queryset = queryset.filter(status=CorrectionStatus.PENDING)
         elif wanted == "decided":

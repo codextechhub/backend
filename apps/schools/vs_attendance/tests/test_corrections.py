@@ -428,6 +428,13 @@ class ListingTests(_Corrections):
         self.assertEqual(self.corrections(self.lekki_admin, branch=self.ikeja.pk).status_code, 404)
         self.assertEqual(self.corrections(self.admin, branch=999999).status_code, 404)
 
+    def test_awaiting_me_leaves_out_the_requests_the_caller_made(self):
+        # The admin asked for eze_row, so only the other request waits on them;
+        # both wait on the Lekki administrator, who asked for neither.
+        self.assertEqual(self.ids(self.corrections(self.admin, awaiting="me")), [self.mine["id"]])
+        self.assertEqual(len(self.ids(self.corrections(self.lekki_admin, awaiting="me"))), 2)
+        self.assertEqual(self.corrections(self.admin, awaiting="others").status_code, 400)
+
     def test_an_empty_queue_is_an_empty_list(self):
         response = self.corrections(self.admin, status="decided")
         self.assertEqual(response.data["data"], [])
