@@ -70,6 +70,7 @@ EXPECTED_RESOURCES = {
     ("platform", "team"),
     ("procurement", "vendor"),
     ("school", "guardians"),
+    ("school", "profile"),
     ("school", "students"),
     ("school", "teachers"),
 }
@@ -82,6 +83,7 @@ EXPECTED_RESOURCES = {
 #: is read with the student key because the guardian endpoints carry it.
 ENDPOINT_GUARDED_RESOURCES = {
     ("school", "guardians"): "school.students.view",
+    ("school", "profile"): "school.profile.view",
     ("school", "teachers"): "school.teachers.view",
 }
 
@@ -139,6 +141,21 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
         "Behind school.administrators.update on an endpoint of its own, the key that "
         "changes an account's sign-in address; the staff edit form cannot.",
+    ("schools.vs_schools.serializers.BranchInlineCreateSerializer", "address"):
+        "The address of a branch CodeX provisions while creating a school, not the "
+        "school profile's own address.",
+    **{
+        ("schools.vs_schools.serializers.SchoolCreateSerializer", name):
+            "The platform creates a school under platform.schools.create; tenant-scoped "
+            "profile switches begin governing the school app after it exists."
+        for name in ("address", "registration_id")
+    },
+    **{
+        ("schools.vs_schools.serializers.SchoolUpdateSerializer", name):
+            "The CodeX platform correction path is governed by platform.schools.update, "
+            "not by the tenant's school.profile switches."
+        for name in ("address", "registration_id")
+    },
     **{
         ("schools.vs_students.serializers.EnrolmentWriteSerializer", name):
             "The pupil's own name on the enrol form, a school.students field; the "
@@ -550,6 +567,24 @@ class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
 #: Serializers that emit a registered name without enforcing it, each with the
 #: reason that is safe. Every entry must still match a real hit.
 READ_PATH_ALLOWLIST = {
+    **{
+        ("schools.vs_schools.serializers.SchoolDetailSerializer", name):
+            "The CodeX platform school detail, governed by platform.schools.view rather "
+            "than the tenant's school.profile switches."
+        for name in ("address", "registration_id")
+    },
+    **{
+        ("schools.vs_schools.serializers.SchoolCreateSerializer", name):
+            "The response to CodeX creating a school, behind the platform create key; "
+            "the tenant has no role or Field Access settings yet."
+        for name in ("address", "registration_id")
+    },
+    **{
+        ("schools.vs_schools.serializers.SchoolUpdateSerializer", name):
+            "The response to CodeX correcting a school, behind the platform update key "
+            "that remains outside the tenant's profile switches."
+        for name in ("address", "registration_id")
+    },
     ("vs_user.serializers.UserInlineSerializer", "first_name"):
         "A person named beside something else (a line manager, an actor on a log); "
         "the name switch covers the CX staff profile, not every mention of a person.",

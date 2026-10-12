@@ -36,6 +36,7 @@ from vs_config.clock import tenant_today
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
 from vs_finance.payroll import PAYROLL_SCOPE_CHOICES
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 from vs_user.email_normalization import normalize_email
 from vs_tenants.app_urls import school_app_url
 
@@ -2012,7 +2013,7 @@ def _choice_options(choices) -> List[Dict[str, str]]:
     return [{"value": value, "label": label} for value, label in choices.choices]
 
 
-class SchoolProfileSerializer(serializers.ModelSerializer):
+class SchoolProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """The school's profile as its own admin sees it.
 
     Carries three things the raw columns do not. ``options`` ships the choice
@@ -2025,6 +2026,9 @@ class SchoolProfileSerializer(serializers.ModelSerializer):
     states plainly which of these the school may change, so the client does not
     have to infer it from a 400.
     """
+
+    field_resource = "school.profile"
+    field_access_detail = True
 
     logo = serializers.SerializerMethodField()
     missing_required = serializers.SerializerMethodField()
@@ -2054,9 +2058,12 @@ class SchoolProfileSerializer(serializers.ModelSerializer):
         return signed_url(logo.name, absolute_for=request)
 
     def get_missing_required(self, obj) -> List[Dict[str, str]]:
+        request = self.context.get("request")
         return [
             {"field": field, "label": PROFILE_FIELD_LABELS.get(field, field)}
             for field in obj.missing_profile_fields()
+            if field not in {"address", "registration_id"}
+            or can_read(request, f"school.profile.{field}")
         ]
 
     def get_options(self, obj) -> Dict[str, List[Dict[str, str]]]:
@@ -2083,13 +2090,22 @@ class SchoolProfileSerializer(serializers.ModelSerializer):
             if obj.has_ever_been_live()
             else set()
         )
-        return [
+        fields = [
             *(f for f in SchoolProfileUpdateSerializer.Meta.fields if f not in locked),
             "logo",
         ]
+        access = self._field_access()
+        if access is None:
+            return fields
+        controlled = {"address", "registration_id"}
+        return [
+            field for field in fields
+            if field not in controlled
+            or access.can_write(f"school.profile.{field}")
+        ]
 
 
-class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
+class SchoolProfileUpdateSerializer(FieldAccessMixin, SchoolUpdateSerializer):
     """What a school may change about itself.
 
     Subclasses the platform's updater rather than restating it, so the audit
@@ -2123,6 +2139,7 @@ class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
 
     slug = None
     branding = None
+    field_resource = "school.profile"
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         attrs = super().validate(attrs)

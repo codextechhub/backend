@@ -17,6 +17,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from vs_rbac.tests.helpers import (
+    install_declared_fields,
     make_assignment,
     make_branch,
     make_permission,
@@ -25,6 +26,7 @@ from vs_rbac.tests.helpers import (
     make_school,
     make_school_admin,
     make_vision_user,
+    set_field_access,
 )
 from vs_tenants.models import BranchStatus, Tenant
 from vs_user.tokens import CodeXRefreshToken
@@ -225,6 +227,94 @@ class SchoolProfileEndpointTests(_SchoolProfileFixture):
         self.assertEqual(response.status_code, 400, response.data)
         self.school.refresh_from_db()
         self.assertEqual(self.school.currency, "NGN")
+
+
+class SchoolProfileFieldAccessTests(_SchoolProfileFixture):
+    """School roles can hide or lock the profile fields approved for control."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.field_keys = install_declared_fields("school.profile")
+
+        cls.hidden_role = make_role(
+            cls.school, name="Hidden profile fields", key="hidden_profile_fields",
+        )
+        make_role_permission(cls.hidden_role, cls.view_perm)
+        make_role_permission(cls.hidden_role, cls.update_perm)
+        set_field_access(cls.hidden_role, *cls.field_keys, read=False, write=False)
+        cls.hidden_reader = make_school_admin(
+            None, email="hidden-profile@bright-star.example.com", tenant=cls.tenant,
+        )
+        make_assignment(
+            cls.school, cls.hidden_reader, cls.hidden_role, branch=None,
+        )
+
+        cls.read_only_role = make_role(
+            cls.school, name="Read-only profile fields", key="read_only_profile_fields",
+        )
+        make_role_permission(cls.read_only_role, cls.view_perm)
+        make_role_permission(cls.read_only_role, cls.update_perm)
+        set_field_access(cls.read_only_role, *cls.field_keys, read=True, write=False)
+        cls.read_only_reader = make_school_admin(
+            None, email="read-only-profile@bright-star.example.com", tenant=cls.tenant,
+        )
+        make_assignment(
+            cls.school, cls.read_only_reader, cls.read_only_role, branch=None,
+        )
+
+        School.objects.filter(pk=cls.school.pk).update(
+            address="14 Lantern Road", registration_id="REG-BRIGHT-14",
+        )
+
+    def test_hidden_fields_leave_no_value_label_or_editable_name(self):
+        response = self._get(self.hidden_reader)
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        for field in ("address", "registration_id"):
+            self.assertNotIn(field, data)
+            self.assertNotIn(field, data["editable_fields"])
+        self.assertNotIn("14 Lantern Road", str(data))
+        self.assertNotIn("REG-BRIGHT-14", str(data))
+
+    def test_hidden_required_address_is_not_named_as_missing(self):
+        School.objects.filter(pk=self.school.pk).update(address="")
+        response = self._get(self.hidden_reader)
+        self.assertEqual(response.status_code, 200, response.data)
+        fields = {row["field"] for row in response.data["data"]["missing_required"]}
+        self.assertNotIn("address", fields)
+
+    def test_read_only_fields_are_present_greyable_and_refused_on_write(self):
+        read = self._get(self.read_only_reader)
+        self.assertEqual(read.status_code, 200, read.data)
+        data = read.data["data"]
+        self.assertEqual(data["address"], "14 Lantern Road")
+        self.assertEqual(data["registration_id"], "REG-BRIGHT-14")
+        self.assertTrue(
+            {"address", "registration_id"}.issubset(
+                set(data["_read_only_fields"]),
+            ),
+        )
+        self.assertNotIn("address", data["editable_fields"])
+        self.assertNotIn("registration_id", data["editable_fields"])
+
+        write = self._patch(
+            self.read_only_reader, {"address": "99 Refused Street"},
+        )
+        self.assertEqual(write.status_code, 403, write.data)
+        self.assertEqual(write.data["error"]["code"], "field_write_denied")
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.address, "14 Lantern Road")
+
+    def test_open_fields_remain_writable_for_the_existing_school_admin(self):
+        response = self._patch(self.admin, {
+            "address": "22 New Road",
+            "registration_id": "REG-BRIGHT-22",
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.address, "22 New Road")
+        self.assertEqual(self.school.registration_id, "REG-BRIGHT-22")
 
 
 class LiveSchoolProfileEndpointTests(TestCase):
