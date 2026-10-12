@@ -31,6 +31,13 @@ themselves for reasons of their own, because nothing here records which rows thi
 migration touched. Restoring a broken routing state and destroying somebody
 else's retirement to do it is worse than not going back, so the reverse is a
 no-op and the rows stay retired.
+
+**It runs after every migration that publishes the steps it retires.** The
+platform payout ladder comes from ``vs_payments.0006`` and is cleared of its
+seeded groups by ``vs_payments.0007``, so this depends on the latter. Without
+that dependency the order was an accident of the graph: an unrelated app
+joining it moved the payments seed after this migration, and a freshly built
+database kept the platform ladder live.
 """
 from django.db import migrations, models
 from django.utils import timezone
@@ -73,6 +80,8 @@ class Migration(migrations.Migration):
     dependencies = [
         ("vs_workflow", "0011_flag_provisioned_approver_roles"),
         ("vs_rbac", "0014_a_school_owns_the_roles_and_rules_codex_set_up"),
+        # The platform payout ladder this retires is published by vs_payments.
+        ("vs_payments", "0007_approver_groups_nobody_asked_for"),
     ]
     operations = [
         migrations.RunPython(stop_them_routing, migrations.RunPython.noop),

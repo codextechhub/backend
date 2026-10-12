@@ -226,8 +226,15 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every key in both modules, all 95 of them."""
-        self.assertEqual(len(self._defaults("school_admin")), 95)
+        """A school admin holds every school and academics key (95) and every
+        attendance key but ``attendance.register.mark`` (10), which is the class
+        teacher's own-class key and is superseded for an administrator by
+        ``attendance.register.mark_any``.
+        """
+        keys = self._defaults("school_admin")
+        self.assertEqual(len(keys), 105)
+        self.assertNotIn("attendance.register.mark", keys)
+        self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.field_access.update", self._defaults("school_admin"))
 
     def test_only_school_admin_gets_field_access_by_default(self):
@@ -299,7 +306,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         key and moves nobody.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 53)
+        # 53 school and academics keys, plus the nine attendance keys a branch
+        # administrator holds: everything but settings and the own-class mark.
+        self.assertEqual(len(branch_admin), 62)
+        self.assertIn("attendance.register.mark_any", branch_admin)
+        self.assertIn("attendance.correction.approve", branch_admin)
+        self.assertNotIn("attendance.settings.update", branch_admin)
+        self.assertNotIn("attendance.register.mark", branch_admin)
         self.assertIn("school.organogram.assign", branch_admin)
         self.assertIn("school.staff.import", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
@@ -345,7 +358,16 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 12)
+        # 12 school and academics keys, plus the three attendance keys a teacher
+        # holds: reading a register, taking their own class's, and asking for
+        # a correction. Taking any class, reminding and deciding are the
+        # administrators'.
+        self.assertEqual(len(keys), 15)
+        self.assertEqual(
+            {k for k in keys if k.startswith("attendance.")},
+            {"attendance.register.view", "attendance.register.mark",
+             "attendance.correction.create"},
+        )
         self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.organogram.view", keys)
         self.assertNotIn("school.organogram.create", keys)
@@ -405,8 +427,10 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are every school and academics key.
-        self.assertEqual(len(keys), 95)
+        # school_admin defaults are every school and academics key, and every
+        # attendance key but the class teacher's own-class mark.
+        self.assertEqual(len(keys), 105)
+        self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)
@@ -458,10 +482,11 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 12)
+        self.assertEqual(len(keys), 15)
         self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
+        self.assertIn("attendance.register.mark", keys)
 
     def test_non_system_role_with_prebuilt_like_key_not_backfilled(self):
         # A custom (non-system) role must not silently inherit prebuilt

@@ -30,8 +30,8 @@ answer for ``school`` would be wrong either way: mark it core and a school
 without the students module is offered student permissions; mark it gated and
 the same school loses access to its own branches and roles.
 
-Capabilities with no permission module yet: ``attendance``, ``gradebook``,
-``parents``, ``parent_portal``, ``student_portal``, ``vendors``. When those
+Capabilities with no permission module yet: ``gradebook``, ``parents``,
+``parent_portal``, ``student_portal``, ``vendors``. When those
 modules get permissions, map them here rather than at the call site.
 """
 from __future__ import annotations
@@ -45,6 +45,8 @@ CAPABILITY_BY_MODULE: dict[str, str] = {
     # money-movement half; there is no separate capability for them.
     "payments": "finance",
     "procurement": "procurement",
+    # Daily registers, corrections and the attendance reports.
+    "attendance": "attendance",
     # Features rather than modules, but gated the same way.
     "communication": "email_alerts",
     "exports": "data_export",

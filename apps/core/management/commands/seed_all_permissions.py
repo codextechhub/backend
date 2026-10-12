@@ -16,7 +16,7 @@ Seed order
 ----------
 1. seed_actions              - global PermissionAction vocabulary (verbs)
 2. seed_prebuilt_role_templates - school_admin / branch_admin / teacher prebuilt roles
-2b. seed_school_permissions  - school + academics modules → prebuilt-role defaults;
+2b. seed_school_permissions  - school + academics + attendance modules → prebuilt-role defaults;
                                a default the library role gains reaches every
                                school's copy of it once (vs_rbac.library_growth),
                                and a key a school took off stays off

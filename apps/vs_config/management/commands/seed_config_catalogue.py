@@ -444,6 +444,32 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "INTEGER", None, {"min": 10, "max": 240},
     ),
     (
+        "attendance.guardian_notices", "Absence Notices To Guardians",
+        "Whether submitting a register emails the primary guardian of each "
+        "absent child. Late and excused children are never emailed.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "attendance.chronic_threshold", "Chronic Absence Threshold",
+        "The attendance rate, as a percentage from 50 to 100, below which a "
+        "student is listed as chronically absent.",
+        "INTEGER", 90, {"min": 50, "max": 100},
+    ),
+    (
+        "attendance.lesson_marking_levels", "Levels That Mark Each Lesson",
+        "The codes of the levels whose classes take a register for every "
+        "lesson as well as one a day. Empty means every class has one "
+        "register a day.",
+        "JSON", [], {},
+    ),
+    (
+        "attendance.edit_window_days", "Register Edit Window",
+        "How many days after a register's date the person who took it may "
+        "still change a mark, 0 to 14. 0 means the same day only. After the "
+        "window a mark changes only through a correction request.",
+        "INTEGER", 0, {"min": 0, "max": 14},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, overdue "

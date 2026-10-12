@@ -22,6 +22,8 @@ Uncommitted (2026-10-09): revise the data import/export, administration and acce
 
 Also (commit 30873433): D131 follow-up for M04 and M19. The Closed figures checklist, verification messages and role permission description say closed figures rather than sealed figures; the stable finance.seal.view key and the sealed response fields stay unchanged. Existing permission and lock-action descriptions are refreshed by vs_rbac migration 0033, while the deployment seeds carry the same wording for fresh databases.
 
+M15 Attendance, build 1 (hash pending, 2026-10-11): WRITE THE FIRST M15 FRD (v1.0, new folder `15-attendance-management`; the user asked for it to be built from the design). Source: `docs/attendance-api-plan.md`; section 9 (as built) overrides earlier sections where they differ; section 3 is the requirement set (R1-R30), section 4 the permission keys, section 5 the models and settings, section 7 Field Access, and the approval block the four decisions. Mark R18-R23 (lesson registers, staff register) as Planned for build 2, everything else as implemented once the build commits. Follow the house shape of the newest FRDs (M13/M14). MRD: Module 15 Planned to In progress with backend Partial, add `vs_attendance` to ownership and its dependencies (M11, M12, M13, M14, M08, M26, M06), and move Attendance out of the "Implement Attendance and Gradebook" priority gap. MUST SAY: the lockout note and "counts as authorised" findings (plan 3.2 D1, D2); exports download immediately instead of queueing; student names on registers are deliberately outside the student name switches.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

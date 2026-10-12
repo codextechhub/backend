@@ -614,6 +614,74 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── attendance.absence_notice ───────────────────────────────────────
+        # "today" is said only when the register's date is the day it is sent
+        # on; a register submitted late names its date instead. The branch is
+        # printed only at a school with several.
+        ("attendance.absence_notice", C.IN_APP): {
+            "subject": (
+                "{{ student_first_name }} was marked absent"
+                "{% if is_today %} today{% else %} on {{ date }}{% endif %}"
+            ),
+            "body": (
+                "Marked absent in the {{ class_name }} register on {{ date }}. "
+                "If this is a mistake, please contact the school."
+            ),
+        },
+        ("attendance.absence_notice", C.EMAIL): {
+            "subject": (
+                "{{ student_first_name }} was marked absent"
+                "{% if is_today %} today{% else %} on {{ date }}{% endif %}"
+            ),
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "{{ student_first_name }} was marked absent at school "
+                "{% if is_today %}today, {% else %}on {% endif %}{{ date }}. "
+                "If this is a mistake, please contact the school.\n\n"
+                "{{ school_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
+        # ── attendance.correction_notice ────────────────────────────────────
+        ("attendance.correction_notice", C.IN_APP): {
+            "subject": "{{ student_first_name }}'s attendance was corrected",
+            "body": (
+                "The absence on {{ date }} was corrected to {{ mark_label }}. "
+                "{{ class_name }} register."
+            ),
+        },
+        ("attendance.correction_notice", C.EMAIL): {
+            "subject": "Attendance corrected for {{ student_first_name }}",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "We told you that {{ student_first_name }} was marked absent on "
+                "{{ date }}. That mark has been corrected to {{ mark_label }}. "
+                "Please contact the school if you have any questions.\n\n"
+                "{{ school_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
+        # ── attendance.register_reminder ────────────────────────────────────
+        ("attendance.register_reminder", C.IN_APP): {
+            "subject": "{{ class_name }} register is due",
+            "body": (
+                "{{ class_name }} register for {{ date }} has not been taken "
+                "yet. Please take it as soon as you can."
+            ),
+        },
+        ("attendance.register_reminder", C.EMAIL): {
+            "subject": "{{ class_name }} register is due",
+            "body": (
+                "Hello {{ teacher_name }},\n\n"
+                "{{ class_name }} register for {{ date }} has not been taken "
+                "yet. Please take it as soon as you can.\n\n"
+                "{{ school_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
         # ── student.deactivated ─────────────────────────────────────────────
         ("student.deactivated", C.IN_APP): {
             "subject": "{{ student_first_name }} {{ student_last_name }} is no longer active",

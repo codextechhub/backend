@@ -60,6 +60,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("record",     "Log a transaction or event entry (payments, sick-bay visits, attendance)."),
     ("enter",      "Input data into a form or score sheet (assessment scores, grades)."),
     ("mark",       "Mark attendance, or mark a record as done / reviewed."),
+    ("mark_any",   "Mark attendance for any class in the holder's branches, not only the one "
+                   "they lead. Distinct from 'mark', which is the holder's own class."),
     ("verify",     "Confirm the authenticity of submitted evidence (payment proof, documents)."),
     ("reverse",    "Undo or void a previously recorded financial or operational transaction."),
     ("confirm",    "Finalise a pending action (confirm enrolment, confirm booking)."),
@@ -68,6 +70,7 @@ ACTIONS: list[tuple[str, str]] = [
 
     # ── Communication ─────────────────────────────────────────────────────────
     ("send",       "Dispatch a message - SMS, email, or push notification."),
+    ("remind",     "Send a reminder about work that is due and not yet done."),
     ("email_vendor", "Email an approved commercial document to its vendor."),
     ("post",       "Publish an announcement or bulletin to a board or feed."),
 

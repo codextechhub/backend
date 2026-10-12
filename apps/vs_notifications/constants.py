@@ -348,6 +348,49 @@ EVENT_TYPE_REGISTRY = [
         "is_active": False,  # no vs_students emitter yet
     },
 
+    # ── Attendance (vs_attendance) ─────────────────────────────────────────
+    # Every sender passes the register's branch, so a branch may switch these
+    # on or off for itself.
+
+    {
+        "key": "attendance.absence_notice",
+        "label": "Absence notice to guardian",
+        "description": (
+            "Fires when a class register is submitted with a child marked "
+            "absent, and is sent to the child's primary guardian. Whether it "
+            "is sent at all is the school's setting, attendance.guardian_notices."
+        ),
+        "source_module": "vs_attendance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "attendance.correction_notice",
+        "label": "Attendance correction notice to guardian",
+        "description": (
+            "Fires when a mark whose absence notice was sent is changed to "
+            "something else, and is sent to the guardian who received the "
+            "absence notice."
+        ),
+        "source_module": "vs_attendance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "attendance.register_reminder",
+        "label": "Register not yet taken",
+        "description": (
+            "Fires when an administrator reminds a class teacher that the "
+            "class's register for a day has not been taken."
+        ),
+        "source_module": "vs_attendance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+
     # ── Workflow Approval (vs_workflow) ────────────────────────────────────
     # Wired lifecycle points (services/routing.py): stage_activated → the
     # stage's approvers; returned / rejected / final_approved → the requester.

@@ -53,6 +53,9 @@ _ALREADY_TITLED = {
     "payments.dispute_received",
     "payroll.payslip_ready",
     "student.suspended",
+    "attendance.absence_notice",
+    "attendance.correction_notice",
+    "attendance.register_reminder",
 }
 
 

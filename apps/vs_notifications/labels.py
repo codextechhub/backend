@@ -15,6 +15,7 @@ from .constants import ChannelChoices, NotificationStatus
 #: The area of the product an event belongs to, keyed by the app that raises it.
 SOURCE_MODULE_LABELS = {
     "core": "Platform",
+    "vs_attendance": "Attendance",
     "vs_billing": "Billing",
     "vs_exports": "Exports",
     "vs_finance": "Finance",

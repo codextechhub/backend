@@ -55,6 +55,8 @@ SYNC = "vs_rbac.management.commands.sync_field_registry.all_declarations"
 
 #: Every resource with a registered field. Adding one is a deliberate change.
 EXPECTED_RESOURCES = {
+    ("attendance", "correction"),
+    ("attendance", "register"),
     ("finance", "bankaccount"),
     ("finance", "interbranch"),
     ("finance", "payrollrun"),
@@ -98,6 +100,19 @@ WRITE_PATH_ALLOWLIST = {
     ("vs_finance.serializers.DirectEntryCreateSerializer", "reference"):
         "A journal reference belongs to a direct entry and is guarded by the journal "
         "create permission, not the inter-branch reference switch.",
+    **{
+        ("schools.vs_attendance.serializers.MarkWriteSerializer", name):
+            "The body of a mark on the register, a surface of attendance.register; a "
+            "correction request carries its own reason, note and arrival time on the "
+            "correction serializers."
+        for name in ("arrived_at", "reason_code", "note")
+    },
+    **{
+        ("schools.vs_attendance.serializers.CorrectionCreateSerializer", name):
+            "The body of a request for a correction, a surface of attendance.correction; "
+            "the register's own switches govern a mark taken on the register itself."
+        for name in ("to_mark", "arrived_at", "reason_code", "note")
+    },
     ("vs_import_data.serializers.ImportBatchUploadSerializer", "file"):
         "The upload is the only way a file enters a batch, and no key guards writing one.",
     ("vs_import_data.serializers.ImportTemplateCreateSerializer", "validation_rules"):

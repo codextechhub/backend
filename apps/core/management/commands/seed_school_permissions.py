@@ -1,9 +1,9 @@
 """Seed the school-scoped permission modules and attach prebuilt-role defaults.
 
 This is the single source of truth for the school-facing permission keys used by
-school-fe (the XVS school-facing app). It registers two modules - ``school``
-(administration / people) and ``academics`` (sessions / calendar / classes /
-structure / subject) -
+school-fe (the XVS school-facing app). It registers three modules - ``school``
+(administration / people), ``academics`` (sessions / calendar / classes /
+structure / subject) and ``attendance`` (registers / corrections / reports) -
 then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
 ``teacher`` PrebuiltRoleTemplates, and grows each school's copies of those roles
 with the defaults the library role gains.
@@ -68,7 +68,7 @@ UNRESTRICTED_KEYS = frozenset({
 
 # ── Permission key table (single source of truth) ─────────────────────────────
 # Each row: (dotted_key, description, sensitivity, {default-role flags}).
-# The dotted key is module.resource.action. Modules: school, academics.
+# The dotted key is module.resource.action. Modules: school, academics, attendance.
 # `defaults` lists which prebuilt roles receive this permission by default.
 #
 # This table MUST stay in lockstep with school-fe/src/permissions/index.ts.
@@ -295,6 +295,29 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "subject", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "subject", "archive",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("academics", "subject", "reactivate",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+
+    # module: attendance
+    #
+    # ``mark`` and ``mark_any`` are two keys because RBAC has no "only my own
+    # class" scope: ``mark`` takes the register of the class the holder is
+    # class teacher of, ``mark_any`` takes any class in the branches the holder
+    # can see (a registrar taking a class on a teacher's behalf). The own-class
+    # rule is the register service's, not a key's.
+    ("attendance", "register", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("attendance", "register", "mark",         _NORMAL,    (ROLE_TEACHER,)),
+    ("attendance", "register", "mark_any",     _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "register", "remind",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "correction", "create",     _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    # Deciding a correction rewrites a day the school has closed, so it is
+    # SENSITIVE and held by the two administrator roles only.
+    ("attendance", "correction", "approve",    _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "staff", "view",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "staff", "mark",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "report", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # Carries a roll of children and their absences out of the platform, so it
+    # is SENSITIVE exactly as school.students.export is.
+    ("attendance", "report", "export",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("attendance", "settings", "update",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 ]
 
 #: Resources that carry Field Access fields and no permission keys.
@@ -329,6 +352,7 @@ RESOURCE_LABELS: dict[tuple[str, str], str] = {
 MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
     "academics": "Academic operations - sessions, calendar, timetables, classes, structure, subjects.",
+    "attendance": "Attendance - daily class registers, corrections, reminders, staff registers, reports and settings.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -362,12 +386,17 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "subject"):     "Subjects and the levels they are offered at",
     ("academics", "timetable"):   "Rooms, the bell schedule and class timetables",
     ("academics", "exam"):        "Exams, exam slots and their publication",
+    ("attendance", "register"):   "Daily class registers: reading them, taking them and reminding a class teacher",
+    ("attendance", "correction"): "Corrections to a mark after its day has closed",
+    ("attendance", "staff"):      "The staff attendance register",
+    ("attendance", "report"):     "Attendance summaries, the chronic-absence list and their exports",
+    ("attendance", "settings"):   "Attendance settings and the school's reasons for excusing an absence",
 }
 
 
 class Command(BaseCommand):
     help = (
-        "Seed the school + academics permission modules, attach prebuilt-role "
+        "Seed the school + academics + attendance permission modules, attach prebuilt-role "
         "defaults, and grant newly attached defaults to schools' copies (idempotent)."
     )
 
@@ -441,7 +470,7 @@ class Command(BaseCommand):
 
         # ── Phase 1: register modules, resources, permissions ─────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 1 - registering school + academics permissions...\n"
+            "\n  Phase 1 - registering school + academics + attendance permissions...\n"
         ))
 
         modules: dict[str, PermissionModule] = {}
@@ -542,7 +571,7 @@ class Command(BaseCommand):
         # ── Summary ───────────────────────────────────────────────────────────
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perm_count} new permission(s) created, "
-            f"{len(all_keys)} school/academics keys registered; "
+            f"{len(all_keys)} school/academics/attendance keys registered; "
             f"{total_grown} grant(s) added to schools' copies of the library roles.\n"
         ))
 
