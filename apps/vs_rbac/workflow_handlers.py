@@ -87,12 +87,16 @@ class RoleChangeWorkflowHandler(BaseWorkflowHandler):
     def get_document_details(self, document) -> dict:
         """Describe the request and every permission delta in decision order.
 
-        Permission descriptions are used instead of internal keys wherever the
-        catalogue provides them. Restricted additions retain an explicit marker
+        Each permission is worded as the role screens word it
+        (:attr:`~vs_rbac.models.Permission.readable_label`): its description, or
+        the action and resource in English when it has none. The internal key
+        never reaches the approver. Restricted additions retain an explicit marker
         because granting them is the action this approval safety boundary exists
         to control. Removing a restricted permission is not marked as risky.
         """
-        items = list(document.delta_items.select_related("permission").all())
+        items = list(
+            document.delta_items.select_related("permission", "permission__resource").all(),
+        )
         return document_details(
             fields_section("Request details", [
                 ("Reason", document.justification),
@@ -100,7 +104,7 @@ class RoleChangeWorkflowHandler(BaseWorkflowHandler):
             changes_section("Permission changes", [
                 {
                     "operation": item.operation,
-                    "label": item.permission.description or item.permission.key,
+                    "label": item.permission.readable_label,
                     "restricted": (
                         item.operation == "ADD" and item.permission.is_restricted
                     ),
@@ -251,15 +255,20 @@ class RoleGrantWorkflowHandler(BaseWorkflowHandler):
         """Name the person, the role, its reach and what it hands them.
 
         Only the restricted permissions are listed: they are why the grant is
-        here, and a role's full catalogue would bury them.
+        here, and a role's full catalogue would bury them. Each is worded as the
+        role screens word it (:attr:`~vs_rbac.models.Permission.readable_label`);
+        the key stands in only for a permission that no longer exists.
         """
         from vs_rbac.validators import role_restricted_permission_keys
         from vs_rbac.models import Permission
 
         restricted = sorted(role_restricted_permission_keys(document.role))
-        described = dict(
-            Permission.objects.filter(key__in=restricted).values_list("key", "description")
-        )
+        labels = {
+            permission.key: permission.readable_label
+            for permission in Permission.objects.filter(
+                key__in=restricted,
+            ).select_related("resource")
+        }
         rows = [
             ("Person", _display_name(document.user)),
             ("Role", document.role.name),
@@ -274,7 +283,7 @@ class RoleGrantWorkflowHandler(BaseWorkflowHandler):
             changes_section("Restricted permissions it grants", [
                 {
                     "operation": "ADD",
-                    "label": described.get(key) or key,
+                    "label": labels.get(key) or key,
                     "restricted": True,
                 }
                 for key in restricted
