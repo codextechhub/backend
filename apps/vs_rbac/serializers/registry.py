@@ -554,19 +554,20 @@ class PermissionGroupDetailSerializer(
                 f"{', '.join(sorted(inactive))}."
             )
 
-        from ..validators import PermissionDependencyValidator
+        from ..validators import (
+            PermissionDependencyValidator,
+            describe_missing_dependencies,
+        )
 
         dependency_result = PermissionDependencyValidator().validate_permission_set(keys)
         if not dependency_result["valid"]:
-            missing = dependency_result["missing_dependencies"]
-            details = "; ".join(
-                f"{key} also requires {', '.join(required)}"
-                for key, required in sorted(missing.items())
+            sentences = describe_missing_dependencies(
+                dependency_result["missing_dependencies"]
             )
-            errors = "; ".join(dependency_result["errors"])
-            message = "; ".join(part for part in (details, errors) if part)
+            sentences.extend(dependency_result["errors"])
             raise serializers.ValidationError(
-                f"Include every required permission in the group: {message}."
+                "Include every required permission in the group: "
+                f"{' '.join(sentences)}"
             )
         return keys
 

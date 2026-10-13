@@ -1,10 +1,16 @@
 """
 Tests for vs_rbac.validators: PermissionDependencyValidator and validate_role_permissions.
 """
+import re
+
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from vs_rbac.validators import PermissionDependencyValidator, validate_role_permissions
+from vs_rbac.validators import (
+    PermissionDependencyValidator,
+    describe_missing_dependencies,
+    validate_role_permissions,
+)
 from .helpers import make_permission, make_dependency
 
 
@@ -127,3 +133,121 @@ class ValidateRolePermissionsTests(TestCase):
 
     def test_empty_set_passes(self):
         validate_role_permissions([])
+
+
+RAW_KEY = re.compile(r"\b[a-z_]+\.[a-z_]+\.[a-z_]+\b")
+
+
+class DependencyWordingTests(TestCase):
+    """Missing-dependency messages name permissions the way the role screens do."""
+
+    @classmethod
+    def setUpTestData(cls):
+        make_permission("school.students.view")
+        make_permission("school.students.transfer")
+        make_permission("school.students.export", description="Download the student list.")
+        make_permission("school.students.update")
+        make_permission("school.classes.view")
+        make_dependency("school.students.transfer", "school.students.view")
+        make_dependency("school.students.export", "school.students.view")
+        make_dependency("school.students.update", "school.students.view")
+        make_dependency("school.students.update", "school.classes.view")
+
+    def test_blank_descriptions_read_as_action_and_resource(self):
+        sentences = describe_missing_dependencies(
+            {"school.students.transfer": ["school.students.view"]},
+        )
+
+        self.assertEqual(sentences, ['"Transfer students" also needs "View students".'])
+
+    def test_a_described_permission_uses_its_description(self):
+        sentences = describe_missing_dependencies(
+            {"school.students.export": ["school.students.view"]},
+        )
+
+        self.assertEqual(
+            sentences, ['"Download the student list" also needs "View students".'],
+        )
+
+    def test_two_dependencies_join_with_and(self):
+        sentences = describe_missing_dependencies(
+            {"school.students.update": ["school.classes.view", "school.students.view"]},
+        )
+
+        self.assertEqual(
+            sentences,
+            ['"Update students" also needs "View classes" and "View students".'],
+        )
+
+    def test_three_dependencies_join_with_commas_and_and(self):
+        make_permission("school.students.delete")
+        make_dependency("school.students.delete", "school.students.view")
+        make_dependency("school.students.delete", "school.students.update")
+        make_dependency("school.students.delete", "school.classes.view")
+
+        sentences = describe_missing_dependencies({
+            "school.students.delete": [
+                "school.classes.view", "school.students.update", "school.students.view",
+            ],
+        })
+
+        self.assertEqual(
+            sentences,
+            ['"Delete students" also needs "View classes", "Update students" '
+             'and "View students".'],
+        )
+
+    def test_sentences_are_sorted_by_dependent_key(self):
+        sentences = describe_missing_dependencies({
+            "school.students.update": ["school.students.view"],
+            "school.students.transfer": ["school.students.view"],
+        })
+
+        self.assertEqual(
+            sentences,
+            ['"Transfer students" also needs "View students".',
+             '"Update students" also needs "View students".'],
+        )
+
+    def test_a_key_without_a_row_falls_back_to_the_key(self):
+        sentences = describe_missing_dependencies({"gone.thing.do": ["gone.thing.see"]})
+
+        self.assertEqual(sentences, ['"gone.thing.do" also needs "gone.thing.see".'])
+
+    def test_all_labels_load_in_one_query(self):
+        with self.assertNumQueries(1):
+            describe_missing_dependencies({
+                "school.students.update": ["school.classes.view", "school.students.view"],
+                "school.students.transfer": ["school.students.view"],
+            })
+
+    def test_no_missing_dependencies_gives_no_sentences(self):
+        with self.assertNumQueries(0):
+            self.assertEqual(describe_missing_dependencies({}), [])
+
+    def test_role_error_carries_readable_wording_and_no_raw_key(self):
+        with self.assertRaises(ValidationError) as ctx:
+            validate_role_permissions(["school.students.transfer"])
+
+        messages = ctx.exception.message_dict["permission_keys"]
+        self.assertEqual(
+            messages, ['"Transfer students" also needs "View students".'],
+        )
+        self.assertIsNone(RAW_KEY.search(" ".join(messages)))
+
+    def test_permission_group_error_carries_readable_wording_and_no_raw_key(self):
+        from vs_rbac.serializers.registry import PermissionGroupDetailSerializer
+
+        serializer = PermissionGroupDetailSerializer(data={
+            "name": "Transfer desk",
+            "permission_keys": ["school.students.transfer"],
+        })
+
+        self.assertFalse(serializer.is_valid())
+        message = " ".join(str(m) for m in serializer.errors["permission_keys"])
+        self.assertEqual(
+            message,
+            'Include every required permission in the group: '
+            '"Transfer students" also needs "View students".',
+        )
+        self.assertIsNone(RAW_KEY.search(message))

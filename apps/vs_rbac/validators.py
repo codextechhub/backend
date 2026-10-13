@@ -227,6 +227,46 @@ def flatten_permission_keys(
     return sorted(result)
 
 
+# Word missing dependencies in the labels the role screens show.
+def describe_missing_dependencies(
+    missing_dependencies: Dict[str, List[str]],
+) -> List[str]:
+    """
+    Turn a ``missing_dependencies`` mapping into one readable sentence per
+    dependent permission, sorted by the dependent's key.
+
+    Permissions are named by ``Permission.readable_label``, the wording every
+    permission picker and approval screen uses, so an administrator who saved
+    a role or group without a prerequisite is told ``"Transfer students" also
+    needs "View students".`` rather than shown dotted keys. A key with no
+    permission row is named by the key itself, and a label's closing full stop
+    is dropped inside the quotes. Every label is loaded in one query.
+    """
+    if not missing_dependencies:
+        return []
+
+    keys = set(missing_dependencies)
+    for required in missing_dependencies.values():
+        keys.update(required)
+    labels = {
+        permission.key: permission.readable_label
+        for permission in Permission.objects.filter(key__in=keys).select_related("resource")
+    }
+
+    def quoted(key: str) -> str:
+        return f'"{labels.get(key, key).rstrip(".")}"'
+
+    sentences = []
+    for key in sorted(missing_dependencies):
+        names = [quoted(required) for required in missing_dependencies[key]]
+        if len(names) > 1:
+            needed = f"{', '.join(names[:-1])} and {names[-1]}"
+        else:
+            needed = names[0]
+        sentences.append(f"{quoted(key)} also needs {needed}.")
+    return sentences
+
+
 # Fail a role update when its effective permission set is incomplete.
 def validate_role_permissions(
     permission_keys: List[str] | None = None,
@@ -250,13 +290,7 @@ def validate_role_permissions(
     result = validator.validate_permission_set(effective_keys)
 
     if not result['valid']:
-        error_messages = []
-
-        for perm, missing in result['missing_dependencies'].items():
-            error_messages.append(
-                f"Permission '{perm}' requires: {', '.join(missing)}"
-            )
-
+        error_messages = describe_missing_dependencies(result['missing_dependencies'])
         error_messages.extend(result['errors'])
 
         raise ValidationError({
