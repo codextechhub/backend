@@ -69,6 +69,7 @@ class AuditModuleKey(models.TextChoices):
     STUDENT = "STUDENT", "Student Management"
     STAFF = "STAFF", "Staff Management"
     ATTENDANCE = "ATTENDANCE", "Attendance Management"
+    GRADEBOOK = "GRADEBOOK", "Gradebook and Assessments"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"

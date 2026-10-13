@@ -426,7 +426,16 @@ class CalendarRulesSerializer(serializers.Serializer):
         )
 
     def validate_closes_school_by_type(self, value):
-        from .services.calendar_rules import DEFAULT_CLOSES_SCHOOL
+        """Judge the answer for each kind of calendar entry.
+
+        A client may omit a kind it does not know, as a screen built before
+        that kind existed does; the kind then keeps the answer the school has
+        stored now (the default where nothing is stored), so saving never
+        changes a setting the client did not mention. A kind that is named must
+        be true or false, and a key that is not a kind of entry is refused.
+        """
+        from .constants import CFG_CLOSES_SCHOOL_BY_TYPE
+        from .services.calendar_rules import DEFAULT_CLOSES_SCHOOL, read_calendar_rules
 
         if not isinstance(value, dict):
             raise serializers.ValidationError(
@@ -439,16 +448,21 @@ class CalendarRulesSerializer(serializers.Serializer):
                     f"'{key}' is not a kind of calendar entry.",
                 )
         for kind in DEFAULT_CLOSES_SCHOOL:
-            if kind not in value:
-                raise serializers.ValidationError(
-                    f"Say whether an entry of type {labels[kind]} closes the school.",
-                )
-            if not isinstance(value[kind], bool):
+            if kind in value and not isinstance(value[kind], bool):
                 raise serializers.ValidationError(
                     f"Say true or false for whether an entry of type "
                     f"{labels[kind]} closes the school.",
                 )
-        return {kind: value[kind] for kind in DEFAULT_CLOSES_SCHOOL}
+        kept = {}
+        if any(kind not in value for kind in DEFAULT_CLOSES_SCHOOL):
+            kept = read_calendar_rules(
+                self.context["tenant"], (CFG_CLOSES_SCHOOL_BY_TYPE,),
+            ).closes_school_by_type
+        return {
+            kind: value[kind] if kind in value else kept[kind]
+            for kind in DEFAULT_CLOSES_SCHOOL
+        }
+
 
     def validate_invigilator_roles(self, value):
         from .services.calendar_rules import active_roles

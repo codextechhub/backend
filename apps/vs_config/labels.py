@@ -187,6 +187,7 @@ SETTING_GROUP_LABELS = {
     "display": "Dates and times",
     "exams": "Exams",
     "finance": "Finance",
+    "gradebook": "Gradebook",
     "guardians": "Guardians",
     "integrations": "Integrations",
     "notifications": "Notifications",

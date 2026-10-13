@@ -84,6 +84,7 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
         _SURFACE + "ReportSerializer",
         _SURFACE + "ReportRangeSerializer",
         _SURFACE + "ReportClassRowSerializer",
+        _SURFACE + "ClassChronicSerializer",
         _SURFACE + "ReasonCodeSerializer",
     })
     allowlist = {
@@ -181,6 +182,7 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
             ]
             samples += self.hub_samples(tenant, admin)
             samples += self.report_samples(tenant, admin)
+            samples += self.class_chronic_samples(tenant, admin, school_class)
         for tenant, viewer, student, school_class, several in self.tabbed:
             tab = student_tab(tenant, viewer, student.pk)
             changes = [e for e in tab["history"] if e["kind"] == "change"]
@@ -203,6 +205,11 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
                 tenant=tenant,
             ),
         ]
+
+    def class_chronic_samples(self, tenant, admin, school_class):
+        body = build_report(tenant, admin, class_ids={school_class.pk})
+        body["school_class"] = {"id": school_class.pk, "name": school_class.name}
+        return [Sample(_SURFACE + "ClassChronicSerializer", body, tenant=tenant)]
 
     def hub_samples(self, tenant, admin):
         teacher = self.eze if tenant.pk == self.tenant.pk else self.solo_teacher

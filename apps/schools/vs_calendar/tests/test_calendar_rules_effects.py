@@ -269,7 +269,7 @@ class ClosesSchoolDefaultTests(_EffectsBase):
     def test_an_entry_that_does_not_say_takes_its_types_default(self):
         self.assertTrue(self.create("HOLIDAY"))
         self.assertTrue(self.create("MIDTERM_BREAK"))
-        for kind in ("EXAM_PERIOD", "SCHOOL_EVENT", "PTA", "SPORTS"):
+        for kind in ("EXAM_PERIOD", "SCHOOL_EVENT", "PTA", "SPORTS", "RESULTS_DAY"):
             self.assertFalse(self.create(kind), kind)
 
     def test_an_entry_that_says_wins(self):

@@ -66,6 +66,7 @@ class EventType(models.TextChoices):
     SCHOOL_EVENT = "SCHOOL_EVENT", "School event"
     PTA = "PTA", "PTA"
     SPORTS = "SPORTS", "Sports day"
+    RESULTS_DAY = "RESULTS_DAY", "Results day"
 
 
 class RoomType(models.TextChoices):

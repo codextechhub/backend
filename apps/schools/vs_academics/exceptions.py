@@ -207,3 +207,40 @@ class AcademicSettingNotRegistered(AcademicsError):
         "yet. Run the migrations and seed_config_catalogue."
     )
     http_status = 500
+
+
+class NotYourClass(AcademicsError):
+    """A caller who may set electives, but not for this class."""
+
+    error_code = "NOT_YOUR_CLASS"
+    default_message = (
+        "Only the class teacher or an administrator can set who takes what."
+    )
+    http_status = 403
+
+
+class ElectiveRefused(AcademicsError):
+    """A change to who takes what that the class cannot accept.
+
+    ``extra`` carries the position of the offending change in the request, so a
+    screen can mark the row. The whole request is refused when any change is.
+    """
+
+    error_code = "ELECTIVE_REFUSED"
+    default_message = "That change to who takes what cannot be made."
+    http_status = 422
+
+
+class ElectiveRemovalRefused(ElectiveRefused):
+    """A removal a removal guard turned down, with the guard's own sentence."""
+
+    error_code = "ELECTIVE_REMOVAL_REFUSED"
+    http_status = 409
+
+
+class HeadRefused(AcademicsError):
+    """A staff record that cannot head a department."""
+
+    error_code = "DEPARTMENT_HEAD_REFUSED"
+    default_message = "That person cannot head a department."
+    http_status = 422

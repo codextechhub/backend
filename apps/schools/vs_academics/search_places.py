@@ -58,6 +58,12 @@ register(
         screen="academics.classes", permission="academics.classes.view",
     ),
     Place(
+        kind=ACTION, key="academics.electives", label="Who takes what",
+        description="Which students take each elective subject in a class.",
+        keywords=("electives", "optional subjects", "subject choices"),
+        screen="academics.electives", permission="academics.electives.view",
+    ),
+    Place(
         kind=ACTION, key="academics.subjects", label="Subjects",
         screen="academics.subjects", permission="academics.subject.view",
     ),

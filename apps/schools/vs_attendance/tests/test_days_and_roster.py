@@ -20,7 +20,7 @@ from ..services.days import (
     DayCalendar,
     school_day,
 )
-from ..services.roster import roster_as_at, rosters_as_at, status_on, suspended_student_ids
+from schools.vs_students.services.roster import roster_as_at, rosters_as_at, status_on, suspended_student_ids
 from .base import (
     FOUNDERS_DAY,
     LAST_FRIDAY,

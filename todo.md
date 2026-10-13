@@ -30,6 +30,8 @@ Field Access coverage wave (commit 02953ab5, 2026-10-12/13; backend, FinPro, con
 
 Paystack live round, payments (commits 64f8b073 and 6dd120dc, 2026-10-13). Modules touched: Payments and collections, Finance and accounting (refunds, receipts, chart), School and branch management (branch phone), Billing and invoicing (desk collections), MRD capability, integration and gap tables. MUST SAY: (1) Refunds through Paystack, held-custody tenants only: a draft refund (method Online) is tied to the original online payment (`/v1/payments/refunds/`, keys payments.refund.view and payments.refund.create), same customer and branch, never more than the payment has left; posting it through the existing refund approval reserves the branch's held balance and asks Paystack; it books Dr customer credit, Cr gateway clearing only when Paystack confirms, and a failed refund returns to draft to retry or pay from bank. Direct-custody tenants still refund from their own bank. A refund made in the Paystack dashboard is recorded and alerted, never booked. (2) Desk collections: a collection can be tagged origin DESK; every collection naming an invoice or customer returns the payer to their own school-app page, never the staff Console. (3) Public payment status `GET /v1/payments/public/collections/<reference>/status/` (no sign-in, throttled) answers only status, amount, payee name and paid time; collection references end in 64 random bits and an older sequential reference is answered as not found. (4) Dedicated virtual accounts ask Paystack for a bank slug (`preferred_bank`, default wema-bank live, test-bank on a test key); webhook events without an id no longer collide on one dedupe key. (5) Branch terminals: every branch gets a Paystack Virtual Terminal opened automatically (backfill command for existing branches); its first WhatsApp contact is the branch's own phone (new Branch.phone, Read switch school.branches.phone; a new school's main branch takes the school's phone), up to five numbers, the last cannot be removed, a branch with no phone waits as NEEDS_NUMBER. Terminal money books at once to its branch, Dr gateway clearing, Cr Unidentified receipts (new account 2195), and raises the held balance at held tenants; a payer email matching exactly one active customer of that branch applies it automatically, oldest bill first; otherwise it waits on the branch's unmatched list with up to five suggestions for a bursar to match (same branch only) or unmatch (keys payments.terminal.view/update, payments.terminal_payment.view/match/reverse). Direct-custody terminals route to the branch subaccount through a Paystack split. Needs Attention to carry: Paystack facts still unconfirmed (refund webhook payload shape, when a refund leaves the balance, whether transfer-funded payments can be refunded, empty terminal destinations, where the terminal's payment link comes back, transfer sender name path); no notification for a new unmatched terminal payment; cross-branch terminal matching is refused.
 
+M16 Gradebook, build 1 (commit pending, 2026-10-13): WRITE THE FIRST M16 FRD (v1.0, new folder `16-gradebook-and-assessments`; built from the design `docs/designs/M16 Gradebook (standalone).html` and its brief). Source: `docs/gradebook-api-plan.md`; its section 10 (as built) overrides earlier sections where they differ, and lists the changes made in other modules in the same change; section 3.1 is the requirement set (R1-R46), 3.2 the things the code could not serve as drawn (D1-D8), 3.3 the brief's extras (B1-B8), 3.4 the backend-only rules, section 4 the permission keys, 5 the models and settings, 7 Field Access, and the approval block the five decisions. Mark build 1's requirements implemented and leave build 2's (amendments R44, analytics R45, bulk upload B7/B8, cumulative card B1/B5) as planned. Follow the house shape of the newest FRDs (M13/M14/M15). Also revise: M13 (who takes what per class per term with its endpoint and keys, and the department head, both new, with Field Access), M14 (the Results day event type; a calendar settings save that omits an event type keeps its stored value), M15 (the system-side term summary read; the class chronic list now answers 404 for a class outside the reader's branches, and its serializer is a registered Field Access surface), M11 (the Results tab is served by M16; the as-at class roll now lives in Student Management), M04 (the gradebook keys, the `enter_any` verb, Finance Admin defaults for fee holds), M19/M17 only if the FAL contract change (`oldest_unpaid_on` on debtor rows) is a documented contract, M28 (FR-006 should read released results, not published). MRD: Module 16 Planned to In progress with backend Partial, add `vs_gradebook` to ownership and its dependencies (M11, M12, M13, M14, M15, M08, M06, finance via the FAL), and move Gradebook out of the "Implement Attendance and Gradebook" priority gap. MUST SAY: holds are only ever placed by hand; the guardian email carries nothing from the result; "cannot sign in" on the late list shows only to a reader who can manage staff accounts; an amendment re-issues only the amended student's card.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
@@ -69,12 +71,12 @@ payment screen and a waiver screen need before the port is shaped.
 The school Settings console (/settings) was surveyed for every rule a school
 might want to set its own way. Three were left out on purpose; revisit them
 when the gradebook is built.
-(a) GRADING AND REPORT CARDS. Grading scales, continuous-assessment and exam
-weightings, pass marks and report-card layout. Nothing exists to configure:
-`gradebook` is only a price-list item (vs_config seed_config_catalogue) with no
-permissions (vs_rbac capability_map), and REPORT_CARD is only a student
-document type. Promotion by results (pass or repeat on marks) waits on the same
-thing; today repeating is a manual override in the promotion run.
+(a) PROMOTION BY RESULTS. Grading scales, CA and exam weightings, fail bands
+and report-card options now exist as Gradebook setup (M16 build 1, 2026-10-13).
+What is still open is promotion by results (pass or repeat on marks): today
+repeating is a manual override in the promotion run, which reads no results.
+It needs the annual average (M16 build 2's cumulative third-term figures) and
+a product decision on whether the run should propose a repeat.
 (b) TEACHER LOAD LIMITS. A maximum number of periods a week per teacher.
 schools/vs_calendar/services/teachers.py rules it out deliberately ("no maximum
 load ... no workload figure carrying a threshold") because nothing records the
@@ -84,9 +86,9 @@ required, and when a suspension releases its class seat
 (schools/vs_students/constants.py, services/status.py). Kept fixed because
 promotion, workflow conditions and the audit trail all read the same state
 machine, so a per-school variant would ripple through all three.
-FIX: design each as a Settings section once the gradebook defines what a
-result is; (b) and (c) need a decision first, not code.
-BLOCKED BY: the gradebook module, and the two decisions above.
+FIX: (a) once M16 build 2 computes an annual average; (b) and (c) need a
+decision first, not code.
+BLOCKED BY: M16 build 2 for (a), and the decisions for (b) and (c).
 
 ### 3. Move staging to the -staging names, and update Paystack's Test webhook (2026-10-08)
 

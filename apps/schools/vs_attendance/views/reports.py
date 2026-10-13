@@ -23,6 +23,7 @@ from core.response import success_response
 from vs_audit.models import AuditActionType
 from vs_finance.exports import EXPORT_FORMATS, render
 from schools.vs_academics.models import SchoolClass
+from schools.vs_students.services.scoping import scope_classes
 from vs_rbac.evaluator import has_permission
 from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
 
@@ -122,7 +123,9 @@ class ClassChronicView(AttendanceViewMixin, APIView):
     A reader of the reports may ask about any class in their branches. The
     class's own teacher may ask about it with the register key alone, because
     knowing which of their own pupils are slipping is part of teaching them;
-    any other class is refused. A class of another school answers 404.
+    any other class is refused. A class of another school, or of a branch the
+    caller cannot see, answers 404 exactly like a class that does not exist,
+    because the lookup itself is narrowed and the class's name is never read.
 
     docstring-name: Chronic absence in one class
     """
@@ -131,8 +134,10 @@ class ClassChronicView(AttendanceViewMixin, APIView):
 
     def get(self, request, class_id):
         school_class = (
-            SchoolClass.objects.filter(tenant=self.tenant, pk=class_id, is_active=True)
-            .select_related("class_teacher").first()
+            scope_classes(
+                SchoolClass.objects.filter(tenant=self.tenant, pk=class_id, is_active=True),
+                request.user, self.tenant,
+            ).select_related("class_teacher").first()
         )
         if school_class is None:
             raise NotFound("No such class at this school.")

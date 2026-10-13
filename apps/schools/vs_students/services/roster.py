@@ -1,8 +1,8 @@
-"""Who is on a class's register on a given day.
+"""Who is in a class on a given day.
 
-**The roster is read as at the register's date**, never as the class stands
-today, so a register opened for last Tuesday lists the children who were in the
-class last Tuesday:
+**A class's roll is read as at a date**, never as the class stands today, so a
+roll asked for last Tuesday lists the children who were in the class last
+Tuesday:
 
 * a child belongs to the class from the placement's ``effective_date``, which
   is the day the school says the placement takes effect, not the day somebody
@@ -13,11 +13,16 @@ class last Tuesday:
 * a child who had left the roll by that day (withdrawn, transferred out or
   graduated, as the status log dates it) is not listed.
 
-**A suspended child stays on the register, locked.** Status is read as at the
+**A suspended child stays on the roll, flagged.** Status is read as at the
 date from the status log, so a child suspended on Monday and back on Thursday is
-locked Monday to Wednesday and markable on Thursday, whether or not the
-automatic return has run. A locked row is never marked and is kept out of every
-count.
+flagged Monday to Wednesday and not on Thursday, whether or not the automatic
+return has run. What a flagged child may do is for the caller to decide: a
+register locks the row and keeps it out of every count, while a gradebook or
+an elective list keeps the child on it.
+
+Several modules read this roll (attendance registers, the gradebook's score
+sheets, the elective takers of a class), which is why it lives with the
+students it is made of.
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ class RosterEntry:
     suspended: bool
 
 
-def _placement_in_force(rows, on_date):
+def placement_in_force(rows, on_date):
     """The placement a child was in on *on_date*, or None.
 
     *rows* are all of one child's placements in the class's school year. The
@@ -121,7 +126,7 @@ def roster_as_at(tenant, school_class, on_date: dt.date) -> list[RosterEntry]:
 
     students = []
     for rows in by_student.values():
-        current = _placement_in_force(rows, on_date)
+        current = placement_in_force(rows, on_date)
         if current is not None and current.school_class_id == school_class.pk:
             students.append(current.student)
 
@@ -165,7 +170,7 @@ def rosters_as_at(tenant, school_classes, on_date: dt.date) -> dict:
 
     placed: dict[int, list] = {school_class.pk: [] for school_class in classes}
     for (session_id, _student_id), rows in by_student.items():
-        current = _placement_in_force(rows, on_date)
+        current = placement_in_force(rows, on_date)
         if current is not None and current.school_class_id in placed:
             placed[current.school_class_id].append(current.student)
 

@@ -62,6 +62,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("mark",       "Mark attendance, or mark a record as done / reviewed."),
     ("mark_any",   "Mark attendance for any class in the holder's branches, not only the one "
                    "they lead. Distinct from 'mark', which is the holder's own class."),
+    ("enter_any",  "Enter scores on any sheet in the holder's branches, not only the ones "
+                   "they teach. Distinct from 'enter', which is the holder's own sheets."),
     ("verify",     "Confirm the authenticity of submitted evidence (payment proof, documents)."),
     ("reverse",    "Undo or void a previously recorded financial or operational transaction."),
     ("confirm",    "Finalise a pending action (confirm enrolment, confirm booking)."),

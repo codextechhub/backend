@@ -68,7 +68,7 @@ from ..models import (
 from .access import open_class
 from .days import DayStatus, school_day
 from .registers import status_of, window_is_open
-from .roster import RosterEntry, roster_as_at, rosters_as_at
+from schools.vs_students.services.roster import RosterEntry, roster_as_at, rosters_as_at
 from .rules import read_attendance_rules
 from .scope import CLASS_RELATIONS
 

@@ -8,6 +8,10 @@ covered: Sunrise has one branch and Lagoon View has two.
 
 Tagged ``slow`` because the sibling seeders and the permission seed cost
 several seconds between them.
+
+``SeedAfterTheStaffSeederTests`` repeats the run in the order a developer runs
+the seeders, with ``seed_staff_scenarios`` in between, which can make the
+whole-school administrator the class teacher of a cast class.
 """
 from __future__ import annotations
 
@@ -15,11 +19,15 @@ import datetime as dt
 from contextlib import redirect_stdout
 from io import StringIO
 
+from unittest import mock
+
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase, tag
 from django.urls import reverse
 
 from core.test_utils import TenantAPIClient
+from schools.vs_academics.models import SchoolClass
 from schools.vs_calendar.models import (
     CalendarEvent,
     ClassTimetable,
@@ -36,7 +44,7 @@ from vs_audit.models import AuditEvent
 from vs_notifications.models import Notification
 from vs_user.models import User
 
-from ..constants import ChangeVia, CorrectionStatus, Mark, NoticeState
+from ..constants import PERM_CORRECTION_APPROVE, ChangeVia, CorrectionStatus, Mark, NoticeState
 from ..models import (
     ClassRegister,
     CorrectionRequest,
@@ -50,7 +58,7 @@ from ..models import (
     StaffMarkChange,
     StudentMark,
 )
-from ..services.roster import roster_as_at
+from schools.vs_students.services.roster import roster_as_at
 from ..services.rules import read_attendance_rules
 from .base import school_clock
 
@@ -62,6 +70,8 @@ SCHOOLS = {
     "lagoon-view": ("Lagoon View Academy", True),
 }
 SLUGS = tuple(SCHOOLS)
+#: The schools ``seed_staff_scenarios`` knows; Lagoon View is not one of them.
+STAFF_CAST = ("sunrise-academy",)
 
 
 def _build(name, **options) -> None:
@@ -69,6 +79,32 @@ def _build(name, **options) -> None:
     sink = StringIO()
     with redirect_stdout(sink):
         call_command(name, stdout=sink, stderr=sink, **options)
+
+
+def _build_prerequisites(*, staff=False) -> None:
+    """Build the permissions and both schools, with the staff seeder's people if asked.
+
+    The staff seeder reaches only the schools in ``STAFF_CAST``.
+
+    The order is the one a developer runs: permissions, onboarding, academic
+    structure, students, then staff.
+    """
+    with school_clock(SEEDED_ON):
+        _build("seed_all_permissions")
+        _build("seed_notification_event_types")
+        _build("seed_notification_templates")
+        for slug, (name, branched) in SCHOOLS.items():
+            # The onboarding seeder's own builder, without the go-live
+            # review that needs a platform operator: the school is made
+            # live directly, which is all the attendance routes ask.
+            build_school(
+                slug=slug, name=name, live=True, extra_branch=branched,
+                with_onboarding=False,
+            )
+            _build("seed_academic_scenarios", only=slug)
+            _build("seed_student_scenarios", only=slug)
+            if staff and slug in STAFF_CAST:
+                _build("seed_staff_scenarios", only=slug)
 
 
 def _counts(tenant) -> dict:
@@ -105,20 +141,7 @@ def _counts(tenant) -> dict:
 class SeedAttendanceScenariosTests(TestCase):
     @classmethod
     def setUpTestData(cls):
-        with school_clock(SEEDED_ON):
-            _build("seed_all_permissions")
-            _build("seed_notification_event_types")
-            _build("seed_notification_templates")
-            for slug, (name, branched) in SCHOOLS.items():
-                # The onboarding seeder's own builder, without the go-live
-                # review that needs a platform operator: the school is made
-                # live directly, which is all the attendance routes ask.
-                build_school(
-                    slug=slug, name=name, live=True, extra_branch=branched,
-                    with_onboarding=False,
-                )
-                _build("seed_academic_scenarios", only=slug)
-                _build("seed_student_scenarios", only=slug)
+        _build_prerequisites()
         cls.tenants = {
             slug: School.objects.get(slug=slug).tenant for slug in SLUGS
         }
@@ -375,3 +398,96 @@ class SeedAttendanceScenariosTests(TestCase):
                 else:
                     self.assertIsNone(unhomed)
                     self.assertNotIn("NO_HOME_BRANCH", {row["lock_reason"] for row in rows})
+
+
+@tag("slow")
+class SeedAfterTheStaffSeederTests(TestCase):
+    """The seeder run after ``seed_staff_scenarios``, which may make the administrator a class teacher.
+
+    The staff seeder gives the first active person on each school's staff list,
+    the whole-school administrator, the class teacher post of the first class.
+    When that class is one of the cast, the person who files C1's corrections
+    is the same account that decides them unless the seeder picks somebody else.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        _build_prerequisites(staff=True)
+        cls.tenants = {slug: School.objects.get(slug=slug).tenant for slug in SLUGS}
+        cls.admins = {
+            slug: User.objects.get(tenant=tenant, email=f"admin@{slug}.example.com")
+            for slug, tenant in cls.tenants.items()
+        }
+        cls.first_run = cls.run_seed()
+        cls.after_first_run = {slug: _counts(t) for slug, t in cls.tenants.items()}
+
+    @classmethod
+    def run_seed(cls, **options) -> str:
+        out = StringIO()
+        with school_clock(MONDAY), cls.captureOnCommitCallbacks(execute=True):
+            call_command("seed_attendance_scenarios", stdout=out, **options)
+        return out.getvalue()
+
+    def test_the_administrator_is_a_class_teacher_at_a_school_in_the_cast(self):
+        # Guards the premise: without it the other tests prove nothing.
+        led = [
+            slug for slug, tenant in self.tenants.items()
+            if SchoolClass.objects.filter(
+                tenant=tenant, class_teacher__user=self.admins[slug],
+            ).exists()
+        ]
+        self.assertTrue(led)
+
+    def test_no_correction_is_decided_by_the_person_who_asked_for_it(self):
+        for slug, tenant in self.tenants.items():
+            with self.subTest(school=slug):
+                decided = CorrectionRequest.objects.filter(tenant=tenant).exclude(
+                    status=CorrectionStatus.PENDING,
+                )
+                self.assertEqual(decided.count(), 2)
+                for correction in decided:
+                    self.assertIsNotNone(correction.decided_by_id)
+                    self.assertNotEqual(correction.decided_by_id, correction.requested_by_id)
+
+    def test_the_register_taken_on_a_teachers_behalf_and_the_reminder_come_from_somebody_else(self):
+        for slug, tenant in self.tenants.items():
+            with self.subTest(school=slug):
+                behalf = ClassRegister.objects.filter(
+                    tenant=tenant, on_behalf_of__isnull=False,
+                )
+                self.assertTrue(behalf.exists())
+                for register in behalf:
+                    self.assertNotEqual(register.submitted_by_id, register.on_behalf_of.user_id)
+                reminders = RegisterReminder.objects.filter(tenant=tenant)
+                self.assertTrue(reminders.exists())
+                for reminder in reminders:
+                    teacher = reminder.school_class.class_teacher
+                    self.assertNotEqual(reminder.sent_by_id, teacher.user_id)
+
+    def test_a_second_run_creates_nothing(self):
+        self.assertNotIn("Created this run: 0", self.first_run)
+
+        second = self.run_seed()
+
+        self.assertIn("Created this run: 0", second)
+        self.assertNotIn("  + ", second)
+        for slug, tenant in self.tenants.items():
+            with self.subTest(school=slug):
+                self.assertEqual(_counts(tenant), self.after_first_run[slug])
+
+    def test_a_school_with_nobody_else_to_decide_fails_and_says_so(self):
+        from ..management.commands.seed_attendance_scenarios import Command
+
+        tenant = self.tenants["sunrise-academy"]
+        admin = self.admins["sunrise-academy"]
+        only_the_admin = User.objects.filter(pk=admin.pk)
+        with mock.patch(
+            "schools.vs_attendance.management.commands.seed_attendance_scenarios."
+            "resolve_users_with_permission", return_value=only_the_admin,
+        ):
+            with self.assertRaises(CommandError) as raised:
+                Command()._holder_besides(
+                    tenant, admin, PERM_CORRECTION_APPROVE, tenant.branches.first(),
+                    besides=admin, doing="a decided correction",
+                )
+        self.assertIn(PERM_CORRECTION_APPROVE, str(raised.exception))

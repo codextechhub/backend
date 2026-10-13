@@ -682,6 +682,92 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── gradebook.sheet_reminder ────────────────────────────────────────
+        ("gradebook.sheet_reminder", C.IN_APP): {
+            "subject": "{{ subject_name }} scores for {{ class_name }} are due",
+            "body": (
+                "The {{ subject_name }} score sheet for {{ class_name }} "
+                "({{ term_name }}) is not in yet. Please complete and submit it "
+                "as soon as you can."
+            ),
+        },
+        ("gradebook.sheet_reminder", C.EMAIL): {
+            "subject": "{{ subject_name }} scores for {{ class_name }} are due",
+            "body": (
+                "Hello {{ teacher_name }},\n\n"
+                "The {{ subject_name }} score sheet for {{ class_name }} "
+                "({{ term_name }}) is not in yet. Please complete and submit it "
+                "as soon as you can.\n\n"
+                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
+        # ── gradebook.sheet_returned ────────────────────────────────────────
+        ("gradebook.sheet_returned", C.IN_APP): {
+            "subject": "{{ subject_name }} sheet for {{ class_name }} was returned",
+            "body": (
+                "{{ returned_by_name }} returned the {{ subject_name }} sheet "
+                "for {{ class_name }} ({{ term_name }}): {{ note }}"
+            ),
+        },
+
+        # ── gradebook.class_returned ────────────────────────────────────────
+        ("gradebook.class_returned", C.IN_APP): {
+            "subject": "{{ class_name }} results were returned",
+            "body": (
+                "{{ returned_by_name }} returned {{ class_name }}'s results for "
+                "{{ term_name }}: {{ note }}"
+            ),
+        },
+
+        # ── gradebook.report_card_ready ─────────────────────────────────────
+        # Carries only the child's first name, the term, the school year, the
+        # school and branch and the school's phone, and says the report card is
+        # ready to collect: nothing from the result, no attachment, no link.
+        ("gradebook.report_card_ready", C.IN_APP): {
+            "subject": "{{ student_first_name }}'s report card is ready",
+            "body": (
+                "{{ student_first_name }}'s report card for {{ term_name }}, "
+                "{{ session_name }} is ready to collect from the school."
+            ),
+        },
+        ("gradebook.report_card_ready", C.EMAIL): {
+            "subject": "{{ student_first_name }}'s report card is ready",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "{{ student_first_name }}'s report card for {{ term_name }}, "
+                "{{ session_name }} is ready to collect from the school."
+                "{% if tenant_phone %} You can reach the school on {{ tenant_phone }}.{% endif %}"
+                "\n\n"
+                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
+        # ── gradebook.report_card_updated ───────────────────────────────────
+        ("gradebook.report_card_updated", C.IN_APP): {
+            "subject": "{{ student_first_name }}'s updated report card is ready",
+            "body": (
+                "An updated report card for {{ student_first_name }} "
+                "({{ term_name }}, {{ session_name }}) is ready to collect from "
+                "the school."
+            ),
+        },
+        ("gradebook.report_card_updated", C.EMAIL): {
+            "subject": "{{ student_first_name }}'s updated report card is ready",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "An updated report card for {{ student_first_name }} "
+                "({{ term_name }}, {{ session_name }}) is ready to collect from "
+                "the school."
+                "{% if tenant_phone %} You can reach the school on {{ tenant_phone }}.{% endif %}"
+                "\n\n"
+                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
         # ── student.deactivated ─────────────────────────────────────────────
         ("student.deactivated", C.IN_APP): {
             "subject": "{{ student_first_name }} {{ student_last_name }} is no longer active",

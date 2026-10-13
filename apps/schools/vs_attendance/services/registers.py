@@ -36,7 +36,7 @@ from ..models import ClassRegister, MarkChange, StudentMark
 from . import notices
 from .access import open_class
 from .days import DayStatus, school_day
-from .roster import RosterEntry, roster_as_at
+from schools.vs_students.services.roster import RosterEntry, roster_as_at
 from .rules import read_edit_window_days
 
 

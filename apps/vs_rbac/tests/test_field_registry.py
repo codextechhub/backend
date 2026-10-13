@@ -56,6 +56,8 @@ SYNC = "vs_rbac.management.commands.sync_field_registry.all_declarations"
 
 #: Every resource with a registered field. Adding one is a deliberate change.
 EXPECTED_RESOURCES = {
+    ("academics", "department"),
+    ("academics", "electives"),
     ("attendance", "correction"),
     ("attendance", "lesson"),
     ("attendance", "register"),
@@ -78,6 +80,10 @@ EXPECTED_RESOURCES = {
     ("finance", "salary"),
     ("finance", "seal"),
     ("finance", "settings"),
+    ("gradebook", "hold"),
+    ("gradebook", "result"),
+    ("gradebook", "setup"),
+    ("gradebook", "sheet"),
     ("import", "batches"),
     ("import", "jobs"),
     ("import", "templates"),
@@ -108,6 +114,7 @@ EXPECTED_RESOURCES = {
 #: is what decides their scope, while a switch narrows it per role. A guardian
 #: is read with the student key because the guardian endpoints carry it.
 ENDPOINT_GUARDED_RESOURCES = {
+    ("academics", "department"): "academics.structure.view",
     ("attendance", "lesson"): "attendance.register.view",
     ("finance", "dashboard"): "finance.report.view",
     ("finance", "payer_link"): "finance.customer.view",
@@ -299,6 +306,12 @@ NESTING_ONLY_SURFACES = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "gradebook.hold.balance": (
+        "What a pupil's family owes the school and since when, read from Finance "
+        "beside a fee hold. It is the school's money position for a named family, "
+        "so a role reads it only when given Read; the roles whose daily work is "
+        "holds (school admin and finance admin) read it by default."
+    ),
     "school.students.status_reason": (
         "Free text a member of staff writes about a child: why this pupil was "
         "suspended, withdrawn, transferred out or brought back, or an applicant "

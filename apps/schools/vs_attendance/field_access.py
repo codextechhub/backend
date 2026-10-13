@@ -42,7 +42,9 @@ days the school was open.
 **The reports are figures, so they follow the counts switch.** The weekly trend,
 the by-level table and the chronic list are made of rates and totals, and the
 chronic list is itself a statement about a rate (who falls below the line), so
-each is left out whole when the counts are hidden. A class in the by-class table
+each is left out whole when the counts are hidden. One class's chronic list,
+asked for by the class's own teacher, is the same list narrowed to the class and
+follows the same switch. A class in the by-class table
 carries its figures under ``counts`` and loses only those, so a role that may
 read the register but not the totals still sees which classes there are. The
 count of school days in the range, and how many marks used each excused reason,
@@ -119,6 +121,7 @@ SURFACES = (
     "schools.vs_attendance.serializers.ReportSerializer",
     "schools.vs_attendance.serializers.ReportRangeSerializer",
     "schools.vs_attendance.serializers.ReportClassRowSerializer",
+    "schools.vs_attendance.serializers.ClassChronicSerializer",
     "schools.vs_attendance.serializers.ReasonCodeSerializer",
 )
 

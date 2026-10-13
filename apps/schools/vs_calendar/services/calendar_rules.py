@@ -12,10 +12,10 @@ default are inherited exactly as every other setting is:
 * ``calendar.week_starts_on``: 1 (Monday) or 7 (Sunday), default 1. Date
   pickers and grids start their week on it, and the grids here order their day
   columns by it.
-* ``calendar.closes_school_by_type``: for each of the six event types, whether
-  an entry of that type closes the school when it is created without saying.
-  Default: a public holiday and the half-term break close it; an exam period,
-  a school event, a PTA meeting and a sports day do not. It fills in a missing
+* ``calendar.closes_school_by_type``: for each event type, whether an entry of
+  that type closes the school when it is created without saying. Default: a
+  public holiday and the half-term break close it; an exam period, a school
+  event, a PTA meeting, a sports day and a results day do not. It fills in a missing
   ``closes_school`` on create and on import, and never changes a stored event.
 * ``timetable.room_required_to_publish``: whether the publish gate refuses a
   lesson with no room, default true. A lesson with no teacher is refused either
@@ -83,6 +83,7 @@ DEFAULT_CLOSES_SCHOOL = {
     EventType.SCHOOL_EVENT.value: False,
     EventType.PTA.value: False,
     EventType.SPORTS.value: False,
+    EventType.RESULTS_DAY.value: False,
 }
 
 
@@ -264,7 +265,7 @@ def calendar_rules_body(tenant, rules=None) -> dict:
     """The body of ``GET /v1/academics/calendar/rules/``.
 
     Each choice the screen offers travels with the label it prints, so the
-    screen carries no copy of them: the six event types in the school's word
+    screen carries no copy of them: the event types in the school's word
     for a term ("Mid-semester break"), the three duty-match modes, and the
     school's active roles. A saved role that is no longer active is left out of
     ``invigilator_roles``, because nobody holds it and the screen could not

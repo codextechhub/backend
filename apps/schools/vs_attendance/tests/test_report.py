@@ -591,8 +591,15 @@ class ClassChronicTests(_Report):
     def test_a_report_reader_may_ask_about_any_class_in_their_branches(self):
         body = self.data(self.class_chronic(self.reporter, self.jss1c))
         self.assertEqual([r["student"]["name"] for r in body["chronic"]], ["Ngozi Ibe"])
-        lekki_only = self.data(self.class_chronic(self.lekki_reporter, self.jss1c))
-        self.assertEqual(lekki_only["chronic"], [])
+
+    def test_a_class_of_another_branch_is_not_found_and_not_named(self):
+        response = self.class_chronic(self.lekki_reporter, self.jss1c)
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("JSS1 C", str(response.data))
+        missing = TenantAPIClient(self.lekki_reporter).get(
+            reverse("attendance-class-chronic", kwargs={"class_id": 0}),
+        )
+        self.assertEqual(response.data, missing.data)
 
     def test_another_schools_class_is_not_found(self):
         self.assertEqual(self.class_chronic(self.solo_reporter, self.jss1a).status_code, 404)
@@ -603,3 +610,21 @@ class ClassChronicTests(_Report):
         body = self.data(self.class_chronic(self.eze, self.jss1a))
         self.assertNotIn("chronic", body)
         self.assertEqual(body["school_class"]["name"], "JSS1 A")
+
+    def test_hidden_counts_leave_out_the_list_for_a_report_reader_too(self):
+        install_declared_fields("attendance.register")
+        role = make_key_role(
+            self.tenant, "No totals", "no_totals", (PERM_REGISTER_VIEW, PERM_REPORT_VIEW),
+        )
+        user = make_school_admin(None, email="nt-class@brightfield.test", tenant=self.tenant)
+        make_assignment(self.tenant, user, role, branch=None)
+        set_field_access(role, "attendance.register.counts", read=False, write=False)
+        body = self.data(self.class_chronic(user, self.jss1a))
+        self.assertNotIn("chronic", body)
+        self.assertEqual(body["school_class"]["name"], "JSS1 A")
+        self.assertEqual(body["threshold"], 90)
+
+    def test_the_list_is_open_by_default_once_the_fields_are_installed(self):
+        install_declared_fields("attendance.register")
+        body = self.data(self.class_chronic(self.eze, self.jss1a))
+        self.assertEqual(len(body["chronic"]), 3)

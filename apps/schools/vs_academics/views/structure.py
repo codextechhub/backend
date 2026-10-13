@@ -42,6 +42,7 @@ from ..services.scoping import (
 )
 from ..exceptions import DuplicateLevelOrder
 from ..services.uniqueness import assert_unique
+from ..services.heads import resolve_head
 from ..services.structure import (
     assert_promotion_target,
     generate_code,
@@ -164,6 +165,18 @@ class _StructureBase(AcademicsViewMixin):
         )
 
 
+    def _resolve_head(self, data):
+        """Swap a submitted ``head_id`` for the staff record it names, or None.
+
+        Only a head that is being set is looked up; clearing it needs no
+        lookup. The record must be this school's and on its roll.
+        """
+        if "head_id" not in data:
+            return
+        staff_id = data.pop("head_id")
+        data["head"] = None if staff_id is None else resolve_head(self.tenant, staff_id)
+
+
 # ── Departments ────────────────────────────────────────────────────────────
 
 def _departments_for(tenant, session=None):
@@ -182,7 +195,7 @@ def _departments_for(tenant, session=None):
     """
     qs = (
         Department.objects.filter(tenant=tenant)
-        .select_related("branch")
+        .select_related("branch", "head__user")
         # annotate() drops Meta.ordering, and an unordered queryset cannot be
         # paged: the same row lands on two pages, or on none.
         .order_by("name")
@@ -228,12 +241,15 @@ class DepartmentListCreateView(_StructureBase, generics.ListCreateAPIView):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        writer = DepartmentWriteSerializer(data=request.data)
+        writer = DepartmentWriteSerializer(
+            data=request.data, context=self.get_serializer_context(),
+        )
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         requested = self._requested_branch(data)
         data.pop("branch", None)
         branch = self._branch_for_write(requested)
+        self._resolve_head(data)
         data["code"] = self._code_for(Department, data["name"], data.get("code"))
         # all_objects, not objects: an archived department still holds its name
         # and its code, and the constraint does not exempt it either.
@@ -282,11 +298,15 @@ class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateAPIView):
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         dept = self.get_object()
-        writer = DepartmentWriteSerializer(dept, data=request.data, partial=True)
+        writer = DepartmentWriteSerializer(
+            dept, data=request.data, partial=True,
+            context=self.get_serializer_context(),
+        )
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         if "branch" in data:
             data["branch"] = self._branch_for_write(self._requested_branch(data))
+        self._resolve_head(data)
         self._unique(
             Department.all_objects.filter(tenant=self.tenant),
             name=data.get("name"), code=data.get("code"), exclude_pk=dept.pk,

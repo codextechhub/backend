@@ -19,6 +19,7 @@ SOURCE_MODULE_LABELS = {
     "vs_billing": "Billing",
     "vs_exports": "Exports",
     "vs_finance": "Finance",
+    "vs_gradebook": "Gradebook",
     "vs_health": "Health",
     "vs_import": "Imports",
     "vs_notifications": "Notifications",

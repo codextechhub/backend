@@ -1790,6 +1790,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 outstanding=row["outstanding"] or 0,
                 ageing=_ageing_bucket(row["oldest_due"], today),
                 branch_ref=row["customer__branch_id"],
+                oldest_unpaid_on=row["oldest_due"],
             )
 
         return _available(_labelled(_page(qs, page, page_size, build), entity.tenant_id))

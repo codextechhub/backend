@@ -415,6 +415,7 @@ SCHOOL_SCOPED_DEFINITIONS = [
         {
             "HOLIDAY": True, "MIDTERM_BREAK": True, "EXAM_PERIOD": False,
             "SCHOOL_EVENT": False, "PTA": False, "SPORTS": False,
+            "RESULTS_DAY": False,
         },
         {},
     ),
@@ -468,6 +469,55 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "still change a mark, 0 to 14. 0 means the same day only. After the "
         "window a mark changes only through a correction request.",
         "INTEGER", 0, {"min": 0, "max": 14},
+    ),
+    (
+        "gradebook.show_class_stats", "Class Statistics On Report Cards",
+        "Whether a report card prints the class average, highest and lowest "
+        "beside each subject.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "gradebook.rank_in_class", "Position In Class",
+        "Whether the school ranks its students. When off, no position is "
+        "shown on a broadsheet, a report card, a student's results or in "
+        "analytics.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "gradebook.conduct_ratings", "Conduct And Skills Ratings",
+        "Whether the class teacher rates each student's conduct and skills "
+        "when compiling the class, and the report card prints the ratings.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "gradebook.rating_key", "Rating Key On Report Cards",
+        "Whether a report card prints the line explaining what each rating "
+        "from 1 to 5 means.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "gradebook.rating_traits", "Traits The Class Teacher Rates",
+        "The conduct and skills traits rated from 1 to 5, in the order the "
+        "report card prints them. One to fifteen different names.",
+        "JSON", [
+            "Punctuality",
+            "Neatness",
+            "Politeness",
+            "Honesty",
+            "Relationship with others",
+            "Attentiveness",
+            "Handwriting",
+            "Sports",
+            "Drawing and painting",
+            "Handling of tools",
+        ], {},
+    ),
+    (
+        "gradebook.moderated_programs", "Programmes Whose Sheets Are Moderated",
+        "The codes of the programmes whose score sheets go to the head of "
+        "the subject's department before they count. Empty means no sheet "
+        "is moderated.",
+        "JSON", [], {},
     ),
     (
         "display.timezone", "Time Zone",

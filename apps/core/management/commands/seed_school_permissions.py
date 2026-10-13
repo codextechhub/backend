@@ -3,10 +3,11 @@
 This is the single source of truth for the school-facing permission keys used by
 school-fe (the XVS school-facing app). It registers three modules - ``school``
 (administration / people), ``academics`` (sessions / calendar / classes /
-structure / subject) and ``attendance`` (registers / corrections / reports) -
-then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
-``teacher`` PrebuiltRoleTemplates, and grows each school's copies of those roles
-with the defaults the library role gains.
+structure / subject), ``attendance`` (registers / corrections / reports) and
+``gradebook`` (assessment setup / sheets / results / holds) - then attaches
+sensible defaults to the ``school_admin`` / ``branch_admin`` / ``teacher`` /
+``finance_admin`` PrebuiltRoleTemplates, and grows each school's copies of those
+roles with the defaults the library role gains.
 
 Run order::
 
@@ -20,7 +21,10 @@ Two idempotent phases:
      one that carries Field Access fields and no keys is listed in
      ``FIELD_ONLY_RESOURCES`` and registered alongside them.
   2. Attach PrebuiltRolePermission defaults per the school_admin/branch_admin/
-     teacher columns. A default the library role gains on this run is granted
+     teacher/finance_admin columns. ``finance_admin`` owns every finance and
+     payments key by prefix (``seed_prebuilt_role_templates``); the few
+     school-module keys it also needs, such as the gradebook's fee holds, are
+     attached here. A default the library role gains on this run is granted
      to every school's copy of that role, its per-branch copies included
      (``branch_admin-<branch pk>``), at that moment and never again
      (:func:`vs_rbac.library_growth.attach_defaults`). A default the library
@@ -43,7 +47,8 @@ SCHOOL_TENANT_KIND = "SCHOOL"
 ROLE_SCHOOL_ADMIN = "school_admin"
 ROLE_BRANCH_ADMIN = "branch_admin"
 ROLE_TEACHER = "teacher"
-PREBUILT_ROLE_KEYS = [ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER]
+ROLE_FINANCE_ADMIN = "finance_admin"
+PREBUILT_ROLE_KEYS = [ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN]
 
 #: Keys registered unrestricted whatever their sensitivity.
 #:
@@ -68,7 +73,8 @@ UNRESTRICTED_KEYS = frozenset({
 
 # ── Permission key table (single source of truth) ─────────────────────────────
 # Each row: (dotted_key, description, sensitivity, {default-role flags}).
-# The dotted key is module.resource.action. Modules: school, academics, attendance.
+# The dotted key is module.resource.action. Modules: school, academics, attendance,
+# gradebook.
 # `defaults` lists which prebuilt roles receive this permission by default.
 #
 # This table MUST stay in lockstep with school-fe/src/permissions/index.ts.
@@ -252,6 +258,13 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "classes", "reactivate",     _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "assign",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
+    # Who takes which non-core subject. Every teacher holds both keys, but the
+    # save is judged class by class: only the class's own class teacher or a
+    # holder of academics.classes.assign may change a class's choices, so
+    # holding update opens no class a teacher does not lead.
+    ("academics", "electives", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "electives", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+
     # Academic structure. "structure" covers departments, programs and
     # levels, which are one screen and one mental object to a school; "subject"
     # is its own resource because a branch admin may create one and may not
@@ -318,6 +331,31 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # is SENSITIVE exactly as school.students.export is.
     ("attendance", "report", "export",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("attendance", "settings", "update",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+
+    # module: gradebook
+    #
+    # A key answers whether somebody may open a screen or take an action at
+    # all; which sheet or class it applies to is a rule in the services. The
+    # main teacher of a subject enters its scores with ``sheet.enter``, and
+    # ``sheet.enter_any`` enters any sheet in the holder's branches (a school
+    # grants it; no role holds it by default). Moderating is the head of the
+    # subject's department and compiling a class is its class teacher, both by
+    # rule. Publishing results, putting a child's result on hold and changing
+    # assessment setup are SENSITIVE: they decide what a family is given.
+    ("gradebook", "hub", "view",              _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "sheet", "view",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("gradebook", "sheet", "enter",           _NORMAL,    (ROLE_TEACHER,)),
+    ("gradebook", "sheet", "enter_any",       _SENSITIVE, ()),
+    ("gradebook", "sheet", "remind",          _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "moderation", "approve",    _NORMAL,    (ROLE_TEACHER,)),
+    ("gradebook", "class", "submit",          _NORMAL,    (ROLE_TEACHER,)),
+    ("gradebook", "class", "publish",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("gradebook", "hold", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_FINANCE_ADMIN)),
+    ("gradebook", "hold", "update",           _SENSITIVE, (ROLE_FINANCE_ADMIN,)),
+    ("gradebook", "release", "view",          _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "result", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "setup", "view",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "setup", "update",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 ]
 
 #: Resources that carry Field Access fields and no permission keys.
@@ -338,6 +376,9 @@ FIELD_ONLY_RESOURCES: list[tuple[str, str]] = [
     # attendance.register.mark, so it needs no keys of its own; its mark, time
     # and note are fields a school restricts per role.
     ("attendance", "lesson"),
+    # A department is created and edited with the academic structure keys; who
+    # heads it is a field a school restricts per role.
+    ("academics", "department"),
 ]
 
 #: Readable names for resources whose slug reads wrongly on screen.
@@ -346,6 +387,8 @@ FIELD_ONLY_RESOURCES: list[tuple[str, str]] = [
 #: ``display_label`` does and what most of them want.
 RESOURCE_LABELS: dict[tuple[str, str], str] = {
     ("school", "guardians"): "Guardians",
+    ("academics", "electives"): "Who takes what",
+    ("academics", "department"): "Departments",
     # The keys say ``teachers`` because ``Permission.key`` is a primary key
     # four tables point at. The register they guard is the whole staff list,
     # and the personal details hanging off this resource belong to the bursar
@@ -357,6 +400,7 @@ MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
     "academics": "Academic operations - sessions, calendar, timetables, classes, structure, subjects.",
     "attendance": "Attendance - daily class registers, corrections, reminders, staff registers, reports and settings.",
+    "gradebook": "Gradebook and assessments - assessment setup, score sheets, moderation, results, fee holds and report cards.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -386,6 +430,9 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "session"):     "Academic sessions",
     ("academics", "calendar"):    "Academic calendar",
     ("academics", "classes"):     "Classes",
+    ("academics", "electives"):   "Which students take each non-core subject in a class",
+    # Fields only: a department is read and changed with the structure keys.
+    ("academics", "department"):  "Departments, and the member of staff who heads each",
     ("academics", "structure"):   "Academic structure - departments, programs and levels",
     ("academics", "subject"):     "Subjects and the levels they are offered at",
     ("academics", "timetable"):   "Rooms, the bell schedule and class timetables",
@@ -397,12 +444,20 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("attendance", "staff"):      "The staff attendance register",
     ("attendance", "report"):     "Attendance summaries, the chronic-absence list and their exports",
     ("attendance", "settings"):   "Attendance settings and the school's reasons for excusing an absence",
+    ("gradebook", "hub"):         "The results hub: which sheets are in and which are late",
+    ("gradebook", "sheet"):       "Score sheets: reading them, entering scores and reminding a main teacher",
+    ("gradebook", "moderation"):  "Moderating a score sheet as the head of the subject's department",
+    ("gradebook", "class"):       "Compiling a class's results, submitting them and publishing them",
+    ("gradebook", "hold"):        "Fee holds on a student's result",
+    ("gradebook", "release"):     "The release list and the report cards of a class",
+    ("gradebook", "result"):      "A student's results across terms",
+    ("gradebook", "setup"):       "Assessment setup: structures, grading scales, report card options and remark templates",
 }
 
 
 class Command(BaseCommand):
     help = (
-        "Seed the school + academics + attendance permission modules, attach prebuilt-role "
+        "Seed the school + academics + attendance + gradebook permission modules, attach prebuilt-role "
         "defaults, and grant newly attached defaults to schools' copies (idempotent)."
     )
 
@@ -476,7 +531,7 @@ class Command(BaseCommand):
 
         # ── Phase 1: register modules, resources, permissions ─────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 1 - registering school + academics + attendance permissions...\n"
+            "\n  Phase 1 - registering school + academics + attendance + gradebook permissions...\n"
         ))
 
         modules: dict[str, PermissionModule] = {}
@@ -577,7 +632,7 @@ class Command(BaseCommand):
         # ── Summary ───────────────────────────────────────────────────────────
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perm_count} new permission(s) created, "
-            f"{len(all_keys)} school/academics/attendance keys registered; "
+            f"{len(all_keys)} school/academics/attendance/gradebook keys registered; "
             f"{total_grown} grant(s) added to schools' copies of the library roles.\n"
         ))
 

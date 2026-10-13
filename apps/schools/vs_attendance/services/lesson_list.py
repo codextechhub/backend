@@ -23,7 +23,7 @@ from vs_config.display import format_date
 from vs_rbac.scoping import visible_branch_ids
 
 from . import lessons
-from .roster import rosters_as_at
+from schools.vs_students.services.roster import rosters_as_at
 from .scope import (
     active_classes,
     placed_classes,

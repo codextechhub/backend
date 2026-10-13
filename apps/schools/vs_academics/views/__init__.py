@@ -39,3 +39,4 @@ from .reads import (  # noqa: F401
     StructureTreeView,
 )
 from .settings import AcademicRulesView  # noqa: F401
+from .electives import ClassElectivesView  # noqa: F401

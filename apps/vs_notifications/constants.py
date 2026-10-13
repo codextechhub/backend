@@ -391,6 +391,75 @@ EVENT_TYPE_REGISTRY = [
         "branch_scoped": True,
     },
 
+    # ── Gradebook (vs_gradebook) ───────────────────────────────────────────
+    # Every sender passes the sheet's or the class's branch, so a branch may
+    # switch these on or off for itself. The two report card events go to a
+    # child's primary guardian and carry nothing from the result.
+
+    {
+        "key": "gradebook.sheet_reminder",
+        "label": "Score sheet not yet in",
+        "description": (
+            "Fires when an administrator reminds a subject's main teacher that "
+            "the score sheet for a class has not been submitted."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "gradebook.sheet_returned",
+        "label": "Score sheet returned",
+        "description": (
+            "Fires when the head of a department returns a moderated score "
+            "sheet to its main teacher with a note, and is sent to that teacher."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "gradebook.class_returned",
+        "label": "Class results returned",
+        "description": (
+            "Fires when the principal returns a class's results to its class "
+            "teacher with a note, and is sent to the class teacher."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "gradebook.report_card_ready",
+        "label": "Report card ready to collect",
+        "description": (
+            "Fires when a class's results are published and a child's result is "
+            "released, and is sent to the child's primary guardian. It says only "
+            "that the report card is ready to collect from the school: no score, "
+            "grade, position or comment."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
+        "key": "gradebook.report_card_updated",
+        "label": "Updated report card ready to collect",
+        "description": (
+            "Fires when a correction to a released result is approved, and is "
+            "sent to the child's primary guardian. It says only that an updated "
+            "report card is ready to collect from the school."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+
     # ── Workflow Approval (vs_workflow) ────────────────────────────────────
     # Wired lifecycle points (services/routing.py): stage_activated → the
     # stage's approvers; returned / rejected / final_approved → the requester.

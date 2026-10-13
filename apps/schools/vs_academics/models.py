@@ -1,6 +1,6 @@
 """The academic backbone: the school year, and the hierarchy taught inside it.
 
-Nine models. Every one carries its own ``tenant`` foreign key, even where its
+Ten models. Every one carries its own ``tenant`` foreign key, even where its
 parent already has one, because :class:`vs_rbac.managers.TenantAwareManager`
 filters on a model's own ``tenant`` or ``branch`` field and returns everything
 otherwise. Reaching the tenant through a parent is not scoping.
@@ -241,6 +241,17 @@ class Department(_Branched):
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
+    #: The member of staff who heads the department, if one has been named.
+    #:
+    #: Points at ``StaffProfile`` and not at the account, for the reason
+    #: ``SchoolClass.class_teacher`` gives: employment is the fact that says
+    #: whether somebody still works here. SET_NULL, because a department
+    #: outlives whoever headed it. Whoever reads a head must also check
+    #: ``StaffProfile.is_on_roll``: leaving the roll does not clear the column.
+    head = models.ForeignKey(
+        "vs_staff.StaffProfile", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="departments_headed",
+    )
 
     class Meta(_Branched.Meta):
         ordering = ["name"]
@@ -553,3 +564,65 @@ class SubjectOffering(models.Model):
 
     def __str__(self):
         return f"{self.subject_id}@{self.level_id}"
+
+
+
+class ElectiveTaker(models.Model):
+    """A student who takes a non-core subject in a class for one term.
+
+    A core subject is everyone's and has no row here. For a non-core subject a
+    student takes it only where a row says so, so a student with no row is on
+    no sheet, no average and no position for it. The record is per class per
+    term because electives are chosen each term and a student who moves class
+    mid-year takes their choices to the new class only by being recorded there.
+
+    Rows are created and removed by ``services.electives``, which keeps them to
+    non-core offerings of the class's level and to students on the class's
+    roll. Neither rule is a constraint, because both depend on dates and on
+    another app's placements.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="elective_takers",
+    )
+    school_class = models.ForeignKey(
+        SchoolClass, on_delete=models.PROTECT, related_name="elective_takers",
+    )
+    #: CASCADE: a term can be deleted only while its year is a draft, when no
+    #: result can rest on a choice made inside it.
+    term = models.ForeignKey(
+        AcademicTerm, on_delete=models.CASCADE, related_name="elective_takers",
+    )
+    subject = models.ForeignKey(
+        Subject, on_delete=models.PROTECT, related_name="elective_takers",
+    )
+    student = models.ForeignKey(
+        "vs_students.Student", on_delete=models.PROTECT,
+        related_name="elective_choices",
+    )
+    set_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="+",
+    )
+    set_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["school_class", "term", "subject", "student"],
+                name="uq_academic_elective_taker",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "school_class", "term"]),
+            models.Index(fields=["student", "term"]),
+        ]
+
+    def __str__(self):
+        return f"{self.student_id}:{self.subject_id}@{self.school_class_id}/{self.term_id}"

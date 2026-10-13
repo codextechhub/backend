@@ -28,6 +28,12 @@ PERM_CLASSES_CREATE = "academics.classes.create"
 PERM_CLASSES_UPDATE = "academics.classes.update"
 PERM_CLASSES_ARCHIVE = "academics.classes.archive"
 PERM_CLASSES_REACTIVATE = "academics.classes.reactivate"
+#: Held by the administrator roles only: designating a class teacher, and so
+#: also the any-class reach over who takes which elective.
+PERM_CLASSES_ASSIGN = "academics.classes.assign"
+
+PERM_ELECTIVES_VIEW = "academics.electives.view"
+PERM_ELECTIVES_UPDATE = "academics.electives.update"
 
 PERM_SUBJECT_VIEW = "academics.subject.view"
 PERM_SUBJECT_CREATE = "academics.subject.create"

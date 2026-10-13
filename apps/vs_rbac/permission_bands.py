@@ -47,6 +47,7 @@ CAPABILITY_MODULE_BY_MODULE = {
     # money-movement half; there is no separate capability for them.
     "payments": "finance",
     "procurement": "procurement",
+    "gradebook": "gradebook",
 }
 
 #: Resources sold under a band that carries its own name rather than the
@@ -109,11 +110,25 @@ RESOURCE_BANDS = {
     # ---- academic structure ----------------------------------------------
     ("academics", "session"): CORE,
     ("academics", "classes"): CORE,
+    ("academics", "electives"): CORE,
     ("academics", "subject"): CORE,
     ("academics", "structure"): CORE,
     ("academics", "calendar"): CORE,
     ("academics", "timetable"): PLUS,
     ("academics", "exam"): ADVANCED,
+
+    # ---- gradebook and assessments -----------------------------------------
+    # Every resource sits at Core for now. Moderation, holds, analytics and bulk
+    # upload each have a resource of their own, so selling one of them deeper is
+    # a change to this table and not to any key.
+    ("gradebook", "hub"): CORE,
+    ("gradebook", "sheet"): CORE,
+    ("gradebook", "moderation"): CORE,
+    ("gradebook", "class"): CORE,
+    ("gradebook", "hold"): CORE,
+    ("gradebook", "release"): CORE,
+    ("gradebook", "result"): CORE,
+    ("gradebook", "setup"): CORE,
 
     # ---- finance ----------------------------------------------------------
     ("finance", "entity"): CORE,

@@ -187,7 +187,7 @@ class LessonFixture(AttendanceFixture):
         *marks* maps a pupil's first name (lower case) to a mark; anyone not
         named is Present and a Late mark arrives at 08:30.
         """
-        from ..services.roster import roster_as_at
+        from schools.vs_students.services.roster import roster_as_at
 
         for entry in roster_as_at(slot.school_class.tenant, slot.school_class, on_date):
             if entry.suspended:

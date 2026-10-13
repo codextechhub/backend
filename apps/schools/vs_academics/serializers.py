@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from vs_rbac.field_enforcement import FieldAccessMixin
+
 from .constants import DEFAULT_ARMS_MAX, NAME_MAX_LENGTH, TERM_NAMES_MAX, TermWord
 from .models import (
     AcademicSession,
@@ -182,17 +184,39 @@ class _ScopedSerializer(_BranchAware):
         return obj.branch.name if obj.branch_id else "School-wide"
 
 
-class DepartmentSerializer(_ScopedSerializer):
+#: The Field Access resource of a department, and of who takes which elective.
+DEPARTMENT_FIELD_RESOURCE = "academics.department"
+ELECTIVES_FIELD_RESOURCE = "academics.electives"
+
+
+class DepartmentSerializer(FieldAccessMixin, _ScopedSerializer):
+    """A department, with the member of staff who heads it.
+
+    ``head`` is ``{id, name}`` or null, and is absent for a role whose Field
+    Access hides it. A head who has left the staff roll reads as null, as
+    :func:`~.services.heads.head_of` answers.
+    """
+
+    field_resource = DEPARTMENT_FIELD_RESOURCE
+    field_access_detail = True
+
     program_count = serializers.SerializerMethodField()
     subject_count = serializers.SerializerMethodField()
+    head = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
         fields = [
             "id", "name", "code", "description", "is_active",
             "branch", "branch_name", "scope_label",
-            "program_count", "subject_count",
+            "program_count", "subject_count", "head",
         ]
+
+    def get_head(self, obj):
+        from .services.heads import display_name, head_of
+
+        head = head_of(obj)
+        return None if head is None else {"id": head.pk, "name": display_name(head)}
 
     def get_program_count(self, obj) -> int:
         return getattr(obj, "program_count_annotated", 0)
@@ -201,10 +225,23 @@ class DepartmentSerializer(_ScopedSerializer):
         return getattr(obj, "subject_count_annotated", 0)
 
 
-class DepartmentWriteSerializer(serializers.ModelSerializer):
+class DepartmentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """A department create or edit.
+
+    ``head`` is the id of a member of staff, or null to clear it. Whether that
+    person belongs to this school and is on its roll is the view's to check
+    (:func:`~.services.heads.resolve_head`), because it needs the tenant.
+    Built with the request in its context, which is what lets Field Access
+    refuse a head from a role that may not write it.
+    """
+
+    field_resource = DEPARTMENT_FIELD_RESOURCE
+
+    head = serializers.IntegerField(source="head_id", required=False, allow_null=True)
+
     class Meta:
         model = Department
-        fields = ["id", "name", "code", "description", "branch", "is_active"]
+        fields = ["id", "name", "code", "description", "branch", "is_active", "head"]
         extra_kwargs = {
             # Generated from the name when omitted, so the drawer's Generate
             # button and an API caller who leaves it out behave alike.
@@ -612,3 +649,64 @@ class AcademicRulesSerializer(serializers.Serializer):
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
+
+
+
+# ── Who takes what ─────────────────────────────────────────────────────────
+
+class ElectiveSubjectSerializer(FieldAccessMixin, serializers.Serializer):
+    """One non-core subject of the class, with how many of the roll take it."""
+
+    field_resource = ELECTIVES_FIELD_RESOURCE
+
+    id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    takers = serializers.IntegerField(read_only=True)
+    roll = serializers.IntegerField(read_only=True)
+
+
+class ElectiveStudentSerializer(FieldAccessMixin, serializers.Serializer):
+    """One student on the class's roll, with the ids of the subjects they take."""
+
+    field_resource = ELECTIVES_FIELD_RESOURCE
+
+    id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    admission_number = serializers.CharField(read_only=True)
+    takes = serializers.ListField(child=serializers.IntegerField(), read_only=True)
+
+
+class ElectiveClassTermSerializer(FieldAccessMixin, serializers.Serializer):
+    """The who-takes-what screen for one class and one term."""
+
+    field_resource = ELECTIVES_FIELD_RESOURCE
+
+    term = serializers.DictField(read_only=True)
+    can_edit = serializers.BooleanField(read_only=True)
+    subjects = ElectiveSubjectSerializer(many=True, read_only=True)
+    students = ElectiveStudentSerializer(many=True, read_only=True)
+
+    def get_fields(self):
+        # ``class`` is a keyword, so it cannot be declared as an attribute.
+        return {"class": serializers.DictField(read_only=True), **super().get_fields()}
+
+
+class ElectiveChangeSerializer(FieldAccessMixin, serializers.Serializer):
+    """One student and one subject, taken or not taken."""
+
+    field_resource = ELECTIVES_FIELD_RESOURCE
+
+    student = serializers.IntegerField()
+    subject = serializers.IntegerField()
+    takes = serializers.BooleanField()
+
+
+class ElectiveWriteSerializer(serializers.Serializer):
+    """The body of a save: the changes, which may not be empty.
+
+    Carries no Field Access of its own. Each change is judged by
+    :class:`ElectiveChangeSerializer`, which names the field being written.
+    """
+
+    changes = ElectiveChangeSerializer(many=True, allow_empty=False)

@@ -339,6 +339,10 @@ class DebtorRow:
     session. It is empty only where there is genuinely nothing to say - a
     reference that names no child, or a child with no active placement - because
     the FAL still will not invent a class it cannot read.
+
+    ``oldest_unpaid_on`` is the date the debtor's oldest unpaid bill fell due
+    (its invoice date where it carries no due date), the same date ``ageing``
+    is bucketed from. It is ``None`` only when no such date can be read.
     """
 
     student_ref: StudentRef
@@ -347,6 +351,7 @@ class DebtorRow:
     outstanding: Kobo
     ageing: AgeingBucket
     branch_ref: Optional[BranchRef] = None
+    oldest_unpaid_on: Optional[date] = None
 
 
 class InvoiceStatus(str, Enum):

@@ -158,3 +158,33 @@ def teaching_days_elapsed(term, events, on_date, *, school_class=None,
             count += 1
         day += timedelta(days=1)
     return count
+
+
+def results_day(tenant, term, branch=None):
+    """The date results are released for *term*, or None when none is planned.
+
+    It is the start date of the earliest ``RESULTS_DAY`` calendar entry of the
+    term's school year that begins inside the term's dates. An entry that
+    carries no branch is the whole school's and applies to every branch; one
+    that names a branch applies to that branch alone, and where it exists it
+    overrides the school's date for that branch, being the more specific plan.
+    Asked with no *branch*, only the school-wide entries are considered, since
+    a single branch's date is not the school's.
+
+    A system read: it applies no caller narrowing, which the calling module
+    owns.
+    """
+    from django.db.models import Min
+
+    from ..models import CalendarEvent, EventType
+
+    inside = CalendarEvent.objects.filter(
+        tenant=tenant, session_id=term.session_id,
+        event_type=EventType.RESULTS_DAY,
+        start_date__gte=term.start_date, start_date__lte=term.end_date,
+    )
+    if branch is not None:
+        own = inside.filter(branch=branch).aggregate(day=Min("start_date"))["day"]
+        if own is not None:
+            return own
+    return inside.filter(branch__isnull=True).aggregate(day=Min("start_date"))["day"]

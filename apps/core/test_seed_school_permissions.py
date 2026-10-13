@@ -79,8 +79,21 @@ class SeedSchoolPermissionsKeyTests(TestCase):
                 f"Expected permission key {key} to be created.",
             )
 
+    def test_the_gradebook_module_registers_its_fourteen_keys(self):
+        keys = set(
+            Permission.objects.filter(module_id="gradebook").values_list("key", flat=True)
+        )
+        self.assertEqual(keys, {
+            "gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.enter",
+            "gradebook.sheet.enter_any", "gradebook.sheet.remind",
+            "gradebook.moderation.approve", "gradebook.class.submit",
+            "gradebook.class.publish", "gradebook.hold.view", "gradebook.hold.update",
+            "gradebook.release.view", "gradebook.result.view", "gradebook.setup.view",
+            "gradebook.setup.update",
+        })
+
     def test_total_key_count(self):
-        """The school and academics modules register exactly 95 keys.
+        """The school and academics modules register exactly 97 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -115,7 +128,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         """
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            95,
+            97,
         )
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
@@ -226,13 +239,22 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every school and academics key (95) and every
+        """A school admin holds every school and academics key (97), every
         attendance key but ``attendance.register.mark`` (10), which is the class
         teacher's own-class key and is superseded for an administrator by
-        ``attendance.register.mark_any``.
+        ``attendance.register.mark_any``, and nine gradebook keys: everything
+        but entering scores (the main teacher's), moderating, submitting a class
+        and the fee-hold update key (the finance admin's), and
+        ``gradebook.sheet.enter_any``, which no role holds by default.
         """
         keys = self._defaults("school_admin")
-        self.assertEqual(len(keys), 105)
+        self.assertEqual(len(keys), 116)
+        self.assertEqual(
+            {k for k in keys if k.startswith("gradebook.")},
+            {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
+             "gradebook.class.publish", "gradebook.hold.view", "gradebook.release.view",
+             "gradebook.result.view", "gradebook.setup.view", "gradebook.setup.update"},
+        )
         self.assertNotIn("attendance.register.mark", keys)
         self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.field_access.update", self._defaults("school_admin"))
@@ -266,7 +288,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """53 permissions cover branch-level school operations.
+        """55 permissions cover branch-level school operations.
 
         A branch admin draws the org chart and appoints people to it, and the
         views keep those writes to their own branch's units and posts.
@@ -306,9 +328,16 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         key and moves nobody.
         """
         branch_admin = self._defaults("branch_admin")
-        # 53 school and academics keys, plus the nine attendance keys a branch
-        # administrator holds: everything but settings and the own-class mark.
-        self.assertEqual(len(branch_admin), 62)
+        # 55 school and academics keys, plus the nine attendance keys a branch
+        # administrator holds (everything but settings and the own-class mark),
+        # plus six gradebook keys: the hub, reading and reminding on sheets,
+        # the release list, a student's results and reading assessment setup.
+        self.assertEqual(len(branch_admin), 70)
+        self.assertEqual(
+            {k for k in branch_admin if k.startswith("gradebook.")},
+            {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
+             "gradebook.release.view", "gradebook.result.view", "gradebook.setup.view"},
+        )
         self.assertIn("attendance.register.mark_any", branch_admin)
         self.assertIn("attendance.correction.approve", branch_admin)
         self.assertNotIn("attendance.settings.update", branch_admin)
@@ -330,7 +359,12 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """12 = 13, less school.teachers.view: a teacher reads colleagues'
+        """14 = 12, plus academics.electives.view and .update: a teacher reads
+        who takes which elective in any class they can open, and saves it for
+        the class they lead. The save is judged per class by the view, so the
+        key opens no class a teacher does not lead.
+
+        12 = 13, less school.teachers.view: a teacher reads colleagues'
         profiles as far as the school's staff profile policy shows colleagues
         and line managers, and their own through the same policy. Holding the
         directory key read every colleague at their branch in full.
@@ -358,11 +392,19 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        # 12 school and academics keys, plus the three attendance keys a teacher
+        # 14 school and academics keys, plus the three attendance keys a teacher
         # holds: reading a register, taking their own class's, and asking for
         # a correction. Taking any class, reminding and deciding are the
-        # administrators'.
-        self.assertEqual(len(keys), 15)
+        # administrators'. Plus four gradebook keys: reading sheets, entering
+        # the scores of the subjects they lead, moderating as a head of
+        # department and submitting the class they lead; which sheet, subject or
+        # class is the service's rule, not the key's.
+        self.assertEqual(len(keys), 21)
+        self.assertEqual(
+            {k for k in keys if k.startswith("gradebook.")},
+            {"gradebook.sheet.view", "gradebook.sheet.enter",
+             "gradebook.moderation.approve", "gradebook.class.submit"},
+        )
         self.assertEqual(
             {k for k in keys if k.startswith("attendance.")},
             {"attendance.register.view", "attendance.register.mark",
@@ -427,9 +469,10 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are every school and academics key, and every
-        # attendance key but the class teacher's own-class mark.
-        self.assertEqual(len(keys), 105)
+        # school_admin defaults are every school and academics key, every
+        # attendance key but the class teacher's own-class mark, and nine
+        # gradebook keys.
+        self.assertEqual(len(keys), 116)
         self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
@@ -482,7 +525,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 15)
+        self.assertEqual(len(keys), 21)
         self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
@@ -542,6 +585,8 @@ class SchoolDefaultsReachCopiesOnceTests(TestCase):
         cls.sunrise_admin = provision(sunrise, "school_admin")
         cls.sunrise_branch_admin = provision(sunrise, "branch_admin", sunrise_main)
         cls.sunrise_teacher = provision(sunrise, "teacher", sunrise_main)
+        cls.bright_finance = provision(bright, "finance_admin")
+        cls.sunrise_finance = provision(sunrise, "finance_admin")
         cls.admin_copies = {
             cls.bright_admin.pk, cls.lekki_admin.pk, cls.ikeja_admin.pk,
             cls.sunrise_admin.pk, cls.sunrise_branch_admin.pk,
@@ -597,6 +642,36 @@ class SchoolDefaultsReachCopiesOnceTests(TestCase):
 
         self.assertEqual(
             self.holders(self.NEW_KEY), self.admin_copies - {self.sunrise_admin.pk},
+        )
+
+    def test_the_fee_hold_keys_reach_every_finance_admin_copy_and_nobody_else_below_admin(self):
+        """Finance Admin owns finance and payments by prefix, and the gradebook's
+        fee-hold keys by this seed. Both schools opened before holds shipped; on
+        the next run each school's Finance Admin can see holds and place them,
+        each School Admin can see them, and no Branch Admin or Teacher can.
+        """
+        keys = ("gradebook.hold.view", "gradebook.hold.update")
+        PrebuiltRolePermission.objects.filter(permission_id__in=keys).delete()
+        TenantRolePermission.objects.filter(permission_id__in=keys).delete()
+
+        _run_school_seed()
+
+        finance = {self.bright_finance.pk, self.sunrise_finance.pk}
+        self.assertEqual(self.holders("gradebook.hold.update"), finance)
+        self.assertEqual(
+            self.holders("gradebook.hold.view"),
+            finance | {self.bright_admin.pk, self.sunrise_admin.pk},
+        )
+        for role in (self.lekki_admin, self.lekki_teacher, self.sunrise_branch_admin):
+            self.assertFalse(self.holds(role, "gradebook.hold.view"))
+
+    def test_nobody_holds_the_enter_any_key_by_default(self):
+        _run_school_seed()
+        self.assertEqual(self.holders("gradebook.sheet.enter_any"), set())
+        self.assertFalse(
+            PrebuiltRolePermission.objects.filter(
+                permission_id="gradebook.sheet.enter_any",
+            ).exists()
         )
 
     def test_a_second_run_adds_nothing(self):

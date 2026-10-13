@@ -384,7 +384,7 @@ class AttendanceFixture(TestCase):
         named is Present and a Late mark arrives at 08:30. Returns the submit
         response.
         """
-        from ..services.roster import roster_as_at
+        from schools.vs_students.services.roster import roster_as_at
 
         for entry in roster_as_at(school_class.tenant, school_class, on_date):
             if entry.suspended:

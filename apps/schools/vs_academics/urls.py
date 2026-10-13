@@ -4,6 +4,7 @@ from .views import (
     AcademicRulesView,
     ClassArchiveView,
     ClassDetailView,
+    ClassElectivesView,
     ClassListCreateView,
     ClassRestoreView,
     DepartmentArchiveView,
@@ -70,6 +71,7 @@ urlpatterns = [
     path("classes/<int:pk>/", ClassDetailView.as_view(), name="academics-class-detail"),
     path("classes/<int:pk>/archive/", ClassArchiveView.as_view(), name="academics-class-archive"),
     path("classes/<int:pk>/restore/", ClassRestoreView.as_view(), name="academics-class-restore"),
+    path("classes/<int:pk>/electives/", ClassElectivesView.as_view(), name="academics-class-electives"),
 
     path("subjects/", SubjectListCreateView.as_view(), name="academics-subject-list"),
     path("subjects/<int:pk>/", SubjectDetailView.as_view(), name="academics-subject-detail"),

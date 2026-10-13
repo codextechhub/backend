@@ -20,8 +20,8 @@ whose Field Access hides the mark still sees which days were open, closed or
 missed, and the mark is the one field it loses.
 
 **The class of a day is the class the pupil was placed in that day**, read from
-their placements as of the date (:func:`~.roster._placement_in_force`) and their
-status log, never the class they are in now. A pupil who moved from JSS1 A to
+their placements as of the date (``vs_students.services.roster.placement_in_force``)
+and their status log, never the class they are in now. A pupil who moved from JSS1 A to
 JSS1 B on the 20th has the first half of the term judged against JSS1 A's
 registers and calendar and the second against JSS1 B's.
 Every day the pupil was on the roll carries that class's ``class_id``, so a
@@ -64,7 +64,8 @@ from ..models import ClassRegister, CorrectionRequest, MarkChange, StudentMark
 from . import lessons, missed, notices
 from .days import DayCalendar
 from .rates import rate_percent
-from .roster import _placement_in_force, status_on
+from schools.vs_students.services.roster import placement_in_force, status_on
+from .term_summary import counts_from_tally, empty_tally
 from .terms import chosen_term, term_block, terms_to_show
 
 MARKED = "MARKED"
@@ -144,7 +145,7 @@ def student_tab(tenant, user, student_id, term_id=None) -> dict:
 
 def _current_class(enrolments, as_at: dt.date):
     """The class the pupil was placed in on *as_at*, or None."""
-    current = _placement_in_force(enrolments, as_at)
+    current = placement_in_force(enrolments, as_at)
     return current.school_class if current is not None else None
 
 
@@ -188,7 +189,7 @@ def _cell(day, enrolments, logs, calendar, student, submitted, marks_by_register
         "date": day, "state": NOT_ON_ROLL, "class_id": None, "mark": None,
         "arrived_at": None, "closed_reason": None,
     }
-    placement = _placement_in_force(enrolments, day)
+    placement = placement_in_force(enrolments, day)
     status = status_on(logs, day)
     if placement is None or status in LEAVES_THE_ROLL:
         return cell
@@ -218,22 +219,22 @@ def _cell(day, enrolments, logs, calendar, student, submitted, marks_by_register
 
 
 def _counts(cells) -> dict:
-    tally = {code: 0 for code in Mark.values}
+    tally = empty_tally()
     not_taken = 0
     for cell in cells:
         if cell["state"] == MARKED:
             tally[cell["mark"]] += 1
         elif cell["state"] == NOT_TAKEN:
             not_taken += 1
-    present = tally[Mark.PRESENT] + tally[Mark.LATE]
+    counts = counts_from_tally(tally, not_taken)
     return {
-        "present": present,
-        "late": tally[Mark.LATE],
-        "absent": tally[Mark.ABSENT],
-        "excused": tally[Mark.EXCUSED],
-        "not_taken": not_taken,
-        "opened": present + tally[Mark.ABSENT] + tally[Mark.EXCUSED] + not_taken,
-        "rate": rate_percent(present, tally[Mark.ABSENT], tally[Mark.EXCUSED]),
+        "present": counts.present,
+        "late": counts.late,
+        "absent": counts.absent,
+        "excused": counts.excused,
+        "not_taken": counts.not_taken,
+        "opened": counts.opened,
+        "rate": rate_percent(counts.present, counts.absent, counts.excused),
     }
 
 

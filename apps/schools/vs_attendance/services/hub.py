@@ -52,7 +52,7 @@ from . import corrections, lessons, missed
 from .next_lesson import next_lesson
 from .rates import rate_percent
 from .registers import RegisterContext, register_status
-from .roster import rosters_as_at
+from schools.vs_students.services.roster import rosters_as_at
 from .scope import (
     active_classes,
     placed_classes,

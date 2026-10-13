@@ -9,6 +9,11 @@ class VsAcademicsConfig(AppConfig):
     label = "vs_academics"
 
     def ready(self):
+        # The fields an administrator may restrict per role.
+        from . import field_access
+
+        field_access.register()
+
         # Registered here, never in vs_exports: the engine keeps no import of
         # a school-shaped module.
         from .export_datasets import register_datasets, register_screens

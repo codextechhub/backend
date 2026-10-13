@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from django.urls import reverse
 
-from vs_config.models import ConfigurationAuditEvent
+from vs_config.models import ConfigurationAuditEvent, ConfigurationDefinition
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -33,6 +33,7 @@ EVENT_TYPES = [
     {"value": "SCHOOL_EVENT", "label": "School event"},
     {"value": "PTA", "label": "PTA"},
     {"value": "SPORTS", "label": "Sports day"},
+    {"value": "RESULTS_DAY", "label": "Results day"},
 ]
 
 DUTY_OPTIONS = [
@@ -54,6 +55,7 @@ DEFAULTS = {
     "closes_school_by_type": {
         "HOLIDAY": True, "MIDTERM_BREAK": True, "EXAM_PERIOD": False,
         "SCHOOL_EVENT": False, "PTA": False, "SPORTS": False,
+        "RESULTS_DAY": False,
     },
     "room_required_to_publish": True,
     "teacher_duty_match": "OFF",
@@ -202,7 +204,11 @@ class CalendarRulesShapeTests(_RulesFixture):
 
     def test_a_save_round_trips_and_answers_with_the_settings(self):
         response = self.save()
-        expected = {**SAVED, "teaching_days": [1, 2, 3, 4, 5, 6]}
+        # The answer lists every kind of entry, including one SAVED leaves out.
+        expected = {
+            **SAVED, "teaching_days": [1, 2, 3, 4, 5, 6],
+            "closes_school_by_type": {**SAVED["closes_school_by_type"], "RESULTS_DAY": False},
+        }
         self.assertEqual(values_of(response.data["data"]), expected)
         again = self.get(self.eze, "calendar-rules").data["data"]
         self.assertEqual(values_of(again), expected)
@@ -254,6 +260,51 @@ class CalendarRulesShapeTests(_RulesFixture):
                 value=value, actor=None, tenant=self.tenant,
             )
         self.assertEqual(values_of(calendar_rules_body(self.tenant)), DEFAULTS)
+
+
+# ── a client that does not know every kind of entry ────────────────────────
+
+class CalendarRulesOlderClientTests(_RulesFixture):
+
+    def stored(self):
+        return calendar_rules_body(self.tenant)["closes_school_by_type"]
+
+    def test_a_submission_without_a_kind_leaves_that_kinds_stored_answer_alone(self):
+        from vs_config.services.resolution import set_value
+
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key="calendar.closes_school_by_type"),
+            value={**DEFAULTS["closes_school_by_type"], "RESULTS_DAY": True},
+            actor=None, tenant=self.tenant,
+        )
+        self.assertNotIn("RESULTS_DAY", SAVED["closes_school_by_type"])
+
+        response = self.put_rules(self.bisi, SAVED)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.stored(), {**SAVED["closes_school_by_type"], "RESULTS_DAY": True})
+        self.assertTrue(response.data["data"]["closes_school_by_type"]["RESULTS_DAY"])
+
+    def test_a_kind_left_out_with_nothing_stored_takes_its_default(self):
+        missing = {
+            k: v for k, v in SAVED["closes_school_by_type"].items() if k != "PTA"
+        }
+
+        self.save(closes_school_by_type=missing)
+
+        self.assertEqual(self.stored()["PTA"], DEFAULTS["closes_school_by_type"]["PTA"])
+
+    def test_a_kind_that_is_sent_is_still_judged(self):
+        response = self.put_rules(self.bisi, {
+            **SAVED,
+            "closes_school_by_type": {**SAVED["closes_school_by_type"], "RESULTS_DAY": "yes"},
+        })
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(
+            response.data["error"]["detail"]["closes_school_by_type"],
+            ["Say true or false for whether an entry of type Results day closes the school."],
+        )
 
 
 # ── refusals ────────────────────────────────────────────────────────────────
@@ -326,11 +377,6 @@ class CalendarRulesRefusalTests(_RulesFixture):
                 "closes_school_by_type"
             ],
             ["'FUNERAL' is not a kind of calendar entry."],
-        )
-        missing = {k: v for k, v in full.items() if k != "PTA"}
-        self.assertEqual(
-            self.refused(closes_school_by_type=missing)["closes_school_by_type"],
-            ["Say whether an entry of type PTA closes the school."],
         )
         self.assertEqual(
             self.refused(closes_school_by_type={**full, "SPORTS": "yes"})[

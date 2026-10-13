@@ -82,6 +82,16 @@ given. Nothing is wrapped in one transaction, so each step commits on its own,
 the notices it triggers go out in order, and a run that fails part way is
 simply run again.
 
+**Different people.** A scenario that needs two parties never leans on the whole-school
+administrator being somebody other than a class teacher: the staff seeder may
+have made that very account the class teacher of C1 or C2. The administrator who
+takes C2's register on the teacher's behalf, the one who decides C1's
+corrections and the one who reminds C2's teacher are each chosen as a holder of
+the permission the action needs who is not the person on the other side of it
+(the whole-school administrator first, then the branch administrator, then
+anyone else holding it). A school with nobody else to do it fails with a
+``CommandError`` that names what is missing.
+
 **Email.** The run forces Django's in-memory mail backend, so no seeded
 address is ever mailed and the console is not flooded with message bodies. The
 in-app notifications the notices produce are written as usual.
@@ -130,9 +140,18 @@ from schools.vs_students.services import enrolment as enrolment_service
 from schools.vs_students.services.status import transition
 from vs_audit.models import AuditEvent
 from vs_config.clock import branch_today, tenant_today
+from vs_rbac.evaluator import resolve_users_with_permission
 from vs_rbac.scoping import WHOLE_TENANT
 
-from schools.vs_attendance.constants import ChangeVia, CorrectionStatus, Mark, NoticeState
+from schools.vs_attendance.constants import (
+    PERM_CORRECTION_APPROVE,
+    PERM_REGISTER_MARK_ANY,
+    PERM_REGISTER_REMIND,
+    ChangeVia,
+    CorrectionStatus,
+    Mark,
+    NoticeState,
+)
 from schools.vs_attendance.models import (
     ClassRegister,
     CorrectionRequest,
@@ -158,7 +177,7 @@ from schools.vs_attendance.services import (
 from schools.vs_attendance.services.days import DayCalendar
 from schools.vs_attendance.services.registers import load_context
 from schools.vs_attendance.services.report import build_report
-from schools.vs_attendance.services.roster import roster_as_at
+from schools.vs_students.services.roster import roster_as_at
 from schools.vs_attendance.services.rules import read_attendance_rules
 
 CAST = ("sunrise-academy", "lagoon-view")
@@ -286,6 +305,33 @@ class Command(BaseCommand):
                 f"seed_onboarding_scenarios first.",
             )
         return user
+
+    def _holder_besides(self, tenant, admin, permission, branch, *, besides, doing):
+        """A user holding *permission* at *branch* who is not *besides*.
+
+        The whole-school administrator is preferred, then the branch
+        administrator the dev school is built with, then the holder with the
+        lowest id, so the choice is the same on every run. Raises
+        ``CommandError`` when nobody qualifies: the scenario needs two people,
+        and one cannot be invented here.
+        """
+        holders = list(
+            resolve_users_with_permission(tenant, branch, permission)
+            .exclude(pk=besides.pk).order_by("pk"),
+        )
+        for user in holders:
+            if user.pk == admin.pk:
+                return user
+        for user in holders:
+            if user.email.startswith("branch.admin@"):
+                return user
+        if holders:
+            return holders[0]
+        raise CommandError(
+            f"{tenant.slug} has nobody besides {besides.full_name} who holds "
+            f"{permission} at {branch.name}, so {doing} cannot be seeded. Give "
+            f"another administrator a role with that permission.",
+        )
 
     # ── the school ────────────────────────────────────────────────────────
 
@@ -585,8 +631,12 @@ class Command(BaseCommand):
 
         if len(cast) > 1:
             c2 = cast[1]
+            behalf = self._holder_besides(
+                tenant, admin, PERM_REGISTER_MARK_ANY, c2.home, besides=c2.teacher_user,
+                doing="a register taken on the class teacher's behalf",
+            )
             for index, day in enumerate(c2.past[:C2_DAYS]):
-                taker = admin if index == 0 else c2.teacher_user
+                taker = behalf if index == 0 else c2.teacher_user
                 self._take(tenant, c2, day, taker)
 
         if len(cast) > 2:
@@ -697,8 +747,12 @@ class Command(BaseCommand):
                 )
                 self._made(f"correction filed: {mark.student.full_name} on {day}")
             if approve is not None and request.status == CorrectionStatus.PENDING:
+                decider = self._holder_besides(
+                    tenant, admin, PERM_CORRECTION_APPROVE, c1.home,
+                    besides=request.requested_by, doing="a decided correction",
+                )
                 corrections.decide(
-                    tenant, admin, request.pk, approve=approve,
+                    tenant, decider, request.pk, approve=approve,
                     decision_note=decision_note,
                 )
                 self._made(
@@ -729,7 +783,11 @@ class Command(BaseCommand):
             tenant=tenant, school_class=c2.school_class, date=today,
         ).exists():
             return
-        reminders.remind(load_context(tenant, admin, c2.school_class.pk, today), admin)
+        sender = self._holder_besides(
+            tenant, admin, PERM_REGISTER_REMIND, c2.home, besides=c2.teacher_user,
+            doing="a reminder to the class teacher",
+        )
+        reminders.remind(load_context(tenant, sender, c2.school_class.pk, today), sender)
         self._made(f"reminder to {c2.teacher_user.full_name} for {c2.name} {today}")
 
     def _retire_a_reason(self, tenant, admin):
