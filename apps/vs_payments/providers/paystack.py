@@ -45,6 +45,7 @@ from .base import (
     Provider,
     SettlementRecord,
     SubaccountResult,
+    RefundResult,
     TransferResult,
     VirtualAccountResult,
     WebhookParseResult,
@@ -69,12 +70,33 @@ _TRANSFER_STATUS = {
 }  # Mapping from Paystack transfer status to neutral status.
 
 
+#: Paystack's refund ``status`` (Refund API reference: pending, processing,
+#: needs-attention, processed, failed) mapped to the neutral one. ``needs-attention``
+#: waits for the payer's bank details through Paystack's retry endpoint, so it is
+#: not final, and neither is ``pending``.
+_REFUND_STATUS = {
+    "processed": "PROCESSED",
+    "failed": "FAILED",
+    "pending": "PROCESSING",
+    "processing": "PROCESSING",
+    "needs-attention": "PROCESSING",
+}
+
+
 # Group behavior for Paystack Provider.
 class PaystackProvider(Provider):
     name = "PAYSTACK"  # Provider lookup key used by the registry.
 
-    def __init__(self, *, secret_key: str, base_url: str = "https://api.paystack.co"):
+    #: The dedicated-account bank used when nothing names one. Paystack's reference
+    #: (``POST /dedicated_account``) gives ``wema-bank`` and ``titan-paystack`` as
+    #: example slugs and states no default; a test key can use only ``test-bank``.
+    LIVE_DEFAULT_PREFERRED_BANK = "wema-bank"
+    TEST_PREFERRED_BANK = "test-bank"
+
+    def __init__(self, *, secret_key: str, base_url: str = "https://api.paystack.co",
+                 dedicated_account_bank: str = ""):
         self.secret_key = secret_key  # Bearer token used for all API requests.
+        self.dedicated_account_bank = (dedicated_account_bank or "").strip()  # Deployment's chosen slug.
         self.base_url = base_url.rstrip("/")  # Normalize away a trailing slash once.
 
     # -- internals ---------------------------------------------------------- #  # Shared request helpers below.
@@ -135,17 +157,34 @@ class PaystackProvider(Provider):
             raw=data,  # Preserve the raw provider data.
         )
 
+    def preferred_bank_slug(self, requested: str = "") -> str:
+        """The bank slug a dedicated account is asked for, never empty.
+
+        Paystack's ``preferred_bank`` takes a bank *slug* (``wema-bank``), not the
+        numeric bank code used for transfers. The order is the caller's choice,
+        then the deployment's (``PAYSTACK_DEDICATED_ACCOUNT_BANK``), then
+        ``test-bank`` for a test key (the only bank a test key can use) or
+        :attr:`LIVE_DEFAULT_PREFERRED_BANK` for a live one.
+        """
+        chosen = (requested or "").strip() or self.dedicated_account_bank
+        if chosen:
+            return chosen
+        if self.secret_key.startswith("sk_test_"):
+            return self.TEST_PREFERRED_BANK
+        return self.LIVE_DEFAULT_PREFERRED_BANK
+
     def create_virtual_account(self, *, reference, customer_name, customer_email="",
-                               bank_code="", metadata=None, subaccount=""):
+                               preferred_bank="", metadata=None, subaccount=""):
         # Paystack requires a Customer first, then a dedicated account against it.  # Two-step account setup.
         first, _, last = (customer_name or "Customer").partition(" ")  # Split the display name into first/last names.
         customer = self._require_ok(self._post("/customer", {  # Create the upstream Paystack customer.
             "email": customer_email or f"{reference}@example.com",  # Fall back to a deterministic placeholder email.
             "first_name": first, "last_name": last or first,  # Use the available name parts.
         }))
-        body = {"customer": customer.get("customer_code", "")}
-        if bank_code:  # Only include preferred bank when the caller supplied one.
-            body["preferred_bank"] = bank_code  # Ask Paystack to prefer that bank.
+        body = {
+            "customer": customer.get("customer_code", ""),
+            "preferred_bank": self.preferred_bank_slug(preferred_bank),
+        }
         if subaccount:  # Deposits settle to the branch's bank, the branch bearing the fee.
             body["subaccount"] = subaccount
             body["bearer"] = "subaccount"
@@ -173,6 +212,50 @@ class PaystackProvider(Provider):
             fee=_kobo_or_none(data.get("fees")),
             raw=data,  # Keep the raw response payload.
         )
+
+    # -- refunds ------------------------------------------------------------ #
+    def create_refund(self, *, transaction_reference, amount, currency="NGN",
+                      customer_note="", merchant_note=""):
+        """Ask Paystack to return ``amount`` kobo of a payment (``POST /refund``).
+
+        Paystack facts this relies on, from its Refund API reference
+        (docs-v2.production.paystack.co/docs/api/refund): ``transaction`` is the
+        payment's reference or id (required), ``amount`` is in the currency's
+        subunit and defaults to the whole payment, ``currency``, ``customer_note``
+        and ``merchant_note`` are optional; the reply carries ``id``, ``status``,
+        ``amount``, ``currency`` and ``transaction`` (``id``, ``reference``).
+        Paystack does not return its own fee on the original payment when it
+        refunds it, so nothing is booked for that fee: it stays the tenant's bank
+        charge. There is no merchant reference parameter, so a refund is found
+        again by its ``id`` or by its payment.
+        """
+        body = {"transaction": transaction_reference, "amount": int(amount), "currency": currency}
+        if customer_note:
+            body["customer_note"] = customer_note[:255]
+        if merchant_note:
+            body["merchant_note"] = merchant_note[:255]
+        data = self._require_ok(self._post("/refund", body))
+        return _refund_result(data, transaction_reference)
+
+    def verify_refund(self, *, provider_reference="", transaction_reference="", amount=0):
+        """The current answer for a refund (``GET /refund/<id>``).
+
+        With no id, the payment's refunds are listed (``GET /refund?transaction=``)
+        and the newest of ``amount`` kobo, or the newest of any amount when none
+        is given, answers; none found reads as still processing.
+        """
+        if provider_reference:
+            data = self._require_ok(self._get(f"/refund/{provider_reference}"))
+            return _refund_result(data, transaction_reference)
+        rows = self._require_ok(self._get(f"/refund?transaction={transaction_reference}"))
+        rows = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        if amount:
+            rows = [row for row in rows if _kobo_or_none(row.get("amount")) == int(amount)]
+        if not rows:
+            return RefundResult(transaction_reference=transaction_reference,
+                                status="PROCESSING", provider_status="pending")
+        newest = max(rows, key=lambda row: _kobo_or_none(row.get("id")) or 0)
+        return _refund_result(newest, transaction_reference)
 
     # -- settlement subaccounts ------------------------------------------- #
     def create_subaccount(self, *, business_name, settlement_bank_code, account_number,
@@ -345,7 +428,9 @@ class PaystackProvider(Provider):
                 amount=int(data.get("refund_amount") or data.get("amount")
                            or transaction_block.get("amount") or 0),
                 currency=data.get("currency", "NGN"),
-                dedupe_key=f"PAYSTACK:{event}:{data.get('id', '') or reference}",
+                dedupe_key=_dedupe_key(
+                    event, data.get("id"), data.get("refund_reference"), reference,
+                    raw_body=raw_body),
                 destination_account_number="",
                 raw=payload,
             )
@@ -374,12 +459,28 @@ class PaystackProvider(Provider):
             status=status,  # Neutral status for the downstream confirm flow.
             amount=int(data.get("amount", 0) or 0),
             currency=data.get("currency", "NGN"),
-            dedupe_key=f"PAYSTACK:{event}:{reference or data.get('id', '')}",
+            dedupe_key=_dedupe_key(event, reference, data.get("id"), raw_body=raw_body),
             destination_account_number=(
                 _dedicated_nuban(data) if direction == "COLLECTION" else ""
             ),
             raw=payload,  # Keep the original normalized payload.
         )
+
+
+def _dedupe_key(event: str, *identifiers, raw_body: bytes = b"") -> str:
+    """The idempotency key of one event: its type and the first stable id it carries.
+
+    Events about a payment or transfer carry our reference or Paystack's id.
+    Others (``dedicatedaccount.assign.*``, ``customeridentification.*``) may
+    carry neither at the top level, and a key ending in nothing would make a
+    second, different event of the same type look like a re-delivery. The last
+    resort is a hash of the raw body: a genuine re-delivery repeats the body, a
+    different event does not.
+    """
+    for identifier in identifiers:
+        if identifier not in (None, ""):
+            return f"PAYSTACK:{event}:{identifier}"
+    return f"PAYSTACK:{event}:{hashlib.sha256(raw_body or b'').hexdigest()}"
 
 
 #: Paystack's ``data.resolution`` on ``charge.dispute.resolve``. ``declined`` and
@@ -397,6 +498,27 @@ _DISPUTE_RESOLUTIONS = {
 def _dispute_outcome(data: dict) -> str:
     """The neutral outcome a dispute resolution reports, or "" when it names none."""
     return _DISPUTE_RESOLUTIONS.get(str(data.get("resolution", "") or "").strip().lower(), "")
+
+
+def _refund_result(data, transaction_reference="") -> RefundResult:
+    """The neutral view of one Paystack refund object."""
+    data = data if isinstance(data, dict) else {}
+    transaction = data.get("transaction")
+    if isinstance(transaction, dict):
+        reference = transaction.get("reference") or transaction_reference
+    else:
+        reference = str(transaction or "") or transaction_reference
+    status = str(data.get("status", "") or "").strip().lower()
+    return RefundResult(
+        transaction_reference=str(reference or ""),
+        provider_reference=str(data.get("id", "") or ""),
+        status=_REFUND_STATUS.get(status, "PROCESSING"),
+        provider_status=status,
+        amount=_kobo_or_none(data.get("amount")) or 0,
+        currency=str(data.get("currency", "") or "NGN"),
+        failure_reason=str(data.get("message", "") or "") if status == "failed" else "",
+        raw=data,
+    )
 
 
 def _kobo_or_none(value):

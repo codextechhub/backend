@@ -14,6 +14,9 @@ reads:
   (:func:`vs_payments.services.collection_branch_id`). The Okafor family is
   filed under Ikeja and pays a Lekki invoice online; the money is Lekki's, so
   Lekki's clerk reaches that collection and Ikeja's does not;
+* a **refund through the provider** is the branch of the finance refund it
+  carries, which is the branch of the payment it returns (a refund returns only
+  its own branch's money);
 * a **virtual account** is the branch its deposits belong to
   (:func:`vs_payments.services.virtual_account_branch_id`);
 * a **payout** is the branch whose bank account the money leaves
@@ -64,6 +67,7 @@ from .models import (
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
+    ProviderRefund,
     VirtualAccount,
     WebhookEvent,
 )
@@ -110,6 +114,10 @@ class PaymentsReach:
 
     def collections(self):
         return self.scope.filter(CollectionIntent.objects.filter(entity=self.entity))
+
+    def provider_refunds(self):
+        """Refunds returned to payers through the provider: the branch whose money they return."""
+        return self.scope.filter(ProviderRefund.objects.filter(entity=self.entity))
 
     def virtual_accounts(self):
         return self.scope.filter(VirtualAccount.objects.filter(entity=self.entity))

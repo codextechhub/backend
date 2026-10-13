@@ -276,6 +276,10 @@ REST_FRAMEWORK = {
         "school_brand":      "240/hour",
         "guide_analytics": "120/minute",
         "payments_webhook": "120/minute",
+        # The payer's return page asking how its payment went: by IP as a
+        # backstop, and per reference so one page polling cannot hammer the provider.
+        "payments_public_status": "240/minute",
+        "payments_public_status_reference": "30/minute",
         # ID-card login is bounded by both the caller IP and the random card
         # identifier, so distributed callers cannot work one copied card.
         "login_preview":      "10/minute",
@@ -611,6 +615,8 @@ PLATFORM_ISSUER = {
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
 PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")
 PAYSTACK_BASE_URL = config("PAYSTACK_BASE_URL", default="https://api.paystack.co")
+# Bank slug (not code) asked for on dedicated virtual accounts; empty uses the adapter's default.
+PAYSTACK_DEDICATED_ACCOUNT_BANK = config("PAYSTACK_DEDICATED_ACCOUNT_BANK", default="")
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/

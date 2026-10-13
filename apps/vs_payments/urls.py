@@ -1,12 +1,19 @@
 """URL routes for vs_payments (mounted at /v1/payments/)."""
 from django.urls import path
 
-from . import views, views_custody
+from . import views, views_custody, views_public, views_refunds
 
 urlpatterns = [
+    path("public/collections/<str:reference>/status/",
+         views_public.PublicCollectionStatusView.as_view(), name="payments-public-collection-status"),
     path("collections/", views.CollectionListCreateView.as_view(), name="payments-collections"),
     path("collections/summary/", views.CollectionSummaryView.as_view(), name="payments-collections-summary"),
     path("collections/<int:pk>/", views.CollectionDetailView.as_view(), name="payments-collection-detail"),
+    path("refunds/", views_refunds.ProviderRefundListCreateView.as_view(), name="payments-refunds"),
+    path("refunds/<int:pk>/", views_refunds.ProviderRefundDetailView.as_view(),
+         name="payments-refund-detail"),
+    path("refunds/<int:pk>/pay-from-bank/", views_refunds.ProviderRefundPayFromBankView.as_view(),
+         name="payments-refund-pay-from-bank"),
     path("virtual-accounts/", views.VirtualAccountListCreateView.as_view(), name="payments-virtual-accounts"),
     path("virtual-accounts/<int:pk>/", views.VirtualAccountDetailView.as_view(), name="payments-virtual-account-detail"),
     path("payouts/", views.PayoutListCreateView.as_view(), name="payments-payouts"),

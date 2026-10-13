@@ -26,7 +26,11 @@ authority over another provider's collections or payouts. See :func:`_find_recor
 
 A chargeback or a refund made at the provider is matched to the payment it concerns,
 recorded and raised to people (:func:`vs_payments.held.record_dispute`), and never
-booked automatically: how the loss is borne is a decision, not a reflex.
+booked automatically: how the loss is borne is a decision, not a reflex. The one
+exception is a ``refund.*`` event about a refund this system asked the provider
+for (:mod:`vs_payments.refunds`): it is not a loss to decide on but the answer to
+our own request, so the refund is re-verified with the provider and booked or
+released, and nobody is alerted.
 """
 from __future__ import annotations
 
@@ -93,7 +97,7 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     except json.JSONDecodeError:  # Fall back to an empty payload if the body is not valid JSON.
         payload = {}
     parsed = client.parse_webhook(payload=payload, raw_body=raw_body, headers=headers)  # Normalize provider-specific fields.
-    dedupe_key = parsed.dedupe_key or f"{provider}:{hashlib.sha256(raw_body).hexdigest()}"  # Build a stable fallback idempotency key.
+    dedupe_key = _dedupe_key(provider, parsed, raw_body)
 
     # Persist-or-find atomically; the unique dedupe_key is the idempotency backbone.
     event, created = WebhookEvent.objects.get_or_create(
@@ -124,6 +128,20 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     # store never enqueues a phantom event, and confirm_* stay idempotent under re-delivery.
     transaction.on_commit(lambda: _enqueue(event.id))
     return event  # Return the stored (RECEIVED) event; the task moves it to a terminal state.
+
+
+def _dedupe_key(provider: str, parsed, raw_body: bytes) -> str:
+    """The idempotency key a stored event is unique under, never empty or open-ended.
+
+    An adapter's key names the event type and an id. One that comes back empty,
+    or ends in a bare ``:`` because the event carried no id, would be shared by
+    every event of that type and drop all but the first as a duplicate, so the
+    body's hash stands in. A re-delivery repeats the body and so repeats the key.
+    """
+    key = (parsed.dedupe_key or "").strip()
+    if not key or key.endswith(":"):
+        return f"{key or provider + ':'}{hashlib.sha256(raw_body or b'').hexdigest()}"
+    return key
 
 
 # Support the enqueue workflow.
@@ -236,12 +254,16 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
             event.error = "No matching payout instruction."  # Save a clear operator-facing explanation.
     elif parsed.direction in (PaymentDirection.DISPUTE, PaymentDirection.REFUND):
+        from . import refunds
         from .held import record_dispute
 
         if record is not None:
             event.collection = record
             event.save(update_fields=["collection", "updated_at"])
-        record_dispute(event, record, parsed)  # Recorded and raised; never booked.
+        ours = (parsed.direction == PaymentDirection.REFUND and record is not None
+                and refunds.confirm_refunds_of(record, parsed))
+        if not ours:
+            record_dispute(event, record, parsed)  # Recorded and raised; never booked.
         event.status = WebhookStatus.PROCESSED
         event.error = "" if record is not None else "No matching collection; raised to operators."
     else:  # Unknown event directions are stored but not acted on.

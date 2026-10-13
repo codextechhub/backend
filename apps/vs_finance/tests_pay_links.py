@@ -138,13 +138,25 @@ class CallbackUrlResolutionTests(TestCase):
 class CallbackReachesTheProviderTests(_PayLinkFixture, TestCase):
     """What the PSP is actually told, which is the thing the customer ends up seeing."""
 
-    @override_settings(FRONTEND_BASE_URL=STAGING, PAYMENTS_CALLBACK_URL="")
+    @override_settings(FRONTEND_BASE_URL=STAGING, PAYMENTS_CALLBACK_URL="",
+                       SCHOOL_APP_BASE_URL="", PLATFORM_PAY_BASE_URL="")
     def test_provider_receives_the_environment_frontend(self):
+        """With no payer host to derive, a checkout returns to the staff frontend."""
         entity, _period, customer, invoice = self.build_payable()
         initiate_collection(
             entity=entity, amount=invoice.balance_due, customer=customer, invoice=invoice,
         )
         self.assertEqual(self.provider.callbacks, [f"{STAGING}/payments/return"])
+
+    @override_settings(FRONTEND_BASE_URL=STAGING, PAYMENTS_CALLBACK_URL="",
+                       SCHOOL_APP_BASE_URL=SCHOOL_APP, PLATFORM_PAY_BASE_URL="")
+    def test_a_staff_started_checkout_returns_the_payer_to_their_own_host(self):
+        entity, _period, customer, invoice = self.build_payable()
+        initiate_collection(
+            entity=entity, amount=invoice.balance_due, customer=customer, invoice=invoice,
+        )
+        self.assertEqual(self.provider.callbacks, [payer_return_url(invoice)])
+        self.assertNotIn("intranet", self.provider.callbacks[0])
 
 
 # --------------------------------------------------------------------------- #

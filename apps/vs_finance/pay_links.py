@@ -180,6 +180,10 @@ def payer_return_url(invoice) -> str:
     The same host they paid from. Returning a Corona parent to the Console, or
     to another school's address, would look like the payment went somewhere it
     did not.
+
+    ``invoice`` may be any record naming its books through ``entity`` (a
+    customer, for a collection that names no invoice): the host depends on the
+    books alone.
     """
     base = payer_base_url(invoice)
     return f"{base}/payments/return" if base else ""

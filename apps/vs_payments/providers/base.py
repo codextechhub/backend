@@ -100,6 +100,27 @@ class TransferResult:
 
 
 @dataclass
+class RefundResult:
+    """Outcome of asking a provider to return a payment, or of checking on that request.
+
+    ``status`` is a :class:`~vs_payments.constants.ProviderRefundStatus` value:
+    ``PROCESSING`` while the provider has not finished, ``PROCESSED`` once it has
+    returned the money, ``FAILED`` when it will not. ``provider_status`` keeps the
+    provider's own word (Paystack's ``pending``, ``processing``, ``needs-attention``,
+    ``processed``, ``failed``). ``amount`` is kobo, ``0`` when the provider reports none.
+    """
+
+    transaction_reference: str  # The payment's reference as the provider knows it.
+    provider_reference: str = ""  # The provider's id for the refund.
+    status: str = "PROCESSING"
+    provider_status: str = ""
+    amount: int = 0
+    currency: str = "NGN"
+    failure_reason: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 class SettlementRecord:
     """One automatic settlement: the provider moving the merchant's money to its own bank.
 
@@ -195,10 +216,15 @@ class CollectionProvider(WebhookCapable):
     @abc.abstractmethod
     # Handle the create virtual account workflow.
     def create_virtual_account(self, *, reference: str, customer_name: str,
-                               customer_email: str = "", bank_code: str = "",
+                               customer_email: str = "", preferred_bank: str = "",
                                metadata: dict | None = None,
                                subaccount: str = "") -> VirtualAccountResult:
-        """Provision a dedicated collection account, settling to ``subaccount`` when given."""
+        """Provision a dedicated collection account, settling to ``subaccount`` when given.
+
+        ``preferred_bank`` is the provider's own identifier for the issuing bank
+        (a slug such as ``wema-bank`` at Paystack), not the bank code used for
+        transfers. Empty leaves the choice to the provider's adapter.
+        """
 
     def create_subaccount(self, *, business_name: str, settlement_bank_code: str,
                           account_number: str, percentage_charge: float = 0) -> SubaccountResult:
@@ -225,6 +251,31 @@ class CollectionProvider(WebhookCapable):
     def verify_collection(self, *, reference: str,
                           provider_reference: str = "") -> CollectionStatusResult:
         ...  # Re-check collection status with the PSP.
+
+    def create_refund(self, *, transaction_reference: str, amount: int, currency: str = "NGN",
+                      customer_note: str = "", merchant_note: str = "") -> RefundResult:
+        """Ask the provider to return ``amount`` kobo of a confirmed payment to its payer.
+
+        ``transaction_reference`` names the payment as the provider knows it. A
+        provider that cannot return payments refuses.
+        """
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} does not offer refunds.",
+                            provider=self.name)
+
+    def verify_refund(self, *, provider_reference: str = "", transaction_reference: str = "",
+                      amount: int = 0) -> RefundResult:
+        """The provider's current answer for a refund, by its id or, failing that, its payment.
+
+        With no ``provider_reference`` the payment's refunds are listed and the
+        one of ``amount`` kobo answers, so a refund whose creation reply was lost
+        can still be found.
+        """
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} does not offer refunds.",
+                            provider=self.name)
 
 
 # Group behavior for Payout Provider.

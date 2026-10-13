@@ -26,6 +26,7 @@ from .constants import (
     DEFAULT_SETTLEMENT_INTERVAL_DAYS,
     SETTLEMENT_INTERVAL_RANGE,
     CollectionChannel,
+    CollectionOrigin,
     CollectionStatus,
     CustodyMode,
     HeldMovementKind,
@@ -35,6 +36,7 @@ from .constants import (
     PayoutBatchStatus,
     PayoutPurpose,
     PayoutStatus,
+    ProviderRefundStatus,
     VirtualAccountStatus,
     WebhookStatus,
 )
@@ -161,6 +163,10 @@ class CollectionIntent(TimeStampedModel):
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     channel = models.CharField(
         max_length=20, choices=CollectionChannel.choices, default=CollectionChannel.CHECKOUT,
+    )
+    origin = models.CharField(
+        max_length=10, choices=CollectionOrigin.choices, default=CollectionOrigin.STANDARD,
+        help_text="Where the collection was started: a branch desk, or any other way.",
     )
     reference = models.CharField(
         max_length=64, unique=True,
@@ -549,7 +555,10 @@ class HeldMovement(TimeStampedModel):
     provider balance (the payment less the provider's fee); a payout or a
     settlement lowers it by what leaves the provider balance for it, when the
     transfer is dispatched; a release gives that back when the transfer fails; a
-    chargeback lowers it by what the payer's bank took. ``balance_after`` is the
+    chargeback lowers it by what the payer's bank took; a refund returned to a
+    payer through the provider lowers it by the refund when it is posted
+    (``REFUND``, tied to its ``provider_refund``) and a failed one gives that
+    back (``RELEASE``). ``balance_after`` is the
     branch's balance once the movement applied.
 
     ``platform_journal`` is the entry in the platform's own books moving the
@@ -580,6 +589,10 @@ class HeldMovement(TimeStampedModel):
     )
     payout = models.ForeignKey(
         PayoutInstruction, on_delete=models.PROTECT, related_name="held_movements",
+        null=True, blank=True,
+    )
+    provider_refund = models.ForeignKey(
+        "ProviderRefund", on_delete=models.PROTECT, related_name="held_movements",
         null=True, blank=True,
     )
     reference = models.CharField(max_length=64, blank=True, default="")
@@ -620,6 +633,10 @@ class HeldMovement(TimeStampedModel):
                 fields=["payout", "kind"], condition=models.Q(payout__isnull=False),
                 name="uniq_payments_held_payout_kind_once",
             ),
+            models.UniqueConstraint(
+                fields=["provider_refund", "kind"], condition=models.Q(provider_refund__isnull=False),
+                name="uniq_payments_held_refund_kind_once",
+            ),
         ]
         indexes = [
             models.Index(fields=["tenant", "branch"]),
@@ -628,6 +645,84 @@ class HeldMovement(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.kind} {format_naira(int(self.amount))} for branch {self.branch_id}"
+
+
+class ProviderRefund(TimeStampedModel):
+    """A refund of a customer's credit returned to the payer through the payment provider.
+
+    It ties a finance :class:`~vs_finance.models.Refund` to the confirmed online
+    payment (``collection``) whose money is being sent back, at the provider
+    that took it. The finance refund is the document and its approval; this row
+    is the provider side of it: what was reserved, what the provider answered,
+    and why it failed.
+
+    The life of one: ``LINKED`` when the bursar names the payment, ``PROCESSING``
+    when the refund is posted (the branch's held money is reserved at once and
+    the provider is asked after the post commits), ``PROCESSED`` when the
+    provider confirms it returned the money, which is when the tenant's books
+    record it (Dr customer credit, Cr gateway clearing), and ``FAILED`` when it
+    did not, which gives the reservation back and returns the refund to a draft
+    for a retry or for payment from the branch's own bank. At most one link per
+    refund is ``LINKED``, ``PROCESSING`` or ``PROCESSED`` at a time.
+
+    ``provider_reference`` is the provider's id for the refund, kept once the
+    provider answers; ``transaction_reference`` is the payment's reference as the
+    provider knows it, the key an event names a refund by. ``sent_at`` is
+    stamped before the provider is asked, so a retried task never asks twice.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="provider_refunds",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="payment_refunds", null=True, blank=True,
+        help_text="The branch whose money is returned: the refund's own.",
+    )
+    refund = models.ForeignKey(
+        "vs_finance.Refund", on_delete=models.PROTECT, related_name="provider_refunds",
+    )
+    collection = models.ForeignKey(
+        CollectionIntent, on_delete=models.PROTECT, related_name="provider_refunds",
+        help_text="The confirmed online payment this refund sends back.",
+    )
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    status = models.CharField(
+        max_length=12, choices=ProviderRefundStatus.choices, default=ProviderRefundStatus.LINKED,
+    )
+    amount = MoneyField(help_text="Kobo returned to the payer.")
+    provider_status = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="The provider's own word for where the refund stands.",
+    )
+    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    transaction_reference = models.CharField(max_length=64, blank=True, default="")
+    failure_reason = models.CharField(max_length=255, blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    raw_response = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["refund"],
+                condition=models.Q(status__in=["LINKED", "PROCESSING", "PROCESSED"]),
+                name="uniq_payments_provider_refund_one_live",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "branch", "status"]),
+            models.Index(fields=["provider", "provider_reference"]),
+            models.Index(fields=["collection", "status"]),
+        ]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"Refund {self.refund_id} of {self.transaction_reference}: {format_naira(int(self.amount))} ({self.status})"
 
 
 class HeldSettlement(TimeStampedModel):

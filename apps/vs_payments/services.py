@@ -17,6 +17,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+import secrets
 from typing import NamedTuple
 
 from django.db import IntegrityError, transaction
@@ -34,6 +36,7 @@ from .constants import (
     COLLECTION_PROVISIONAL_FAILURES,
     COLLECTION_SETTLED,
     CollectionChannel,
+    CollectionOrigin,
     CollectionStatus,
     PAYOUT_BATCH_DISPATCHABLE,
     PaymentAuditAction,
@@ -120,6 +123,30 @@ def _new_reference(entity) -> str:
     )
 
 
+#: Hex characters of randomness closing a collection's reference.
+COLLECTION_REFERENCE_RANDOM_CHARS = 16
+
+#: The shape of a reference minted by :func:`_new_collection_reference`: anything the
+#: public status page serves must match it, so a reference that was ever sequential
+#: is never looked up from outside.
+COLLECTION_REFERENCE_RE = re.compile(
+    rf"^{REFERENCE_PREFIX}-\d+-[0-9a-f]{{{COLLECTION_REFERENCE_RANDOM_CHARS}}}$")
+
+
+def _new_collection_reference(entity) -> str:
+    """A collection's reference: the tenant's daily number, closed with random characters.
+
+    The reference is the merchant reference the provider echoes back on the
+    payer's return address (``?reference=``), so it reaches the payer's browser
+    and a public status page can be asked about it. The daily number alone
+    (``CXP-<tenant id><YYMMDD><n>``) is sequential, and anyone could walk it to
+    read other people's payments, so sixty-four bits of randomness follow it.
+    The number stays so references still sort and group by tenant and day.
+    Payout references are never public and keep the plain number.
+    """
+    return f"{_new_reference(entity)}-{secrets.token_hex(COLLECTION_REFERENCE_RANDOM_CHARS // 2)}"
+
+
 def resolve_provider_name(provider=None) -> str:
     """The provider a new collection, virtual account or payout batch is made with.
 
@@ -174,11 +201,33 @@ def default_callback_url() -> str:
     return f"{base}/payments/return" if base else ""  # No frontend configured means no return URL.
 
 
+def payer_callback_url(*, invoice=None, customer=None) -> str:
+    """Where a checkout for this invoice or customer returns the payer, in the order of preference.
+
+    1. The payer's own app host (``vs_finance.pay_links.payer_return_url``), the
+       same answer a pay link gives: a parent who scans a desk code or follows a
+       link lands on their school's address, never on the staff Console, which
+       has no such page.
+    2. ``settings.PAYMENTS_CALLBACK_URL``, an environment's explicit return URL,
+       for a payer whose app host cannot be derived (the platform's own books,
+       no ``SCHOOL_APP_BASE_URL`` configured).
+    3. The staff frontend (``FRONTEND_BASE_URL``).
+
+    An invoice and a customer both name the books they belong to, which is all
+    the host is derived from.
+    """
+    from vs_finance.pay_links import payer_return_url
+
+    record = invoice if invoice is not None else customer
+    return (payer_return_url(record) if record is not None else "") or default_callback_url()
+
+
 # Handle the initiate collection workflow.
 def initiate_collection(*, entity, amount, customer=None, invoice=None,
                         deposit_account=None, channel=None, provider=None,
                         payer_email="", payer_name="", narration="", currency=None,
-                        callback_url=None, metadata=None, actor_user=None):
+                        callback_url=None, metadata=None, actor_user=None,
+                        origin=CollectionOrigin.STANDARD):
     """Create a :class:`CollectionIntent` and ask the provider to start a collection.
 
     Returns the intent with ``checkout_url`` (and ``provider_reference``) populated. No
@@ -191,16 +240,29 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     branch's own collection account, and a branch without one is refused with a
     409 before anything is written. With no deposit account named, a direct
     payment is expected in that collection account.
+
+    ``callback_url`` is where the checkout returns the payer; when none is given
+    it is the payer's own app host (:func:`payer_callback_url`).
+
+    ``origin`` says where the collection was started
+    (:class:`~vs_payments.constants.CollectionOrigin`). A branch desk starts one
+    for the payer to scan and pay on their own phone: the bursar names the invoice,
+    ``payer_email`` is the address the provider sends the receipt to (the
+    customer's billing email when blank), and the screen polls the collection
+    until it is paid. The money books exactly as any other collection does,
+    to the invoice's branch.
     """
+    if origin not in CollectionOrigin.values:
+        raise ValidationError({"origin": "Choose a known collection origin."})
     channel = channel or CollectionChannel.CHECKOUT  # Default to a checkout-style collection.
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     client = get_provider(provider_name)  # Resolve the PSP client once for this request.
-    reference = _new_reference(entity)  # Generate a unique reference for the provider and our ledger.
-    callback_url = callback_url or default_callback_url()  # Use the environment's return URL if none is provided.
+    reference = _new_collection_reference(entity)  # Unguessable: the payer's browser carries it back.
     currency = currency or _entity_currency(entity)  # Keep the collection in the entity's currency by default.
 
     if invoice is not None and customer is None:  # Allow invoice-driven collections to infer the customer.
         customer = invoice.customer  # Pull the customer from the invoice when possible.
+    callback_url = callback_url or payer_callback_url(invoice=invoice, customer=customer)
 
     if customer is None:  # The receipt cannot be posted without a customer AR account.
         raise ValidationError({"customer": "A customer is required to book the collection receipt."})
@@ -221,9 +283,12 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
             deposit_account = custody.branch_collection_account(entity, branch_id).gl_account
         metadata = {**(metadata or {}), "settlement_subaccount": subaccount}
 
+    if origin == CollectionOrigin.DESK:  # Let the provider's dashboard tell the counter apart too.
+        metadata = {**(metadata or {}), "origin": origin}
+
     intent = CollectionIntent.objects.create(
         entity=entity, branch_id=branch_id,
-        provider=provider_name, channel=channel, reference=reference,
+        provider=provider_name, channel=channel, origin=origin, reference=reference,
         amount=amount, currency=currency, customer=customer, invoice=invoice,
         deposit_account=deposit_account, payer_email=payer_email or
         (customer.billing_email if customer else ""),
@@ -329,16 +394,33 @@ def record_virtual_account_deposit(*, virtual_account, reference, amount,
     return intent, created  # Hand the intent back for the ordinary confirm path.
 
 
+_BANK_SLUG = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*")
+
+
+def _preferred_bank_slug(value) -> str:
+    """The cleaned bank slug, or "" for none; a numeric bank code is refused (400)."""
+    slug = str(value or "").strip().lower()
+    if slug and not _BANK_SLUG.fullmatch(slug):
+        raise ValidationError({
+            "preferred_bank": "Name the bank by its slug, for example wema-bank, not by its bank code."})
+    return slug
+
+
 # Handle the create virtual account workflow.
 def create_virtual_account(*, entity, customer, provider=None, deposit_account=None,
-                           bank_code="", actor_user=None):
+                           preferred_bank="", actor_user=None):
     """Provision a dedicated virtual NUBAN for ``customer`` and store it.
 
     The account belongs to the branch its deposits do
     (:func:`virtual_account_branch_id`). When the tenant takes payments directly
     it is created against that branch's provider subaccount, and a branch without
     one is refused with a 409 before the provider is asked.
+
+    ``preferred_bank`` is the provider's identifier for the issuing bank, a slug
+    such as ``wema-bank`` and not a numeric bank code; a value that is not shaped
+    like a slug is refused so a code is never passed on as if it were one.
     """
+    preferred_bank = _preferred_bank_slug(preferred_bank)
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
     branch_id = virtual_account_branch_id(customer=customer, deposit_account=deposit_account)
     subaccount = ""
@@ -358,7 +440,7 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     reference = _new_reference(entity)  # Give the PSP request its own reference.
     result = client.create_virtual_account(  # Ask the PSP to provision the account.
         reference=reference, customer_name=customer.name,
-        customer_email=customer.billing_email, bank_code=bank_code,
+        customer_email=customer.billing_email, preferred_bank=preferred_bank,
         **({"subaccount": subaccount} if subaccount else {}),
     )
 

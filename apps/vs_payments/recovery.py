@@ -23,6 +23,10 @@ this order:
 3. **Payouts still PROCESSING**, including those whose send timed out with the
    outcome unknown. There is no give-up age: money may have left, and a payout
    that stays PROCESSING keeps its bill open for somebody to pay a second time.
+4. **Refunds through the provider still PROCESSING** (:mod:`vs_payments.refunds`):
+   asked again until the provider says processed or failed, and any posted refund
+   whose hand-off to the provider never ran is sent. A refund the provider holds
+   at "needs attention" is asked about on the same backoff and stays in flight.
 
 Each row is re-asked on a backoff measured from its age (:func:`reverify_interval`):
 every half hour at first, hourly after six hours, daily after two days. The
@@ -90,18 +94,21 @@ def _due(row, now) -> bool:
 def recover_unconfirmed_payments(*, now=None) -> dict:
     """Re-run lost webhook events and re-verify unconfirmed collections and payouts.
 
-    Returns counts: ``events`` re-run, ``collections``/``payouts`` asked about,
-    ``collections_booked``/``payouts_booked``, and ``failures``. One row's
+    Returns counts: ``events`` re-run, ``collections``/``payouts``/``refunds`` asked
+    about, ``collections_booked``/``payouts_booked``/``refunds_settled`` (a refund
+    the provider finished, returned or failed), and ``failures``. One row's
     failure is logged and counted and never stops the rest.
     """
     now = now or timezone.now()
     summary = {
         "events": 0, "collections": 0, "collections_booked": 0,
-        "payouts": 0, "payouts_booked": 0, "failures": 0,
+        "payouts": 0, "payouts_booked": 0,
+        "refunds": 0, "refunds_settled": 0, "failures": 0,
     }
     _rerun_stale_events(now, summary)
     _reverify_collections(now, summary)
     _reverify_payouts(now, summary)
+    _reverify_refunds(now, summary)
     return summary
 
 
@@ -198,3 +205,49 @@ def _reverify_payouts(now, summary) -> None:
             summary["payouts_booked"] += 1
             webhooks.settle_events_for(payout=payout)
     summary["payouts"] += asked
+
+
+def _reverify_refunds(now, summary) -> None:
+    """Send posted refunds the provider was never asked about, and ask about those in flight."""
+    from . import refunds
+    from .constants import ProviderRefundStatus
+    from .models import ProviderRefund
+
+    unsent = (
+        ProviderRefund.objects
+        .filter(status=ProviderRefundStatus.PROCESSING, sent_at__isnull=True,
+                updated_at__lte=now - REVERIFY_AFTER)
+        .order_by("updated_at").values_list("pk", flat=True)[:BATCH_LIMIT]
+    )
+    for link_id in list(unsent):
+        try:
+            refunds.send_provider_refund(link_id)  # Claims itself; a second worker no-ops.
+        except Exception:  # noqa: BLE001 - one refund must not stop the sweep
+            logger.exception("recover_unconfirmed_payments: refund %s could not be sent.", link_id)
+            summary["failures"] += 1
+            ProviderRefund.objects.filter(pk=link_id).update(updated_at=now)
+
+    candidates = (
+        ProviderRefund.objects
+        .filter(status=ProviderRefundStatus.PROCESSING, sent_at__isnull=False,
+                updated_at__lte=now - REVERIFY_AFTER)
+        .order_by("updated_at")
+    )
+    asked = 0
+    for link in candidates[:_SCAN_LIMIT]:
+        if asked >= BATCH_LIMIT:
+            break
+        if not _due(link, now):
+            continue
+        asked += 1
+        try:
+            link = refunds.confirm_provider_refund(link)
+        except Exception:  # noqa: BLE001 - one refund must not stop the sweep
+            logger.exception(
+                "recover_unconfirmed_payments: refund %s could not be confirmed.", link.pk)
+            summary["failures"] += 1
+            ProviderRefund.objects.filter(pk=link.pk).update(updated_at=now)
+            continue
+        if link.status in (ProviderRefundStatus.PROCESSED, ProviderRefundStatus.FAILED):
+            summary["refunds_settled"] += 1
+    summary["refunds"] += asked

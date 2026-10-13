@@ -40,6 +40,13 @@ class VsPaymentsConfig(AppConfig):
         from .custody import refund_guard
 
         register_refund_guard(refund_guard)
+        # Pay a refund tied to an online payment back through the provider; finance
+        # hands it over when the refund posts.
+        from vs_finance.credit_notes import register_refund_channel
+
+        from .refunds import channel as provider_refund_channel
+
+        register_refund_channel(provider_refund_channel)
         # Money that moved through the gateway is a record kept for the
         # statutory period, like the ledger it posts to.
         from core import retention
@@ -51,11 +58,13 @@ class VsPaymentsConfig(AppConfig):
             HeldSettlement,
             PayoutBatch,
             PayoutInstruction,
+            ProviderRefund,
         )
 
         retention.register(CollectionIntent, dated_record("created_at", "an online collection"))
         retention.register(PayoutBatch, dated_record("created_at", "a payout batch"))
         retention.register(PayoutInstruction, dated_record("created_at", "a payout"))
+        retention.register(ProviderRefund, dated_record("created_at", "a refund through the provider"))
         retention.register(HeldMovement, dated_record("occurred_on", "a held-funds movement"))
         retention.register(HeldSettlement, dated_record("created_at", "a held-funds settlement"))
 

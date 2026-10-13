@@ -415,6 +415,11 @@ def _void_refund_atomic(refund, *, actor_user=None, date=None):
 
     refund = Refund.objects.select_for_update(of=("self",)).get(pk=refund.pk)
     _guard_posted(refund, "refund")
+    from .credit_notes import refund_void_blocker
+
+    blocker = refund_void_blocker(refund)
+    if blocker:
+        raise PostingError(blocker)
     allocations = list(
         RefundAllocation.objects.select_for_update().filter(refund=refund)
         .order_by("payment_id", "note_id", "pk")

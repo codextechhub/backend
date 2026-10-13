@@ -184,7 +184,7 @@ def _locked_balance(tenant_id, branch_id):
 
 
 def _move(*, tenant, branch_id, kind, amount, on, reference="", narration="",
-          collection=None, payout=None, actor_user=None, balance=None):
+          collection=None, payout=None, provider_refund=None, actor_user=None, balance=None):
     """Record one movement of a branch's held balance and mirror it in the platform's books.
 
     Must run inside the caller's transaction. ``balance`` is the branch's row when
@@ -198,7 +198,8 @@ def _move(*, tenant, branch_id, kind, amount, on, reference="", narration="",
     movement = HeldMovement.objects.create(
         tenant=tenant, branch_id=branch_id, kind=kind, amount=int(amount),
         balance_after=balance.balance, occurred_on=on,
-        collection=collection, payout=payout, reference=reference[:64],
+        collection=collection, payout=payout, provider_refund=provider_refund,
+        reference=reference[:64],
         narration=(narration or f"Held for {_branch_label(tenant, branch_id)}")[:255],
         created_by=actor_user,
     )
@@ -441,6 +442,62 @@ def reserve_for_transfer(payout, amount, *, actor_user=None):
         tenant=tenant, branch_id=branch_id, kind=HeldMovementKind.PAYOUT,
         amount=-int(amount), on=_today(tenant), reference=payout.reference,
         payout=payout, actor_user=actor_user, balance=balance,
+    )
+
+
+def reserve_for_refund(link, *, actor_user=None):
+    """Take a refund's amount from the held balance of the branch whose payment it returns.
+
+    Runs inside the posting transaction, under a lock on the branch's balance,
+    so two refunds and a payout for one branch cannot spend the same money. The
+    money leaves the platform's provider balance when the provider returns it,
+    but the reservation is taken now, as a payout's is: the branch cannot spend
+    twice what it is sending back. Refused (409) when the branch holds less; the
+    refund stays a draft and nothing is taken then.
+    """
+    entity = link.entity
+    if not holds_for(entity):
+        raise PaymentStateError("The platform holds no online money for this tenant to refund from.")
+    tenant = entity.tenant
+    branch_id = held_branch_id(entity, link.branch_id)
+    if branch_id is None:
+        raise InsufficientHeldFundsError(
+            "This refund has not been given a branch, so there is no branch's held money "
+            "to return it from. Give the refund its branch first.")
+    balance = _locked_balance(tenant.pk, branch_id)
+    if int(link.amount) > balance.balance:
+        raise InsufficientHeldFundsError(
+            f"{_branch_label(None, branch_id)} has {_naira(max(balance.balance, 0))} of online "
+            f"payments held by the platform, and this refund needs {_naira(link.amount)}. "
+            f"Wait for more online payments to clear, or pay the refund from the branch's "
+            f"bank and record it.",
+            branch=branch_id, held=balance.balance, needed=int(link.amount))
+    return _move(
+        tenant=tenant, branch_id=branch_id, kind=HeldMovementKind.REFUND,
+        amount=-int(link.amount), on=_today(tenant), reference=link.transaction_reference,
+        provider_refund=link, actor_user=actor_user, balance=balance,
+        narration=f"Refund of {link.transaction_reference} returned to the payer",
+    )
+
+
+def release_refund(link, *, reason="", actor_user=None):
+    """Give back what a refund reserved from its branch's held balance, once.
+
+    For a refund the provider failed. Must run inside a transaction. A refund
+    that reserved nothing, or already released it, changes nothing.
+    """
+    from .models import HeldMovement
+
+    reserved = HeldMovement.objects.filter(
+        provider_refund=link, kind=HeldMovementKind.REFUND).first()
+    if reserved is None or HeldMovement.objects.filter(
+            provider_refund=link, kind=HeldMovementKind.RELEASE).exists():
+        return None
+    return _move(
+        tenant=reserved.tenant, branch_id=reserved.branch_id, kind=HeldMovementKind.RELEASE,
+        amount=-reserved.amount, on=_today(reserved.tenant), reference=link.transaction_reference,
+        provider_refund=link, actor_user=actor_user,
+        narration=f"Returned: {reason}" if reason else "",
     )
 
 

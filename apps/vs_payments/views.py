@@ -32,7 +32,7 @@ from vs_finance.money import format_naira
 from vs_finance.models import Account, Customer, Invoice
 from vs_finance.views import resolve_entity
 from vs_finance.views_ops.base import _resolve_account
-from vs_rbac.field_enforcement import can_read
+from vs_rbac.field_enforcement import assert_writable, can_read
 from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
@@ -45,6 +45,7 @@ from .payout_access import may_read_beneficiary
 from .reach import PaymentsReach
 from .constants import (
     COLLECTION_GROUPS,
+    CollectionOrigin,
     PAYOUT_GROUPS,
     VirtualAccountStatus,
     WebhookStatus,
@@ -61,6 +62,21 @@ from .serializers import (
     VirtualAccountSerializer,
     WebhookEventSerializer,
 )
+
+
+def _payer_email(value) -> str:
+    """The address a payer's receipt goes to, checked, or "" when none was given."""
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from django.core.validators import validate_email
+
+    email = str(value or "").strip()
+    if not email:
+        return ""
+    try:
+        validate_email(email)
+    except DjangoValidationError:
+        raise ValidationError({"payer_email": "Enter a valid email address."})
+    return email
 
 
 # Support the paginate workflow.
@@ -288,6 +304,8 @@ class CollectionListCreateView(APIView):
             qs = qs.filter(status=status_)
         if (provider := request.query_params.get("provider")):
             qs = qs.filter(provider=provider)
+        if (origin := request.query_params.get("origin")):
+            qs = qs.filter(origin=origin.upper())
         if (va := request.query_params.get("virtual_account")):
             qs = qs.filter(virtual_account_id=va)
         return _paginate(request, qs.order_by("-created_at", "-id"), CollectionIntentSerializer, self)
@@ -300,7 +318,11 @@ class CollectionListCreateView(APIView):
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject empty or negative collections.
             raise ValidationError({"amount": "Enter an amount greater than zero."})
-        
+        payer_email = _payer_email(body.get("payer_email"))
+        origin = body.get("origin") or CollectionOrigin.STANDARD
+        if "origin" in body:
+            assert_writable(request, "payments.collection", {"origin": origin}, creating=True)
+
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
         customer = _collection_payer(request, entity, body.get("customer"), invoice)
         deposit = _collection_deposit(
@@ -310,13 +332,15 @@ class CollectionListCreateView(APIView):
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
             entity=entity, amount=amount, customer=customer, invoice=invoice,
             deposit_account=deposit, channel=body.get("channel"),
-            provider=body.get("provider"), payer_email=body.get("payer_email", ""),
+            provider=body.get("provider"), payer_email=payer_email,
             payer_name=body.get("payer_name", ""), narration=body.get("narration", ""),
-            metadata=body.get("metadata") or {}, actor_user=request.user,
+            metadata=body.get("metadata") or {}, actor_user=request.user, origin=origin,
         )
 
         return success_response(
-            "Collection initiated.", data=CollectionIntentSerializer(intent).data, status=201,
+            "Collection initiated.",
+            data=CollectionIntentSerializer(intent, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -387,7 +411,9 @@ class CollectionDetailView(APIView):
         if request.query_params.get("verify") in ("1", "true", "True"):
             intent = services.confirm_collection(intent, actor_user=request.user)  # Confirm against the provider before returning.
             
-        return success_response("Collection retrieved.", data=CollectionIntentSerializer(intent).data)
+        return success_response(
+            "Collection retrieved.",
+            data=CollectionIntentSerializer(intent, context={"request": request}).data)
 
 
 # Group endpoint behavior for Virtual Account List Create View.
@@ -451,7 +477,7 @@ class VirtualAccountListCreateView(APIView):
             noun="virtual account")
         va = services.create_virtual_account(  # Delegate provisioning to the service layer.
             entity=entity, customer=customer, provider=request.data.get("provider"),
-            deposit_account=deposit, bank_code=request.data.get("bank_code", ""),
+            deposit_account=deposit, preferred_bank=request.data.get("preferred_bank", ""),
             actor_user=request.user,
         )
         return success_response(

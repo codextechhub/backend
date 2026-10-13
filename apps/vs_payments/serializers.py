@@ -14,6 +14,7 @@ from .models import (
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
+    ProviderRefund,
     VirtualAccount,
     WebhookEvent,
 )
@@ -21,7 +22,19 @@ from .audit import SENTENCE_MARKER
 from .payout_access import trim_vendor_beneficiary
 
 
-class CollectionIntentSerializer(serializers.ModelSerializer):
+class CollectionIntentSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One collection attempt, with the checkout link a payer follows.
+
+    ``checkout_url`` is the provider's hosted checkout page (Paystack's
+    ``authorization_url``), what a desk screen draws as a code and a payer opens
+    on their phone; ``id`` is what the screen polls
+    (``GET /payments/collections/<id>/?verify=1``) until ``status`` reads
+    ``SUCCEEDED``. ``origin`` is the one switched field: it says whether a branch
+    desk started the collection.
+    """
+
+    field_resource = "payments.collection"
+
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
     customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
@@ -35,11 +48,43 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
     class Meta:
         model = CollectionIntent
         fields = [
-            "id", "entity_code", "branch", "provider", "channel", "reference", "provider_reference",
+            "id", "entity_code", "branch", "provider", "channel", "origin", "reference",
+            "provider_reference",
             "amount", "amount_naira", "status", "customer_code", "customer_name", "invoice_id",
             "deposit_account_code", "deposit_account_name",
             "payer_email", "payer_name", "narration", "checkout_url", "payment_id",
             "fee", "settlement_entry_id", "confirmed_at", "created_at",
+        ]
+
+    def get_amount_naira(self, obj):
+        return format_naira(obj.amount)
+
+
+class ProviderRefundSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One refund returned to a payer through the provider.
+
+    The payment it returns, the provider's status and reference and the reason
+    it failed are the registered fields of ``payments.refund``.
+    ``status`` is our own stage and ``provider_status`` the provider's word; both
+    answer to the one ``status`` switch.
+    """
+
+    field_resource = "payments.refund"
+
+    refund_number = serializers.CharField(source="refund.document_number", read_only=True)
+    refund_status = serializers.CharField(source="refund.status", read_only=True)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
+    collection_id = serializers.IntegerField(read_only=True)
+    collection_reference = serializers.CharField(source="collection.reference", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProviderRefund
+        fields = [
+            "id", "refund_id", "refund_number", "refund_status", "branch", "provider",
+            "status", "provider_status", "amount", "amount_naira",
+            "collection_id", "collection_reference", "provider_reference", "failure_reason",
+            "sent_at", "processed_at", "created_at",
         ]
 
     def get_amount_naira(self, obj):

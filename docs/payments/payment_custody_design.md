@@ -265,6 +265,26 @@ settlement report *(confirm the field)*; the settlement match books it.
   `ONLINE_REFUNDS_NOT_OFFERED`, at drafting and again at posting
   (`custody.assert_online_refund_allowed`, registered with finance as a refund
   guard). Recording a refund paid from the bank is unaffected.
+- **Held tenant refunds through Paystack (built, `vs_payments/refunds.py`):** a
+  finance refund raised with method *Online / Gateway* can be tied to the confirmed
+  held payment it returns (`POST /v1/payments/refunds/`). The payment must be the
+  refund's customer and branch, and the refund no more than what the payment has
+  left after earlier provider refunds (the payment row is locked). Posting the
+  finance refund, by direct post or on final approval, hands it to the provider
+  channel (`vs_finance.credit_notes.register_refund_channel`) instead of posting a
+  bank journal: in that transaction the branch's held balance is reduced by the
+  amount (refused with `HELD_FUNDS_INSUFFICIENT` if the branch holds less, leaving
+  the refund a draft), the refund waits as `APPROVED` (still reserving the
+  customer's credit), and after commit a worker asks Paystack (`POST /refund`
+  with the payment's reference and the amount in kobo). When Paystack reports it
+  processed (a `refund.*` event or the recovery sweep, always re-verified with
+  `GET /refund/<id>`), the tenant's books record Dr customer credit, Cr gateway
+  clearing in the branch, and the held reduction stands. When it fails, the
+  reduction is released and the refund returns to a draft to be sent again (it goes
+  through the same approval again) or paid from the branch's bank
+  (`.../pay-from-bank/`). Paystack does not return the fee it kept on the original
+  payment, so nothing is booked for it. A refund made in the Paystack dashboard
+  matches none of ours and is recorded and raised as below.
 - **Chargebacks and provider refunds:** Paystack's `charge.dispute.*` and `refund.*`
   events are matched to the payment, recorded (`PROVIDER_DISPUTE_RECEIVED`) and
   sent to the tenant's holders of `payments.webhook.view` and Codex's holders of

@@ -77,6 +77,23 @@ def primary_collection_account(entity, branch=None):
 # Shared blocks                                                               #
 # --------------------------------------------------------------------------- #
 
+def issuer_name(entity) -> str:
+    """The name the issuer of ``entity``'s documents goes by, and nothing else about it.
+
+    The same choice :func:`_issuer_block` makes for ``name`` (the school's name,
+    the platform's configured name, or the ledger entity's), without the pay-to
+    bank or logo lookups, for a screen that names the payee and no more.
+    """
+    school = getattr(entity.tenant, "school_profile", None)
+    if school is not None:
+        return school.name
+    if entity.is_platform:
+        from vs_config.platform_settings import get_platform_profile
+
+        return get_platform_profile().get("name") or entity.name
+    return entity.name
+
+
 def _issuer_block(entity, *, branch=None) -> dict:
     """Letterhead identity for the document's issuer - *the entity keeping the books*.
 

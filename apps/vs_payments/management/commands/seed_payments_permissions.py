@@ -33,6 +33,10 @@ PAYMENTS_RESOURCES = [
     # switches on the role rather than a key of their own.
     ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
+    # Returning an online payment to its payer through the provider. Tying a refund to
+    # the payment it returns decides which payment's money is sent back, so the write
+    # is CRITICAL; posting the finance refund is what sends it.
+    ("refund",          "refunds through the provider", [("view", "NORMAL"), ("create", "CRITICAL")]),
     # Inbound provider webhooks that could not be booked. Viewing exposes provider
     # references and error detail, so it is SENSITIVE; replaying re-runs the confirm
     # services and can book real money, so it is CRITICAL.

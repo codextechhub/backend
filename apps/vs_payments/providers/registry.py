@@ -77,6 +77,7 @@ def _build(name: str) -> Provider:
         return PaystackProvider(  # Return a configured Paystack client.
             secret_key=secret,
             base_url=getattr(settings, "PAYSTACK_BASE_URL", "https://api.paystack.co"),  # Use the default Paystack API host unless overridden.
+            dedicated_account_bank=getattr(settings, "PAYSTACK_DEDICATED_ACCOUNT_BANK", ""),
         )
     if name == PaymentProvider.FAKE:  # No-network adapter; get_provider has checked it is enabled.
         from .fake import FakeProvider

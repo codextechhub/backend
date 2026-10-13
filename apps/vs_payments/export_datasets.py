@@ -64,6 +64,7 @@ def _payouts(scope):
 
 
 _COLLECTION_STATUS = choice_labels("vs_payments.constants.CollectionStatus")
+_COLLECTION_ORIGIN = choice_labels("vs_payments.constants.CollectionOrigin")
 _PAYOUT_STATUS = choice_labels("vs_payments.constants.PayoutStatus")
 _PROVIDER = choice_labels("vs_payments.constants.PaymentProvider")
 
@@ -88,6 +89,7 @@ def register_datasets():
             Field("provider_reference", "Provider reference", "Collection", KIND_TEXT),
             Field("provider", "Provider", "Collection", KIND_CHOICE, choices=_PROVIDER),
             Field("channel", "Channel", "Collection", KIND_TEXT),
+            Field("origin", "Origin", "Collection", KIND_CHOICE, choices=_COLLECTION_ORIGIN),
             Field("status", "Status", "Collection", KIND_CHOICE, choices=_COLLECTION_STATUS),
             Field("amount", "Amount", "Amounts", KIND_MONEY),
             Field("currency", "Currency", "Amounts", KIND_TEXT, source="currency__code"),
@@ -108,6 +110,7 @@ def register_datasets():
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_COLLECTION_STATUS),
             FilterDef("provider", "Provider", FILTER_CHOICE, choices=_PROVIDER),
+            FilterDef("origin", "Origin", FILTER_CHOICE, choices=_COLLECTION_ORIGIN),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
                 ("reference", "Our reference"),
                 ("provider_reference", "Provider reference"),

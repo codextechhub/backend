@@ -188,6 +188,7 @@ RESOURCE_BANDS = {
     ("payments", "webhook"): CORE,
     ("payments", "virtual_account"): PLUS,
     ("payments", "payout"): PLUS,
+    ("payments", "refund"): PLUS,
     ("payments", "report"): PLUS,
     ("payments", "payout_batch"): ADVANCED,
     ("payments", "unattributed_webhook"): ADVANCED,

@@ -19,6 +19,7 @@ import json
 
 from .base import (
     CheckoutResult,
+    RefundResult,
     CollectionStatusResult,
     Provider,
     SubaccountResult,
@@ -58,6 +59,12 @@ class FakeProvider(Provider):
         self.balances: dict[str, int] = {}
         # The automatic settlements ``list_settlements`` reports; a test sets them.
         self.settlements: list = []
+        # Refunds asked for, in order, and the provider's word per payment reference
+        # (``PROCESSING`` until a test forces ``PROCESSED`` or ``FAILED``).
+        self.refunds_created: list[dict] = []
+        self.forced_refund_status: dict[str, str] = {}
+        # A test that wants creation refused sets the error raised by ``create_refund``.
+        self.refund_error: Exception | None = None
 
     def healthcheck(self) -> bool:
         return True
@@ -78,7 +85,7 @@ class FakeProvider(Provider):
         )
 
     def create_virtual_account(self, *, reference, customer_name, customer_email="",
-                               bank_code="", metadata=None, subaccount=""):
+                               preferred_bank="", metadata=None, subaccount=""):
         if subaccount:  # Remember the settlement route a test may assert on.
             self.subaccounts_named[reference] = subaccount
         # Deterministic 10-digit NUBAN from the reference.  # Keep account generation repeatable.
@@ -127,6 +134,39 @@ class FakeProvider(Provider):
 
     # -- payout ------------------------------------------------------------- #  # Money-out behavior.
     # Handle the create transfer workflow.
+    def create_refund(self, *, transaction_reference, amount, currency="NGN",
+                      customer_note="", merchant_note=""):
+        if self.refund_error is not None:
+            raise self.refund_error
+        row = {"id": f"FAKE-RF-{len(self.refunds_created) + 1}",
+               "transaction_reference": transaction_reference, "amount": int(amount),
+               "currency": currency, "customer_note": customer_note,
+               "merchant_note": merchant_note}
+        self.refunds_created.append(row)
+        return RefundResult(
+            transaction_reference=transaction_reference, provider_reference=row["id"],
+            status="PROCESSING", provider_status="pending", amount=int(amount),
+            currency=currency, raw=dict(row),
+        )
+
+    def verify_refund(self, *, provider_reference="", transaction_reference="", amount=0):
+        row = next((r for r in self.refunds_created
+                    if (provider_reference and r["id"] == provider_reference)
+                    or (not provider_reference
+                        and r["transaction_reference"] == transaction_reference
+                        and (not amount or r["amount"] == int(amount)))), None)
+        if row is None:
+            return RefundResult(transaction_reference=transaction_reference,
+                                status="PROCESSING", provider_status="pending")
+        status = self.forced_refund_status.get(row["transaction_reference"], "PROCESSING")
+        return RefundResult(
+            transaction_reference=row["transaction_reference"], provider_reference=row["id"],
+            status=status, provider_status=status.lower(), amount=row["amount"],
+            currency=row["currency"],
+            failure_reason="The payer's bank refused the refund." if status == "FAILED" else "",
+            raw={"forced": status},
+        )
+
     def create_transfer(self, *, reference, amount, currency, account_number, bank_code,
                         account_name="", narration="", metadata=None):
         return TransferResult(  # Return a deterministic transfer response.
@@ -197,7 +237,8 @@ class FakeProvider(Provider):
             status=status,  # Fake status value.
             amount=int(data.get("amount", 0)),
             currency=data.get("currency", "NGN"),
-            dedupe_key=f"FAKE:{payload.get('event', '')}:{data.get('reference', '')}",
+            dedupe_key=(f"FAKE:{payload.get('event', '')}:"
+                        f"{data.get('refund_reference', '') or data.get('reference', '') or data.get('id', '')}"),
             # Mirrors Paystack: a transfer into a dedicated NUBAN names the receiving
             # account on the event, and nothing else ties it to a payer we know.
             destination_account_number=(

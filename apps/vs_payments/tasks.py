@@ -85,6 +85,24 @@ def dispatch_payout_batch(batch_id: int, instance_id, actor_user_id=None):
     )
 
 
+@shared_task(
+    name="vs_payments.send_provider_refund", acks_late=True, reject_on_worker_lost=True,
+)
+# Ask the provider to return one posted refund.
+def send_provider_refund_task(link_id: int):
+    """Ask the provider to return a refund that was posted, outside the posting transaction.
+
+    Enqueued from :class:`vs_payments.refunds.ProviderRefundChannel` via
+    ``transaction.on_commit``, so it only ever runs for a post that is durable.
+    Idempotent: the refund claims itself before the provider is asked, and
+    :func:`vs_payments.recovery.recover_unconfirmed_payments` sends any whose
+    enqueue was lost.
+    """
+    from .refunds import send_provider_refund
+
+    send_provider_refund(link_id)
+
+
 @shared_task(name="vs_payments.dispatch_undispatched_payout_batches")
 # Re-dispatch approved batches whose hand-off never ran.
 def dispatch_undispatched_payout_batches():

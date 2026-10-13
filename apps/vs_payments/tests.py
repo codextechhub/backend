@@ -205,9 +205,10 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(intent.status, CollectionStatus.PROCESSING)
         self.assertTrue(intent.checkout_url)
         self.assertTrue(intent.provider_reference)
-        self.assertEqual(
+        # The daily number, then randomness: the reference reaches the payer's browser.
+        self.assertRegex(
             intent.reference,
-            f"CXP-{entity.tenant_id}{tenant_today(entity.tenant):%y%m%d}1",
+            rf"^CXP-{entity.tenant_id}{tenant_today(entity.tenant):%y%m%d}1-[0-9a-f]{{16}}$",
         )
         self.assertTrue(
             PaymentEvent.objects.filter(

@@ -436,8 +436,9 @@ def customer_refund_available_balances(
       not handed back as cash. (Open *invoices* deliberately do not reduce it; only
       an explicit allocation settles those.)
     * **Pending approvals** reserve their amount, so two requests cannot promise the
-      same credit. Drafts deliberately do not reserve; they are revalidated on submit
-      and again on post.
+      same credit, and so does a refund posted and waiting for its payment channel to
+      confirm the money has gone (``APPROVED``). Drafts deliberately do not reserve;
+      they are revalidated on submit and again on post.
     * **``as_of``** - credit that does not yet exist on the refund's own accounting
       date cannot fund it. Callers must pass the refund date, not today.
 
@@ -515,7 +516,8 @@ def _refund_available(entity, customer_ids, *, exclude_refund_id, as_of, branch,
     debit_notes = CreditNote.objects.filter(
         entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
     pending = Refund.objects.filter(
-        entity=entity, status=DocumentStatus.PENDING_APPROVAL)
+        entity=entity,
+        status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED))
     if customer_ids is not None:
         customer_ids = list(customer_ids)
         debit_notes = debit_notes.filter(customer_id__in=customer_ids)

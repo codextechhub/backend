@@ -843,6 +843,12 @@ class RefundHandler(_FinancePostOnApprove):
                 f"({format_naira(available)}).",
             )
 
+        from .credit_notes import refund_channel_for
+
+        channel = refund_channel_for(document)
+        if channel is not None:  # The channel pays it, so no bank account is needed.
+            channel.preflight(document)
+            return
         deposit = document.deposit_account or (  # Resolve source account for cash out.
             document.bank_account.gl_account if document.bank_account_id else None  # Fallback to bank GL account.
         )

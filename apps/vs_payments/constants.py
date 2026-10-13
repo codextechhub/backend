@@ -41,6 +41,18 @@ class CollectionChannel(models.TextChoices):
     USSD = "USSD", "USSD"  # USSD-based payment flow.
 
 
+class CollectionOrigin(models.TextChoices):
+    """Where a collection was started, so reports can tell the counter from the rest.
+
+    ``DESK``: a member of staff at a branch desk started the checkout and the
+    payer paid on their own phone from a code or link shown there. ``STANDARD``
+    is every other way: a pay link, a payer's own portal, a virtual account.
+    """
+
+    STANDARD = "STANDARD", "Standard"
+    DESK = "DESK", "Taken at a branch desk"
+
+
 # Define Collection Status values.
 class CollectionStatus(models.TextChoices):
     """Lifecycle of a collection intent.
@@ -189,6 +201,11 @@ class PaymentAuditAction(models.TextChoices):
     VIRTUAL_ACCOUNT_REISSUED = "VIRTUAL_ACCOUNT_REISSUED", "Virtual account reissued"  # Old number retired.
     PROVIDER_DISPUTE_RECEIVED = "PROVIDER_DISPUTE_RECEIVED", "Chargeback or refund received"  # Raised, not booked.
     PROVIDER_DISPUTE_RESOLVED = "PROVIDER_DISPUTE_RESOLVED", "Chargeback resolved"  # Won or lost.
+    PROVIDER_REFUND_LINKED = "PROVIDER_REFUND_LINKED", "Refund tied to a payment"  # A refund names the payment it returns.
+    PROVIDER_REFUND_SENT = "PROVIDER_REFUND_SENT", "Refund sent to the provider"  # Money reserved and requested.
+    PROVIDER_REFUND_PROCESSED = "PROVIDER_REFUND_PROCESSED", "Refund returned to the payer"  # Provider paid it back; booked.
+    PROVIDER_REFUND_FAILED = "PROVIDER_REFUND_FAILED", "Refund failed"  # Reserved money released.
+    PROVIDER_REFUND_CANCELLED = "PROVIDER_REFUND_CANCELLED", "Refund taken off the provider"  # Paid from the bank instead.
 
 
 class CustodyMode(models.TextChoices):
@@ -243,6 +260,32 @@ class HeldMovementKind(models.TextChoices):
     OPENING = "OPENING", "Opening balance"  # Money already held when the ledger started.
     DISPUTE = "DISPUTE", "Chargeback"  # A payer's bank took a held payment back.
     DISPUTE_WON = "DISPUTE_WON", "Chargeback won back"  # The dispute went the merchant's way.
+    REFUND = "REFUND", "Refund sent to the payer"  # Reserved when the provider is asked to return a payment.
+
+
+class ProviderRefundStatus(models.TextChoices):
+    """Where a refund returned to a payer through the provider stands.
+
+    ``LINKED``: the refund names the payment it returns and has not been posted
+    yet. ``PROCESSING``: posted, the branch's held money is reserved and the
+    provider has been (or is about to be) asked; the provider's own words for
+    this stage (pending, processing, needs-attention) are kept in
+    ``provider_status``. ``PROCESSED``: the provider returned the money and the
+    books record it. ``FAILED``: it did not, the reservation is released and the
+    refund is back to a draft. ``CANCELLED``: dropped before it was sent.
+    """
+
+    LINKED = "LINKED", "Tied to a payment, not yet posted"
+    PROCESSING = "PROCESSING", "Sent to the provider"
+    PROCESSED = "PROCESSED", "Returned to the payer"
+    FAILED = "FAILED", "Failed; reservation released"
+    CANCELLED = "CANCELLED", "Dropped before it was sent"
+
+
+#: States in which a provider refund still counts against the payment it returns.
+PROVIDER_REFUND_COUNTS = frozenset({
+    ProviderRefundStatus.LINKED, ProviderRefundStatus.PROCESSING, ProviderRefundStatus.PROCESSED,
+})
 
 
 class HeldSettlementStatus(models.TextChoices):

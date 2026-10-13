@@ -533,6 +533,7 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
 
 
 _REFUND_GUARDS: list = []
+_REFUND_CHANNELS: list = []
 
 
 def register_refund_guard(guard):
@@ -556,12 +557,60 @@ def check_refund_method(entity, method):
         guard(entity, method)
 
 
+def register_refund_channel(channel):
+    """Register a channel that pays a refund out through an outside party. Idempotent.
+
+    By default a refund is paid from a bank account and posts at once. A channel
+    is a dependent app's way of paying one another way (the payment provider
+    returning the money to the payer), registered from its ``ready()`` so finance
+    never imports it. It answers four questions about a refund:
+
+    * ``carries(refund)``: whether this refund, being posted now, leaves through
+      the channel;
+    * ``preflight(refund)``: raises when the refund cannot be sent, changing
+      nothing, so a doomed refund is refused before it enters an approval queue;
+    * ``begin(refund, actor_user=)``: called inside the posting transaction in
+      place of the bank journal, raises to refuse, and arranges the hand-over
+      to the outside party for after the transaction commits;
+    * ``void_blocker(refund)``: a sentence saying why a posted refund cannot be
+      voided, or ``""``.
+
+    A refund taken up by a channel is ``APPROVED`` until the outside party
+    confirms the money has gone, when :func:`finish_channel_refund` posts it,
+    or refuses it, when :func:`return_channel_refund_to_draft` gives it back to
+    its maker.
+    """
+    if channel not in _REFUND_CHANNELS:
+        _REFUND_CHANNELS.append(channel)
+    return channel
+
+
+def refund_channel_for(refund):
+    """The registered channel that would pay ``refund`` out, or ``None`` for the bank."""
+    for channel in _REFUND_CHANNELS:
+        if channel.carries(refund):
+            return channel
+    return None
+
+
+def refund_void_blocker(refund) -> str:
+    """Why a posted refund may not be voided, from the first channel that objects, else ``""``."""
+    for channel in _REFUND_CHANNELS:
+        reason = channel.void_blocker(refund)
+        if reason:
+            return reason
+    return ""
+
+
 # Public wrapper for customer refund posting.
 def post_refund(refund, *, actor_user=None):
     """Post a customer :class:`Refund` (``Dr customer-credit (2140), Cr bank``).
 
     A refund pays out a customer's credit balance - so it draws down the
     customer-credit liability, not AR. Capped at the customer's available credit.
+    A refund a registered channel carries (:func:`register_refund_channel`) is
+    handed to it instead of posting a bank journal, and stays ``APPROVED`` until
+    the channel reports the outcome.
     Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
     """
     try:  # Atomic worker performs refund posting.
@@ -574,24 +623,71 @@ def post_refund(refund, *, actor_user=None):
         raise
 
 
+def _lock_refund(refund):
+    """The refund and its customer, locked, in the order every refund payout takes them.
+
+    Serializes every payout for the customer before the derived credit position
+    is read. Without this lock, two different refund rows could both observe the
+    same balance and pay it out concurrently.
+    """
+    from .models import Customer
+
+    refund = type(refund).objects.select_for_update().get(pk=refund.pk)
+    customer = Customer.objects.select_for_update().get(pk=refund.customer_id)
+    return refund, customer
+
+
+def _assert_refund_funded(refund, customer, *, as_of):
+    """Refuse a refund the customer's credit of its own branch does not cover on ``as_of``.
+
+    Availability is measured **on the accounting date given**, not today. Credit
+    that only arrives later has not happened yet as far as this payout is
+    concerned, and paying it out would drive the 2140 liability negative for the
+    gap. Only the refund's own branch's credit can fund it.
+    """
+    from .receivables import customer_refund_available_balance, require_refund_branch_credit
+
+    available = customer_refund_available_balance(
+        customer, exclude_refund_id=refund.pk, as_of=as_of,
+        branch=refund.branch_id)  # Unreserved refundable credit as at the refund date.
+    if refund.amount <= available:
+        return
+    require_refund_branch_credit(  # Name the branch that holds it, if another does.
+        customer, refund.amount, refund.branch_id,
+        as_of=as_of, exclude_refund_id=refund.pk)
+    later = customer_refund_available_balance(
+        customer, exclude_refund_id=refund.pk,
+        branch=refund.branch_id)  # Same figure with no date cutoff.
+    tenant = refund.entity.tenant
+    hint = ""
+    if later > available:  # The shortfall is purely a dating problem - say so.
+        first = _earliest_credit_date(
+            customer, refund.amount, exclude_refund_id=refund.pk, branch=refund.branch_id)
+        hint = (
+            f" {format_naira(later)} is available today, but not as at "
+            f"{format_date(as_of, tenant)}"
+            + (f" - the credit exists from {format_date(first, tenant)}." if first else ".")
+        )
+    raise PostingError(
+        f"Refund of {format_naira(refund.amount)} exceeds {customer.code}'s credit "
+        f"available on {format_date(as_of, tenant)} "
+        f"({format_naira(available)}).{hint}",
+    )
+
+
 @transaction.atomic
 # Transactional customer refund implementation.
 def _post_refund_atomic(refund, *, actor_user=None):
     """Post a draft refund: raise its bank journal and mark it POSTED.
     Steps:
       1. **Guard.** Only a DRAFT refund posts, and the amount must be positive and not exceed the customer's available credit.
-      2. **Post the journal** (``Dr customer-credit (2140), Cr bank``) to pay out the refund.
+      2. **Post the journal** (``Dr customer-credit (2140), Cr bank``) to pay out the refund,
+         or hand the refund to the channel that carries it, which leaves it ``APPROVED``.
       3. **Finalise.** Link the journal, flip status to POSTED, and write a REFUND_POSTED audit record.
         Returns the updated ``refund``. Raises ``PostingError`` on any guard failure;
         ``post_refund`` wraps this to record a rejection on ``FinanceError``.
     """
-    from .models import Customer, JournalEntry, JournalLine
-
-    # Serialize every payout for this customer before reading the derived credit
-    # position. Without this lock, two different refund rows could both observe the
-    # same balance and pay it out concurrently.
-    refund = type(refund).objects.select_for_update().get(pk=refund.pk)
-    customer = Customer.objects.select_for_update().get(pk=refund.customer_id)
+    refund, customer = _lock_refund(refund)
 
     if refund.status != DocumentStatus.DRAFT:  # Only draft refunds can post.
         raise PostingError(
@@ -601,48 +697,36 @@ def _post_refund_atomic(refund, *, actor_user=None):
     if refund.amount <= 0:  # Refund must pay a positive amount.
         raise PostingError("A refund must have a positive amount to post.")
     check_refund_method(refund.entity, refund.method)
+    _assert_refund_funded(refund, customer, as_of=refund.refund_date)
 
-    # Availability is measured **on the refund's own accounting date**, not today.
-    # Credit that only arrives later has not happened yet as far as this payout is
-    # concerned, and paying it out would drive the 2140 liability negative for the gap.
-    # Only the refund's own branch's credit can fund it.
-    from .receivables import customer_refund_available_balance, require_refund_branch_credit
-    available = customer_refund_available_balance(
-        customer, exclude_refund_id=refund.pk, as_of=refund.refund_date,
-        branch=refund.branch_id)  # Unreserved refundable credit as at the refund date.
-    if refund.amount > available:  # Refund cannot exceed stored customer credit.
-        require_refund_branch_credit(  # Name the branch that holds it, if another does.
-            customer, refund.amount, refund.branch_id,
-            as_of=refund.refund_date, exclude_refund_id=refund.pk)
-        later = customer_refund_available_balance(
-            customer, exclude_refund_id=refund.pk,
-            branch=refund.branch_id)  # Same figure with no date cutoff.
-        tenant = refund.entity.tenant
-        hint = ""
-        if later > available:  # The shortfall is purely a dating problem - say so.
-            first = _earliest_credit_date(
-                customer, refund.amount, exclude_refund_id=refund.pk, branch=refund.branch_id)
-            hint = (
-                f" {format_naira(later)} is available today, but not as at "
-                f"{format_date(refund.refund_date, tenant)}"
-                + (f" - the credit exists from {format_date(first, tenant)}." if first else ".")
-            )
-        raise PostingError(
-            f"Refund of {format_naira(refund.amount)} exceeds {customer.code}'s credit "
-            f"available on {format_date(refund.refund_date, tenant)} "
-            f"({format_naira(available)}).{hint}",
-        )
+    channel = refund_channel_for(refund)
+    if channel is not None:  # The outside party pays it; the journal waits for its word.
+        channel.begin(refund, actor_user=actor_user)
+        refund.status = DocumentStatus.APPROVED
+        refund.save(update_fields=["status", "updated_at"])
+        return refund
 
     deposit = refund.deposit_account or (  # Resolve bank/deposit account to credit.
         refund.bank_account.gl_account if refund.bank_account_id else None  # Fallback from selected bank account.
     )
     if deposit is None:  # Refund needs a payment source account.
         raise PostingError("Refund has no bank/deposit account to pay from.")
+    return _book_refund(refund, customer, deposit, on=refund.refund_date, actor_user=actor_user)
 
-    period = resolve_period(refund.entity, refund.refund_date)  # Resolve refund period.
+
+def _book_refund(refund, customer, source, *, on, actor_user, message=None):
+    """Post ``Dr customer credit, Cr source`` on ``on``, draw the credit lots, mark POSTED.
+
+    Shared by the bank path and by :func:`finish_channel_refund`, where ``source``
+    is the account the outside party's money left (gateway clearing for a refund
+    the payment provider returned). Runs inside the caller's transaction.
+    """
+    from .models import JournalEntry, JournalLine
+
+    period = resolve_period(refund.entity, on)  # Resolve refund period.
     entry = JournalEntry.objects.create(
         entity=refund.entity, branch=refund.branch,  # Scope entity and optional branch.
-        date=refund.refund_date, period=period,  # Refund date and period.
+        date=on, period=period,  # Refund date and period.
         source=JournalSource.BANK, currency=refund.currency,  # Bank-source cash payment.
         narration=refund.narration or f"Refund {refund.document_number or ''}".strip(),  # Narration.
         reference=refund.reference, created_by=actor_user,  # Reference and actor.
@@ -652,24 +736,25 @@ def _post_refund_atomic(refund, *, actor_user=None):
         debit=refund.amount, credit=0, description=f"Refund: {customer.code}", line_no=1,  # Dr customer credit.
     )
     JournalLine.objects.create(
-        entry=entry, account=deposit, debit=0, credit=refund.amount,  # Cr cash/bank.
+        entry=entry, account=source, debit=0, credit=refund.amount,  # Cr cash/bank.
         description=f"Refund paid: {customer.code}", line_no=2,  # Label and order.
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post refund journal.
 
     # Say which credit was handed back, not just that some was. Same transaction as
     # the journal, so the sub-ledger can never drift from the 2140 movement.
-    rows = _attribute_refund_to_lots(refund, customer, as_of=refund.refund_date)
+    rows = _attribute_refund_to_lots(refund, customer, as_of=on)
 
     refund.journal = entry  # Link refund to journal.
-    refund.deposit_account = deposit  # Persist account used.
+    refund.deposit_account = source  # Persist account used.
+    refund.refund_date = on  # The day the money left is the day the refund reads.
     refund.status = DocumentStatus.POSTED  # Mark refund posted.
-    refund.save(update_fields=["journal", "deposit_account", "status", "updated_at"])
+    refund.save(update_fields=["journal", "deposit_account", "refund_date", "status", "updated_at"])
 
     record(  # Audit successful refund.
         entity=refund.entity, action=FinanceAuditAction.REFUND_POSTED,  # Audit action.
         actor_user=actor_user, target=refund,  # Actor and target context.
-        message=f"Refunded {customer.code}.",  # Summary.
+        message=message or f"Refunded {customer.code}.",  # Summary.
         journal_id=entry.pk, amount=refund.amount,  # Structured metadata.
         drawn_from=[  # Which credit parcels funded the payout.
             {
@@ -680,6 +765,44 @@ def _post_refund_atomic(refund, *, actor_user=None):
         ],
     )
     return refund  # Return posted refund.
+
+
+@transaction.atomic
+def finish_channel_refund(refund, *, source_account, on=None, actor_user=None, message=None):
+    """Post a refund its channel has paid out: ``Dr customer credit, Cr source_account``.
+
+    Called by the channel when the outside party confirms the money has gone.
+    ``source_account`` is the account the money left, ``on`` the day it did (the
+    refund's own date by default). The refund must be ``APPROVED``, which is
+    what :func:`post_refund` leaves it when a channel carries it, so a second
+    confirmation finds it posted and refuses. The customer's credit is checked
+    again on the day given: it can have been spent while the money was on its
+    way, and then the refusal tells the people who must reconcile it.
+    """
+    refund, customer = _lock_refund(refund)
+    if refund.status != DocumentStatus.APPROVED:
+        raise PostingError(
+            f"Refund {refund.document_number or refund.pk} is {state_word(refund)}, "
+            f"only a refund awaiting its payment channel can be completed.",
+        )
+    on = on or refund.refund_date
+    _assert_refund_funded(refund, customer, as_of=on)
+    return _book_refund(refund, customer, source_account, on=on, actor_user=actor_user,
+                        message=message)
+
+
+@transaction.atomic
+def return_channel_refund_to_draft(refund):
+    """Give a refund its channel could not pay back to its maker as a draft, once.
+
+    The credit it reserved is free again, and it can be sent again or paid from a
+    bank account instead. A refund already past ``APPROVED`` is left as it is.
+    """
+    refund = type(refund).objects.select_for_update().get(pk=refund.pk)
+    if refund.status == DocumentStatus.APPROVED:
+        refund.status = DocumentStatus.DRAFT
+        refund.save(update_fields=["status", "updated_at"])
+    return refund
 
 
 # --------------------------------------------------------------------------- #
