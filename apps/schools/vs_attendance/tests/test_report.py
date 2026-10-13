@@ -298,6 +298,14 @@ class ChronicTests(_Report):
         self.assertEqual((chiamaka["absent"], chiamaka["not_taken"]), (2, 1))
         self.assertEqual(rows[2]["not_taken"], 2)
 
+    def test_an_excused_day_is_counted_as_a_day_away(self):
+        # An excused day lowers the rate, so the row says how many there were;
+        # without it Kelechi would read 66.7% with no day missed.
+        kelechi = {r["student"]["name"]: r for r in self.chronic()}["Kelechi Eze"]
+        self.assertEqual(
+            (kelechi["rate"], kelechi["absent"], kelechi["excused"]), (66.7, 0, 1),
+        )
+
     def test_a_pupil_exactly_at_the_threshold_is_not_listed(self):
         set_setting(CFG_CHRONIC_THRESHOLD, 100, self.tenant, self.admin)
         names = {r["student"]["name"] for r in self.chronic()}
@@ -326,8 +334,8 @@ class ChronicTests(_Report):
             with self.subTest(student=row["student"]["name"]):
                 counts = student_tab(self.tenant, self.reporter, student_id)["counts"]
                 self.assertEqual(
-                    (row["rate"], row["absent"], row["not_taken"]),
-                    (counts["rate"], counts["absent"], counts["not_taken"]),
+                    (row["rate"], row["absent"], row["excused"], row["not_taken"]),
+                    (counts["rate"], counts["absent"], counts["excused"], counts["not_taken"]),
                 )
 
     def test_a_class_total_is_the_sum_of_its_pupils_tabs(self):

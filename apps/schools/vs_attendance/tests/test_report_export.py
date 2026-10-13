@@ -220,9 +220,9 @@ class ChronicTests(_Export):
         self.assertEqual(subtitle, "First Term, 2025/2026 · below 90% · All branches")
         self.assertEqual(
             headers,
-            ["Student", "Student number", "Class", "Rate", "Days absent", "Days not taken"],
+            ["Student", "Student number", "Class", "Rate", "Days absent", "Days excused", "Days not taken"],
         )
-        self.assertEqual(rows[0], ["Chiamaka Nwosu", "BFS/001", "JSS1 A", "33.3%", "2", "1"])
+        self.assertEqual(rows[0], ["Chiamaka Nwosu", "BFS/001", "JSS1 A", "33.3%", "2", "0", "1"])
         self.assertEqual(
             [r[0] for r in rows],
             ["Chiamaka Nwosu", "Kelechi Eze", "Ngozi Ibe", "Tunde Bello"],

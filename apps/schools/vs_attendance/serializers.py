@@ -799,6 +799,7 @@ class ReportChronicRowSerializer(serializers.Serializer):
     class_name = serializers.CharField(read_only=True, allow_null=True)
     rate = serializers.FloatField(read_only=True)
     absent = serializers.IntegerField(read_only=True)
+    excused = serializers.IntegerField(read_only=True)
     not_taken = serializers.IntegerField(read_only=True)
 
 

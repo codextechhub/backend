@@ -476,6 +476,7 @@ def _chronic(tenant, by_student, expected, latest_class, threshold) -> list:
             "class_name": latest_class[student_id].name if student_id in latest_class else None,
             "rate": figures["rate"],
             "absent": figures["absent"],
+            "excused": figures["excused"],
             "not_taken": max(0, expected.get(student_id, 0) - counted),
         })
     rows.sort(key=lambda row: (row["rate"], row["student"]["name"].lower(), row["student"]["id"]))

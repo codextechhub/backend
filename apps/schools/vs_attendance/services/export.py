@@ -13,10 +13,10 @@ out. The three tables are cut like this:
 * ``by_class``: Class and Branch (Level at a one-branch school) always; Rate,
   Absences, Lateness, Days not taken and Students only when the caller may read
   the register's counts;
-* ``chronic``: Student, Student number and Class always; Rate, Days absent and
-  Days not taken only with the counts. The list itself is a statement about a
-  rate, so a caller who may not read the counts receives the headings and no
-  rows, exactly as the screen shows no list;
+* ``chronic``: Student, Student number and Class always; Rate, Days absent,
+  Days excused and Days not taken only with the counts. The list itself is a
+  statement about a rate, so a caller who may not read the counts receives the
+  headings and no rows, exactly as the screen shows no list;
 * ``not_taken``: Date, Class, Class teacher and Branch (Level). The list is the
   register's status, so a caller who may not read it receives the headings and
   no rows.
@@ -109,7 +109,7 @@ def build_table(request, tenant, report: dict, table: str, *, branch, narrowed: 
     elif table == "chronic":
         columns = ["Student", "Student number", "Class"]
         if counts_open:
-            columns += ["Rate", "Days absent", "Days not taken"]
+            columns += ["Rate", "Days absent", "Days excused", "Days not taken"]
         rows = []
         for item in report.get("chronic", []):
             row = [
@@ -117,7 +117,7 @@ def build_table(request, tenant, report: dict, table: str, *, branch, narrowed: 
                 _text(item["class_name"]),
             ]
             if counts_open:
-                row += [_rate(item["rate"]), item["absent"], item["not_taken"]]
+                row += [_rate(item["rate"]), item["absent"], item["excused"], item["not_taken"]]
             rows.append(row)
     else:
         columns = ["Date", "Class", "Class teacher", where]
