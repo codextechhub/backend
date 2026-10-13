@@ -64,6 +64,10 @@ ACCOUNT_MAPPING_SPECS = {
     # What a petty cash count finds short (a debit) or over (a credit) against the
     # fund's books. An expense, since a shortage is the usual finding.
     AccountMappingKey.CASH_OVER_SHORT: ("5530", AccountType.EXPENSE),
+    # Online money that reached a branch's payment terminal before anyone knew
+    # which customer paid it. A liability: the branch owes it to whoever it
+    # turns out to belong to, and it empties as each payment is matched.
+    AccountMappingKey.UNIDENTIFIED_RECEIPTS: ("2195", AccountType.LIABILITY),
 }
 
 #: Roles only the platform's books carry. Every other set of books neither lists

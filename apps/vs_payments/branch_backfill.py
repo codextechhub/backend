@@ -20,7 +20,8 @@ administrator.
 A held settlement's journal (Dr bank, Dr bank charges, Cr gateway clearing in the
 tenant's books) belongs to the settlement and carries its branch, and a
 chargeback's entry in the tenant's books belongs to its held movement and carries
-the movement's branch. A held movement's platform journal is not registered: it is
+the movement's branch. The unidentified-receipts journal of a payment made on a
+branch terminal belongs to that payment and carries its branch. A held movement's platform journal is not registered: it is
 the platform's own entry, always raised in the platform's branch, never the client
 branch the movement is for.
 """
@@ -75,3 +76,4 @@ for _target in _TARGETS:
 
 register_journal_owner(JournalOwner("vs_payments.HeldSettlement", "settlement_journal"))
 register_journal_owner(JournalOwner("vs_payments.HeldMovement", "tenant_journal"))
+register_journal_owner(JournalOwner("vs_payments.TerminalPayment", "suspense_journal"))

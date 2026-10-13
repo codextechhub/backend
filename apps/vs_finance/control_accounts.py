@@ -65,6 +65,8 @@ _MAPPED_ROLES = {
     AccountMappingKey.HELD_FOR_OTHER_BRANCHES: (
         "the inter-branch ledger",
         "a receipt held for another branch, or the transfer that forwards it"),
+    AccountMappingKey.UNIDENTIFIED_RECEIPTS: (
+        "the payment gateway", "matching the terminal payment to the customer who paid"),
 }
 
 _BANK = ("its bank account", "a receipt, a vendor payment or a bank transaction")

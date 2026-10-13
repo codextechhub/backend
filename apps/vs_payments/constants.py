@@ -39,6 +39,7 @@ class CollectionChannel(models.TextChoices):
     CARD = "CARD", "Card"  # Card-present or card-not-present capture.
     BANK_TRANSFER = "BANK_TRANSFER", "Bank transfer"  # Manual or virtual-account bank transfer.
     USSD = "USSD", "USSD"  # USSD-based payment flow.
+    TERMINAL = "TERMINAL", "Branch payment terminal"  # Paid at a branch's virtual terminal, payer unknown.
 
 
 class CollectionOrigin(models.TextChoices):
@@ -206,6 +207,15 @@ class PaymentAuditAction(models.TextChoices):
     PROVIDER_REFUND_PROCESSED = "PROVIDER_REFUND_PROCESSED", "Refund returned to the payer"  # Provider paid it back; booked.
     PROVIDER_REFUND_FAILED = "PROVIDER_REFUND_FAILED", "Refund failed"  # Reserved money released.
     PROVIDER_REFUND_CANCELLED = "PROVIDER_REFUND_CANCELLED", "Refund taken off the provider"  # Paid from the bank instead.
+    TERMINAL_CREATED = "TERMINAL_CREATED", "Payment terminal created"  # A branch's terminal opened at the provider.
+    TERMINAL_FAILED = "TERMINAL_FAILED", "Payment terminal failed"  # The provider refused or could not be reached.
+    TERMINAL_DEACTIVATED = "TERMINAL_DEACTIVATED", "Payment terminal deactivated"  # Switched off at the provider.
+    TERMINAL_DESTINATION_ADDED = "TERMINAL_DESTINATION_ADDED", "Terminal notification number added"  # Never names the number.
+    TERMINAL_DESTINATION_REMOVED = "TERMINAL_DESTINATION_REMOVED", "Terminal notification number removed"  # Never names the number.
+    TERMINAL_ROUTING_CHANGED = "TERMINAL_ROUTING_CHANGED", "Payment terminal routing changed"  # Split attached or removed.
+    TERMINAL_PAYMENT_RECEIVED = "TERMINAL_PAYMENT_RECEIVED", "Terminal payment received"  # Booked to unidentified receipts.
+    TERMINAL_PAYMENT_MATCHED = "TERMINAL_PAYMENT_MATCHED", "Terminal payment matched"  # Applied to a customer.
+    TERMINAL_PAYMENT_UNMATCHED = "TERMINAL_PAYMENT_UNMATCHED", "Terminal payment unmatched"  # Put back on the list.
 
 
 class CustodyMode(models.TextChoices):
@@ -219,6 +229,38 @@ class CustodyMode(models.TextChoices):
 
     DIRECT = "DIRECT", "Direct to each branch's bank"
     HELD = "HELD", "Held by the platform"
+
+
+class TerminalStatus(models.TextChoices):
+    """Where a branch's provider payment terminal stands.
+
+    ``PENDING``: not yet opened at the provider. ``NEEDS_NUMBER``: the branch has
+    no phone number and none has been added, and the provider needs at least one
+    number to notify, so nothing is opened until one is given. ``ACTIVE``: open, with its code.
+    ``FAILED``: the last attempt to open it was refused or unreachable, and the
+    retry sweep tries again. ``DEACTIVATED``: switched off at the provider (the
+    provider offers no way back, so a branch that returns gets a new terminal).
+    """
+
+    PENDING = "PENDING", "Being set up"
+    NEEDS_NUMBER = "NEEDS_NUMBER", "Needs a phone number"
+    ACTIVE = "ACTIVE", "Active"
+    FAILED = "FAILED", "Set-up failed"
+    DEACTIVATED = "DEACTIVATED", "Deactivated"
+
+
+class TerminalPaymentStatus(models.TextChoices):
+    """Whether a terminal payment has been applied to a customer."""
+
+    UNMATCHED = "UNMATCHED", "Unmatched"
+    MATCHED = "MATCHED", "Matched"
+
+
+class TerminalMatchMethod(models.TextChoices):
+    """How a terminal payment came to be applied to its customer."""
+
+    AUTO = "AUTO", "Automatic (payer email)"
+    MANUAL = "MANUAL", "Matched by a person"
 
 
 class DisputeOutcome(models.TextChoices):

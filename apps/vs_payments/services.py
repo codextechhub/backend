@@ -623,11 +623,12 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
         status = result.status  # Trust the PSP status for the confirmation decision.
         # No provider-reported amount means nothing authoritative to book. See the
         # docstring.
-        if (result.amount <= 0 and intent.virtual_account_id
-                and intent.channel == CollectionChannel.VIRTUAL_ACCOUNT):
+        if result.amount <= 0 and (
+                (intent.virtual_account_id and intent.channel == CollectionChannel.VIRTUAL_ACCOUNT)
+                or intent.channel == CollectionChannel.TERMINAL):
             raise PaymentStateError(
-                "Provider did not report a settled amount for this virtual account "
-                "deposit; booking held for manual review.")
+                "Provider did not report a settled amount for this virtual account or "
+                "terminal deposit; booking held for manual review.")
         amount = result.amount or intent.amount  # Fall back to the original amount if the PSP omits it.
         verify_raw = result.raw  # Carried into the locked half; applied to the row it re-reads.
         paid_at = getattr(result, "paid_at", None)  # The day the payer paid dates the receipt.
@@ -709,13 +710,22 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
 
     if fee is not None and fee >= 0:
         intent.fee = fee
-    _book_receipt(intent, actor_user=actor_user, paid_at=paid_at)  # Create and post the corresponding receipt.
+    if intent.channel == CollectionChannel.TERMINAL:
+        # A terminal payer names no customer: book it to the branch's unidentified
+        # receipts and apply it to a customer if one is certain.
+        from .terminal_payments import book_terminal_collection
+
+        book_terminal_collection(intent, actor_user=actor_user, paid_at=paid_at,
+                                 verify_raw=verify_raw)
+    else:
+        _book_receipt(intent, actor_user=actor_user, paid_at=paid_at)  # Create and post the corresponding receipt.
     intent.status = CollectionStatus.SUCCEEDED  # Mark the gateway event as settled.
     intent.confirmed_at = timezone.now()
     held.record_collection(intent, actor_user=actor_user)  # The platform owes it to the branch.
     intent.save(update_fields=[
-        "status", "payment", "amount", "metadata", "confirmed_at", "raw_response",
-        "fee", "clearing_account", "branch", "held_by_platform", "updated_at",
+        "status", "payment", "customer", "amount", "metadata", "confirmed_at", "raw_response",
+        "fee", "clearing_account", "branch", "held_by_platform", "payer_email", "payer_name",
+        "updated_at",
     ])
 
     audit_metadata = {"payment_id": intent.payment_id}

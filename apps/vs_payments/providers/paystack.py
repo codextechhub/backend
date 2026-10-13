@@ -31,12 +31,38 @@ against Paystack's API reference (paystack.com/docs/api) on 2026-10-04:
   at a new bank account.
 * A subaccount settles to its bank on Paystack's own schedule, usually the next
   working day, as one amount per settlement for the payments it covers.
+
+Paystack facts this adapter relies on for payment terminals, checked against
+Paystack's Virtual Terminal API reference (docs-v2.production.paystack.co/docs/api/virtual-terminal)
+on 2026-10-13:
+
+* ``POST /virtual_terminal`` takes ``name`` and ``destinations`` (each a WhatsApp
+  ``target`` number and a ``name``) as required, and optional ``metadata``,
+  ``currency`` and ``custom_fields``; it answers ``id``, ``code`` (``VT_...``),
+  ``name``, ``active``, ``currency``, ``destinations``, ``paymentMethods`` and
+  ``integration``. ``GET /virtual_terminal/:code`` fetches one,
+  ``PUT /virtual_terminal/:code/deactivate`` switches it off (the reference lists
+  no way to switch it back on), and ``PUT`` / ``DELETE /virtual_terminal/:code/split_code``
+  with a ``split_code`` body attach and remove a split.
+* A payment on a terminal arrives as ``charge.success`` whose
+  ``data.metadata.virtual_terminal.code`` is the terminal's code.
+* ``POST /split`` takes ``name``, ``type`` (``percentage`` or ``flat``), ``currency``,
+  ``subaccounts`` (each a ``subaccount`` code and a ``share``), ``bearer_type``
+  (``subaccount``, ``account``, ``all-proportional`` or ``all``) and, for a
+  ``subaccount`` bearer, ``bearer_subaccount``; it answers ``split_code``.
+
+Not stated by the reference, and so unconfirmed until a live call settles them: whether
+``destinations`` may be empty, where the terminal's payment page link or QR poster is
+returned (only ``paymentMethods`` is named), the exact shape of the sender's name on a
+transfer (read from ``data.authorization.sender_name``), and whether a split attached
+to a terminal honours ``bearer_type: subaccount`` the way a checkout's ``bearer`` does.
 """
 from __future__ import annotations
 
 import datetime
 import hashlib
 import hmac
+import json
 
 from ..exceptions import ProviderError
 from .base import (
@@ -44,8 +70,10 @@ from .base import (
     CollectionStatusResult,
     Provider,
     SettlementRecord,
+    SplitResult,
     SubaccountResult,
     RefundResult,
+    TerminalResult,
     TransferResult,
     VirtualAccountResult,
     WebhookParseResult,
@@ -114,8 +142,12 @@ class PaystackProvider(Provider):
         return request_json("GET", f"{self.base_url}{path}", headers=self._headers(),  # Send an authenticated GET.
                             provider=self.name)  # Include provider name for better error context.
 
-    def _put(self, path: str, body: dict) -> dict:
+    def _put(self, path: str, body: dict | None = None) -> dict:
         return request_json("PUT", f"{self.base_url}{path}", headers=self._headers(),
+                            body=body, provider=self.name)
+
+    def _delete(self, path: str, body: dict | None = None) -> dict:
+        return request_json("DELETE", f"{self.base_url}{path}", headers=self._headers(),
                             body=body, provider=self.name)
 
     @staticmethod
@@ -256,6 +288,43 @@ class PaystackProvider(Provider):
                                 status="PROCESSING", provider_status="pending")
         newest = max(rows, key=lambda row: _kobo_or_none(row.get("id")) or 0)
         return _refund_result(newest, transaction_reference)
+
+    # -- payment terminals ------------------------------------------------- #
+    def create_terminal(self, *, name, destinations, currency="NGN", metadata=None):
+        body = {"name": name, "destinations": list(destinations or []), "currency": currency}
+        if metadata:
+            body["metadata"] = json.dumps(metadata)
+        return _terminal_result(self._require_ok(self._post("/virtual_terminal", body)))
+
+    def fetch_terminal(self, *, code):
+        return _terminal_result(self._require_ok(self._get(f"/virtual_terminal/{code}")))
+
+    def deactivate_terminal(self, *, code):
+        self._require_ok(self._put(f"/virtual_terminal/{code}/deactivate"))
+
+    def assign_terminal_destinations(self, *, code, destinations):
+        self._require_ok(self._post(f"/virtual_terminal/{code}/destination/assign",
+                                    {"destinations": list(destinations)}))
+
+    def unassign_terminal_destinations(self, *, code, targets):
+        self._require_ok(self._post(f"/virtual_terminal/{code}/destination/unassign",
+                                    {"targets": list(targets)}))
+
+    def create_split(self, *, name, subaccount_code, currency="NGN"):
+        data = self._require_ok(self._post("/split", {
+            "name": name, "type": "percentage", "currency": currency,
+            "subaccounts": [{"subaccount": subaccount_code, "share": 100}],
+            "bearer_type": "subaccount", "bearer_subaccount": subaccount_code,
+        }))
+        return SplitResult(split_code=str((data or {}).get("split_code", "") or ""), raw=data)
+
+    def attach_terminal_split(self, *, code, split_code):
+        self._require_ok(self._put(f"/virtual_terminal/{code}/split_code",
+                                   {"split_code": split_code}))
+
+    def detach_terminal_split(self, *, code, split_code):
+        self._require_ok(self._delete(f"/virtual_terminal/{code}/split_code",
+                                      {"split_code": split_code}))
 
     # -- settlement subaccounts ------------------------------------------- #
     def create_subaccount(self, *, business_name, settlement_bank_code, account_number,
@@ -451,9 +520,11 @@ class PaystackProvider(Provider):
             )
             direction = "COLLECTION"  # Route non-transfer events to the collection confirm path.
         reference = data.get("reference", "")
+        terminal = _terminal_payment_facts(data) if direction == "COLLECTION" else {}
         return WebhookParseResult(
             event_type=event,  # Preserve the provider event name.
             direction=direction,  # COLLECTION or PAYOUT.
+            **terminal,
             reference=reference,  # Merchant reference for matching local records.
             provider_reference=str(data.get("id", "")),
             status=status,  # Neutral status for the downstream confirm flow.
@@ -481,6 +552,54 @@ def _dedupe_key(event: str, *identifiers, raw_body: bytes = b"") -> str:
         if identifier not in (None, ""):
             return f"PAYSTACK:{event}:{identifier}"
     return f"PAYSTACK:{event}:{hashlib.sha256(raw_body or b'').hexdigest()}"
+
+
+def _terminal_result(data) -> TerminalResult:
+    """The neutral view of a Paystack virtual terminal response body.
+
+    ``details`` keeps what the response says about how to pay at the terminal
+    (``paymentMethods`` and any payment page, QR or link fields), under the
+    names Paystack used, since the reference names only ``paymentMethods``.
+    """
+    data = data if isinstance(data, dict) else {}
+    kept = ("paymentMethods", "payment_methods", "payment_url", "payment_link", "link",
+            "qr_code", "qr_code_url", "poster_url", "destinations", "currency")
+    return TerminalResult(
+        code=str(data.get("code", "") or ""),
+        name=str(data.get("name", "") or ""),
+        active=bool(data.get("active", True)),
+        details={key: data[key] for key in kept if key in data},
+        raw=data,
+    )
+
+
+def _terminal_payment_facts(data: dict) -> dict:
+    """The terminal, payer and sender facts a ``charge.success`` event carries, as parse-result fields.
+
+    The terminal is ``data.metadata.virtual_terminal.code``; ``metadata`` may be a
+    JSON string. The payer's email is ``data.customer.email``, and the sender is
+    ``data.authorization.sender_name`` (a bank transfer) or ``account_name`` (a card
+    holder), with ``sender_bank`` or ``bank``. Every field is empty for an event
+    that did not come from a terminal, which is the only one that uses them.
+    """
+    meta = data.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = {}
+    terminal = meta.get("virtual_terminal") if isinstance(meta, dict) else None
+    code = terminal.get("code") if isinstance(terminal, dict) else terminal
+    if not isinstance(code, str) or not code.strip():
+        return {}
+    customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+    auth = data.get("authorization") if isinstance(data.get("authorization"), dict) else {}
+    return {
+        "terminal_code": code.strip(),
+        "payer_email": str(customer.get("email", "") or "").strip(),
+        "sender_name": str(auth.get("sender_name") or auth.get("account_name") or "").strip(),
+        "sender_bank": str(auth.get("sender_bank") or auth.get("bank") or "").strip(),
+    }
 
 
 #: Paystack's ``data.resolution`` on ``charge.dispute.resolve``. ``declined`` and

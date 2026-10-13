@@ -1378,13 +1378,14 @@ class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
         import inspect
         import re
 
-        from . import views, views_custody
+        from . import views, views_custody, views_terminals
 
         platform_scope = {
             views: (views._unattributed_webhooks,),
             views_custody: (views_custody.PlatformHeldSettlementListView,
                             views_custody.PlatformHeldSettlementSubmitView,
                             views_custody.PlatformHeldReconciliationListView),
+            views_terminals: (),
         }
         for module, exempt in platform_scope.items():
             source = inspect.getsource(module)
@@ -1392,7 +1393,8 @@ class PaymentsViewsStartFromTheReachTests(SimpleTestCase):
                 source = source.replace(inspect.getsource(reader), "")
             found = re.findall(
                 r"\b(CollectionIntent|VirtualAccount|PayoutInstruction|PayoutBatch|PaymentEvent"
-                r"|WebhookEvent|HeldSettlement|HeldBalance)\.(?:objects|all_objects)\b",
+                r"|WebhookEvent|HeldSettlement|HeldBalance|VirtualTerminal|TerminalPayment)"
+                r"\.(?:objects|all_objects)\b",
                 source)
             with self.subTest(module=module.__name__):
                 self.assertEqual(found, [], "Start from vs_payments.reach.PaymentsReach instead.")

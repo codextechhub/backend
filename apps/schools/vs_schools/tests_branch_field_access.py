@@ -179,12 +179,12 @@ class ReadingBranchesTests(_Fixture):
         self.assertEqual(hidden["hidden"], ["address", "email"])
         partly = field_access_payload(self.bursar, self.corona.tenant)[RESOURCE]
         self.assertEqual(partly["hidden"], ["email"])
-        self.assertEqual(partly["read_only"], ["address"])
+        self.assertEqual(partly["read_only"], ["address", "phone"])  # Phone is open and CodeX-written.
 
     def test_the_switches_offer_no_write_to_a_school(self):
         from vs_rbac.models import FieldDefinition
 
-        for name in ("address", "email"):
+        for name in ("address", "email", "phone"):
             row = FieldDefinition.objects.get(key=f"{RESOURCE}.{name}")
             self.assertFalse(row.writable)
             self.assertFalse(row.sensitive)

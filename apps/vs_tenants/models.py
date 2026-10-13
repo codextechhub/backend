@@ -307,7 +307,7 @@ class Branch(models.Model):
         name: Display label such as "Lekki Branch".
         code: Integer code unique within the tenant; filled on first save.
         is_main: Boolean marker for the canonical site (constraint enforces 1).
-        address / email / country / state: Contact + location metadata.
+        address / email / phone / country / state: Contact + location metadata.
         status: Lifecycle state (BranchStatus choices, indexed).
         opened_at / closed_at / activated_at / deactivated_at: Lifecycle stamps.
 
@@ -364,6 +364,11 @@ class Branch(models.Model):
     # Branch contact/location info
     address = models.CharField(max_length=255, blank=True, default="")
     email = models.EmailField(blank=True, default="")
+    phone = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="The branch's own phone number, the one its payment terminal "
+                  "notifies on WhatsApp until others are added.",
+    )
     country = models.CharField(max_length=80, default="Nigeria")
     state = models.CharField(max_length=120, blank=True, default="")
 

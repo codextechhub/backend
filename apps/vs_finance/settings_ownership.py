@@ -122,6 +122,11 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "Money received for another branch",
         "Holds a payment one branch received that belongs to another, until it is forwarded.",
     ),
+    AccountMappingKey.UNIDENTIFIED_RECEIPTS: _consumer(
+        "Payment terminal receipts",
+        "Holds an online payment a branch's payment terminal received until a person "
+        "matches it to the customer who paid.",
+    ),
     AccountMappingKey.CASH_OVER_SHORT: _consumer(
         "Petty cash counts",
         "Receives what a petty cash count finds short, or over, against the fund's books "

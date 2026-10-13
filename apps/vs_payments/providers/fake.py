@@ -22,7 +22,9 @@ from .base import (
     RefundResult,
     CollectionStatusResult,
     Provider,
+    SplitResult,
     SubaccountResult,
+    TerminalResult,
     TransferResult,
     VirtualAccountResult,
     WebhookParseResult,
@@ -65,6 +67,14 @@ class FakeProvider(Provider):
         self.forced_refund_status: dict[str, str] = {}
         # A test that wants creation refused sets the error raised by ``create_refund``.
         self.refund_error: Exception | None = None
+        # Payment terminals opened, by code: name, destinations and whether active.
+        self.terminals: dict[str, dict] = {}
+        # The split each terminal is routed through, by terminal code.
+        self.terminal_splits: dict[str, str] = {}
+        # Splits created, by code: the subaccount they send everything to.
+        self.splits: dict[str, str] = {}
+        # A message a test sets to make the next terminal call fail as a rejection.
+        self.terminal_error: str = ""
 
     def healthcheck(self) -> bool:
         return True
@@ -109,6 +119,56 @@ class FakeProvider(Provider):
             fee=self.forced_fee.get(reference, self.default_fee),
             raw={"forced": status},  # Show where the verification status came from.
         )
+
+    # -- payment terminals ------------------------------------------------- #
+    def _terminal_refusal(self):
+        from ..exceptions import ProviderError
+
+        if self.terminal_error:
+            raise ProviderError(self.terminal_error, provider=self.name, provider_code="422")
+
+    def create_terminal(self, *, name, destinations, currency="NGN", metadata=None):
+        self._terminal_refusal()
+        code = f"VT_FAKE{len(self.terminals) + 1:04d}"
+        self.terminals[code] = {"name": name, "destinations": list(destinations or []),
+                                "currency": currency, "metadata": metadata or {}, "active": True}
+        return TerminalResult(
+            code=code, name=name, active=True,
+            details={"paymentMethods": [{"type": "dedicated_account", "bank": self.bank_name}]},
+            raw={"code": code, "name": name})
+
+    def fetch_terminal(self, *, code):
+        self._terminal_refusal()
+        row = self.terminals[code]
+        return TerminalResult(code=code, name=row["name"], active=row["active"],
+                              details={"paymentMethods": []}, raw={"code": code})
+
+    def deactivate_terminal(self, *, code):
+        self._terminal_refusal()
+        self.terminals[code]["active"] = False
+
+    def assign_terminal_destinations(self, *, code, destinations):
+        self._terminal_refusal()
+        self.terminals[code]["destinations"].extend(destinations)
+
+    def unassign_terminal_destinations(self, *, code, targets):
+        self._terminal_refusal()
+        row = self.terminals[code]
+        row["destinations"] = [d for d in row["destinations"] if d["target"] not in targets]
+
+    def create_split(self, *, name, subaccount_code, currency="NGN"):
+        self._terminal_refusal()
+        split_code = f"SPL_FAKE{len(self.splits) + 1:04d}"
+        self.splits[split_code] = subaccount_code
+        return SplitResult(split_code=split_code, raw={"split_code": split_code})
+
+    def attach_terminal_split(self, *, code, split_code):
+        self._terminal_refusal()
+        self.terminal_splits[code] = split_code
+
+    def detach_terminal_split(self, *, code, split_code):
+        self._terminal_refusal()
+        self.terminal_splits.pop(code, None)
 
     # -- settlement subaccounts ------------------------------------------- #
     def create_subaccount(self, *, business_name, settlement_bank_code, account_number,
@@ -245,6 +305,9 @@ class FakeProvider(Provider):
                 str(data.get("receiver_account_number", "") or "")
                 if direction == "COLLECTION" else ""
             ),
+            # Mirrors Paystack: a terminal payment names its terminal in metadata, the
+            # payer in customer, and the sender in authorization.
+            **(_terminal_facts(data) if direction == "COLLECTION" else {}),
             raw=payload,  # Preserve the original payload.
         )
 
@@ -252,13 +315,17 @@ class FakeProvider(Provider):
     # Handle the build webhook workflow.
     def build_webhook(self, *, event: str, reference: str, status: str,
                       amount: int = 0, currency: str = "NGN", provider_id: str = "1",
-                      receiver_account_number: str = "", resolution: str = ""):
+                      receiver_account_number: str = "", resolution: str = "",
+                      terminal_code: str = "", payer_email: str = "",
+                      sender_name: str = "", sender_bank: str = ""):
         """Return ``(raw_body: bytes, headers: dict)`` for a correctly-signed event.
 
         Pass ``receiver_account_number`` to build a dedicated virtual-account deposit
         (the unsolicited-transfer event); leave it out for an ordinary charge. Pass
         ``resolution`` (``declined`` for a dispute the merchant won,
         ``merchant-accepted`` for one it lost) with ``charge.dispute.resolve``.
+        Pass ``terminal_code`` for a payment made on a branch terminal, with the
+        payer's email and the sender's name and bank as the event would carry them.
         """
         data = {  # Build the event data block in the shape the parser expects.
             "reference": reference, "status": status, "amount": amount,  # Core event fields.
@@ -268,5 +335,26 @@ class FakeProvider(Provider):
             data["resolution"] = resolution
         if receiver_account_number:  # Only deposits carry a receiving account.
             data["receiver_account_number"] = receiver_account_number  # Name the destination NUBAN.
+        if terminal_code:
+            data["metadata"] = {"virtual_terminal": {"code": terminal_code}}
+        if payer_email:
+            data["customer"] = {"email": payer_email}
+        if sender_name or sender_bank:
+            data["authorization"] = {"sender_name": sender_name, "sender_bank": sender_bank}
         body = json.dumps({"event": event, "data": data}).encode()  # Encode the payload as bytes.
         return body, {SIGNATURE_HEADER: self._sign(body)}  # Return the body and matching fake signature.
+
+
+def _terminal_facts(data: dict) -> dict:
+    """The terminal, payer and sender facts of a fake event, as parse-result fields."""
+    terminal = (data.get("metadata") or {}).get("virtual_terminal") or {}
+    code = str(terminal.get("code", "") or "").strip()
+    if not code:
+        return {}
+    auth = data.get("authorization") or {}
+    return {
+        "terminal_code": code,
+        "payer_email": str((data.get("customer") or {}).get("email", "") or "").strip(),
+        "sender_name": str(auth.get("sender_name", "") or "").strip(),
+        "sender_bank": str(auth.get("sender_bank", "") or "").strip(),
+    }

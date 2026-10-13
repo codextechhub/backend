@@ -49,7 +49,7 @@ class SchoolProfileDeepPayloadTests(DeepPayloadChecks, TestCase):
 
 
 class BranchDeepPayloadTests(DeepPayloadChecks, TestCase):
-    """A school's branch card sends no address or email to a role that may read neither.
+    """A branch sends no address, email or phone to a role that may read none of them.
 
     Rendered on a school with two branches and on one with a single branch, so
     the shape of the school cannot change whether the switch is applied.
@@ -65,10 +65,12 @@ class BranchDeepPayloadTests(DeepPayloadChecks, TestCase):
             make_branch(
                 cls.multi, name="Ikeja Branch", is_main=True,
                 address="14 Lantern Road, Ikeja", email="ikeja@branch-deep.test",
+                phone="08011112222",
             ),
             make_branch(
                 cls.multi, name="Lekki Branch", is_main=False,
                 address="3 Admiralty Way, Lekki", email="lekki@branch-deep.test",
+                phone="08033334444",
             ),
         ]
         cls.single = make_school(slug="branch-deep-single", name="Branch Deep Single")
@@ -76,15 +78,14 @@ class BranchDeepPayloadTests(DeepPayloadChecks, TestCase):
             make_branch(
                 cls.single, name="Main Branch", is_main=True,
                 address="9 Sunrise Close", email="main@branch-deep.test",
+                phone="08055556666",
             ),
         ]
 
     def samples(self):
         return [
-            Sample(
-                _SURFACE + "SchoolBranchSerializer", branches, many=True,
-                tenant=school.tenant,
-            )
+            Sample(surface, branches, many=True, tenant=school.tenant)
+            for surface in sorted(self.covers)
             for school, branches in (
                 (self.multi, self.multi_branches),
                 (self.single, self.single_branches),
@@ -118,13 +119,15 @@ class PlatformSchoolsDeepPayloadTests(DeepPayloadChecks, TestCase):
         )
     })
 
-    #: CodeX's own branch records nested in the school detail. A branch email is
-    #: not the school's billing email; it is governed by the platform.branches
-    #: keys, and the school's own switch for it is school.branches.email.
+    #: CodeX's own branch records nested in the school detail. A branch email or
+    #: phone is not the school's billing email or phone; it is governed by the
+    #: platform.branches keys, and the school's own switches for it are
+    #: school.branches.email and school.branches.phone.
     allowlist = {
         (_SURFACE + "SchoolDetailSerializer", path):
-            "A branch record under platform.branches.view, not the school's billing email."
-        for path in ("main_branch.email", "branches[].email")
+            "A branch record under platform.branches.view, not the school's billing contact."
+        for path in ("main_branch.email", "branches[].email",
+                     "main_branch.phone", "branches[].phone")
     }
 
     @classmethod

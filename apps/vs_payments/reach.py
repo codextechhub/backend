@@ -33,6 +33,9 @@ reads:
   matched;
 * a **bank statement line** (settlement reconciliation) is reached with its
   bank account;
+* a **payment terminal** and a **terminal payment** are the branch the terminal
+  belongs to, so a payment made on Lekki's terminal is Lekki's whoever it was
+  later matched to;
 * a **held settlement** is the branch it pays. The money is held in the
   platform's books, but the settlement row sits in the tenant's: its ``entity``
   is the tenant's books, which record the money arriving, so a tenant reads its
@@ -68,7 +71,9 @@ from .models import (
     PayoutBatch,
     PayoutInstruction,
     ProviderRefund,
+    TerminalPayment,
     VirtualAccount,
+    VirtualTerminal,
     WebhookEvent,
 )
 
@@ -127,6 +132,20 @@ class PaymentsReach:
 
     def batches(self):
         return self.scope.filter(PayoutBatch.objects.filter(entity=self.entity))
+
+    def terminals(self):
+        """The payment terminals of this tenant's branches the caller reaches.
+
+        A terminal names its branch and carries the tenant, which owns the
+        entity's books, so the tenant filter keeps every other tenant's
+        terminals out and the branch scope keeps a branch-bound caller to
+        their own branches'.
+        """
+        return self.scope.filter(VirtualTerminal.objects.filter(tenant_id=self.entity.tenant_id))
+
+    def terminal_payments(self):
+        """The payments made on this entity's branch terminals that the caller reaches."""
+        return self.scope.filter(TerminalPayment.objects.filter(entity=self.entity))
 
     def held_settlements(self):
         """The platform's settlements paying this tenant's branches what it held for them.

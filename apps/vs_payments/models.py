@@ -37,6 +37,9 @@ from .constants import (
     PayoutPurpose,
     PayoutStatus,
     ProviderRefundStatus,
+    TerminalMatchMethod,
+    TerminalPaymentStatus,
+    TerminalStatus,
     VirtualAccountStatus,
     WebhookStatus,
 )
@@ -259,6 +262,38 @@ class CollectionIntent(TimeStampedModel):
         return self.status in COLLECTION_TERMINAL
 
     @property
+    def is_booked_to_clearing(self) -> bool:
+        """True while a posted journal carries this payment's money in gateway clearing.
+
+        An ordinary collection is carried by its receipt. A branch terminal's
+        payment is carried by its receipt once matched, and by its posted
+        unidentified-receipts journal before that and after an unmatch
+        (:class:`TerminalPayment`).
+        """
+        from django.core.exceptions import ObjectDoesNotExist
+        from vs_finance.constants import DocumentStatus
+
+        if self.payment_id and self.payment.status == DocumentStatus.POSTED:
+            return True
+        try:
+            suspense = self.terminal_payment.suspense_journal
+        except ObjectDoesNotExist:
+            return False
+        return suspense is not None and suspense.status == DocumentStatus.POSTED
+
+    @property
+    def received_on(self):
+        """The accounting date this payment entered gateway clearing, or None before it is booked."""
+        from django.core.exceptions import ObjectDoesNotExist
+
+        if self.payment_id:
+            return self.payment.payment_date
+        try:
+            return self.terminal_payment.booked_on
+        except ObjectDoesNotExist:
+            return None
+
+    @property
     def awaits_settlement(self) -> bool:
         """True while this collection's money sits in gateway clearing.
 
@@ -266,9 +301,9 @@ class CollectionIntent(TimeStampedModel):
         """
         from vs_finance.constants import DocumentStatus
 
-        if self.clearing_account_id is None or self.payment_id is None:
+        if self.clearing_account_id is None or self.status != CollectionStatus.SUCCEEDED:
             return False
-        if self.status != CollectionStatus.SUCCEEDED or self.payment.status != DocumentStatus.POSTED:
+        if not self.is_booked_to_clearing:
             return False
         if self.held_settlement_id and self.held_settlement.status == HeldSettlementStatus.PAID:
             return False
@@ -906,6 +941,167 @@ class ProviderSweep(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.provider} sweep {self.settlement_id}: {format_naira(int(self.amount))}"
+
+
+class VirtualTerminal(TimeStampedModel):
+    """A branch's provider payment terminal: a payment page, QR poster and transfer details.
+
+    One live terminal per branch and provider, opened automatically when the
+    branch is created and switched off when the branch is deactivated or
+    closed. A payment made on it reaches us as a provider event naming only
+    the terminal, the amount and the payer's email, never the pupil, so the
+    money is booked to the branch and matched to a customer afterwards
+    (:class:`TerminalPayment`).
+
+    ``status`` is :class:`~vs_payments.constants.TerminalStatus`. ``code`` is
+    the provider's handle, blank until the provider has opened it.
+    ``provider_details`` keeps the provider's own description of the terminal
+    (the payment page and the transfer details it answers), exposed to readers
+    holding the field's switch. ``split_code`` and ``split_subaccount`` record
+    the settlement route attached at the provider: set when the tenant's
+    payments settle directly and the terminal's money goes to the branch's
+    subaccount, blank when they settle to the platform's balance, which
+    holds them for the branch (:mod:`vs_payments.held`).
+
+    ``destinations`` are the WhatsApp numbers the provider notifies of each
+    payment. The first is the branch's own phone, with the branch's name; the
+    tenant adds and removes others, and at least one always stays. A terminal
+    with none is ``NEEDS_NUMBER`` and is not opened at the provider.
+
+    ``claimed_at`` leases the row to one worker for the provider call, so the
+    set-up task and the retry sweep never open two terminals for one branch.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="payment_terminals",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="payment_terminals",
+    )
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    code = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="The provider's code for the terminal; blank until it is opened.",
+    )
+    name = models.CharField(max_length=255)
+    status = models.CharField(
+        max_length=12, choices=TerminalStatus.choices, default=TerminalStatus.PENDING,
+    )
+    last_error = models.CharField(max_length=500, blank=True, default="")
+    destinations = models.JSONField(
+        default=list, blank=True,
+        help_text="The people the provider notifies of each payment: a list of "
+                  "{name, number}, the number in international form.",
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    provider_details = models.JSONField(default=dict, blank=True)
+    split_code = models.CharField(max_length=64, blank=True, default="")
+    split_subaccount = models.CharField(max_length=64, blank=True, default="")
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "code"], condition=~models.Q(code=""),
+                name="uniq_payments_terminal_provider_code",
+            ),
+            models.UniqueConstraint(
+                fields=["branch", "provider"],
+                condition=~models.Q(status="DEACTIVATED"),
+                name="uniq_payments_terminal_live_branch_provider",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "status"])]
+        ordering = ["tenant_id", "branch_id", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.code or 'pending'}: {self.name} ({self.status})"
+
+
+class TerminalPayment(TimeStampedModel):
+    """One payment made on a branch terminal, and who it was applied to.
+
+    Created with its collection when the provider's event arrives. Its money is
+    booked at once to the branch, Dr gateway clearing and Cr unidentified
+    receipts (``suspense_journal``), so it is on the books whether or not
+    anybody knows who paid. It is then ``UNMATCHED`` until it is applied to a
+    customer, automatically when exactly one active customer of the branch has
+    the payer's email, otherwise by a person. Applying it posts a receipt
+    (``match_payment``) that debits unidentified receipts and settles the
+    customer's oldest bills first; unmatching voids that receipt and the
+    payment is back on the list.
+
+    ``branch`` is the terminal's, and is the only thing reach reads. A customer
+    of another branch is refused. ``booked_on`` is the accounting date of the
+    unidentified-receipts journal.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="terminal_payments",
+    )
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="terminal_payments",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="terminal_payments",
+    )
+    terminal = models.ForeignKey(
+        VirtualTerminal, on_delete=models.PROTECT, related_name="payments",
+    )
+    collection = models.OneToOneField(
+        CollectionIntent, on_delete=models.PROTECT, related_name="terminal_payment",
+    )
+    status = models.CharField(
+        max_length=10, choices=TerminalPaymentStatus.choices,
+        default=TerminalPaymentStatus.UNMATCHED,
+    )
+    match_method = models.CharField(
+        max_length=8, choices=TerminalMatchMethod.choices, blank=True, default="",
+    )
+    payer_email = models.CharField(max_length=254, blank=True, default="")
+    sender_name = models.CharField(max_length=200, blank=True, default="")
+    sender_bank = models.CharField(max_length=120, blank=True, default="")
+    paid_at = models.DateTimeField(null=True, blank=True)
+    booked_on = models.DateField(null=True, blank=True)
+    suspense_journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="terminal_payments", null=True, blank=True,
+        help_text="Dr gateway clearing, Cr unidentified receipts, booked when the payment arrived.",
+    )
+    customer = models.ForeignKey(
+        "vs_finance.Customer", on_delete=models.PROTECT,
+        related_name="terminal_payments", null=True, blank=True,
+    )
+    match_payment = models.ForeignKey(
+        "vs_finance.Payment", on_delete=models.PROTECT, related_name="+",
+        null=True, blank=True,
+        help_text="The receipt that applied this payment to its customer.",
+    )
+    match_note = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Why the automatic match did not apply, for the person who matches it.",
+    )
+    matched_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+    matched_at = models.DateTimeField(null=True, blank=True)
+    unmatched_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+    unmatched_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "branch", "status"]),
+            models.Index(fields=["terminal", "status"]),
+        ]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"{self.collection_id}: {self.status}"
 
 
 class WebhookEvent(TimeStampedModel):

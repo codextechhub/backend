@@ -121,6 +121,31 @@ class RefundResult:
 
 
 @dataclass
+class TerminalResult:
+    """Outcome of opening or fetching a provider payment terminal.
+
+    ``code`` is the provider's handle for it. ``details`` is the provider's own
+    description of the terminal, kept as it answered it: the payment methods it
+    accepts (a payment page, a dedicated transfer account) and anything else it
+    reports, for the screens that show a branch how to take payment.
+    """
+
+    code: str
+    name: str = ""
+    active: bool = True
+    details: dict = field(default_factory=dict)
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
+class SplitResult:
+    """Outcome of creating a settlement split that routes a payment to a subaccount."""
+
+    split_code: str
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 class SettlementRecord:
     """One automatic settlement: the provider moving the merchant's money to its own bank.
 
@@ -172,6 +197,13 @@ class WebhookParseResult:
     # neutral shape has to carry it or the webhook layer can never resolve the deposit.
     # Empty for hosted-checkout charges, card captures and every payout event.
     destination_account_number: str = ""
+    # For a payment made on a branch's provider payment terminal: the terminal's code,
+    # the payer's email, and who the money came from (a transfer's sender or a card
+    # holder) as the event reports them. The provider never says which customer paid.
+    terminal_code: str = ""
+    payer_email: str = ""
+    sender_name: str = ""
+    sender_bank: str = ""
     raw: dict = field(default_factory=dict)  # Normalized raw payload for replay/audit.
 
 
@@ -275,6 +307,52 @@ class CollectionProvider(WebhookCapable):
         from ..exceptions import ProviderError
 
         raise ProviderError(f"{self.name or 'This provider'} does not offer refunds.",
+                            provider=self.name)
+
+    # -- payment terminals ------------------------------------------------- #
+    def create_terminal(self, *, name: str, destinations: list, currency: str = "NGN",
+                        metadata: dict | None = None) -> TerminalResult:
+        """Open a payment terminal: a payment page and transfer details a branch displays.
+
+        ``destinations`` are the people the provider notifies of each payment,
+        each ``{"target": <WhatsApp number>, "name": <person>}``. A provider
+        without terminals refuses.
+        """
+        self._no_terminals()
+
+    def fetch_terminal(self, *, code: str) -> TerminalResult:
+        """The provider's current description of terminal ``code``."""
+        self._no_terminals()
+
+    def deactivate_terminal(self, *, code: str) -> None:
+        """Switch terminal ``code`` off. The provider offers no way to switch it back on."""
+        self._no_terminals()
+
+    def assign_terminal_destinations(self, *, code: str, destinations: list) -> None:
+        """Add ``destinations`` (each ``{"target": number, "name": person}``) to terminal ``code``."""
+        self._no_terminals()
+
+    def unassign_terminal_destinations(self, *, code: str, targets: list) -> None:
+        """Remove the numbers ``targets`` from terminal ``code``'s notifications."""
+        self._no_terminals()
+
+    def create_split(self, *, name: str, subaccount_code: str,
+                     currency: str = "NGN") -> SplitResult:
+        """Create a split sending all of a payment to ``subaccount_code``, which bears the fee."""
+        self._no_terminals()
+
+    def attach_terminal_split(self, *, code: str, split_code: str) -> None:
+        """Route terminal ``code``'s payments through ``split_code``."""
+        self._no_terminals()
+
+    def detach_terminal_split(self, *, code: str, split_code: str) -> None:
+        """Stop routing terminal ``code``'s payments through ``split_code``."""
+        self._no_terminals()
+
+    def _no_terminals(self):
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} does not offer payment terminals.",
                             provider=self.name)
 
 

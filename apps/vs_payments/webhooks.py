@@ -375,6 +375,8 @@ def _find_collection(parsed, provider: str):
         ).first()
         if intent:
             return intent
+    if parsed.terminal_code:  # A payment on a branch terminal, which names no customer.
+        return _terminal_collection(parsed, provider)
     return _deposit_collection(parsed, provider)  # An unsolicited virtual-account transfer.
 
 
@@ -389,6 +391,34 @@ def _find_disputed_collection(parsed, provider: str):
             provider=provider, provider_reference=parsed.provider_reference,
         ).first()
     return None
+
+
+def _terminal_collection(parsed, provider: str):
+    """Resolve a payment made on one of our branch terminals, creating its collection.
+
+    The event names the terminal, never the customer. The terminal is the match:
+    it belongs to one branch of one tenant, and the collection is created for
+    that branch (see :func:`vs_payments.terminal_payments.record_terminal_payment`).
+    Nothing here trusts the event to move money: the collection lands ``PENDING``
+    and the ordinary confirm path re-verifies status and amount against the
+    provider's API. A terminal code we never opened, an event with no provider
+    reference (nothing to re-verify against), and a terminal whose tenant has no
+    books are left unresolved for an operator to see.
+    """
+    from . import terminal_payments
+
+    if not parsed.reference:
+        return None
+    terminal = terminal_payments.terminal_for_code(provider, parsed.terminal_code)
+    if terminal is None:
+        return None
+    intent, _created = terminal_payments.record_terminal_payment(
+        terminal=terminal, reference=parsed.reference, amount=parsed.amount,
+        provider_reference=parsed.provider_reference, payer_email=parsed.payer_email,
+        sender_name=parsed.sender_name, sender_bank=parsed.sender_bank,
+        event_type=parsed.event_type,
+    )
+    return intent
 
 
 # Support the deposit collection workflow.
@@ -436,6 +466,10 @@ def _unmatched_collection_reason(parsed) -> str:
     but it is misleading for a deposit that named one of our NUBANs, where the operator
     needs to know whether the account is unknown to us or the event was unverifiable.
     """
+    if parsed.terminal_code:  # A terminal payment that could not be resolved.
+        if not parsed.reference:
+            return "Terminal payment carries no provider reference to verify."
+        return f"No payment terminal '{parsed.terminal_code}' is registered, or its tenant has no books."[:255]
     if not parsed.destination_account_number:  # An ordinary charge we have no record of.
         return "No matching collection intent."
     if not parsed.reference:  # Named an account, but nothing to re-verify the deposit against.

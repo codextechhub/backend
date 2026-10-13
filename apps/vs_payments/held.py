@@ -397,7 +397,7 @@ def record_collection(intent, *, actor_user=None):
     net = int(intent.amount) - int(intent.fee or 0)
     return _move(
         tenant=intent.entity.tenant, branch_id=branch_id, kind=HeldMovementKind.COLLECTION,
-        amount=net, on=intent.payment.payment_date, reference=intent.reference,
+        amount=net, on=intent.received_on, reference=intent.reference,
         collection=intent, actor_user=actor_user,
     )
 
@@ -1110,7 +1110,11 @@ def apply_custody_switch(row, *, today=None) -> dict:
     if mode == CustodyMode.DIRECT:
         for entity in entities:
             reissued[entity.code] = reissue_virtual_accounts(entity)
-    return {"tenant": tenant.slug, "result": "switched", "mode": mode, "reissued": reissued}
+    from .terminals import sync_tenant_terminals
+
+    terminals = sync_tenant_terminals(tenant)  # Each branch terminal follows the new mode.
+    return {"tenant": tenant.slug, "result": "switched", "mode": mode, "reissued": reissued,
+            "terminals": terminals}
 
 
 def apply_custody_switches() -> dict:

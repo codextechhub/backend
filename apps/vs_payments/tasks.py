@@ -178,3 +178,53 @@ def apply_custody_switches():
     if summary["results"]:
         logger.info("apply_custody_switches: %s", summary)
     return summary
+
+
+@shared_task(name="vs_payments.provision_terminal", acks_late=True, reject_on_worker_lost=True)
+# Open one branch's payment terminal at the provider.
+def provision_terminal(terminal_id: int):
+    """Open the terminal row at the provider, outside the transaction that created the branch.
+
+    Enqueued with ``transaction.on_commit`` when a branch is created, so it only
+    ever runs for a branch that exists. A failure is recorded on the terminal and
+    retried by :func:`sweep_terminals`; a duplicate run finds the row leased or
+    open and does nothing. See :func:`vs_payments.terminals.provision_terminal`.
+    """
+    from .terminals import provision_terminal as provision
+
+    terminal = provision(terminal_id)
+    return {"terminal": terminal_id, "status": getattr(terminal, "status", None)}
+
+
+@shared_task(name="vs_payments.deactivate_branch_terminals", acks_late=True,
+             reject_on_worker_lost=True)
+# Switch off the terminals of a branch that left service.
+def deactivate_branch_terminals(branch_id: int):
+    """See :func:`vs_payments.terminals.deactivate_branch_terminals`. Safe to re-run."""
+    from .terminals import deactivate_branch_terminals as deactivate
+
+    return {"branch": branch_id, "deactivated": deactivate(branch_id)}
+
+
+@shared_task(name="vs_payments.sweep_terminals", acks_late=True, reject_on_worker_lost=True)
+# Retry terminals that failed to open and switch off those of branches that left.
+def sweep_terminals():
+    """See :func:`vs_payments.terminals.sweep`. Idempotent; a quiet run finds nothing."""
+    from .terminals import sweep
+
+    summary = sweep()
+    if summary["opened"] or summary["still_failing"] or summary["deactivated"]:
+        logger.info("sweep_terminals: %s", summary)
+    return summary
+
+
+@shared_task(name="vs_payments.repair_terminal_routes", acks_late=True, reject_on_worker_lost=True)
+# Bring every terminal's settlement route in line with its tenant's custody.
+def repair_terminal_routes():
+    """See :func:`vs_payments.terminals.repair_routes`. Idempotent; a quiet run changes nothing."""
+    from .terminals import repair_routes
+
+    summary = repair_routes()
+    if summary["rerouted"] or summary["failed"]:
+        logger.warning("repair_terminal_routes: %s", summary)
+    return summary

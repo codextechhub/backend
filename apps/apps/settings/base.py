@@ -580,6 +580,11 @@ PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
 # vs_payments.providers.registry.
 PAYMENTS_FAKE_PROVIDER_ENABLED = False
 PAYMENTS_FAKE_WEBHOOK_SECRET = ""
+# Whether creating a branch opens a payment terminal for it at the provider
+# (vs_payments.terminals). On wherever real branches take real payments; the
+# development and test settings modules switch it off so that creating a branch
+# in a fixture never calls a provider.
+PAYMENTS_TERMINALS_AUTO_CREATE = config("PAYMENTS_TERMINALS_AUTO_CREATE", default=True, cast=bool)
 
 # --------------------------------------------------------------------------- #
 # Where a PAYING CUSTOMER is sent                                              #

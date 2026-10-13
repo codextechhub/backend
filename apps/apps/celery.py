@@ -128,6 +128,19 @@ app.conf.beat_schedule = {
         "task": "vs_payments.reconcile_held_ledger",
         "schedule": crontab(hour=7, minute=15),
     },
+    # A branch's payment terminal is opened right after the branch is created, but a
+    # refused or lost call leaves a row that needs another go, and a branch taken out of
+    # service needs its terminal switched off. Each terminal backs off by itself.
+    "payments-sweep-terminals": {
+        "task": "vs_payments.sweep_terminals",
+        "schedule": crontab(minute="*/15"),
+    },
+    # Daily, after the custody switches: a terminal's money must go to the branch's bank
+    # when the tenant settles directly, and to the platform's balance otherwise.
+    "payments-repair-terminal-routes": {
+        "task": "vs_payments.repair_terminal_routes",
+        "schedule": crontab(hour=1, minute=10),
+    },
 
     # --- vs_exports (Export Centre) --------------------------------------
     # Every five minutes: start any schedule whose moment has come. The window

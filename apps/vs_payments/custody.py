@@ -406,4 +406,11 @@ def save_collection_subaccount(*, entity, bank_account, settlement_bank_code,
         metadata={"bank_account_id": bank_account.pk, "branch_id": bank_account.branch_id,
                   "refreshed": refresh},
     )
+    if entity.tenant_id and bank_account.branch_id:
+        # The branch's terminal must send its money to this subaccount when payments
+        # settle directly; a failure here never undoes the subaccount, the daily
+        # repair tries again.
+        from .terminals import sync_tenant_terminals
+
+        sync_tenant_terminals(entity.tenant, branch_id=bank_account.branch_id)
     return bank_account

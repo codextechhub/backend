@@ -1070,6 +1070,9 @@ class AccountMappingKey(models.TextChoices):
     HELD_FOR_OTHER_BRANCHES = "HELD_FOR_OTHER_BRANCHES", "Held for other branches"
     # What a petty cash count finds over or short against the fund's books.
     CASH_OVER_SHORT = "CASH_OVER_SHORT", "Cash over and short"
+    # Online money a branch's payment terminal received and no customer has been
+    # matched to yet, until a person identifies who paid.
+    UNIDENTIFIED_RECEIPTS = "UNIDENTIFIED_RECEIPTS", "Unidentified receipts"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

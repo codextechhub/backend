@@ -52,6 +52,9 @@ PAYMENTS_FAKE_PROVIDER_ENABLED = True
 PAYMENTS_FAKE_WEBHOOK_SECRET = config(
     "PAYMENTS_FAKE_WEBHOOK_SECRET", default="fake-test-secret",
 )
+# Creating a branch in a fixture must not open a provider terminal; the terminal
+# tests switch it on for themselves.
+PAYMENTS_TERMINALS_AUTO_CREATE = False
 
 # Throttling off: tests hammer endpoints far faster than the rates allow. Rates
 # are zeroed, never removed. See the module docstring.

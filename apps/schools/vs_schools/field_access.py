@@ -11,8 +11,8 @@ Address and registration number belong to the school's own profile form, so
 each receives independent Read and Write control. The declarations are open by
 default to preserve the screens existing roles already use.
 
-``school.branches`` carries a branch's address and email on the school's
-branches screen. CodeX alone edits a branch, so neither field is writable from
+``school.branches`` carries a branch's address, email and phone on the school's
+branches screen. CodeX alone edits a branch, so none of these fields is writable from
 the school app: the switch governs who reads them. The branch name is the label
 that identifies the branch everywhere and has no switch.
 
@@ -142,6 +142,15 @@ def register():
                 "email", "Branch email", group="Contact", scope=_TENANT,
                 sort_order=20, writable=False,
                 description="Set by CodeX when the branch is provisioned or corrected.",
+            ),
+            FieldSpec(
+                "phone", "Branch phone", group="Contact", scope=_TENANT,
+                sort_order=30, writable=False,
+                description=(
+                    "Set by CodeX when the branch is provisioned or corrected. It is the "
+                    "number the branch's payment terminal notifies first; the school adds "
+                    "other numbers to the terminal itself."
+                ),
             ),
         ),
     )

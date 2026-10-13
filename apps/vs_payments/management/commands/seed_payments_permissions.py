@@ -62,6 +62,20 @@ PAYMENTS_RESOURCES = [
     # Matching a bank line to the online payments it settles posts a journal
     # moving gateway clearing to the bank and booking the provider's fees.
     ("settlement",      "gateway settlements", [("create", "SENSITIVE")]),
+    # A branch's provider payment terminal: its status, the payment page and transfer
+    # details it displays, and retrying a failed set-up. The details are a Field Access
+    # switch on the role rather than a key of their own.
+    ("terminal",        "payment terminals",   [("view", "NORMAL"), ("update", "SENSITIVE")]),
+    # The WhatsApp numbers a terminal notifies. No key of its own: listing, adding and
+    # removing them is ``payments.terminal.update``, and the name and number are Field
+    # Access switches registered under this resource.
+    ("terminal_destination", "terminal notification numbers", []),
+    # Payments made on a terminal, which name no customer until a person or the
+    # payer's email chooses one. Matching posts a receipt that settles the
+    # customer's bills, so it is SENSITIVE; undoing it voids that receipt. The payer,
+    # sender, matched customer and suggestions are Field Access switches.
+    ("terminal_payment", "terminal payments",  [("view", "NORMAL"), ("match", "SENSITIVE"),
+                                                 ("reverse", "SENSITIVE")]),
     # The platform's settlements of money it holds for client branches, across
     # every tenant. Granted to the platform roles below; the views also require
     # the caller to be platform staff. Putting one forward starts the transfer's

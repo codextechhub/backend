@@ -801,6 +801,13 @@ def branch_school_slug(branch) -> Optional[str]:
     return school.slug if school is not None else None
 
 
+#: Branch columns the audit trail never carries. The trail is append-only and carries
+#: no value a Field Access switch guards, so a branch's phone number, which a
+#: role may be denied (``school.branches.phone``), is left out of every before and
+#: after snapshot.
+BRANCH_AUDIT_EXCLUDED = ("phone",)
+
+
 class BranchListSerializer(serializers.ModelSerializer):
     school_slug = serializers.SerializerMethodField()
 
@@ -840,6 +847,7 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 
             "address",
             "email",
+            "phone",
 
             "country",
             "state",
@@ -868,6 +876,9 @@ class BranchCreateSerializer(serializers.ModelSerializer):
     - you can optionally auto-set opened_at if not provided.
     """
 
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, validators=[phone_validator],
+    )
     primary_admin_data = BranchPrimaryAdminWriteSerializer(required=False, write_only=True)
 
     class Meta:
@@ -878,6 +889,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
             "address",
             "email",
+            "phone",
 
             "country",
             "state",
@@ -993,7 +1005,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         _snap = AuditDiffService.from_instances(
             before_instance=None,
             after_instance=branch,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at", *BRANCH_AUDIT_EXCLUDED],
         )
         # Keyed on the primary key, not the code. ``Branch.code`` is allocated
         # per tenant from 1, so every school's main branch is code 1 and
@@ -1041,6 +1053,10 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
     Keep status transitions in a dedicated serializer if you want strict lifecycle policies.
     """
 
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, validators=[phone_validator],
+    )
+
     class Meta:
         model = Branch
         fields = [
@@ -1049,6 +1065,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
             "address",
             "email",
+            "phone",
 
             "country",
             "state",
@@ -1089,7 +1106,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance: Branch, validated_data: Dict[str, Any]) -> Branch:
         before_instance = AuditDiffService.model_instance_to_dict(
             instance,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at", *BRANCH_AUDIT_EXCLUDED],
         )
 
         # Every field this request named, including the ``is_main`` popped just
@@ -1119,7 +1136,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
         after_instance = AuditDiffService.model_instance_to_dict(
             instance,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at", *BRANCH_AUDIT_EXCLUDED],
         )
 
         emit_audit_event(
@@ -1300,6 +1317,9 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
+    phone = serializers.CharField(
+        max_length=32, required=False, allow_blank=True, default="", validators=[phone_validator],
+    )
     country = serializers.CharField(max_length=80, required=False)
     state = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
     is_main = serializers.BooleanField(default=False)
@@ -1594,6 +1614,9 @@ class SchoolCreateSerializer(FieldAccessMixin, serializers.ModelSerializer):
         report_stage("branches")
         for branch_data in branches_data:
             branch_admin_data = branch_data.pop("primary_admin_data", None)
+            if branch_data.get("is_main") and not branch_data.get("phone"):
+                # The main branch answers on the school's own number until it is given another.
+                branch_data["phone"] = school.phone
 
             branch = Branch.objects.create(
                 tenant=school.tenant,
@@ -1661,7 +1684,7 @@ class SchoolCreateSerializer(FieldAccessMixin, serializers.ModelSerializer):
             _branch_snap = AuditDiffService.from_instances(
                 before_instance=None,
                 after_instance=branch,
-                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
+                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at", *BRANCH_AUDIT_EXCLUDED],
             )
             emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
@@ -2483,6 +2506,7 @@ class SchoolBranchSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "status",
             "address",
             "email",
+            "phone",
             "state",
             "country",
             "opened_at",

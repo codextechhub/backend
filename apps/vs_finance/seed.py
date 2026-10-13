@@ -51,6 +51,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("2160", "Deferred Income", AccountType.LIABILITY, True, False),  # Billed ahead of the service period.
     ("2170", "Customer Deposits Held", AccountType.LIABILITY, True, False),  # Refundable deposits.
     ("2190", "Held for Other Branches", AccountType.LIABILITY, True, False),  # Received for another branch.
+    ("2195", "Unidentified Receipts", AccountType.LIABILITY, True, False),  # Terminal payments not yet matched to a customer.
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),  # Output VAT payable.
     ("2300", WHT_NAME, AccountType.LIABILITY, True, False),  # Withholding tax payable.
     ("2310", "PAYE Payable", AccountType.LIABILITY, True, False),  # PAYE payable.
@@ -139,6 +140,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "2100": IFRSLine.TRADE_PAYABLES, "2140": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,  # AP-like balances.
     "2160": IFRSLine.DEFERRED_INCOME, "2170": IFRSLine.TRADE_PAYABLES,  # Fees in advance, deposits.
     "2190": IFRSLine.TRADE_PAYABLES,  # Money held for another branch.
+    "2195": IFRSLine.TRADE_PAYABLES,  # Money received that no customer has claimed yet.
     "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,  # Tax payables.
     "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,  # Employee statutory payables.
     "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,  # Wages and reimbursements.
@@ -166,7 +168,7 @@ _PARENTS = {  # Parent account code by child account code.
     "1260": "1000", "1300": "1000",
     "1400": "1000", "1500": "1000", "1900": "1000",  # More asset children.
     "2100": "2000", "2140": "2000", "2150": "2000", "2160": "2000", "2170": "2000",  # Liability children.
-    "2190": "2000", "2200": "2000", "2300": "2000",
+    "2190": "2000", "2195": "2000", "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
     "2340": "2000", "2350": "2000", "2360": "2000",
     "3100": "3000", "3200": "3000",  # Equity children.

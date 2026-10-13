@@ -15,7 +15,9 @@ from .models import (
     PayoutBatch,
     PayoutInstruction,
     ProviderRefund,
+    TerminalPayment,
     VirtualAccount,
+    VirtualTerminal,
     WebhookEvent,
 )
 from .audit import SENTENCE_MARKER
@@ -58,6 +60,147 @@ class CollectionIntentSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     def get_amount_naira(self, obj):
         return format_naira(obj.amount)
+
+    def to_representation(self, instance):
+        """The collection, less the people a branch terminal payment says it is about.
+
+        A terminal payment's payer, sender and matched customer are the registered
+        fields of ``payments.terminal_payment``, and this list is another door to
+        them: the collection of a terminal payment carries the payer's email and
+        name and, once matched, the customer. They follow the same switches.
+        """
+        data = super().to_representation(instance)
+        if instance.channel != "TERMINAL":
+            return data
+        request = self.context.get("request")
+        hidden = {
+            "payer_email": "payments.terminal_payment.payer_email",
+            "payer_name": "payments.terminal_payment.sender_name",
+            "customer_code": "payments.terminal_payment.matched_customer",
+            "customer_name": "payments.terminal_payment.matched_customer",
+        }
+        for name, key in hidden.items():
+            if not can_read(request, key):
+                data.pop(name, None)
+        return data
+
+
+class VirtualTerminalSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One branch's payment terminal, with the page and transfer details a branch displays.
+
+    The fields are the registered ones of ``payments.terminal``; none is writable,
+    because the provider issues the code and details and the status follows from
+    the provider. ``payment_details`` is what the provider said about how to pay
+    at the terminal (its payment methods, and a payment page or QR where it
+    reports one), without the notification numbers it holds. ``routed_to_branch_bank``
+    says whether the terminal's money goes to the branch's bank (a settlement
+    split is attached) or to the platform's balance, which holds it for the branch.
+    """
+
+    field_resource = "payments.terminal"
+
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    payment_details = serializers.SerializerMethodField()
+    routed_to_branch_bank = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VirtualTerminal
+        fields = [
+            "id", "branch", "branch_name", "provider", "code", "name", "status", "attempts",
+            "last_error", "payment_details", "routed_to_branch_bank", "created_at", "updated_at",
+        ]
+
+    def get_payment_details(self, obj):
+        return {key: value for key, value in (obj.provider_details or {}).items()
+                if key != "destinations"}
+
+    def get_routed_to_branch_bank(self, obj):
+        return bool(obj.split_code)
+
+
+class TerminalDestinationSerializer(FieldAccessMixin, serializers.Serializer):
+    """One number a terminal notifies on WhatsApp, with the name it is saved under.
+
+    Read from the terminal's stored ``{name, number}`` entries. Both are the
+    registered fields of ``payments.terminal_destination``: personal contact data,
+    sensitive, and writable when a number is added.
+    """
+
+    field_resource = "payments.terminal_destination"
+
+    name = serializers.CharField(read_only=True)
+    number = serializers.CharField(read_only=True)
+
+
+class TerminalPaymentSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One payment made on a branch terminal, and who it was applied to.
+
+    The fields are the registered ones of ``payments.terminal_payment``; none is
+    writable, because a person's only acts on a payment are matching and
+    unmatching it, which take a customer and nothing else. ``status`` reads
+    ``UNMATCHED`` for a payment waiting for a customer, including one whose
+    matching receipt has since been voided. ``suggestions`` come from the view
+    through the serializer context (``suggestions``, keyed by payment id), because
+    ranking customers costs queries a list should pay once per page and an
+    export or a nested render not at all.
+    """
+
+    field_resource = "payments.terminal_payment"
+
+    collection_id = serializers.IntegerField(read_only=True)
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    terminal = serializers.IntegerField(source="terminal_id", read_only=True)
+    terminal_name = serializers.CharField(source="terminal.name", read_only=True)
+    reference = serializers.CharField(source="collection.reference", read_only=True)
+    provider_reference = serializers.CharField(source="collection.provider_reference", read_only=True)
+    amount = serializers.IntegerField(source="collection.amount", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+    fee = serializers.IntegerField(source="collection.fee", read_only=True)
+    status = serializers.SerializerMethodField()
+    matched_customer = serializers.IntegerField(source="customer_id", read_only=True)
+    matched_customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    matched_customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    matched_by = serializers.IntegerField(source="matched_by_id", read_only=True)
+    matched_by_name = serializers.SerializerMethodField()
+    unmatched_by_name = serializers.SerializerMethodField()
+    receipt_id = serializers.IntegerField(source="match_payment_id", read_only=True)
+    suggestions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TerminalPayment
+        fields = [
+            "id", "collection_id", "branch", "branch_name", "terminal", "terminal_name",
+            "reference", "provider_reference", "amount", "amount_naira", "fee", "status",
+            "match_method", "match_note", "payer_email", "sender_name", "sender_bank",
+            "matched_customer", "matched_customer_code", "matched_customer_name",
+            "matched_by", "matched_by_name", "matched_at", "unmatched_by_name", "unmatched_at",
+            "receipt_id", "paid_at", "booked_on", "created_at", "suggestions",
+        ]
+
+    def get_amount_naira(self, obj):
+        return format_naira(obj.collection.amount)
+
+    def get_status(self, obj):
+        from .terminal_payments import is_open
+
+        return "UNMATCHED" if is_open(obj) else "MATCHED"
+
+    @staticmethod
+    def _person(user):
+        if user is None:
+            return None
+        return f"{user.first_name} {user.last_name}".strip() or user.email
+
+    def get_matched_by_name(self, obj):
+        return self._person(obj.matched_by)
+
+    def get_unmatched_by_name(self, obj):
+        return self._person(obj.unmatched_by)
+
+    def get_suggestions(self, obj):
+        return (self.context.get("suggestions") or {}).get(obj.pk, [])
 
 
 class ProviderRefundSerializer(FieldAccessMixin, serializers.ModelSerializer):

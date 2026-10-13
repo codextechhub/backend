@@ -67,6 +67,13 @@ class PaymentStateError(PaymentError):
     http_status = 409  # Conflicts reflect invalid state transitions.
 
 
+class LastDestinationError(PaymentStateError):
+    """Removing a terminal's only notification number, which the provider requires it to keep (409)."""
+
+    error_code = "TERMINAL_LAST_DESTINATION"
+    default_message = "A terminal must keep at least one number."
+
+
 class IdempotencyConflictError(PaymentStateError):
     """The caller reused a creation key for a different normalized request."""
 

@@ -29,6 +29,15 @@ class VsPaymentsConfig(AppConfig):
         from .provisioning import provision_payout_approval
 
         register_entity_provisioner(provision_payout_approval)
+        # Every new branch gets a payment terminal at the provider, and one that
+        # leaves service for good has it switched off.
+        from django.db.models.signals import post_save
+        from vs_tenants.models import Branch
+
+        from .terminals import on_branch_saved
+
+        post_save.connect(on_branch_saved, sender=Branch,
+                          dispatch_uid="vs_payments.terminals.on_branch_saved")
         # Warn the period close about online payments left in gateway clearing.
         from .settlement import register as register_close_checks
 
@@ -59,9 +68,11 @@ class VsPaymentsConfig(AppConfig):
             PayoutBatch,
             PayoutInstruction,
             ProviderRefund,
+            TerminalPayment,
         )
 
         retention.register(CollectionIntent, dated_record("created_at", "an online collection"))
+        retention.register(TerminalPayment, dated_record("created_at", "a branch terminal payment"))
         retention.register(PayoutBatch, dated_record("created_at", "a payout batch"))
         retention.register(PayoutInstruction, dated_record("created_at", "a payout"))
         retention.register(ProviderRefund, dated_record("created_at", "a refund through the provider"))

@@ -43,7 +43,10 @@ from vs_finance.wording import agrees, counted, state_word
 def awaiting_settlement_q(prefix: str = "") -> Q:
     """The collections whose money is still in gateway clearing, as a ``Q``.
 
-    Booked to clearing, with a receipt still posted, and no posted settlement.
+    Booked to clearing, with a receipt still posted (a branch terminal's payment
+    is booked by its unidentified-receipts journal until it is matched, and the
+    receipt that matches it carries the clearing balance from then on), and no
+    posted settlement.
     A settlement that was unmatched (its journal reversed) leaves them waiting
     again; a receipt that was voided takes them out of clearing altogether. A
     payment the platform held leaves clearing when its held settlement is paid
@@ -56,8 +59,9 @@ def awaiting_settlement_q(prefix: str = "") -> Q:
 
     return (
         Q(**{f"{prefix}status": CollectionStatus.SUCCEEDED,
-             f"{prefix}clearing_account__isnull": False,
-             f"{prefix}payment__status": DocumentStatus.POSTED})
+             f"{prefix}clearing_account__isnull": False})
+        & (Q(**{f"{prefix}payment__status": DocumentStatus.POSTED})
+           | Q(**{f"{prefix}terminal_payment__suspense_journal__status": DocumentStatus.POSTED}))
         & (Q(**{f"{prefix}settlement_entry__isnull": True})
            | ~Q(**{f"{prefix}settlement_entry__status": DocumentStatus.POSTED}))
         & ~Q(**{f"{prefix}held_settlement__status": HeldSettlementStatus.PAID})
@@ -174,7 +178,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     book_date = resolve_adjustment_date(
         entity, line.txn_date, branch=branch_id, requested=posting_date,
     )
-    received = max(intent.payment.payment_date for intent in intents)
+    received = max(intent.received_on for intent in intents)
     if book_date < received:  # Money cannot leave clearing before it entered it.
         tenant = entity.tenant if entity.tenant_id else None
         _refuse(f"The settlement would be booked on {format_date(book_date, tenant)}, before a "

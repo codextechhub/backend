@@ -1,7 +1,7 @@
 """URL routes for vs_payments (mounted at /v1/payments/)."""
 from django.urls import path
 
-from . import views, views_custody, views_public, views_refunds
+from . import views, views_custody, views_public, views_refunds, views_terminals
 
 urlpatterns = [
     path("public/collections/<str:reference>/status/",
@@ -43,6 +43,22 @@ urlpatterns = [
          name="payments-custody-settings"),
     path("subaccounts/", views_custody.CollectionSubaccountView.as_view(),
          name="payments-subaccounts"),
+    path("terminals/", views_terminals.TerminalListView.as_view(), name="payments-terminals"),
+    path("terminals/<int:pk>/retry/", views_terminals.TerminalRetryView.as_view(),
+         name="payments-terminal-retry"),
+    path("terminals/<int:pk>/destinations/", views_terminals.TerminalDestinationListView.as_view(),
+         name="payments-terminal-destinations"),
+    path("terminals/<int:pk>/destinations/remove/",
+         views_terminals.TerminalDestinationRemoveView.as_view(),
+         name="payments-terminal-destination-remove"),
+    path("terminal-payments/", views_terminals.TerminalPaymentListView.as_view(),
+         name="payments-terminal-payments"),
+    path("terminal-payments/<int:pk>/", views_terminals.TerminalPaymentDetailView.as_view(),
+         name="payments-terminal-payment-detail"),
+    path("terminal-payments/<int:pk>/match/", views_terminals.TerminalPaymentMatchView.as_view(),
+         name="payments-terminal-payment-match"),
+    path("terminal-payments/<int:pk>/unmatch/", views_terminals.TerminalPaymentUnmatchView.as_view(),
+         name="payments-terminal-payment-unmatch"),
     path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),
     path("movements/", views.MovementsView.as_view(), name="payments-movements"),
     path("movements/summary/", views.MovementsSummaryView.as_view(), name="payments-movements-summary"),

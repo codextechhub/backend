@@ -84,6 +84,9 @@ EXPECTED_RESOURCES = {
     ("payments", "collection"),
     ("payments", "payout"),
     ("payments", "refund"),
+    ("payments", "terminal"),
+    ("payments", "terminal_destination"),
+    ("payments", "terminal_payment"),
     ("payments", "virtual_account"),
     ("platform", "staff_profile"),
     ("platform", "schools"),
@@ -112,6 +115,7 @@ ENDPOINT_GUARDED_RESOURCES = {
     ("finance", "pettycash_return"): "finance.pettycash.view",
     ("procurement", "vendor_contact"): "procurement.vendor.view",
     ("procurement", "approval"): "procurement.approval.view",
+    ("payments", "terminal_destination"): "payments.terminal.update",
     ("school", "guardians"): "school.students.view",
     ("school", "profile"): "school.profile.view",
     ("school", "teachers"): "school.teachers.view",
@@ -213,6 +217,9 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_schools.serializers.BranchInlineCreateSerializer", "email"):
         "The email of a branch CodeX provisions while creating a school, not the "
         "school's billing email.",
+    ("schools.vs_schools.serializers.BranchInlineCreateSerializer", "phone"):
+        "The phone of a branch CodeX provisions while creating a school, not the "
+        "school's billing phone.",
     **{
         (f"schools.vs_schools.serializers.{serializer}", name):
             "The contact for the administrator named in the request, stored on the "
@@ -300,6 +307,28 @@ SENSITIVE_BEYOND_THE_CONVERSION = {
         "role as it opens those. Every holder of school.students.view read it "
         "before it was registered, so turning the switch on for the roles that "
         "need it is part of adopting the field."
+    ),
+    **{
+        f"payments.terminal_payment.{name}": (
+            "Personal data about a person who paid at a branch terminal, or the customers "
+            "suggested as having paid. The field is new and no key ever hid it, so the "
+            "sync gives Finance Admin its Read switch (read_by) and every other role "
+            "adopts it deliberately."
+        )
+        for name in ("payer_email", "sender_name", "matched_customer", "suggestions")
+    },
+    **{
+        f"payments.terminal_destination.{name}": (
+            "A name and WhatsApp number a person typed in to be notified of terminal payments. "
+            "The field is new and no key ever hid it, so the sync gives Finance Admin its Read "
+            "switch (read_by) and every other role adopts it deliberately."
+        )
+        for name in ("name", "number")
+    },
+    "payments.terminal.payment_details": (
+        "The payment page and dedicated transfer details a branch displays at its terminal. "
+        "A new field that no key ever hid; the sync gives Finance Admin its Read switch "
+        "(read_by) and every other role adopts it deliberately."
     ),
 }
 
@@ -684,7 +713,7 @@ READ_PATH_ALLOWLIST = {
             "CodeX's own branch management, governed by the platform.branches keys rather "
             "than the school's school.branches switches."
         for serializer in ("BranchDetailSerializer", "BranchCreateSerializer", "BranchUpdateSerializer")
-        for name in ("address", "email")
+        for name in ("address", "email", "phone")
     },
     **{
         ("schools.vs_schools.serializers.SchoolDetailSerializer", name):

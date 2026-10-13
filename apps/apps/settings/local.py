@@ -88,6 +88,11 @@ PAYMENTS_FAKE_PROVIDER_ENABLED = config(
 PAYMENTS_FAKE_WEBHOOK_SECRET = config(
     "PAYMENTS_FAKE_WEBHOOK_SECRET", default="fake-dev-secret",
 )
+# A development database opens no provider terminals unless asked: creating a
+# branch while testing must not reach for Paystack with whatever key .env holds.
+PAYMENTS_TERMINALS_AUTO_CREATE = config(
+    "PAYMENTS_TERMINALS_AUTO_CREATE", default=False, cast=bool,
+)
 
 # Frontend URL - must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
