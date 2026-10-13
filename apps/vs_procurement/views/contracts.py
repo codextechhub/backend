@@ -31,6 +31,7 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_q,
     _date,
     _resolve_vendor,
     _strict_kobo,
@@ -292,6 +293,9 @@ class ContractSummaryView(_ProcBase):
 class ContractLinkedPurchaseOrdersView(_ProcBase):
     """GET - real purchase orders with this contract's vendor during its term.
 
+    The contract is shared across branches; the orders under it are each one
+    branch's, so a branch-bound reader is shown only their own branches' orders.
+
     docstring-name: Contract linked purchase orders
     """
     # Reading POs is a *different* resource than reading contracts, so this leaf is gated
@@ -319,7 +323,7 @@ class ContractLinkedPurchaseOrdersView(_ProcBase):
 
         # 1) Explicit call-offs: POs whose contract FK points at this exact contract.
         explicit = PurchaseOrder.objects.filter(
-            entity=entity, contract_id=contract.pk,
+            _branch_q(request), entity=entity, contract_id=contract.pk,
         ).order_by("-order_date", "-id")[:100]
         rows = [_row(po, "linked") for po in explicit]
 
@@ -328,7 +332,8 @@ class ContractLinkedPurchaseOrdersView(_ProcBase):
         # without claiming a hard link, and (via contract__isnull) never double-counts a PO
         # that is explicitly linked to some other overlapping contract of the same vendor.
         fallback = PurchaseOrder.objects.filter(
-            entity=entity, vendor_id=contract.vendor_id, contract__isnull=True,
+            _branch_q(request), entity=entity, vendor_id=contract.vendor_id,
+            contract__isnull=True,
         )
         if contract.start_date is not None:
             fallback = fallback.filter(order_date__gte=contract.start_date)

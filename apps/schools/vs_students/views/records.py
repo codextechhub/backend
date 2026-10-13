@@ -435,8 +435,9 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
     enrolment form has to render the hint; setting or removing it needs
     ``update``.
 
-    The body is ``{required, pattern, hint, auto_issue, source, suggestion}``.
-    ``source`` is ``branch`` when the branch has a rule of its own, ``school``
+    The body is ``{required, pattern, hint, auto_issue, source, suggestion}``,
+    without ``suggestion`` for a caller whose roles do not grant Read on
+    ``school.students.student_number``. ``source`` is ``branch`` when the branch has a rule of its own, ``school``
     when the school has set one, and ``default`` when nobody has. PUT with a
     branch writes that branch's own rule, all four values; DELETE with a
     branch removes it, so the branch follows the school's again. DELETE with
@@ -484,11 +485,15 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
         # A suggestion, not a reservation: two registrars enrolling at once can
         # be handed the same number, and the unique constraint is what actually
         # stops the collision. "" means the series cannot be continued honestly;
-        # see suggest_number for when that happens.
-        return {
-            **policy.as_dict(),
-            "suggestion": suggest_number(self.tenant, policy=policy, branch=branch),
-        }
+        # see suggest_number for when that happens. It restates the highest
+        # number issued, so it is left out for a caller who may not read
+        # student numbers.
+        body = policy.as_dict()
+        if can_read(self.request, "school.students.student_number"):
+            body["suggestion"] = suggest_number(
+                self.tenant, policy=policy, branch=branch,
+            )
+        return body
 
     def get(self, request):
         from ..services.policy import read_policy
@@ -572,12 +577,12 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
     def get(self, request):
         from ..services.rules import read_rules
 
-        return success_response(data=read_rules(self.tenant).as_dict())
+        return success_response(data=read_rules(self.tenant).as_dict(request))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
 
-        from ..services.rules import write_rules
+        from ..services.rules import read_rules, write_rules
 
         assert_caller_may_configure(
             request.user, self.tenant,
@@ -586,10 +591,14 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
         writer = EnrolmentRulesSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
+        # Requirements for fields the caller cannot read stay as stored.
+        data["required_fields"] = read_rules(self.tenant).required_fields_after(
+            request, data["required_fields"],
+        )
         rules = write_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Enrolment rules saved.", data=rules.as_dict())
+        return success_response("Enrolment rules saved.", data=rules.as_dict(request))
 
 
 class AdmissionRulesView(StudentsViewMixin, APIView):

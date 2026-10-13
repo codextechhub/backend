@@ -3147,7 +3147,8 @@ class VendorPaymentConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         self.assertEqual(response.status_code, 200)
         messages = " ".join(row["message"] for row in response.data["data"]["activity"])
-        self.assertIn("₦", messages)
+        self.assertIn("Paid ACME", messages)
+        self.assertNotIn("₦", messages)
         self.assertNotIn("kobo", messages.lower())
 
     def test_partial_payment_marks_partial(self):
@@ -4765,7 +4766,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         message = FinanceAuditLog.objects.get(
             entity=entity, action=FinanceAuditAction.QUOTATION_SUBMITTED,
         ).message
-        self.assertIn("₦", message)
+        self.assertNotIn("₦", message)
         self.assertNotIn("kobo", message.lower())
 
     def test_award_builds_po_and_rejects_losers(self):
@@ -4803,7 +4804,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         message = FinanceAuditLog.objects.get(
             entity=entity, action=FinanceAuditAction.QUOTATION_AWARDED,
         ).message
-        self.assertIn("₦", message)
+        self.assertNotIn("₦", message)
         self.assertNotIn("kobo", message.lower())
 
     def test_award_enforces_submitted_bid_minimum_and_audits_exception(self):
@@ -9439,7 +9440,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         message = FinanceAuditLog.objects.get(
             entity=entity, action=FinanceAuditAction.STOCK_ISSUED,
         ).message
-        self.assertIn("₦", message)
+        self.assertNotIn("₦", message)
         self.assertNotIn("kobo", message.lower())
 
     def test_issue_beyond_on_hand_is_blocked_and_audited(self):
@@ -9559,7 +9560,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         messages = FinanceAuditLog.objects.filter(
             entity=entity, action=FinanceAuditAction.STOCK_ADJUSTED,
         ).values_list("message", flat=True)
-        self.assertTrue(all("₦" in message and "kobo" not in message.lower() for message in messages))
+        self.assertTrue(all("₦" not in message and "kobo" not in message.lower() for message in messages))
 
     def test_writeup_into_empty_stock_requires_unit_cost(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -12206,6 +12207,109 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         req.refresh_from_db()
         self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_former_branch_approver_keeps_only_their_decision_receipt(self, _permission):
+        """Moving branches keeps authorship evidence without keeping document access."""
+        from core.test_utils import TenantAPIClient
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        req, instance = self.submit(self.multi, branch=self.lekki)
+        client = TenantAPIClient(user=self.lekki_approver)
+        decided = client.post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={self.multi.entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(decided.status_code, 200, decided.data)
+
+        TenantUserRoleAssignment.objects.filter(
+            user=self.lekki_approver,
+        ).update(assignment_status="REVOKED")
+        self.lekki_approver.branch = self.ikeja
+        self.lekki_approver.save(update_fields=["branch", "updated_at"])
+        self.appoint(
+            self.lekki_approver, self.MANAGER_ROLE,
+            tenant=self.multi_tenant, branch=self.ikeja,
+        )
+
+        history = client.get(
+            f"/v1/procurement/approvals/?entity={self.multi.entity.code}&view=history",
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        self.assertEqual(len(history.json()["data"]), 1)
+        receipt = history.json()["data"][0]
+        self.assertTrue(receipt["receipt_only"])
+        self.assertEqual(receipt["id"], str(instance.id))
+        self.assertEqual(receipt["reference"], req.document_number)
+        self.assertEqual(receipt["decision"], "APPROVED")
+        self.assertEqual(receipt["stage"], "Manager approval")
+        self.assertIn("decided_at", receipt)
+        for hidden in ("amount", "currency", "requester", "title", "submitted_at", "status"):
+            self.assertNotIn(hidden, receipt)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_decision_history_filters_and_keeps_full_rows_in_current_reach(self, _permission):
+        """The queue's search and type filter also narrow completed decisions."""
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+
+        req, instance = self.submit(self.multi, branch=self.lekki)
+        client = TenantAPIClient(user=self.lekki_approver)
+        decided = client.post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={self.multi.entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(decided.status_code, 200, decided.data)
+        base = f"/v1/procurement/approvals/?entity={self.multi.entity.code}&view=history"
+
+        found = client.get(
+            f"{base}&document_type={WF_DOCTYPE_REQUISITION}&outcome=APPROVED"
+            f"&search={req.document_number}",
+        )
+        self.assertEqual(found.status_code, 200, found.data)
+        self.assertEqual([row["id"] for row in found.json()["data"]], [str(instance.id)])
+        self.assertFalse(found.json()["data"][0]["receipt_only"])
+        self.assertIn("amount", found.json()["data"][0])
+
+        absent = client.get(f"{base}&outcome=REJECTED")
+        self.assertEqual(absent.status_code, 200, absent.data)
+        self.assertEqual(absent.json()["data"], [])
+
+        refused = client.get(f"{base}&outcome=NOT_A_DECISION")
+        self.assertEqual(refused.status_code, 400, refused.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_decision_receipt_omits_a_field_closed_by_field_access(self, _permission):
+        """Each audit field follows its own read-only Field Access switch."""
+        from core.test_utils import TenantAPIClient
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        _req, instance = self.submit(self.multi, branch=self.lekki)
+        client = TenantAPIClient(user=self.lekki_approver)
+        decided = client.post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={self.multi.entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(decided.status_code, 200, decided.data)
+
+        keys = install_declared_fields("procurement.approval")
+        role = TenantRoleTemplate.objects.get(
+            tenant=self.multi_tenant, key=self.MANAGER_ROLE,
+        )
+        set_field_access(role, *keys, read=True, write=False)
+        set_field_access(
+            role, "procurement.approval.stage", read=False, write=False,
+        )
+
+        history = client.get(
+            f"/v1/procurement/approvals/?entity={self.multi.entity.code}&view=history",
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        receipt = history.json()["data"][0]
+        self.assertNotIn("stage", receipt)
+        self.assertIn("reference", receipt)
+        self.assertEqual(receipt["decision"], "APPROVED")
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_a_parked_approval_cannot_be_overridden_from_another_branch(self, _permission):

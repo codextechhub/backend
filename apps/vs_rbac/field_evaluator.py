@@ -34,6 +34,14 @@ passes :data:`vs_rbac.evaluator.ANY_BRANCH`: every role a person holds counts
 for every record they can open, and which records they can open is branch
 visibility's question, not this module's.
 
+A CodeX operator acts on a school by asserting it as the request's tenant,
+while their roles live in the platform tenant. :func:`get_acting_field_access`
+is the map a request is judged by: a ``PLATFORM`` field (the school record's
+subscription, a CodeX staff member's profile) is judged in the operator's own
+tenant with their platform roles, and a ``TENANT`` field stays judged in the
+tenant the request acts on. Everyone else, whose own tenant is the request's,
+gets exactly what :func:`get_field_access` answers.
+
 The module is not ``field_access.py`` because that name belongs to each
 domain app's field declarations.
 """
@@ -238,6 +246,57 @@ def get_field_access(user, tenant=None, branch=ANY_BRANCH) -> FieldAccessMap:
         result = FieldAccessMap(open_all=True)
     else:
         result = FieldAccessMap(_evaluate(user, tenant, branch, with_overrides=True))
+
+    if cache is None:
+        cache = {}
+        setattr(user, _CACHE_ATTR, cache)
+    cache[cache_key] = (revision, result)
+    return result
+
+
+def get_acting_field_access(user, tenant=None, branch=ANY_BRANCH) -> FieldAccessMap:
+    """What *user* may read and write while acting on *tenant*.
+
+    The map every enforcement door consults. When *tenant* is the user's own it
+    is :func:`get_field_access`. When a CodeX operator acts on a school they
+    asserted as the request tenant, the fields only the platform can hold
+    (``PermissionScope.PLATFORM``) are judged in the operator's own platform
+    tenant, where their roles and exceptions live, and every other field is
+    judged in the school, where the operator holds no role and so reads none
+    of the school's switches open. Judging a platform field in the school
+    would close every one of them for every operator, because a school tenant
+    holds no platform role.
+
+    Memoised beside :func:`get_field_access` and checked against the same
+    registry revision.
+    """
+    tenant = _normalize_tenant(user, tenant=tenant)
+    home = getattr(user, "tenant", None)
+    if (
+        tenant is None
+        or home is None
+        or not getattr(user, "is_authenticated", False)
+        or not tenant_is_platform(home)
+        or tenant.pk == home.pk
+    ):
+        return get_field_access(user, tenant=tenant, branch=branch)
+
+    cache_key = (
+        "acting", tenant.pk,
+        branch if branch is ANY_BRANCH else getattr(branch, "pk", None),
+    )
+    revision = PermissionRegistryRevision.current()
+    cache = getattr(user, _CACHE_ATTR, None)
+    if cache is not None and cache_key in cache and cache[cache_key][0] == revision:
+        return cache[cache_key][1]
+
+    own = get_field_access(user, tenant=home, branch=branch)
+    acted_on = get_field_access(user, tenant=tenant, branch=branch)
+    states = {}
+    for key, scope in FieldDefinition.objects.filter(is_active=True).values_list("key", "scope"):
+        source = own if scope == PermissionScope.PLATFORM else acted_on
+        states[key] = (source.can_read(key), source.can_write(key))
+    result = FieldAccessMap(states)
 
     if cache is None:
         cache = {}

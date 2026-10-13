@@ -56,7 +56,10 @@ Who the caller is
 
 The caller is the request's user, evaluated in the request's tenant with every
 role they hold counting (``ANY_BRANCH``), which is what keeps the create form's
-``/me`` map and a record's ``_read_only_fields`` in agreement. The answer is
+``/me`` map and a record's ``_read_only_fields`` in agreement. A CodeX operator
+who asserts a school as the request's tenant is judged for the fields only the
+platform can hold in their own tenant, with their platform roles, and for every
+other field in the school (:func:`vs_rbac.field_evaluator.get_acting_field_access`). The answer is
 memoised on the request, so serializing two hundred rows evaluates once.
 
 The escape hatch, kept narrow and named: a render with **no request** in its
@@ -79,7 +82,7 @@ from rest_framework.relations import PKOnlyObject
 from rest_framework.serializers import ListSerializer
 
 from .evaluator import ANY_BRANCH
-from .field_evaluator import FieldAccessMap, get_field_access
+from .field_evaluator import FieldAccessMap, get_acting_field_access
 
 #: The context key a system-context render sets, through :func:`system_context`.
 SYSTEM_CONTEXT_KEY = "field_access_system_surface"
@@ -107,7 +110,21 @@ SYSTEM_SURFACES: dict[str, str] = {
         "pay into it, so the document is addressed to the payer and not to "
         "the member of staff who pressed Send. Filtering it by that person "
         "would produce a different document each time, and an invoice with no "
-        "account number cannot be paid."
+        "account number cannot be paid. The same block carries the letterhead: "
+        "the issuing branch's address and email print so the payer knows where "
+        "the document came from and whom to write to, and the school.branches "
+        "switches that govern the branch screens do not apply to it."
+    ),
+    "vs_finance.documents._customer_block": (
+        "The bill-to block of an invoice, receipt or statement. It prints the "
+        "customer's own name, billing address, email and phone on a document "
+        "addressed to that customer, so the document is the customer's record "
+        "of who was billed and not a screen of the member of staff who pressed "
+        "Print or Send. Filtering it by that person would produce a different "
+        "document each time, and the copy the customer receives by email would "
+        "not match the one the school printed. The billing email switch "
+        "governs where the school's screens, exports and delivery history show "
+        "the address, not what the document itself says."
     ),
 }
 
@@ -178,7 +195,8 @@ class FieldWriteDenied(APIException):
     comes out in the same envelope as every other error: ``message`` is the
     sentence, naming each field as a person would (``labels``, see
     :class:`FieldReadDenied`), and ``error.detail`` carries one message per
-    field, keyed by the name a client sends.
+    field, keyed by the name a client sends. ``labels`` is kept so a caller can
+    word the refusal of a single field in the same terms.
     """
 
     status_code = 403
@@ -188,6 +206,7 @@ class FieldWriteDenied(APIException):
 
     def __init__(self, fields, labels=None):
         self.fields = sorted(set(fields))
+        self.labels = dict(labels or {})
         self.extra = {name: [WRITE_DENIED_MESSAGE] for name in self.fields}
         self.message = f"You do not have permission to change {_listed(self.fields, labels)}."
         super().__init__(self.extra)
@@ -276,7 +295,9 @@ def _access_for(request) -> FieldAccessMap:
 
     The tenant is the request's, falling back to the user's own, and every
     role the user holds counts (``ANY_BRANCH``): which records they may open
-    at all is branch visibility's question, not this one's.
+    at all is branch visibility's question, not this one's. A CodeX operator
+    acting on a school is judged for platform fields in their own tenant (see
+    :func:`vs_rbac.field_evaluator.get_acting_field_access`).
     """
     user = getattr(request, "user", None)
     tenant = getattr(request, "tenant", None) or getattr(user, "tenant", None)
@@ -284,7 +305,7 @@ def _access_for(request) -> FieldAccessMap:
     cached = getattr(request, _MAP_ATTR, None)
     if cached is not None and cached[0] == tenant_id:
         return cached[1]
-    access = get_field_access(user, tenant=tenant, branch=ANY_BRANCH)
+    access = get_acting_field_access(user, tenant=tenant, branch=ANY_BRANCH)
     setattr(request, _MAP_ATTR, (tenant_id, access))
     return access
 
@@ -340,6 +361,28 @@ def can_read(request, key: str) -> bool:
     if request is None:
         return True
     return _access_for(request).can_read(key)
+
+
+def can_supply(request, resource: str, name: str, *, creating: bool = False) -> bool:
+    """Whether the request's caller can put a value in field *name* of *resource*.
+
+    The question behind a rule that makes a field mandatory: a rule can only
+    bind somebody who is able to satisfy it. The caller can supply a field they
+    may both read and write, and, while a record is being created, a field
+    declared ``open_on_create``, which belongs to the act of creating rather
+    than to editing. A name that is not a registered, active field can be
+    supplied by anybody, and ``request=None`` is the escape hatch the module
+    docstring names.
+    """
+    if request is None:
+        return True
+    entry = _entries_for(request, resource).get(name)
+    if entry is None:
+        return True
+    if creating and entry.open_on_create:
+        return True
+    access = _access_for(request)
+    return access.can_read(entry.key) and access.can_write(entry.key)
 
 
 def readable_lookups(request, resource: str, lookups: Mapping[str, object]) -> tuple[str, ...]:
@@ -407,7 +450,8 @@ def field_access_payload(user, tenant) -> dict:
     hidden, the way the access catalogue leaves it out: a school has no screen
     a CodeX staff member's payroll account could appear on, so naming it here
     would tell every school administrator the shape of a record they will
-    never meet.
+    never meet. A CodeX operator whose own tenant is the platform is shown the
+    platform fields even while acting on a school, judged in their own tenant.
 
     On an existing record the response's ``_read_only_fields`` wins, because it
     carries the owner rules this map cannot know: a member of staff reads and
@@ -424,9 +468,11 @@ def field_access_payload(user, tenant) -> dict:
     """
     from .models import FieldDefinition, PermissionScope, tenant_is_platform
 
-    access = get_field_access(user, tenant=tenant, branch=ANY_BRANCH)
+    access = get_acting_field_access(user, tenant=tenant, branch=ANY_BRANCH)
     rows = FieldDefinition.objects.filter(is_active=True)
-    if not tenant_is_platform(tenant):
+    if not (
+        tenant_is_platform(tenant) or tenant_is_platform(getattr(user, "tenant", None))
+    ):
         rows = rows.filter(scope=PermissionScope.TENANT)
     rows = rows.values_list(
         "resource__module_id", "resource__name", "key", "name", "api_names",
@@ -476,6 +522,28 @@ def _resource_aliases(resource: str) -> dict[str, str]:
     module, name = _split_resource(resource)
     declaration = get_declaration(module, name)
     return declaration.alias_keys() if declaration is not None else {}
+
+
+def _alias_entries(
+    entries: dict[str, _Entry], resource: str, explicit: Mapping[str, str] | None = None,
+) -> dict[str, _Entry | None]:
+    """The field each write alias of *resource* answers to, as the entry that governs it.
+
+    The resource's registered write aliases first, then *explicit* (a submitted
+    name mapped to a registered client name), which wins where both name the
+    same alias. An alias whose governing field is not active for the tenant
+    maps to ``None``, as does an explicit one naming an unregistered name:
+    either is judged by nothing.
+    """
+    by_key: dict[str, _Entry] = {}
+    for entry in entries.values():
+        by_key.setdefault(entry.key, entry)
+    found: dict[str, _Entry | None] = {
+        alias: by_key.get(key) for alias, key in _resource_aliases(resource).items()
+    }
+    for alias, name in (explicit or {}).items():
+        found[alias] = entries.get(name)
+    return found
 
 
 class _Unparsed:
@@ -535,11 +603,18 @@ def assert_writable(
     corrected name, and the save goes through; had the gross differed by one
     kobo, it is refused and nothing is written.
 
-    ``aliases`` maps a submitted name that is not a registered name to the
-    registered name whose write switch governs it: a value that is not itself
-    a figure the switch hides but that changes one when written. The refusal
-    names the submitted name. Such a value is readable to anyone who sees the
-    record, so an unchanged one is passed whatever the caller may read.
+    A submitted name that is not a registered name but is one of the
+    resource's registered write aliases
+    (:func:`vs_rbac.field_registry.register_fields`) is judged under the
+    registered field it follows: a value that is not itself a figure the
+    switch hides but that changes one when written. The refusal names the
+    submitted name. Such a value is readable to anyone who sees the record, so
+    an unchanged one is passed whatever the caller may read.
+
+    ``aliases`` maps a submitted name to the registered client name whose write
+    switch governs it, for a body key a path accepts that its resource does not
+    register as an alias. Where it names an alias the resource also registers,
+    it wins.
 
     ``request=None`` is the escape hatch the module docstring names: a write
     made for nobody is refused nothing.
@@ -552,10 +627,11 @@ def assert_writable(
         )
     access = _access_for(request)
     entries = _entries_for(request, resource)
-    aliases = aliases or {}
+    alias_entries = _alias_entries(entries, resource, aliases)
     denied = {}
     for name in body:
-        entry = entries.get(aliases.get(name, name))
+        is_alias = name in alias_entries
+        entry = alias_entries[name] if is_alias else entries.get(name)
         if entry is None or access.can_write(entry.key):
             continue
         if creating and entry.open_on_create:
@@ -563,7 +639,7 @@ def assert_writable(
         if (
             current is not None and name in current
             and _same(body[name], current[name])
-            and (creating or name in aliases or access.can_read(entry.key))
+            and (creating or is_alias or access.can_read(entry.key))
         ):
             continue
         denied[name] = entry.label
@@ -599,6 +675,14 @@ class FieldAccessMixin:
     the resource's write aliases) lists each write alias whose governing
     field the caller cannot write as well: the body key a form sends, such as
     ``pfa``, whether or not the payload carries a key of that name.
+
+    A submitted key that is one of the resource's registered write aliases
+    (:func:`vs_rbac.field_registry.register_fields`) is judged under the field
+    it follows, by the rules a registered name follows: refused when the
+    caller may not write that field, dropped when empty on a create, passed on
+    a create of a field open on create, and passed on an update when it equals
+    what the record shows. An alias is readable to anyone who sees the record,
+    so an unchanged one passes whatever the caller may read.
 
     Nested serializers need nothing: DRF gives a child the root's context, so
     a nested one carrying this mixin is filtered as its own resource.
@@ -769,11 +853,15 @@ class FieldAccessMixin:
             return super().to_internal_value(data)
 
         entries = self._field_entries()
+        alias_entries = _alias_entries(entries, self.field_resource)
         creating = self.instance is None
         denied: dict[str, str] = {}
         dropped: list[str] = []
         for name in list(data):
             entry = self._entry_for(name, entries)
+            is_alias = entry is None and alias_entries.get(name) is not None
+            if is_alias:
+                entry = alias_entries[name]
             if entry is None or access.can_write(entry.key):
                 continue
             if creating:
@@ -782,7 +870,7 @@ class FieldAccessMixin:
                 if _is_empty(data[name]):
                     dropped.append(name)
                     continue
-            elif access.can_read(entry.key) and self._is_echo(name, data[name]):
+            elif (is_alias or access.can_read(entry.key)) and self._is_echo(name, data[name]):
                 dropped.append(name)
                 continue
             denied[name] = entry.label

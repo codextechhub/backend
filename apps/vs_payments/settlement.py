@@ -224,8 +224,7 @@ def settle_collections(statement_line, collection_ids, *, actor_user=None, posti
     finance_record(
         entity=entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank,
-        message=(f"Settled {counted(len(intents), 'online payment')} into {bank.name}: "
-                 f"{format_naira(gross)} less {format_naira(fee)} fees."),
+        message=f"Settled {counted(len(intents), 'online payment')} into {bank.name}.",
         bank_account_id=bank.id, journal_id=entry.pk, gross=gross, fee=fee, net=net,
     )
     audit.record(  # Filed under a payment's reference, so it reaches that payment's readers.

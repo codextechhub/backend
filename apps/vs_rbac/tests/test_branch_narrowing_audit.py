@@ -168,6 +168,12 @@ SETTLED_ELSEWHERE = {
         "view is a whole-tenant write (WholeTenantWriteMixin refuses any caller "
         "whose reach is not the whole tenant before the handler runs), so every "
         "bank account of the books is one the caller may name.",
+    "vs_finance/views_settings.py::_assert_collection_account_writable::BankAccount":
+        "Judging whether a fee collection account choice changes anything, from "
+        "the finance document settings update. That view is a whole-tenant write "
+        "(WholeTenantSettingsMixin refuses any caller whose reach is not the "
+        "whole tenant before the handler runs), and the lookup only reads the "
+        "chosen account's primary-collection flag to pick the field switch.",
 }
 
 #: Flagged lookups nothing answers.

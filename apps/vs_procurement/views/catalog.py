@@ -19,7 +19,7 @@ from vs_rbac.scoping import WholeTenantWriteMixin
 from ..models import CatalogItem, PurchaseOrderLine, Vendor, VendorCategory
 from ..purchasing import vendor_purchase_block_reason
 from ..serializers import CatalogItemSerializer
-from .base import _catalogue_visible, _ProcBase, _resolve_account, _resolve_tax
+from .base import _branch_q, _catalogue_visible, _ProcBase, _resolve_account, _resolve_tax
 
 
 def _has_permission(request, permission):
@@ -340,7 +340,12 @@ class CatalogItemDetailView(_CatalogWriteMixin, _ProcBase):
 
 
 class CatalogItemInsightsView(_ProcBase):
-    """Report-gated, authoritative purchasing history for one catalog item."""
+    """Report-gated, authoritative purchasing history for one catalog item.
+
+    The catalogue entry is shared, but the orders and requisitions that used it are
+    each one branch's: a branch-bound reader is told what their own branches
+    bought and asked for, never another branch's vendors, prices or order numbers.
+    """
 
     rbac_permission = "procurement.report.view"
 
@@ -353,6 +358,7 @@ class CatalogItemInsightsView(_ProcBase):
 
         # Only issued commitments count as history; draft/pending orders are not realised vendor pricing.
         lines = PurchaseOrderLine.objects.filter(
+            _branch_q(request, prefix="purchase_order__"),
             requisition_line__catalog_item=item,
             requisition_line__requisition__entity=entity,
             purchase_order__entity=entity,
@@ -376,6 +382,7 @@ class CatalogItemInsightsView(_ProcBase):
             "usage": {
                 # Counts are scoped through both sides of every historical relationship.
                 "requisition_line_count": item.requisition_lines.filter(
+                    _branch_q(request, prefix="requisition__"),
                     requisition__entity=entity,
                 ).count(),
                 "stock_item_count": item.stock_items.filter(entity=entity).count(),

@@ -20,12 +20,19 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_rbac.field_enforcement import visible
 from vs_rbac.permissions import HasAnyModuleAccess, IsAuthenticatedAndActive
 from vs_finance.constants import GRIR_NAME
 from vs_finance.views import resolve_entity
 
 
 
+from ..vendor_field_access import (
+    require_vendor_field,
+    trim_overview_dashboard,
+    trim_suppliers_dashboard,
+    vendor_field_readable,
+)
 from .base import (
     _kobo,
     _ProcBase,
@@ -95,14 +102,14 @@ class APAgingView(_ProcBase):
         }
         return _paginated_report(
             request, report.rows, data, key="rows",
-            render=lambda r: {
+            render=lambda r: visible(request, "procurement.vendor", {
                 "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
                 "payment_terms": r.payment_terms,
                 "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
                 "outstanding": _kobo(r.outstanding),
                 "unallocated_credit": _kobo(r.unallocated_credit),
                 "net": _kobo(r.net),
-            },
+            }),
             message="AP aging retrieved.",
         )
 
@@ -450,11 +457,11 @@ class ProcurementDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Procurement dashboard retrieved.",
-            data=procurement_dashboard(
+            data=trim_overview_dashboard(request, procurement_dashboard(
                 entity, user=request.user, branch_scope=_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
-            ),
+            )),
         )
 
 
@@ -476,11 +483,11 @@ class ProcurementSuppliersDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Spend and suppliers dashboard retrieved.",
-            data=suppliers_view(
+            data=trim_suppliers_dashboard(request, suppliers_view(
                 entity, user=request.user, branch_scope=_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
-            ),
+            )),
         )
 
 
@@ -528,6 +535,7 @@ class SpendAnalysisView(_ProcBase):
         category_ref = str(request.query_params.get("category") or "").strip()
         category = None
         if category_ref:
+            require_vendor_field(request, "category", "Category")
             if category_ref.casefold() == "uncategorised":
                 category = "UNCATEGORISED"
             else:
@@ -561,8 +569,6 @@ class SpendAnalysisView(_ProcBase):
             "entity": entity.code,
             "start_date": str(start) if start else None,
             "end_date": str(end) if end else None,
-            "category": category,
-            "by_category": _rows(report.by_category),
             "by_period": [
                 {
                     "period": p.period, "label": p.label,
@@ -575,6 +581,10 @@ class SpendAnalysisView(_ProcBase):
             "total_gross": _kobo(report.total_gross),
             "invoice_count": report.invoice_count,
         }
+        # The category breakdown is spend grouped by a vendor field.
+        if vendor_field_readable(request, "category"):
+            data["category"] = category
+            data["by_category"] = _rows(report.by_category)
         return _paginated_report(
             request, report.by_vendor, data, key="by_vendor",
             render=lambda r: {
@@ -608,11 +618,13 @@ class VendorPerformanceView(_ProcBase):
             "end_date": str(end) if end else None,
         }
 
+        show_category = vendor_field_readable(request, "category")
+
         def render_vendor(r):
             a = r.latest_assessment
             return {
                 "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
-                "category": r.category,
+                **({"category": r.category} if show_category else {}),
                 "po_count": r.po_count, "total_ordered": _kobo(r.total_ordered),
                 "receipt_count": r.receipt_count,
                 "on_time_receipts": r.on_time_receipts,

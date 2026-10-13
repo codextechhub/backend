@@ -163,7 +163,7 @@ def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None)
     record(  # Audit successful establishment/top-up.
         entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_ESTABLISHED,  # Audit action.
         actor_user=actor_user, target=fund,  # Actor and target context.
-        message=f"Established {format_naira(amount)} into petty cash '{fund.name}'.",  # Summary.
+        message=f"Established petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=amount,  # Structured metadata.
     )
     return entry  # Return posted transfer journal.
@@ -299,7 +299,7 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
     record(  # Audit successful voucher post.
         entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_POSTED,  # Audit action.
         actor_user=actor_user, target=voucher,  # Actor and target context.
-        message=f"Posted petty cash voucher ({format_naira(voucher.total)} from '{fund.name}').",  # Summary.
+        message=f"Posted petty cash voucher from '{fund.name}'.",  # Summary.
         journal_id=entry.pk, total=voucher.total, tax=voucher.tax_total,  # Structured metadata.
     )
     return voucher  # Return posted voucher.
@@ -343,7 +343,7 @@ def void_voucher(voucher, *, actor_user=None):
         entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_VOIDED,  # Audit action.
         actor_user=actor_user, target=voucher,  # Actor and target context.
         message=f"Voided petty cash voucher {voucher.document_number or voucher.pk} "  # Human-readable summary.
-                f"(reversed journal {voucher.journal_id}); {format_naira(voucher.total)} back to "  # Reversal and amount.
+                f"(reversed journal {voucher.journal_id}); the cash is back in "  # Reversal context.
                 f"'{fund.name}'.",  # Fund name.
         journal_id=voucher.journal_id, total=voucher.total,  # Structured metadata.
     )
@@ -417,7 +417,7 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     record(  # Audit successful replenishment.
         entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_REPLENISHED,  # Audit action.
         actor_user=actor_user, target=fund,  # Actor and target context.
-        message=f"Replenished {format_naira(top_up)} into petty cash '{fund.name}'.",  # Summary.
+        message=f"Replenished petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=top_up,  # Structured metadata.
     )
     return entry  # Return posted replenishment journal.
@@ -762,10 +762,16 @@ def _post_petty_cash_return_atomic(ret, *, actor_user=None):
         entity=ret.entity, action=FinanceAuditAction.PETTY_CASH_RETURN_POSTED,
         actor_user=actor_user, target=ret,
         message=(
-            f"Banked {format_naira(ret.amount)} from petty cash '{fund.name}' "
-            f"({ret.get_kind_display().lower()}); counted {format_naira(ret.counted_amount)} "
-            f"against {format_naira(ret.book_balance)} on the books."
+            f"Banked cash from petty cash '{fund.name}' "
+            f"({ret.get_kind_display().lower()})."
         ),
+        after={
+            "amount": int(ret.amount), "counted_amount": int(ret.counted_amount),
+            "book_balance": int(ret.book_balance),
+            "shortage": ret.shortage, "overage": ret.overage,
+            "new_float_amount": int(ret.new_float_amount),
+            "bank_account_id": ret.bank_account_id,
+        },
         journal_id=entry.pk if entry else None, kind=ret.kind, fund_id=fund.pk,
         amount=int(ret.amount), counted=int(ret.counted_amount),
         book_balance=int(ret.book_balance), shortage=ret.shortage, overage=ret.overage,
@@ -886,10 +892,11 @@ def _void_petty_cash_return_atomic(ret, *, actor_user=None, date=None):
     record(
         entity=ret.entity, action=FinanceAuditAction.PETTY_CASH_RETURN_VOIDED,
         actor_user=actor_user, target=ret,
-        message=(
-            f"Voided petty cash return {label}; {format_naira(ret.amount)} back in "
-            f"'{fund.name}' and its float back to {format_naira(ret.previous_float_amount)}."
-        ),
+        message=f"Voided petty cash return {label}; the cash is back in '{fund.name}'.",
+        before={
+            "amount": int(ret.amount),
+            "previous_float_amount": int(ret.previous_float_amount),
+        },
         journal_id=ret.journal_id, reversal_id=reversal.pk if reversal else None,
     )
     if closing:
@@ -932,7 +939,7 @@ def reopen_fund(fund, *, reason, float_amount=None, actor_user=None):
         actor_user=actor_user, target=fund,
         message=(
             f"Reopened petty cash fund '{fund.name}', closed on "
-            f"{format_date(closed_on, fund.entity.tenant)}: {reason}"
+            f"{format_date(closed_on, fund.entity.tenant)}."
         ),
         reason=reason, closed_on=closed_on.isoformat(), closed_by_id=closed_by_id,
         before={"float_amount": before_float}, after={"float_amount": fund.float_amount},
@@ -945,21 +952,25 @@ def reopen_fund(fund, *, reason, float_amount=None, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 # Return active petty-cash fund status rows.
-def fund_status(entity, *, threshold_bps=2500) -> list:
+def fund_status(entity, *, threshold_bps=2500, reach=None) -> list:
     """Per-fund cash position with a low-balance flag for replenishment alerts.
 
     ``threshold_bps`` is the fraction of the float (in basis points; default 25%) at or
     below which a fund is flagged ``needs_replenish``. Returns one dict per active fund.
+
+    ``reach`` is a ``Q`` on the fund (:func:`vs_rbac.scoping.transaction_branch_q`)
+    that narrows the funds to the caller's branches: a fund's float and cash on
+    hand are its branch's money, so a branch-bound reader is never served another
+    branch's. Without it every fund of the entity is served, which only a caller
+    with no request (a scheduled alert) may do.
     """
     from .models import PettyCashFund
 
     rows = []  # Response rows.
-    qs = (  # Active funds for this entity.
-        PettyCashFund.objects
-        .filter(entity=entity, is_active=True)
-        .select_related("gl_account")
-        .order_by("name")
-    )
+    qs = PettyCashFund.objects.filter(entity=entity, is_active=True)  # Active funds for this entity.
+    if reach is not None:
+        qs = qs.filter(reach)
+    qs = qs.select_related("gl_account").order_by("name")
     for fund in qs:  # Build status for each fund.
         threshold = int(fund.float_amount) * threshold_bps // 10000  # Low-balance threshold in kobo.
         on_hand = gl_cash_on_hand(fund)  # live GL truth, so alerts can't be misled by drift

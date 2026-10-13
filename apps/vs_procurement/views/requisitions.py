@@ -42,6 +42,7 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_q,
     _branch_scoped,
     _correcting_returned,
     _date,
@@ -501,27 +502,35 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
                 "available": 0,
             })
 
-        # When approved scenarios coexist, the most recently approved plan is the operative budget.
-        budget = Budget.objects.filter(
+        # A plan belongs to a branch and so do the orders raised against it: the caller
+        # is measured against the branches they work in (and ``?branch=`` within them),
+        # never against a neighbouring branch's plan or commitments.
+        plans = Budget.objects.filter(
+            _branch_q(request, entity, request.query_params),
             entity=entity, fiscal_year=period.fiscal_year, status=BudgetStatus.APPROVED,
-        ).order_by("-approved_at", "-id").first()
+        ).order_by("-approved_at", "-id")
+        # Where scenarios coexist, each branch's most recently approved plan is its
+        # operative budget; several branches in reach add up, as their commitments do.
+        operative = {}
+        for plan in plans:
+            operative.setdefault(plan.branch_id, plan)
+        budget = next(iter(operative.values())) if len(operative) == 1 else None
         fy = period.fiscal_year
-        budget_amount = 0
-        if budget is not None:
-            # Annual allocation: the department's budgeted amount across every period
-            # of the operative plan. The commitment figure below is bounded to the
-            # same fiscal year, so both sides of "available" share one time
-            # window. Mismatched windows understate availability for any
-            # department carrying a standing open PO.
-            budget_amount = BudgetLine.objects.filter(
-                budget=budget, cost_center=cost_center,
-            ).aggregate(total=Sum("amount"))["total"] or 0
+        # Annual allocation: the department's budgeted amount across every period of
+        # each operative plan. The commitment figure below is bounded to the same
+        # fiscal year, so both sides of "available" share one time window.
+        # Mismatched windows understate availability for any department carrying a
+        # standing open PO.
+        budget_amount = BudgetLine.objects.filter(
+            budget__in=operative.values(), cost_center=cost_center,
+        ).aggregate(total=Sum("amount"))["total"] or 0
 
-        # Open-PO commitments for this department within the operative fiscal year.
-        # Summing the PO *line's* own cost centre (not the requisition's) counts
-        # directly-raised POs too, and keeps the figure correct if a line was
-        # reclassified away from the requisition's department.
+        # Open-PO commitments for this department within the operative fiscal year, in
+        # the caller's branches. Summing the PO *line's* own cost centre (not the
+        # requisition's) counts directly-raised POs too, and keeps the figure correct
+        # if a line was reclassified away from the requisition's department.
         committed = PurchaseOrderLine.objects.filter(
+            _branch_q(request, entity, request.query_params, prefix="purchase_order__"),
             purchase_order__entity=entity,
             purchase_order__status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED),
             purchase_order__order_date__range=(fy.start_date, fy.end_date),
@@ -530,9 +539,10 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
         # Available budget is the approved annual plan less commitments already raised for the department.
         available = budget_amount - committed
         return success_response("Budget availability retrieved.", data={
-            "has_budget": budget is not None and budget_amount > 0,
+            "has_budget": bool(operative) and budget_amount > 0,
             # Label with the operative plan (e.g. "IT CAPEX 2026") since the figures
-            # are annual; a month name here would misrepresent the scope.
+            # are annual; a month name here would misrepresent the scope. Several
+            # branches' plans in one answer are labelled by the year they cover.
             "period": budget.name if budget is not None else f"FY{fy.year}",
             "budget": budget_amount,
             "committed": committed,
@@ -571,11 +581,13 @@ class RequisitionSubmitView(_ProcBase):
 # Spend approvals (vs_workflow hand-off)                                       #
 # --------------------------------------------------------------------------- #
 
-def _approval_response(message, document, instance, serializer_cls):
+def _approval_response(message, document, instance, serializer_cls, *, request=None):
     """Build the standard envelope for a submit-for-approval action.
 
     Re-reads ``document`` because the engine may have reached a terminal decision
     synchronously (all stages auto-skipped), mutating it via a different instance.
+    ``request`` is the caller whose Field Access the document is rendered under;
+    a document with no registered fields can leave it out.
     """
     from vs_workflow.services import release as release_svc
 
@@ -587,7 +599,9 @@ def _approval_response(message, document, instance, serializer_cls):
         # Tells the client in the submit response itself that nobody can approve what it
         # just submitted, so the "continue anyway" prompt costs no extra round trip.
         "approval": release_svc.approval_block(instance),
-        "document": serializer_cls(document).data,
+        "document": serializer_cls(
+            document, **({} if request is None else {"context": {"request": request}}),
+        ).data,
     })
 
 
@@ -631,7 +645,7 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
             delivery.workflow_instance_id = str(instance.id)
             delivery.save(update_fields=["workflow_instance_id", "updated_at"])
         return _approval_response("Purchase order submitted for approval.",
-                                  po, instance, PurchaseOrderSerializer)
+                                  po, instance, PurchaseOrderSerializer, request=request)
 
 
 class VendorInvoiceSubmitApprovalView(_ProcBase):

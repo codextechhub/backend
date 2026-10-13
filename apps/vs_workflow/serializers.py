@@ -877,6 +877,7 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         summary = summary_for_reader(
             obj.document_summary, getattr(obj, "tenant", None),
             branch=getattr(obj, "branch_id", None),
+            request=self.context.get("request"),
         )
         document = obj.document
         if document is None:

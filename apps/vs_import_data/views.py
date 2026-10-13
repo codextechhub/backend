@@ -775,7 +775,7 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
         serializer = ValidateImportBatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result = validate_import_batch(import_batch)
+        result = validate_import_batch(import_batch, actor=request.user)
 
         create_import_audit_log(
             tenant=import_batch.tenant,

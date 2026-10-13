@@ -163,12 +163,51 @@ class EnrolmentRules:
     capacity_mode: str = CapacityMode.WARN.value
     default_capacity: int | None = None
 
-    def as_dict(self) -> dict:
+    def binding_required_fields(self, request, *, creating: bool = True) -> tuple:
+        """The required fields that bind *request*'s caller.
+
+        A rule can only bind somebody able to satisfy it. A caller who cannot
+        read and write a field (or, on a create, supply it) is enrolling the
+        child without it, and somebody with Write completes it later.
+        """
+        from vs_rbac.field_enforcement import can_supply
+
+        return tuple(
+            field for field in self.required_fields
+            if can_supply(request, "school.students", field, creating=creating)
+        )
+
+    def required_fields_after(self, request, submitted) -> tuple:
+        """The required fields stored after *request*'s caller saves *submitted*.
+
+        The settings screen offers, and so submits, only the student fields its
+        caller may read (``as_dict``). A save from a caller who cannot read
+        blood group must not drop a school's requirement for it, so every
+        stored entry the caller cannot read is kept as it stands, and an entry
+        for such a field they submit is ignored: they can neither add nor
+        remove a requirement for a field they cannot see. Every other entry is
+        the caller's to set.
+        """
+        from vs_rbac.field_enforcement import can_read
+
+        def readable(field) -> bool:
+            return can_read(request, f"school.students.{field}")
+
+        kept = [field for field in self.required_fields if not readable(field)]
+        return _fields([*(field for field in submitted if readable(field)), *kept])
+
+    def as_dict(self, request=None) -> dict:
         """The body of ``GET /v1/students/enrolment-rules/``.
 
         ``document_types`` and ``optional_fields`` are the choices the screen
-        offers, so it never carries its own copy of either list.
+        offers, so it never carries its own copy of either list. With a
+        *request*, ``optional_fields`` offers only the student fields its
+        caller may read, and ``binding_required_fields`` names the entries of
+        ``required_fields`` that bind that caller (the others are left for
+        somebody with Write to complete).
         """
+        from vs_rbac.field_enforcement import can_read
+
         return {
             "min_age_years": self.min_age_years,
             "max_age_years": self.max_age_years,
@@ -178,9 +217,11 @@ class EnrolmentRules:
                 for value, label in DocumentType.choices
             ],
             "required_fields": list(self.required_fields),
+            "binding_required_fields": list(self.binding_required_fields(request)),
             "optional_fields": [
                 {"value": value, "label": label}
                 for value, label in REQUIRABLE_FIELDS.items()
+                if can_read(request, f"school.students.{value}")
             ],
             "capacity_mode": self.capacity_mode,
             "default_capacity": self.default_capacity,

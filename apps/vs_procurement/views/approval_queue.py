@@ -8,8 +8,13 @@ thresholds and terminal callbacks remain wholly owned by ``vs_workflow``.
 """
 from __future__ import annotations
 
-from django.db.models import F
-from rest_framework.exceptions import NotFound
+from datetime import datetime, time, timedelta
+
+from django.db.models import CharField, F, Q, Subquery
+from django.db.models.functions import Cast
+from django.utils.dateparse import parse_date
+from rest_framework import serializers
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from core.attribution import audit_row_attribution, vote_attribution
@@ -17,6 +22,7 @@ from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_tenants.models import Branch
 from vs_workflow.models import (
     WorkflowStageAction,
@@ -51,6 +57,21 @@ DOCUMENT_MODELS = {
     WF_DOCTYPE_VENDOR_PAYMENT: VendorPayment,
     WF_DOCTYPE_VENDOR_CREDIT_NOTE: VendorCreditNote,
 }
+
+HISTORY_ACTIONS = {"APPROVED", "REJECTED", "RETURNED"}
+
+
+class ProcurementApprovalHistoryReceiptSerializer(FieldAccessMixin, serializers.Serializer):
+    """The read-only evidence a decision's author keeps across branch moves."""
+
+    field_resource = "procurement.approval"
+
+    reference = serializers.CharField(read_only=True)
+    decision = serializers.CharField(read_only=True)
+    stage = serializers.CharField(read_only=True)
+    decided_at = serializers.DateTimeField(read_only=True)
+    on_behalf_of = serializers.CharField(read_only=True, allow_null=True)
+    reversed_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
 
 def _user_name(user) -> str:
@@ -113,6 +134,156 @@ def _document_map(entity, snapshots, branch_filter):
             qs = qs.select_related("vendor")
         documents[document_type] = {row.pk: row for row in qs}
     return usable, documents
+
+
+def _entity_history_actions(entity, user):
+    """Return this person's original Procurement decisions in one ledger entity.
+
+    Workflow instances carry tenant and document ids but not the ledger entity.
+    Each document family therefore contributes an entity-scoped subquery. This
+    keeps pagination in the database without materialising a person's entire
+    history or admitting a second set of books owned by the same tenant.
+    """
+    entity_documents = Q()
+    for document_type, model in DOCUMENT_MODELS.items():
+        ids = (
+            model.objects.filter(entity=entity)
+            .annotate(workflow_object_id=Cast("pk", output_field=CharField()))
+            .values("workflow_object_id")
+        )
+        entity_documents |= Q(
+            stage_instance__instance__document_type=document_type,
+            stage_instance__instance__document_object_id__in=Subquery(ids),
+        )
+    return (
+        WorkflowStageAction.objects.filter(
+            Q(actor=user) | Q(proxied_by=user),
+            entity_documents,
+            stage_instance__instance__tenant=entity.tenant,
+            stage_instance__instance__document_type__in=PROCUREMENT_APPROVAL_TYPES,
+            is_reversal_of__isnull=True,
+        )
+        .select_related(
+            "actor", "on_behalf_of", "proxied_by", "stage_instance__stage",
+            "stage_instance__instance__requested_by",
+        )
+        .order_by("-acted_at", "-pk")
+    )
+
+
+def _history_documents(entity, actions, branch_filter):
+    """Resolve one page of history and mark which records remain in branch reach."""
+    ids_by_type = {document_type: set() for document_type in PROCUREMENT_APPROVAL_TYPES}
+    for action in actions:
+        instance = action.stage_instance.instance
+        try:
+            ids_by_type[instance.document_type].add(int(instance.document_object_id))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    documents = {}
+    reachable = {}
+    for document_type, model in DOCUMENT_MODELS.items():
+        base = model.objects.filter(entity=entity, pk__in=ids_by_type[document_type])
+        if document_type != WF_DOCTYPE_REQUISITION:
+            base = base.select_related("vendor")
+        documents[document_type] = {row.pk: row for row in base}
+        reachable[document_type] = set(base.filter(branch_filter).values_list("pk", flat=True))
+    return documents, reachable
+
+
+def _history_row(request, entity, action, document, *, receipt_only):
+    """Project one immutable decision, with business detail only in current reach."""
+    instance = action.stage_instance.instance
+    receipt = ProcurementApprovalHistoryReceiptSerializer({
+        "reference": document.document_number or str(document.pk),
+        "decision": action.action,
+        "stage": action.stage_instance.stage.label,
+        "decided_at": action.acted_at,
+        "on_behalf_of": _user_name(action.on_behalf_of) if action.on_behalf_of_id else None,
+        "reversed_at": action.reversed_at,
+    }, context={"request": request}).data
+    common = {
+        "id": str(instance.id),
+        "action_id": str(action.id),
+        "document_type": instance.document_type,
+        "document_type_label": document_type_label(instance.document_type),
+        "receipt_only": receipt_only,
+        **receipt,
+    }
+    if receipt_only:
+        return common
+
+    amount_field = getattr(document, "workflow_amount_field", "")
+    common.update({
+        "document_id": document.pk,
+        "title": _document_title(document, instance.document_type),
+        "requester": _user_name(instance.requested_by),
+        "amount": int(getattr(document, amount_field, 0) or 0),
+        "currency": entity.base_currency_id,
+        "submitted_at": instance.submitted_at,
+        "status": instance.status,
+    })
+    return common
+
+
+def _filter_history(actions, request, entity):
+    """Apply validated decision, date, document and search filters."""
+    outcome = request.query_params.get("outcome", "").strip().upper()
+    if outcome:
+        if outcome not in HISTORY_ACTIONS:
+            raise ValidationError({"outcome": "Choose APPROVED, REJECTED or RETURNED."})
+        actions = actions.filter(action=outcome)
+
+    from vs_config.clock import tenant_zone
+
+    zone = tenant_zone(entity.tenant)
+    for parameter in ("decided_from", "decided_to"):
+        raw = request.query_params.get(parameter, "").strip()
+        if raw:
+            value = parse_date(raw)
+            if value is None:
+                raise ValidationError({parameter: "Give a date as YYYY-MM-DD."})
+            if parameter == "decided_from":
+                actions = actions.filter(acted_at__gte=datetime.combine(value, time.min, tzinfo=zone))
+            else:
+                actions = actions.filter(
+                    acted_at__lt=datetime.combine(value + timedelta(days=1), time.min, tzinfo=zone),
+                )
+
+    document_type = request.query_params.get("document_type", "").strip()
+    if document_type:
+        if document_type not in PROCUREMENT_APPROVAL_TYPES:
+            raise ValidationError({"document_type": "Choose a Procurement document type."})
+        actions = actions.filter(stage_instance__instance__document_type=document_type)
+
+    search = request.query_params.get("search", "").strip()
+    if not search:
+        return actions
+
+    matches = Q(
+        stage_instance__instance__requested_by__first_name__icontains=search,
+    ) | Q(stage_instance__instance__requested_by__last_name__icontains=search)
+    for document_type, model in DOCUMENT_MODELS.items():
+        title = Q(document_number__icontains=search)
+        if document_type == WF_DOCTYPE_REQUISITION:
+            title |= Q(title__icontains=search) | Q(justification__icontains=search)
+        elif document_type in (WF_DOCTYPE_PURCHASE_ORDER, WF_DOCTYPE_VENDOR_PAYMENT):
+            title |= Q(reference__icontains=search) | Q(narration__icontains=search)
+        elif document_type == WF_DOCTYPE_VENDOR_INVOICE:
+            title |= Q(vendor_reference__icontains=search) | Q(narration__icontains=search)
+        else:
+            title |= Q(vendor_reference__icontains=search) | Q(reason__icontains=search)
+        ids = (
+            model.objects.filter(entity=entity).filter(title)
+            .annotate(workflow_object_id=Cast("pk", output_field=CharField()))
+            .values("workflow_object_id")
+        )
+        matches |= Q(
+            stage_instance__instance__document_type=document_type,
+            stage_instance__instance__document_object_id__in=Subquery(ids),
+        )
+    return actions.filter(matches)
 
 
 def _pending_snapshots(user, *, workflow_id=None):
@@ -411,17 +582,44 @@ class ProcurementApprovalOverrideView(APIView):
 
 
 class ProcurementApprovalListView(APIView):
-    """The signed-in actor's pending Procurement decisions for one ledger entity.
+    """The signed-in actor's Procurement queue and personal decision history.
 
     Ordinary resource RBAC is intentionally not the authorization rule here.
     Being frozen into the active workflow stage is the narrower, instance-level
-    eligibility grant; users who cannot currently vote see no row at all.
+    eligibility grant. Completed history is limited to decisions the actor made;
+    after a branch move, only a narrow receipt remains visible.
     """
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
-        """Return entity-verified, currently actionable snapshots for this actor."""
+        """Return entity-verified pending work or this actor's decision history."""
         entity = resolve_entity(request)
+        if request.query_params.get("view") == "history":
+            actions = _filter_history(
+                _entity_history_actions(entity, request.user), request, entity,
+            )
+            paginator = XVSPagination()
+            paginator.page_size = 25
+            page = paginator.paginate_queryset(actions, request, view=self)
+            documents, reachable = _history_documents(
+                entity, page, _branch_q(request, entity),
+            )
+            rows = []
+            for action in page:
+                instance = action.stage_instance.instance
+                try:
+                    object_id = int(instance.document_object_id)
+                except (TypeError, ValueError):
+                    continue
+                document = documents[instance.document_type].get(object_id)
+                if document is None:
+                    continue
+                rows.append(_history_row(
+                    request, entity, action, document,
+                    receipt_only=object_id not in reachable[instance.document_type],
+                ))
+            return paginator.get_paginated_response(rows)
+
         # A stage that activated while nobody held its permission has an empty frozen
         # snapshot and would never appear here, however the permissions changed since.
         # Restore reachability first, then read; one indexed query when nothing is parked.

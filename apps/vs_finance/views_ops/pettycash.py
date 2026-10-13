@@ -1,4 +1,14 @@
 """Petty cash funds, their vouchers, and the returns that bank their cash.
+
+A return is rendered through the Field Access switches of the fields-only
+resource ``finance.pettycash_return``: a serializer carrying :class:`~vs_rbac.field_enforcement.FieldAccessMixin` for
+every payload, a refusal of any list filter that names a field the caller may
+not read, a refusal of any body that sets a field the caller may not write, and
+sentences that name the books' balance or the counted cash only to a caller
+who may read them. The fund a return names (``fund_id``, ``fund_name``) is an
+identifying label, like a bank account's name, and has no switch. A fund and a voucher are other records: a fund's
+float, balance and custodian, and a voucher's payee and lines, are not values of
+the return that moved them and are not governed by those switches.
 """
 from __future__ import annotations
 
@@ -6,6 +16,7 @@ from __future__ import annotations
 from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 
 from core.response import success_response
@@ -13,6 +24,7 @@ from vs_config.clock import branch_today
 from vs_config.display import format_date
 
 from ..constants import DocumentStatus, PettyCashReturnKind
+from ..field_guards import readable, refuse_hidden_filters, submitted
 from ..money import format_naira
 from ..views import resolve_entity
 from ..models import (
@@ -333,6 +345,20 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
         )
 
 
+_RETURN = "finance.pettycash_return"
+
+#: The body keys of a return that name a field of ``finance.pettycash_return``.
+_RETURN_BODY = (
+    "counted_amount", "new_float_amount", "amount", "bank_account", "return_date",
+    "counted_by", "difference_reason", "narration", "reference",
+)
+
+
+def _return_data(request, ret):
+    """A return as the caller may read it."""
+    return PettyCashReturnSerializer(ret, context={"request": request}).data
+
+
 def _return_branch_id(request, entity, fund):
     """The branch a return of ``fund`` is raised for: the fund's own.
 
@@ -374,6 +400,7 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
 
         entity, fund = self._fund(request, pk)
         body = request.data or {}
+        assert_writable(request, _RETURN, submitted(body, *_RETURN_BODY), creating=True)
         if body.get("counted_amount") in (None, ""):
             raise ValidationError({"counted_amount": "Count the tin and enter the cash found as a whole amount."})
         counted = _money(body.get("counted_amount"), "counted_amount")
@@ -404,6 +431,8 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
                 raise ValidationError({"difference_reason": (
                     f"The count found {format_naira(counted)} against "
                     f"{format_naira(ret.book_balance)} on the books. Say why they differ."
+                    if readable(request, _RETURN, "book_balance") else
+                    "The count differs from the books. Say why they differ."
                 )})
             validate_petty_cash_return(ret)
             ret.save()
@@ -415,10 +444,10 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
                 ret.refresh_from_db()
                 return success_response(
                     message=(
-                        f"Petty cash return {ret.document_number} is waiting for approval. "
-                        f"It reaches the books once it is approved."
+                        f"Petty cash return {ret.document_number} "
+                        f"is waiting for approval. It reaches the books once it is approved."
                     ),
-                    data=PettyCashReturnSerializer(ret).data
+                    data=_return_data(request, ret)
                     | {"approval": release_svc.approval_block(instance)},
                     status=201,
                 )
@@ -428,7 +457,7 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
             fund.refresh_from_db()
         return success_response(
             message=f"Petty cash return posted as {ret.document_number}.",
-            data=PettyCashReturnSerializer(ret).data
+            data=_return_data(request, ret)
             | {"fund": PettyCashFundSerializer(fund).data},
             status=201,
         )
@@ -532,6 +561,10 @@ class PettyCashReturnListView(_FinanceBase):
     rbac_permission = "finance.pettycash.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _RETURN, {
+            "kind": ("kind", "Kind of return"),
+            "status": ("status", "Status"), "approval": ("status", "Status"),
+        })
         entity = resolve_entity(request)
         qs = _returns_in_reach(request, entity)
         if (fund := request.query_params.get("fund")) and str(fund).isdigit():
@@ -564,7 +597,7 @@ class PettyCashReturnDetailView(_FinanceBase):
             raise NotFound("Petty cash return not found for this entity.")
         return success_response(
             "Petty cash return retrieved.",
-            data=with_approval_request(PettyCashReturnSerializer(ret).data, ret),
+            data=with_approval_request(_return_data(request, ret), ret),
         )
 
 
@@ -598,7 +631,7 @@ class PettyCashReturnVoidView(_FinanceBase):
         ret.refresh_from_db()
         return success_response(
             f"Petty cash return {ret.document_number} voided.",
-            data=PettyCashReturnSerializer(ret).data,
+            data=_return_data(request, ret),
         )
 
 
@@ -712,8 +745,8 @@ class PettyCashReturnApprovalTemplateView(WholeTenantWriteMixin, _FinanceBase):
                     actor_user=request.user, target_type="WorkflowTemplate",
                     target_id=str(template.pk), branch=None,
                     message=(
-                        f"Adopted the ready-made petty cash return route: a count more than "
-                        f"{format_naira(threshold)} short, or a closure, needs a second person."
+                        "Adopted the ready-made petty cash return route: a short count above "
+                        "the set limit, or a closure, needs a second person."
                     ),
                     document_type=template.document_type, threshold=threshold,
                 )
@@ -752,7 +785,7 @@ class PettyCashStatusView(_FinanceBase):
             ),
             "threshold_bps", minimum=0, maximum=10000,
         )
-        rows = fund_status(entity, threshold_bps=threshold)
+        rows = fund_status(entity, threshold_bps=threshold, reach=transaction_branch_q(request))
         return success_response(
             "Petty cash status retrieved.",
             data={

@@ -24,7 +24,6 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import FinanceError, NoReceivableAccountError, PostingError
-from .money import format_naira
 from .wording import state_word
 
 
@@ -148,8 +147,7 @@ def _post_opening_invoice_atomic(invoice, *, actor_user=None):
         actor_user=actor_user, target=invoice,
         message=(
             f"Carried in an opening invoice for {customer.code} dated "
-            f"{format_date(invoice.invoice_date, invoice.entity.tenant)} "
-            f"({format_naira(invoice.total)})."
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)}."
         ),
         journal_id=entry.pk, total=invoice.total, invoice_date=str(invoice.invoice_date),
         journal_date=str(journal_date),

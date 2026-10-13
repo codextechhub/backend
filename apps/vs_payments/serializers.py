@@ -17,6 +17,8 @@ from .models import (
     VirtualAccount,
     WebhookEvent,
 )
+from .audit import SENTENCE_MARKER
+from .payout_access import trim_vendor_beneficiary
 
 
 class CollectionIntentSerializer(serializers.ModelSerializer):
@@ -81,6 +83,10 @@ class PayoutInstructionSerializer(FieldAccessMixin, serializers.ModelSerializer)
     verified vendor record, and a value a caller supplies is only ever
     compared against it. The payload therefore names no read-only fields, a
     resource a client can never write having nothing to grey.
+
+    A line that pays a vendor shows each beneficiary field only to a caller who
+    may also read the vendor field it was copied from
+    (:mod:`vs_payments.payout_access`).
     """
 
     field_resource = "payments.payout"
@@ -105,6 +111,12 @@ class PayoutInstructionSerializer(FieldAccessMixin, serializers.ModelSerializer)
             "source_account_code", "source_account_name", "wht_amount",
             "vendor_payment_id", "failure_reason", "confirmed_at", "created_at",
         ]
+
+    def to_representation(self, instance):
+        """Serialise the line, then hold a vendor's copied banking to the vendor's switches."""
+        return trim_vendor_beneficiary(
+            self.context.get("request"), super().to_representation(instance), instance,
+        )
 
     def get_amount_naira(self, obj):
         return format_naira(obj.amount)
@@ -166,7 +178,8 @@ EVENT_METADATA_FIELDS = (
     "gross", "fee", "net",  # A settlement's payments, the provider's fees and what arrived.
 )
 
-#: Actions whose message names a virtual account by its number.
+#: Actions whose message, in an event written before sentences stopped naming
+#: the number, names a virtual account by its number.
 _VIRTUAL_ACCOUNT_ACTIONS = ("VIRTUAL_ACCOUNT_CREATED", "VIRTUAL_ACCOUNT_STATUS_CHANGED")
 _VIRTUAL_ACCOUNT_NUMBER = re.compile(r"^Virtual account \S+ ")
 
@@ -189,10 +202,16 @@ class PaymentEventSerializer(serializers.ModelSerializer):
     """Read serializer for the append-only gateway action log (transactions log).
 
     ``metadata`` carries only :data:`EVENT_METADATA_FIELDS`, and only scalar values
-    of them. A virtual account's actions name its account number in the message;
-    for a caller whose roles hide ``payments.virtual_account.account_number`` the
-    number is left out of the message, as it is absent from the account's own
-    record, so the log says no more than the record would.
+    of them. An event written now names no switched value in its message: a
+    virtual account's number, a payout beneficiary's name, account number and
+    bank code are the registered fields of ``payments.virtual_account`` and
+    ``payments.payout`` and never travel in a sentence. An event written before
+    that rule (it lacks :data:`vs_payments.audit.SENTENCE_MARKER`) named the
+    account number in a virtual account's message; for a caller whose roles hide
+    ``payments.virtual_account.account_number`` the number is left out of that
+    message, as it is absent from the account's own record, so the log says no
+    more than the record would. Amounts are not switched in payments and stay in
+    the sentence.
 
     ``actor_email`` is the person in whose name the action ran. Each named
     person has a separate employment-exit flag. An action taken under a proxy
@@ -240,7 +259,12 @@ class PaymentEventSerializer(serializers.ModelSerializer):
 
     def get_message(self, obj):
         message = obj.message or ""
-        if obj.action in _VIRTUAL_ACCOUNT_ACTIONS and not self._reads_account_numbers():
+        stored = obj.metadata if isinstance(obj.metadata, dict) else {}
+        if (
+            obj.action in _VIRTUAL_ACCOUNT_ACTIONS
+            and SENTENCE_MARKER not in stored
+            and not self._reads_account_numbers()
+        ):
             return _VIRTUAL_ACCOUNT_NUMBER.sub("Virtual account ", message)
         return message
 

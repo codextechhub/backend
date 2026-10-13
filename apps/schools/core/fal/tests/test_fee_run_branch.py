@@ -356,12 +356,13 @@ class AccountFollowsPupilTests(RouteFixture):
             )
             self.assertNotIn("deferred", str(entry.metadata))
         self.assertIn(
-            "moved to Lekki, where the pupil attends, with ₦145,000.00 owed.",
-            entries.get(branch=self.ikeja).message,
+            "moved to Lekki, where the pupil attends.", entries.get(branch=self.ikeja).message,
         )
         self.assertIn(
-            "moved from Ikeja with ₦145,000.00 owed", entries.get(branch=self.lekki).message,
+            "moved from Ikeja, billed here", entries.get(branch=self.lekki).message,
         )
+        for entry in entries:
+            self.assertNotIn("₦", entry.message)
 
     def test_the_first_term_bill_moves_to_the_branch_the_pupil_attends(self):
         """Lekki collects it now; the revenue it booked stays in Ikeja's journal.
@@ -482,7 +483,7 @@ class AccountFollowsPupilTests(RouteFixture):
         self.assertEqual(self.account.branch_id, self.lekki.pk)
         messages = self.move_messages(self.audit_reader("audit-all@corona.test"))
         self.assertEqual(len(messages), 2, messages)
-        self.assertTrue(all("with ₦5,000.00 in credit" in m for m in messages), messages)
+        self.assertTrue(all("₦" not in m for m in messages), messages)
 
     # ---- the audit trail ---------------------------------------------------
     def audit_reader(self, email, branch=None):
@@ -511,9 +512,10 @@ class AccountFollowsPupilTests(RouteFixture):
 
         self.assertEqual(len(ikeja), 1, ikeja)
         self.assertIn("moved to Lekki", ikeja[0])
-        self.assertIn("₦145,000.00 owed", ikeja[0])
+        self.assertNotIn("₦", ikeja[0])
         self.assertEqual(len(lekki), 1, lekki)
-        self.assertIn("moved from Ikeja with ₦145,000.00 owed", lekki[0])
+        self.assertIn("moved from Ikeja", lekki[0])
+        self.assertNotIn("₦", lekki[0])
         self.assertEqual(sorted(school), sorted(ikeja + lekki))
 
     # ---- reruns and previews -----------------------------------------------

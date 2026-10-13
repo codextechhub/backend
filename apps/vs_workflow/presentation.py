@@ -18,6 +18,19 @@ snapshotted when the document is submitted and read later by whoever approves
 it, so the marker, rather than the value, is what the snapshot has to carry:
 filtering at submission would answer for the submitter and hand every approver
 the same answer.
+
+A value copied from two registered fields (a payout line that restates a
+vendor's bank account) names both: the marker is then a sequence of keys, kept
+as ``access`` plus ``access_also``, and the reader needs every one of them.
+
+The summary a handler snapshots for the approval card carries the same marker
+on each of its ``fields`` (:func:`summary_fields`), and
+:func:`summary_for_reader` drops the ones the reader may not see. Its ``title``
+and ``subtitle`` are different: they are copied into the queue row, the search
+filter and every notification, none of which knows who will read them, so they
+hold only identifying labels (a document number, a person's name and job title,
+a document type) and never a value from a registered field. A governed value
+that would have sat in a title or subtitle is a marked field instead.
 """
 
 from __future__ import annotations
@@ -48,12 +61,30 @@ def _unpack(entry, size: int):
     )
 
 
+def _mark_access(row: dict, access) -> None:
+    """Record on *row* the Field Access key, or keys, its values come from."""
+    if not access:
+        return
+    keys = [access] if isinstance(access, str) else [str(key) for key in access]
+    row["access"] = str(keys[0])
+    if len(keys) > 1:
+        row["access_also"] = [str(key) for key in keys[1:]]
+
+
+def _may_read(entry: Mapping, request) -> bool:
+    """Whether the request's caller may read every key *entry* is marked with."""
+    from vs_rbac.field_enforcement import can_read
+
+    keys = ([entry["access"]] if entry.get("access") else []) + list(entry.get("access_also") or [])
+    return all(can_read(request, key) for key in keys)
+
+
 def fields_section(title: str, items: Iterable[tuple]) -> dict:
     """Build a labelled field group and omit facts that have no value.
 
     An item is ``(label, value)``, or ``(label, value, access)`` where the
-    value comes from a registered field and only an approver who may read that
-    field should see it.
+    value comes from a registered field (or, as a sequence of keys, from
+    several) and only an approver who may read it should see it.
     """
     display_items = []
     for item in items:
@@ -61,8 +92,7 @@ def fields_section(title: str, items: Iterable[tuple]) -> dict:
         display_value = _display(value)
         if display_value.strip():
             row = {"label": str(label), "value": display_value}
-            if access:
-                row["access"] = str(access)
+            _mark_access(row, access)
             display_items.append(row)
     return {
         "kind": "fields",
@@ -79,15 +109,14 @@ def table_section(
     """Build a generic table whose cells contain display values only.
 
     A column is ``(key, label)``, or ``(key, label, access)`` where the column
-    holds a registered field and an approver who may not read that field
-    should not be given the column at all.
+    holds a registered field (or, as a sequence of keys, several) and an
+    approver who may not read it should not be given the column at all.
     """
     column_rows = []
     for column in columns:
         key, label, access = _unpack(column, 2)
         row = {"key": str(key), "label": str(label)}
-        if access:
-            row["access"] = str(access)
+        _mark_access(row, access)
         column_rows.append(row)
     keys = [column["key"] for column in column_rows]
     return {
@@ -177,15 +206,27 @@ def _validate_fields(section: dict, index: int) -> dict:
     for item_index, item in enumerate(items):
         where = f"Fields section {index + 1}, item {item_index + 1}"
         if not isinstance(item, dict) or not {"label", "value"} <= set(item) <= {
-            "label", "value", "access",
+            "label", "value", "access", "access_also",
         }:
             raise InvalidDocumentDetails(f"{where} must contain label and value.")
         _required_text(item, "label", where)
         _text(item, "value", where)
         if "access" in item:
             _required_text(item, "access", where)
+        _validate_access_also(item, where)
         clean.append(dict(item))
     return {"kind": "fields", "title": section["title"], "items": clean}
+
+
+def _validate_access_also(entry: dict, where: str) -> None:
+    """``access_also`` is a list of further keys, and only ever follows an ``access``."""
+    if "access_also" not in entry:
+        return
+    extra = entry["access_also"]
+    if "access" not in entry or not isinstance(extra, list) or not extra or not all(
+        isinstance(key, str) and key.strip() for key in extra
+    ):
+        raise InvalidDocumentDetails(f"{where} access_also must be a list of Field Access keys.")
 
 
 def _validate_table(section: dict, index: int) -> dict:
@@ -204,13 +245,14 @@ def _validate_table(section: dict, index: int) -> dict:
     for column_index, column in enumerate(columns):
         where = f"Table section {index + 1}, column {column_index + 1}"
         if not isinstance(column, dict) or not {"key", "label"} <= set(column) <= {
-            "key", "label", "access",
+            "key", "label", "access", "access_also",
         }:
             raise InvalidDocumentDetails(f"{where} must contain key and label.")
         _required_text(column, "key", where)
         _required_text(column, "label", where)
         if "access" in column:
             _required_text(column, "access", where)
+        _validate_access_also(column, where)
         if column["key"] in keys:
             raise InvalidDocumentDetails(f"{where} repeats key {column['key']!r}.")
         keys.append(column["key"])
@@ -275,8 +317,6 @@ def for_reader(details: Mapping, request) -> dict:
     A section left with nothing is dropped rather than shown empty, and the
     snapshot itself is never rewritten.
     """
-    from vs_rbac.field_enforcement import can_read
-
     if not details or not details.get("sections"):
         return dict(details or {})
 
@@ -285,7 +325,7 @@ def for_reader(details: Mapping, request) -> dict:
         if section.get("kind") == "fields":
             items = [
                 item for item in section["items"]
-                if not item.get("access") or can_read(request, item["access"])
+                if _may_read(item, request)
             ]
             if not items:
                 continue
@@ -293,7 +333,7 @@ def for_reader(details: Mapping, request) -> dict:
         elif section.get("kind") == "table":
             columns = [
                 column for column in section["columns"]
-                if not column.get("access") or can_read(request, column["access"])
+                if _may_read(column, request)
             ]
             if not columns:
                 continue
@@ -345,8 +385,34 @@ def reword_date(value, tenant, *, branch=None):
     return value
 
 
-def summary_for_reader(summary: Mapping, tenant, *, branch=None) -> dict:
-    """A stored approval summary with its dates in the reader's format (see :func:`reword_date`)."""
+def summary_fields(items: Iterable[tuple]) -> list[dict]:
+    """The ``fields`` of an approval summary, each carrying the key it is governed by.
+
+    An item is ``(label, value)``, or ``(label, value, access)`` where the value
+    comes from a registered field (or, as a sequence of keys, from several) and
+    only an approver who may read it should see it. A fact with no value is
+    omitted, as in :func:`fields_section`.
+    """
+    rows = []
+    for item in items:
+        label, value, access = _unpack(item, 2)
+        display_value = _display(value)
+        if display_value.strip():
+            row = {"label": str(label), "value": display_value}
+            _mark_access(row, access)
+            rows.append(row)
+    return rows
+
+
+def summary_for_reader(summary: Mapping, tenant, *, branch=None, request=None) -> dict:
+    """A stored approval summary as the request's caller may read it.
+
+    Dates are written in the reader's format (see :func:`reword_date`). A field
+    marked with a Field Access key the caller may not read is dropped, so two
+    approvers of the same request can be shown different cards without the
+    stored snapshot differing. ``request=None`` judges nobody and keeps every
+    field.
+    """
     summary = dict(summary or {})
     if "subtitle" in summary:
         summary["subtitle"] = reword_date(summary["subtitle"], tenant, branch=branch)
@@ -356,6 +422,7 @@ def summary_for_reader(summary: Mapping, tenant, *, branch=None) -> dict:
             {**field, "value": reword_date(field.get("value"), tenant, branch=branch)}
             if isinstance(field, dict) else field
             for field in fields
+            if not isinstance(field, dict) or _may_read(field, request)
         ]
     return summary
 

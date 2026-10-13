@@ -46,6 +46,7 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _branch_scoped,
+    _branch_visible,
     _correcting_returned,
     _date,
     _document_or_404,
@@ -534,7 +535,6 @@ def _write_invoice_lines(request, entity, invoice, po, lines):
 
 def _serialize_invoice_detail(invoice):
     """Enrich the base invoice with safe, authoritative drawer-only data."""
-    from vs_finance.audit import activity_actor
     from vs_finance.models import FinanceAuditLog
     from vs_workflow.models import WorkflowInstance
 
@@ -573,29 +573,20 @@ def _serialize_invoice_detail(invoice):
         "debit": line.debit,
         "credit": line.credit,
     } for line in invoice.journal.lines.all()] if invoice.journal_id else []
-    def display_message(log):
-        """Render immutable audit metadata without leaking raw JSON or kobo prose."""
-        # FinanceAuditLog is immutable; use structured metadata to present legacy
-        # minor-unit messages safely without rewriting the authoritative row.
-        if log.action == "VENDOR_INVOICE_POSTED" and "total" in (log.metadata or {}):
-            from vs_finance.money import format_naira
-            return f"Posted bill from {invoice.vendor.code} ({format_naira(log.metadata['total'])})."
-        return log.message
+    from vs_finance.audit import activity_entry, prime_activity_actors
 
-    from vs_finance.audit import prime_activity_actors
-
-    data["activity"] = [{
-        "id": log.id, "action": log.action, "message": display_message(log),
-        "status": log.status,
-        **activity_actor(log),
-        "created_at": log.created_at,
-    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
+    data["activity"] = [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=invoice.entity, target_type="VendorInvoice", target_id=str(invoice.pk),
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
     return data
 
 class VendorInvoiceReferenceCheckView(_ProcBase):
-    """Check an exact supplier reference before a user commits the invoice form."""
+    """Check an exact supplier reference before a user commits the invoice form.
+
+    Only the bills the caller's branches hold are matched and counted. The create
+    path still refuses a duplicate across the whole books, since that is what the
+    uniqueness constraint protects, but it names nothing of the bill it found.
+    """
 
     rbac_permission = "procurement.vendor_invoice.view"
 
@@ -615,9 +606,10 @@ class VendorInvoiceReferenceCheckView(_ProcBase):
         if len(reference) > 64:
             raise ValidationError({"reference": "Must be 64 characters or fewer."})
 
-        matches = _vendor_reference_matches(
+        # A bill raised at another branch is that branch's record, not this caller's.
+        matches = _branch_visible(request, _vendor_reference_matches(
             entity, reference, exclude_id=int(exclude) if exclude else None,
-        )
+        ))
         same_vendor = matches.filter(vendor=vendor).first()
         other_vendor_qs = matches.exclude(vendor=vendor).order_by("id")
         other_vendor_match_count = other_vendor_qs.count()

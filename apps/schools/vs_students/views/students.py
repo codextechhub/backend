@@ -262,6 +262,7 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
             allow_over_capacity=data.pop("allow_over_capacity", False),
             confirm_duplicate=data.pop("confirm_duplicate", False),
             documents=documents,
+            guardian_rules=writer.context.get("_guardian_rules"),
         )
         named = self.name_of(student)
         number = (

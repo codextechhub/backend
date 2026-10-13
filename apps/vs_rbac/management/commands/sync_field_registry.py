@@ -24,6 +24,13 @@ read defaults below.
 A field declaring default readers (``FieldSpec.read_by``) has them offered
 after the rows are written: the library role gains Read, and every tenant's
 existing copy of it gains Read once (:mod:`vs_rbac.library_growth`).
+
+A field that has been split into finer ones
+(:data:`vs_rbac.field_conversion.SUCCESSIONS`) has its switches carried onto the
+new fields after the rows are written, once the new fields exist, so a school's
+decisions about the old field stand for each field that replaces it. Carrying
+removes the originals, which is what makes it happen once, and it writes its
+own audit row listing what moved.
 """
 from __future__ import annotations
 
@@ -98,7 +105,14 @@ class Command(BaseCommand):
             plan = self._plan(declarations, lock=True)
             self._apply(plan)
             offered, grown = self._attach_read_defaults(declarations)
+            carried = self._carry_over_successions()
 
+        if any(carried.values()):
+            self.stdout.write(
+                f"  Field switches carried onto split fields: {carried['role_field_access']} "
+                f"role, {carried['prebuilt_role_field_access']} library default, "
+                f"{carried['user_field_access_override']} personal exception row(s)."
+            )
         if offered:
             self.stdout.write(
                 f"  Field read defaults: {offered} offered to library roles, "
@@ -111,6 +125,30 @@ class Command(BaseCommand):
             f"  Field registry synced: {len(plan.create)} created, "
             f"{len(plan.update)} updated, {len(plan.deactivate)} deactivated."
         )
+
+    @staticmethod
+    def _carry_over_successions() -> dict:
+        """Carry the switches of every split field onto its successors, and audit it."""
+        from vs_rbac.audit import record_rbac_audit
+        from vs_rbac.field_conversion import carry_over_successions
+
+        carried = carry_over_successions()
+        if any(carried.values()):
+            record_rbac_audit(
+                action_type=SYNCED_ACTION,
+                entity_type="FieldDefinition",
+                entity_id="field_registry",
+                entity_label="Field registry",
+                severity="INFO",
+                summary=(
+                    "Field switches carried onto split fields: "
+                    f"{carried['role_field_access']} role, "
+                    f"{carried['prebuilt_role_field_access']} library default, "
+                    f"{carried['user_field_access_override']} personal exception row(s)"
+                ),
+                metadata={"carried": carried},
+            )
+        return carried
 
     @staticmethod
     def _attach_read_defaults(declarations) -> tuple[int, int]:

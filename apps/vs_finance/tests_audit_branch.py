@@ -131,7 +131,7 @@ class ALekkiReaderReadsLekkiTests(_AuditFixture):
 
         self.assertEqual(len(paid), 1, paid)
         self.assertIn("Lekki Branch", paid[0]["message"])
-        self.assertIn("₦720.00", paid[0]["message"])
+        self.assertNotIn("₦", paid[0]["message"])
         self.assert_nothing_of_theirs(self.rows(self.ngozi))
 
     def test_they_never_see_the_whole_schools_salary_totals(self):
@@ -140,7 +140,7 @@ class ALekkiReaderReadsLekkiTests(_AuditFixture):
         accrued = self.rows(self.ngozi, action=FinanceAuditAction.PAYROLL_POSTED)
 
         self.assertEqual([row["message"] for row in accrued],
-                         ["Accrued Lekki Branch's payroll: gross ₦800.00, net ₦720.00."])
+                         ["Accrued Lekki Branch's payroll."])
         self.assert_nothing_of_theirs(self.rows(self.ngozi))
 
     def test_an_entry_written_before_entries_had_a_branch_is_not_theirs(self):

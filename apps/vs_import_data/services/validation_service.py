@@ -207,16 +207,22 @@ def _build_col_resolver(template):
     return lambda target_field: mapping.get(target_field, target_field)
 
 
-def _validate_dataset_specific_rules(import_batch) -> list[dict]:
+def _validate_dataset_specific_rules(import_batch, actor=None) -> list[dict]:
     """
     Dataset-specific business rules that catch runtime errors before execution.
     Routed by template.dataset_type.
+
+    *actor* is the person the file is validated for, where a dataset's rules
+    depend on who will run the import: a schools, CX users, staff, students
+    or guardians file reports the fields that person's Field Access would
+    refuse, and a students or guardians file does not demand a field the school
+    requires of someone who cannot write it.
     """
     if not import_batch.template:
         return []
     dataset_type = import_batch.template.dataset_type
     if dataset_type == "schools":
-        return _validate_schools_rules(import_batch)
+        return _validate_schools_rules(import_batch, actor)
     if dataset_type == "branches":
         return _validate_branches_rules(import_batch)
     if dataset_type == "calendar_events":
@@ -233,7 +239,7 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         # passes cannot disagree.
         from schools.vs_students.imports import validate_students_import_batch
 
-        return validate_students_import_batch(import_batch)
+        return validate_students_import_batch(import_batch, actor)
     if dataset_type in {"org_units", "positions", "matrix_reports"}:
         from vs_user.imports import validate_organogram_import
 
@@ -252,13 +258,15 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
 
         return validate_subjects_import_batch(import_batch)
     if dataset_type == "staff":
-        return _validate_staff_rules(import_batch)
+        return _validate_staff_rules(import_batch, actor)
+    if dataset_type == "cx_users":
+        return _validate_cx_users_rules(import_batch, actor)
     if dataset_type == "guardians":
         from schools.vs_students.guardian_imports import (
             validate_guardians_import_batch,
         )
 
-        return validate_guardians_import_batch(import_batch)
+        return validate_guardians_import_batch(import_batch, actor)
     if dataset_type == "bank_statements":
         from vs_finance.statement_imports import validate_bank_statement_import_batch
 
@@ -268,12 +276,22 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
     return []
 
 
-def _validate_schools_rules(import_batch) -> list[dict]:
+def _validate_schools_rules(import_batch, actor=None) -> list[dict]:
+    """Every rule a schools file must meet before execution can create its rows.
+
+    With an *actor*, each row is also read as execution will read it and any
+    field that person may not write is reported against the row, in the words
+    execution uses, so a restricted operator is told here and not after the
+    import has failed row by row (:func:`school_row_write_refusal`).
+    """
     from datetime import date as date_type
     from django.utils.text import slugify
     from schools.vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
     from vs_user.email_normalization import normalize_email
     from vs_user.services.email_availability import email_refusal
+    from vs_rbac.field_enforcement import FieldWriteDenied
+
+    from .import_executor import map_row_to_payload, school_row_write_refusal
 
     issues = []
     rows = import_batch.preview_rows or []
@@ -472,6 +490,20 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 })
             else:
                 seen_admin_emails[email] = row_number
+
+        # --- fields the actor's Field Access would refuse ---
+        if actor is not None:
+            refusal = school_row_write_refusal(map_row_to_payload(import_batch, row), actor)
+            for field in refusal.fields if refusal is not None else ():
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": FieldWriteDenied([field], labels=refusal.labels).message,
+                    "row_number": row_number,
+                    "column_name": _col(field),
+                    "raw_value": "",
+                    "metadata": {"field_write_denied": [field]},
+                })
 
     return issues
 
@@ -735,9 +767,12 @@ def _update_batch_validation_state(import_batch, summary: dict) -> None:
 # Main validation entry point
 # =========================================================
 @transaction.atomic
-def validate_import_batch(import_batch) -> dict:
+def validate_import_batch(import_batch, actor=None) -> dict:
     """
     Main validation function for a template-driven import batch.
+
+    *actor* is the person validating on behalf of whom the file would be
+    imported. Without one no write access is previewed.
 
     What it does:
     1. confirms a template exists
@@ -771,7 +806,7 @@ def validate_import_batch(import_batch) -> dict:
     issues.extend(_validate_rows_against_template(import_batch))
     issues.extend(_validate_template_uniqueness_rules(import_batch))
     issues.extend(_validate_cross_references(import_batch))
-    issues.extend(_validate_dataset_specific_rules(import_batch))
+    issues.extend(_validate_dataset_specific_rules(import_batch, actor))
 
     summary = summarize_issues(issues)
     dataset_summary = getattr(import_batch, "_dataset_validation_summary", None)
@@ -787,7 +822,32 @@ def validate_import_batch(import_batch) -> dict:
     }
 
 
-def _validate_staff_rules(import_batch) -> list[dict]:
+def _validate_cx_users_rules(import_batch, actor=None) -> list[dict]:
+    """The fields the actor's Field Access would refuse on each CX users row.
+
+    Reads each row as execution does (:func:`cx_user_row_write_refusal`) and
+    reports a refusal against its row and column in the words execution uses.
+    Nothing else about a row is judged here: its other faults surface when the
+    serializer reads it.
+    """
+    from vs_import_data.field_writes import write_refusal_issue
+
+    from .import_executor import cx_user_row_write_refusal, map_row_to_payload
+
+    if actor is None:
+        return []
+    header = {c.target_field: c.column_name for c in import_batch.template.columns.all()}
+    issues = []
+    for row_number, row in enumerate(import_batch.preview_rows or [], start=1):
+        refusal = cx_user_row_write_refusal(
+            map_row_to_payload(import_batch, row), actor, import_batch,
+        )
+        for field in refusal.fields if refusal is not None else ():
+            issues.append(write_refusal_issue(refusal, field, row_number, header))
+    return issues
+
+
+def _validate_staff_rules(import_batch, actor=None) -> list[dict]:
     """Every staff row read through the same resolver the executor uses.
 
     Two passes over one file that read a row differently is the way an import
@@ -798,4 +858,4 @@ def _validate_staff_rules(import_batch) -> list[dict]:
     """
     from schools.vs_staff.imports import validate_rows
 
-    return validate_rows(import_batch)
+    return validate_rows(import_batch, actor)

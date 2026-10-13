@@ -204,6 +204,21 @@ class InterBranchFieldAccessTests(_InterBranchFixture):
         set_field_access(read_only, *keys, read=True, write=True)
         set_field_access(read_only, "finance.interbranch.amount", read=True, write=False)
 
+        cls.alias_read_only_user = cls.user_for(cls.tenant, "ib-fields-alias-ro@corona.test")
+        cls.grant(cls.alias_read_only_user, *TRANSFER_KEYS, tenant=cls.tenant,
+                  role_key="ib-fields-alias-ro", branch=None)
+        alias_ro = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="ib-fields-alias-ro")
+        set_field_access(alias_ro, *keys, read=True, write=True)
+        set_field_access(
+            alias_ro, "finance.interbranch.customer", "finance.interbranch.source_bank_account",
+            read=True, write=False,
+        )
+        cls.open_user = cls.user_for(cls.tenant, "ib-fields-open@corona.test")
+        cls.grant(cls.open_user, *TRANSFER_KEYS, tenant=cls.tenant,
+                  role_key="ib-fields-open", branch=None)
+        open_role = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="ib-fields-open")
+        set_field_access(open_role, *keys, read=True, write=True)
+
         cls.transfer = InterBranchTransfer.objects.create(
             entity=cls.books, kind=InterBranchTransferKind.CASH, branch=cls.ikeja,
             to_branch=cls.lekki, from_bank_account=cls.ikeja_bank,
@@ -225,6 +240,8 @@ class InterBranchFieldAccessTests(_InterBranchFixture):
         super().setUp()
         self.hidden = TenantAPIClient(user=self.hidden_user)
         self.read_only = TenantAPIClient(user=self.read_only_user)
+        self.alias_read_only = TenantAPIClient(user=self.alias_read_only_user)
+        self.open = TenantAPIClient(user=self.open_user)
 
     def test_hidden_amount_is_removed_from_rows_nested_shares_and_balances(self):
         transfer = self.hidden.get(self.url("inter-branch-transfers/"))
@@ -261,6 +278,52 @@ class InterBranchFieldAccessTests(_InterBranchFixture):
         self.assertEqual(refused.status_code, 403, refused.data)
         self.assertEqual(refused.data["error"]["code"], "field_write_denied")
         self.assertEqual(InterBranchTransfer.objects.count(), before)
+
+    def test_a_read_only_source_bank_account_refuses_the_account_a_transfer_sends_from(self):
+        before = InterBranchTransfer.objects.count()
+        refused = self.alias_read_only.post(self.url("inter-branch-transfers/"), {
+            "from_bank_account": self.ikeja_bank.pk, "amount": 50_000_00,
+            "transfer_date": "2026-01-15", "purpose": "Diesel",
+        }, format="json")
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertIn("from_bank_account", refused.data["error"]["detail"])
+        self.assertIn("Source bank account", refused.data["message"])
+        self.assertEqual(InterBranchTransfer.objects.count(), before)
+
+    def test_a_read_only_source_bank_account_refuses_sending_a_requested_transfer(self):
+        asked = self.client_for(self.lekki).post(
+            self.url("inter-branch-transfers/requests/"), {
+                "from_branch": self.ikeja.pk, "amount": 1_000_000_00, "purpose": "Diesel",
+                "transfer_date": "2026-01-15",
+            }, format="json")
+        self.assertEqual(asked.status_code, 201, asked.data)
+        pk = asked.data["data"]["id"]
+
+        refused = self.alias_read_only.post(
+            self.url(f"inter-branch-transfers/{pk}/send/"),
+            {"from_bank_account": self.ikeja_bank.pk}, format="json",
+        )
+
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertEqual(refused.data["error"]["code"], "field_write_denied")
+        self.assertEqual(
+            InterBranchTransfer.objects.get(pk=pk).status, DocumentStatus.DRAFT,
+        )
+
+    def test_a_read_only_customer_refuses_moving_that_customers_balance(self):
+        refused = self.alias_read_only.post(self.url("inter-branch-transfers/receivable-moves/"), {
+            "customer": self.customer_row.code, "from_branch": self.lekki.pk,
+            "to_branch": self.ikeja.pk,
+        }, format="json")
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertEqual(refused.data["error"]["code"], "field_write_denied")
+        self.assertIn("customer", refused.data["error"]["detail"])
+
+    def test_a_writable_role_sends_a_transfer_naming_the_same_keys(self):
+        refused_before = InterBranchTransfer.objects.count()
+        sent = self.send(self.open, source=self.ikeja_bank, to_branch=self.lekki)
+        self.assertEqual(sent.status_code, 201, sent.data)
+        self.assertEqual(InterBranchTransfer.objects.count(), refused_before + 1)
 
 
 class CashTransferTests(_InterBranchFixture):

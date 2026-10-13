@@ -71,6 +71,26 @@ class TransactionsLogTests(_FinanceBranchFixture):
         opened = self.rows(reads_account_numbers=True)["REQ-1"]
         self.assertEqual(opened["message"], "Virtual account 9012345678 for CALL.")
 
+    def test_a_sentence_written_without_the_number_reads_the_same_to_every_reader(self):
+        """An event written now stays whole for a reader who may not read the number.
+
+        The cut that removes the number from an older sentence must not eat the
+        first word of a sentence that never carried one.
+        """
+        PaymentEvent.objects.create(
+            entity=self.books, action=PaymentAuditAction.VIRTUAL_ACCOUNT_STATUS_CHANGED,
+            reference="REQ-2", message="Virtual account for CALL set to INACTIVE.",
+            metadata={"sentence_without_values": True})
+        request, _keys = closed_request(self.tenant, "payments.virtual_account")
+        event = PaymentEvent.objects.get(reference="REQ-2")
+
+        closed = PaymentEventSerializer(event, context={"request": request}).data
+        opened = self.rows(reads_account_numbers=True)["REQ-2"]
+
+        self.assertEqual(closed["message"], "Virtual account for CALL set to INACTIVE.")
+        self.assertEqual(opened["message"], closed["message"])
+        self.assertNotIn("sentence_without_values", closed["metadata"])
+
     def test_the_log_costs_the_same_for_a_long_page_as_a_short_one(self):
         """Who acted, and who really did under a proxy, is read with the rows.
 

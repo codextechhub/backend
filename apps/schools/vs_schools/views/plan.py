@@ -30,14 +30,19 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
 )
+from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.plan_grants import unsettled_roles_note
 
 from ..models import School
 from ..serializers import (
     ChangeSchoolPlanSerializer,
+    SchoolPlanOverviewSerializer,
     SchoolPlanUpliftSerializer,
 )
 from ..services.packages import change_plan, plan_overview
+
+#: The Field Access resource every route here reads and writes.
+FIELD_RESOURCE = "platform.schools"
 
 
 class _PlanView(APIView):
@@ -47,6 +52,13 @@ class _PlanView(APIView):
 
     def get_school(self, slug):
         return get_object_or_404(School.objects.select_related("tenant"), slug=slug)
+
+    def overview(self, school, unsettled_roles=()):
+        """The plan page's payload, with the caller's Field Access applied."""
+        return SchoolPlanOverviewSerializer(
+            plan_overview(school, unsettled_roles=unsettled_roles),
+            context={"request": self.request},
+        ).data
 
 
 class SchoolPlanView(_PlanView):
@@ -64,14 +76,12 @@ class SchoolPlanView(_PlanView):
 
     def get(self, request, slug):
         school = self.get_school(slug)
-        return success_response(
-            "School plan retrieved.", data=plan_overview(school),
-        )
+        return success_response("School plan retrieved.", data=self.overview(school))
 
     def patch(self, request, slug):
         school = self.get_school(slug)
         serializer = ChangeSchoolPlanSerializer(
-            data=request.data, context={"school": school},
+            data=request.data, context={"school": school, "request": request},
         )
         serializer.is_valid(raise_exception=True)
 
@@ -89,7 +99,7 @@ class SchoolPlanView(_PlanView):
             f"{school.name} moved from {previous.name} to {setup.package_plan.name}, "
             f"and {len(rows)} module grants were re-applied."
             + unsettled_roles_note(unsettled),
-            data=plan_overview(school, unsettled_roles=unsettled),
+            data=self.overview(school, unsettled_roles=unsettled),
         )
 
 
@@ -103,6 +113,7 @@ class SchoolPlanUpliftView(_PlanView):
 
     def post(self, request, slug):
         school = self.get_school(slug)
+        assert_writable(request, FIELD_RESOURCE, {"uplift": True})
         serializer = SchoolPlanUpliftSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -120,7 +131,7 @@ class SchoolPlanUpliftView(_PlanView):
         return success_response(
             "Uplift recorded. It ends on its own date and returns the school "
             "to the depth its plan pays for." + unsettled_roles_note(unsettled),
-            data=plan_overview(school, unsettled_roles=unsettled),
+            data=self.overview(school, unsettled_roles=unsettled),
         )
 
 
@@ -134,6 +145,7 @@ class SchoolPlanUpliftDetailView(_PlanView):
 
     def delete(self, request, slug, capability):
         school = self.get_school(slug)
+        assert_writable(request, FIELD_RESOURCE, {"uplift": True})
         row = get_object_or_404(
             Capability, key=capability, parent__isnull=True, is_active=True,
         )
@@ -149,5 +161,5 @@ class SchoolPlanUpliftDetailView(_PlanView):
         )
         return success_response(
             message + unsettled_roles_note(unsettled),
-            data=plan_overview(school, unsettled_roles=unsettled),
+            data=self.overview(school, unsettled_roles=unsettled),
         )

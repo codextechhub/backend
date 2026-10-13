@@ -1,5 +1,5 @@
 import re
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
@@ -367,14 +367,14 @@ class FinanceBankingSettingsAPITests(TestCase):
             f"/v1/finance/petty-cash-status/?entity={self.entity.code}",
         )
         self.assertEqual(response.status_code, 200)
-        fund_status.assert_called_once_with(self.entity, threshold_bps=4000)
+        fund_status.assert_called_once_with(self.entity, threshold_bps=4000, reach=ANY)
 
         fund_status.reset_mock()
         override = self.client.get(
             f"/v1/finance/petty-cash-status/?entity={self.entity.code}&threshold_bps=1500",
         )
         self.assertEqual(override.status_code, 200)
-        fund_status.assert_called_once_with(self.entity, threshold_bps=1500)
+        fund_status.assert_called_once_with(self.entity, threshold_bps=1500, reach=ANY)
 
     @patch("vs_finance.banking.auto_reconcile", return_value=[])
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

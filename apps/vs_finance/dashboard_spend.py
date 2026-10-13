@@ -30,6 +30,9 @@ Spending
     spending with them (untagged spending shows as its own row so the total
     still adds up), and by expense account when they do not.
 
+A block the reader's Field Access closes (``finance.dashboard``) is not computed
+and its key is left out of the response (:mod:`vs_finance.dashboard_serializers`).
+
 Access follows the other tabs. The cash, bank, payroll and tax blocks are the
 school's money as a whole, so only readers who see the whole school get them.
 Spending, budgets, expense claims, petty cash and fixed assets answer under the
@@ -567,11 +570,18 @@ def spend_view(entity, *, reader, window=None, period=None, user=None) -> dict:
     chosen, windows = resolve_window(entity, as_of, current, window)
     scope = reader.scope
     whole = reader.whole_tenant
+    show = reader.shows
     ledger = reader.can("finance.report.view")
     sets = _account_sets(entity) if ledger or reader.can("finance.expenseclaim.view") else None
 
-    cash = cash_movement(entity, chosen, as_of, sets) if whole and ledger else None
-    banks = bank_accounts(entity) if whole and reader.can("finance.bankaccount.view") else None
+    cash_reader = whole and ledger
+    cash = cash_movement(entity, chosen, as_of, sets) if cash_reader and show("cash_movement") else None
+    banks = (
+        bank_accounts(entity)
+        if whole and reader.can("finance.bankaccount.view")
+        and (show("reconciliation") or show("unmatched")) else None
+    )
+    tax = whole and reader.can("finance.tax.view")
     return {
         "entity": entity.code,
         "books": books_kind(entity),
@@ -582,27 +592,35 @@ def spend_view(entity, *, reader, window=None, period=None, user=None) -> dict:
         "windows": [{"key": w.key, "label": w.label, "name": w.name} for w in windows],
         "runway": (
             runway(entity, as_of, sets, _cash_on(entity, as_of + datetime.timedelta(days=1), sets["cash"]))
-            if cash else None
+            if cash_reader and show("runway") else None
         ),
         "cash_movement": cash,
-        "spend": operating_spend(entity, chosen, as_of, sets, scope) if ledger else None,
-        "spending": spending(entity, chosen, as_of, sets, scope) if ledger else None,
-        "reconciliation": reconciliation(banks) if banks else None,
+        "spend": operating_spend(entity, chosen, as_of, sets, scope) if ledger and show("operating_spend") else None,
+        "spending": spending(entity, chosen, as_of, sets, scope) if ledger and show("spending") else None,
+        "reconciliation": reconciliation(banks) if banks and show("reconciliation") else None,
         "unmatched": (
             {"lines": sum(b["unmatched_lines"] for b in banks),
              "amount": _m(sum(b["unmatched_amount"]["kobo"] for b in banks))}
-            if banks else None
+            if banks and show("unmatched") else None
         ),
         "budgets": (
             budgets(entity, getattr(current, "fiscal_year", None), as_of, scope)
-            if reader.can("finance.budget.view") else None
+            if reader.can("finance.budget.view") and show("budgets") else None
         ),
-        "payroll": payroll(entity, as_of) if whole and reader.can("finance.payrollrun.view") else None,
+        "payroll": (
+            payroll(entity, as_of) if whole and reader.can("finance.payrollrun.view") and show("payroll") else None
+        ),
         "claims": (
-            expense_claims(entity, chosen, as_of, sets, scope) if reader.can("finance.expenseclaim.view") else None
+            expense_claims(entity, chosen, as_of, sets, scope)
+            if reader.can("finance.expenseclaim.view") and show("expense_claims") else None
         ),
-        "petty_cash": petty_cash(entity, scope) if reader.can("finance.pettycash.view") else None,
-        "tax_owed": tax_owed(entity, as_of) if whole and reader.can("finance.tax.view") else None,
-        "tax_calendar": tax_calendar(entity, as_of) if whole and reader.can("finance.tax.view") else None,
-        "assets": fixed_assets(entity, chosen, as_of, scope) if reader.can("finance.fixedasset.view") else None,
+        "petty_cash": (
+            petty_cash(entity, scope) if reader.can("finance.pettycash.view") and show("petty_cash") else None
+        ),
+        "tax_owed": tax_owed(entity, as_of) if tax and show("tax_owed") else None,
+        "tax_calendar": tax_calendar(entity, as_of) if tax and show("tax_calendar") else None,
+        "assets": (
+            fixed_assets(entity, chosen, as_of, scope)
+            if reader.can("finance.fixedasset.view") and show("fixed_assets") else None
+        ),
     }

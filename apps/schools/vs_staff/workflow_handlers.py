@@ -34,6 +34,17 @@ from .constants import (
 )
 
 
+def _teacher_key(name: str) -> str:
+    """The Field Access key of the staff field *name*.
+
+    A hire card restates fields of the staff record, so each names the key that
+    governs it and is shown only to an approver whose roles may read it. A
+    person's name and job title are what identify a hire or a leave request and
+    are never marked.
+    """
+    return f"school.teachers.{name}"
+
+
 def _days(count) -> str:
     return f"{count} day" if count == 1 else f"{count} days"
 
@@ -294,10 +305,12 @@ class StaffHireWorkflowHandler(BaseWorkflowHandler):
     def get_document_details(self, document) -> dict:
         user = getattr(document, "user", None)
         return document_details(fields_section("New staff details", [
-            ("Email", getattr(user, "email", "") or "-"),
-            ("Staff ID", document.staff_number or "-"),
-            ("Employment type", document.get_employment_type_display() or "-"),
-            ("Hire date", str(document.hire_date) if document.hire_date else "-"),
+            ("Email", getattr(user, "email", "") or "-", _teacher_key("email")),
+            ("Staff ID", document.staff_number or "-", _teacher_key("staff_number")),
+            ("Employment type", document.get_employment_type_display() or "-",
+             _teacher_key("employment_type")),
+            ("Hire date", str(document.hire_date) if document.hire_date else "-",
+             _teacher_key("hire_date")),
         ]))
 
     def validate_document(self, document, requested_by) -> None:

@@ -40,7 +40,9 @@ from vs_workflow.exceptions import (
     InvalidInstanceStateError, ReversalNotAllowedError,
 )
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
-from vs_workflow.presentation import document_details, fields_section, table_section
+from vs_workflow.presentation import (
+    document_details, fields_section, summary_fields, table_section,
+)
 
 from .constants import DocumentStatus, PaymentMethod, PettyCashReturnKind
 from .money import format_naira
@@ -56,6 +58,18 @@ def _console_document_link(path: str, document) -> str:
 def _console_document_id_link(path: str, document) -> str:
     """Return a console detail route scoped to the document's ledger entity."""
     return f"{path}?{urlencode({'document': document.pk, 'entity': document.entity.code})}"
+
+
+def _key(resource: str, name: str) -> str:
+    """The Field Access key of the registered field *name* of finance *resource*.
+
+    An approval document restates registered fields, so each restated value
+    names the key that governs it and is shown only to an approver whose roles
+    may read that field (:func:`vs_workflow.presentation.for_reader`). A bank
+    account, a fund, a branch, a vendor or a customer is an identifying label
+    and is never marked, and neither is a document number.
+    """
+    return f"finance.{resource}.{name}"
 
 
 def _quantity(value) -> str:
@@ -520,11 +534,11 @@ class BankTransactionHandler(_FinancePostOnApprove):
         return {
             "title": document.document_number or str(document.pk),
             "subtitle": "Bank transaction",
-            "fields": [
-                {"label": "Date", "value": document.transaction_date.isoformat()},
-                {"label": "Amount", "value": format_naira(document.amount)},
-                {"label": "Bank account", "value": document.bank_account.name},
-            ],
+            "fields": summary_fields([
+                ("Date", document.transaction_date.isoformat(), _key("banktransaction", "transaction_date")),
+                ("Amount", format_naira(document.amount), _key("banktransaction", "amount")),
+                ("Bank account", document.bank_account.name),
+            ]),
             "link": _console_document_link("/finance/bank-transactions", document),
         }
 
@@ -532,12 +546,13 @@ class BankTransactionHandler(_FinancePostOnApprove):
         return document_details(
             fields_section("Bank transaction details", [
                 ("Bank account", document.bank_account.name),
-                ("Direction", document.get_direction_display()),
-                ("Amount", format_naira(document.amount)),
-                ("Other side", f"{document.counter_account.code} · {document.counter_account.name}"),
-                ("Date", document.transaction_date),
-                ("Narration", document.narration),
-                ("Reference", document.reference or "-"),
+                ("Direction", document.get_direction_display(), _key("banktransaction", "direction")),
+                ("Amount", format_naira(document.amount), _key("banktransaction", "amount")),
+                ("Other side", f"{document.counter_account.code} · {document.counter_account.name}",
+                 _key("banktransaction", "counter_account")),
+                ("Date", document.transaction_date, _key("banktransaction", "transaction_date")),
+                ("Narration", document.narration, _key("banktransaction", "narration")),
+                ("Reference", document.reference or "-", _key("banktransaction", "reference")),
             ]),
         )
 
@@ -573,12 +588,12 @@ class BankTransferHandler(_FinancePostOnApprove):
         return {
             "title": document.document_number or str(document.pk),
             "subtitle": "Transfer between own accounts",
-            "fields": [
-                {"label": "Date", "value": document.transfer_date.isoformat()},
-                {"label": "Amount", "value": format_naira(document.amount)},
-                {"label": "From", "value": document.from_account.name},
-                {"label": "To", "value": document.to_account.name},
-            ],
+            "fields": summary_fields([
+                ("Date", document.transfer_date.isoformat(), _key("banktransfer", "transfer_date")),
+                ("Amount", format_naira(document.amount), _key("banktransfer", "amount")),
+                ("From", document.from_account.name),
+                ("To", document.to_account.name),
+            ]),
             "link": _console_document_link("/finance/bank-transfers", document),
         }
 
@@ -587,10 +602,10 @@ class BankTransferHandler(_FinancePostOnApprove):
             fields_section("Transfer details", [
                 ("From", document.from_account.name),
                 ("To", document.to_account.name),
-                ("Amount", format_naira(document.amount)),
-                ("Date", document.transfer_date),
-                ("Narration", document.narration),
-                ("Reference", document.reference or "-"),
+                ("Amount", format_naira(document.amount), _key("banktransfer", "amount")),
+                ("Date", document.transfer_date, _key("banktransfer", "transfer_date")),
+                ("Narration", document.narration, _key("banktransfer", "narration")),
+                ("Reference", document.reference or "-", _key("banktransfer", "reference")),
             ]),
         )
 
@@ -646,12 +661,13 @@ class PettyCashReturnHandler(_FinancePostOnApprove):
     def summary(self, document) -> dict:
         return {
             "title": document.document_number or str(document.pk),
-            "subtitle": f"Petty cash return: {document.get_kind_display().lower()}",
-            "fields": [
-                {"label": "Date", "value": document.return_date.isoformat()},
-                {"label": "Banked", "value": format_naira(document.amount)},
-                {"label": "Fund", "value": document.fund.name},
-            ],
+            "subtitle": "Petty cash return",
+            "fields": summary_fields([
+                ("Kind", document.get_kind_display(), _key("pettycash_return", "kind")),
+                ("Date", document.return_date.isoformat(), _key("pettycash_return", "return_date")),
+                ("Banked", format_naira(document.amount), _key("pettycash_return", "amount")),
+                ("Fund", document.fund.name),
+            ]),
             "link": _console_document_link("/finance/expenses/petty-cash", document),
         }
 
@@ -659,17 +675,23 @@ class PettyCashReturnHandler(_FinancePostOnApprove):
         return document_details(
             fields_section("Petty cash return details", [
                 ("Fund", document.fund.name),
-                ("Kind", document.get_kind_display()),
-                ("Counted", format_naira(document.counted_amount)),
-                ("On the books", format_naira(document.book_balance)),
-                ("Short", format_naira(document.shortage) if document.shortage else "-"),
-                ("Over", format_naira(document.overage) if document.overage else "-"),
-                ("Why the count differs", document.difference_reason or "-"),
-                ("Banked", format_naira(document.amount)),
+                ("Kind", document.get_kind_display(), _key("pettycash_return", "kind")),
+                ("Counted", format_naira(document.counted_amount),
+                 _key("pettycash_return", "counted_amount")),
+                ("On the books", format_naira(document.book_balance),
+                 _key("pettycash_return", "book_balance")),
+                ("Short", format_naira(document.shortage) if document.shortage else "-",
+                 _key("pettycash_return", "difference")),
+                ("Over", format_naira(document.overage) if document.overage else "-",
+                 _key("pettycash_return", "difference")),
+                ("Why the count differs", document.difference_reason or "-",
+                 _key("pettycash_return", "difference_reason")),
+                ("Banked", format_naira(document.amount), _key("pettycash_return", "amount")),
                 ("Into", document.bank_account.name if document.bank_account_id else "-"),
-                ("New float", format_naira(document.new_float_amount)),
-                ("Date", document.return_date),
-                ("Reference", document.reference or "-"),
+                ("New float", format_naira(document.new_float_amount),
+                 _key("pettycash_return", "new_float_amount")),
+                ("Date", document.return_date, _key("pettycash_return", "return_date")),
+                ("Reference", document.reference or "-", _key("pettycash_return", "reference")),
             ]),
         )
 
@@ -730,28 +752,28 @@ class InterBranchTransferHandler(_FinancePostOnApprove):
         return {
             "title": document.document_number or str(document.pk),
             "subtitle": "Inter-branch transfer",
-            "fields": [
-                {"label": "Date", "value": document.transfer_date.isoformat()},
-                {"label": "Amount", "value": format_naira(document.amount)},
-                {"label": "From", "value": document.branch.name},
-                {"label": "To", "value": document.to_branch.name},
-            ],
+            "fields": summary_fields([
+                ("Date", document.transfer_date.isoformat(), _key("interbranch", "transaction_date")),
+                ("Amount", format_naira(document.amount), _key("interbranch", "amount")),
+                ("From", document.branch.name),
+                ("To", document.to_branch.name),
+            ]),
             "link": _console_document_link("/finance/inter-branch-transfers", document),
         }
 
     def details(self, document) -> dict:
         return document_details(
             fields_section("Inter-branch transfer details", [
-                ("Kind", document.get_kind_display()),
+                ("Kind", document.get_kind_display(), _key("interbranch", "kind")),
                 ("From", f"{document.branch.name} ({document.from_bank_account.name})"
                  if document.from_bank_account_id else document.branch.name),
                 ("To", f"{document.to_branch.name} ({document.to_bank_account.name})"
                  if document.to_bank_account_id else document.to_branch.name),
-                ("Amount", format_naira(document.amount)),
-                ("Date", document.transfer_date),
-                ("Purpose", document.purpose),
-                ("Repay by", document.repay_by or "-"),
-                ("Reference", document.reference or "-"),
+                ("Amount", format_naira(document.amount), _key("interbranch", "amount")),
+                ("Date", document.transfer_date, _key("interbranch", "transaction_date")),
+                ("Purpose", document.purpose, _key("interbranch", "purpose")),
+                ("Repay by", document.repay_by or "-", _key("interbranch", "repay_by")),
+                ("Reference", document.reference or "-", _key("interbranch", "reference")),
             ]),
         )
 
@@ -1260,11 +1282,13 @@ class DoubtfulDebtProvisionHandler(_FinancePostOnApprove):
         return {
             "title": document.document_number or str(document.pk),
             "subtitle": "Doubtful-debt provision",
-            "fields": [
-                {"label": "Aged to", "value": document.as_of.isoformat()},
-                {"label": "Allowance required", "value": format_naira(document.required_total)},
-                {"label": "Change to the allowance", "value": format_naira(document.movement_total)},
-            ],
+            "fields": summary_fields([
+                ("Aged to", document.as_of.isoformat(), _key("provision", "as_of")),
+                ("Allowance required", format_naira(document.required_total),
+                 _key("provision", "required_total")),
+                ("Change to the allowance", format_naira(document.movement_total),
+                 _key("provision", "movement_total")),
+            ]),
             "link": _console_document_id_link("/finance/receivables/provisions", document),
         }
 
@@ -1272,13 +1296,15 @@ class DoubtfulDebtProvisionHandler(_FinancePostOnApprove):
         lines = document.lines.select_related("branch")
         return document_details(
             fields_section("Provision details", [
-                ("Aged to", document.as_of),
-                ("Narration", document.narration or "-"),
+                ("Aged to", document.as_of, _key("provision", "as_of")),
+                ("Narration", document.narration or "-", _key("provision", "narration")),
             ]),
             table_section(
                 "By branch",
-                [("branch", "Branch"), ("required", "Required"),
-                 ("current", "Held"), ("movement", "Change")],
+                [("branch", "Branch"),
+                 ("required", "Required", _key("provision", "required")),
+                 ("current", "Held", _key("provision", "current")),
+                 ("movement", "Change", _key("provision", "movement"))],
                 [
                     {
                         "branch": line.branch.name if line.branch_id else "No branch",

@@ -66,6 +66,11 @@ from .helpers import (
 
 VENDOR_KEY = "procurement.vendor.view_sensitive"
 VENDOR_BANK = "procurement.vendor.bank_account_number"
+VENDOR_CONTACT_DETAILS = (
+    "procurement.vendor_contact.name",
+    "procurement.vendor_contact.email",
+    "procurement.vendor_contact.phone",
+)
 STUDENT_MEDICAL_KEY = "school.students.view_sensitive"
 BLOOD_GROUP = "school.students.blood_group"
 ENROLMENT_DATE = "school.students.enrolment_date"
@@ -295,6 +300,22 @@ class SingleBranchConversionTests(_Converted):
         self.hold(self.role_with("school.students.view", name="Storekeeper"))
         run_conversion()
         self.assertEqual((True, True), self.state(VENDOR_BANK))
+
+    def test_the_vendor_key_converts_to_each_contact_person_detail(self):
+        """The key governed the whole contact list, so it opens all three details."""
+        self.hold(self.role_with(VENDOR_KEY))
+        run_conversion()
+        for key in VENDOR_CONTACT_DETAILS:
+            with self.subTest(field=key):
+                self.assertEqual((True, True), self.state(key))
+
+    def test_a_role_without_the_vendor_key_has_every_contact_person_detail_closed(self):
+        role = self.hold(self.role_with("finance.bankaccount.view"))
+        run_conversion()
+        for key in VENDOR_CONTACT_DETAILS:
+            with self.subTest(field=key):
+                self.assertEqual((False, False), self.state(key))
+                self.assertIsNone(self.row(role, key))
 
 
 class MultiBranchConversionTests(SingleBranchConversionTests):

@@ -259,6 +259,15 @@ def emit_audit_event(
 
             resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
 
+            # A snapshot taken from a serializer or a model can hold a date or
+            # a Decimal, which a JSON column refuses; the refusal rolls the
+            # whole event back and the change goes unrecorded.
+            before_data, diff_data, metadata = (
+                AuditDiffService.to_json_safe_dict(payload)
+                if isinstance(payload, dict) else payload
+                for payload in (before_data, diff_data, metadata)
+            )
+
             event = AuditEvent.objects.create(
                 module_key=module_key,
                 action_type=action_type,

@@ -459,8 +459,7 @@ def complete_reconciliation(bank_account, *, actor_user=None):
     record(  # Log the reconciliation completion.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
-        message=f"Reconciliation completed on {bank_account.name} "
-                f"(difference {format_naira(recon.difference)}).",
+        message=f"Reconciliation completed on {bank_account.name}.",
         bank_account_id=bank_account.id, difference=recon.difference,
     )
     return recon  # Return the completed reconciliation snapshot.
@@ -686,8 +685,8 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
         entity=statement_line.bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=statement_line.bank_account,
         message=(f"{'Ignored' if ignored else 'Un-ignored'} a statement line on "
-                 f"{statement_line.bank_account.name}." + (f" Reason: {reason}" if reason else "")),
-        bank_account_id=statement_line.bank_account_id,
+                 f"{statement_line.bank_account.name}."),
+        bank_account_id=statement_line.bank_account_id, reason=reason or "",
     )
     return statement_line  # Return the updated statement line.
 
@@ -846,7 +845,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,
         actor_user=actor_user, target=bank_account,
         message=(
-            f"Booked bank adjustment {format_naira(magnitude)} on {bank_account.name}"
+            f"Booked a bank adjustment on {bank_account.name}"
             + (
                 f" on {format_date(book_date, entity.tenant)} (bank value date "
                 f"{format_date(statement_line.txn_date, entity.tenant)} "
@@ -1014,10 +1013,12 @@ def _post_bank_transaction_atomic(txn, *, actor_user=None):
     record(
         entity=txn.entity, action=FinanceAuditAction.BANK_TRANSACTION_POSTED,
         actor_user=actor_user, target=txn,
-        message=(
-            f"{'Received' if money_in else 'Paid'} {format_naira(txn.amount)} "
-            f"{'into' if money_in else 'out of'} {bank.name}: {txn.narration}"
-        ),
+        message=f"{'Received money into' if money_in else 'Paid money out of'} {bank.name}.",
+        after={
+            name: _audited(getattr(txn, name))
+            for name in ("bank_account_id", "direction", "amount", "counter_account_id",
+                         "transaction_date", "narration", "reference")
+        },
         journal_id=entry.pk, amount=txn.amount, direction=txn.direction,
         counter_account=txn.counter_account.code, bank_account_id=bank.pk,
     )
@@ -1186,7 +1187,12 @@ def _post_bank_transfer_atomic(transfer, *, actor_user=None):
     record(
         entity=transfer.entity, action=FinanceAuditAction.BANK_TRANSFER_POSTED,
         actor_user=actor_user, target=transfer,
-        message=f"Moved {format_naira(transfer.amount)} from {source.name} to {target.name}.",
+        message=f"Moved money from {source.name} to {target.name}.",
+        after={
+            name: _audited(getattr(transfer, name))
+            for name in ("from_account_id", "to_account_id", "amount", "transfer_date",
+                         "narration", "reference")
+        },
         journal_id=entry.pk, amount=transfer.amount,
         from_account_id=source.pk, to_account_id=target.pk,
     )

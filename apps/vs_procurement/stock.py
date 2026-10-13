@@ -46,7 +46,6 @@ from django.db import models, transaction
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import FinanceAuditAction, JournalSource
 from vs_finance.exceptions import FinanceError, PostingError
-from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 
 from .constants import INVENTORY_ADJUSTMENT_CODE, StockMovementType
@@ -284,10 +283,7 @@ def receive_stock(stock_item, *, quantity, value, movement_date, location=None,
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_RECEIVED,
         actor_user=actor_user, target=stock_item, branch=location.branch_id,
-        message=(
-            f"Received {quantity} of {stock_item.code} into {location.code} "
-            f"({format_naira(int(value))} into inventory)."
-        ),
+        message=f"Received {quantity} of {stock_item.code} into {location.code}.",
         movement_id=movement.pk, location_id=location.pk,
         journal_id=journal.pk if journal is not None else None,
         grn_id=grn.pk if grn is not None else None,
@@ -397,10 +393,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ISSUED,
         actor_user=actor_user, target=stock_item, branch=location.branch_id,
-        message=(
-            f"Issued {quantity} of {stock_item.code} from {location.code} "
-            f"({format_naira(value)} to expense)."
-        ),
+        message=f"Issued {quantity} of {stock_item.code} from {location.code}.",
         journal_id=entry.pk, value=value, location_id=location.pk,
     )
     return movement
@@ -514,10 +507,7 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date, location=
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ADJUSTED,
         actor_user=actor_user, target=stock_item, branch=location.branch_id,
-        message=(
-            f"Adjusted {stock_item.code} at {location.code} by {delta} "
-            f"({format_naira(signed_value)})."
-        ),
+        message=f"Adjusted {stock_item.code} at {location.code} by {delta}.",
         journal_id=entry.pk, value=value, location_id=location.pk,
     )
     return movement
@@ -635,10 +625,7 @@ def _transfer_stock_atomic(stock_item, *, quantity, movement_date, from_location
         record(
             entity=entity, action=FinanceAuditAction.STOCK_TRANSFERRED,
             actor_user=actor_user, target=stock_item, branch=store.branch_id,
-            message=(
-                f"Moved {quantity} of {stock_item.code} from {source.code} to {target.code} "
-                f"({format_naira(value)})."
-            ),
+            message=f"Moved {quantity} of {stock_item.code} from {source.code} to {target.code}.",
             movement_id=movement.pk, location_id=store.pk, value=value,
             inter_branch_transfer_id=getattr(transfer, "pk", None),
         )

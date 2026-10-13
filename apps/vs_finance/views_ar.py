@@ -29,6 +29,7 @@ from core.references import find_by_code_or_id, pick_by_code_or_id
 from core.response import error_response, success_response
 from vs_config.clock import branch_day_q, branch_today, branch_zone, tenant_today
 from vs_config.display import format_date
+from vs_rbac.field_enforcement import UNPARSED, assert_writable, can_read
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_rbac.scoping import (
     WholeTenantWriteMixin, branch_q, caller_may_use_branch, resolve_branch,
@@ -57,6 +58,9 @@ from .constants import (
     FinanceAuditAction,
     FinanceAuditStatus,
 )
+from .field_guards import (
+    customer_aging_readable, customer_balance_readable, refuse_hidden_filters, submitted,
+)
 from .money import format_naira
 from .models import (
     Concession,
@@ -77,7 +81,10 @@ from .models import (
 from .serializers import (
     ConcessionSerializer,
     CreditNoteSerializer,
+    CustomerAccountSerializer,
+    CustomerListSerializer,
     CustomerSerializer,
+    CustomerSummaryTotalsSerializer,
     DunningNoticeSerializer,
     DunningPolicySerializer,
     FeeStructureSerializer,
@@ -393,6 +400,32 @@ def _money_obj(kobo) -> dict:
     from .money import format_naira
     return {"kobo": int(kobo), "naira": format_naira(int(kobo))}
 
+_CUSTOMER = "finance.customer"
+
+#: The list filters that answer a question about a registered customer field,
+#: by query parameter: the registered field and the words a refusal uses.
+_CUSTOMER_FILTERS = {
+    "is_active": ("is_active", "Active"),
+    "status": ("account_status", "Account status"),
+}
+
+def _money_or_unparsed(raw):
+    """``raw`` as kobo, or :data:`~vs_rbac.field_enforcement.UNPARSED` where the write would refuse it."""
+    try:
+        return _money(raw, "opening_balance")
+    except ValidationError:
+        return UNPARSED
+
+
+#: The body keys of a customer create that are registered fields of ``finance.customer``
+#: or follow one (``receivable_account``, ``opening_date``, ``opening_branch``).
+_CUSTOMER_BODY_KEYS = (
+    "billing_email", "billing_phone", "billing_address", "receivable_account",
+    "opening_balance", "opening_date", "opening_branch", "source_type", "source_id",
+    "is_active",
+)
+
+
 # Group endpoint behavior for Customer List Create View.
 class CustomerListCreateView(_FinanceBase):
     """Customers / payers for an entity.
@@ -419,9 +452,8 @@ class CustomerListCreateView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
-        from .money import format_naira
-
         entity = resolve_entity(request)
+        refuse_hidden_filters(request, _CUSTOMER, _CUSTOMER_FILTERS)
         scope = transaction_branch_scope(request)
         qs = Customer.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
@@ -441,18 +473,11 @@ class CustomerListCreateView(_FinanceBase):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
-        ledger = _customer_ledger(entity, [c.id for c in page], scope=scope)
-        pays_for = _pays_for_counts(request, entity, [c.id for c in page])
-        rows = []
-        for c in page:
-            row = CustomerSerializer(c).data
-            led = ledger.get(c.id, {})
-            net = led.get("outstanding", 0) - led.get("credit", 0)
-            row["balance"] = net                      # signed kobo: + owes, − in credit
-            row["balance_naira"] = format_naira(net)
-            row["account_status"] = _account_status(net, led.get("overdue", False))
-            row["pays_for_count"] = pays_for.get(c.id, 0)
-            rows.append(row)
+        rows = CustomerListSerializer(page, many=True, context={
+            "request": request,
+            "standing": _customer_ledger(entity, [c.id for c in page], scope=scope),
+            "pays_for": _pays_for_counts(request, entity, [c.id for c in page]),
+        }).data
         return paginator.get_paginated_response(rows)
 
     @transaction.atomic
@@ -460,6 +485,11 @@ class CustomerListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        values = submitted(body, *_CUSTOMER_BODY_KEYS)
+        if "is_active" in values:
+            values["is_active"] = bool(values["is_active"])
+        # A new customer is active unless the form says otherwise, so saying so changes nothing.
+        assert_writable(request, _CUSTOMER, values, creating=True, current={"is_active": True})
         code = str(body.get("code", "")).strip().upper()
         if code and Customer.objects.filter(entity=entity, code=code).exists():
             raise ValidationError({"code": f"A customer with code '{code}' already exists."})
@@ -541,7 +571,7 @@ class CustomerListCreateView(_FinanceBase):
         )
         return success_response(
             f"Customer {customer.code} created.",
-            data=CustomerSerializer(customer).data, status=201,
+            data=CustomerSerializer(customer, context={"request": request}).data, status=201,
         )
 
 
@@ -702,8 +732,14 @@ class CustomerDetailView(_FinanceBase):
                 "credit": _money_obj(credit), "balance": _money_obj(running),
             })
 
-        return success_response("Customer retrieved.", data={
-            "customer": CustomerSerializer(customer).data,
+        if not can_read(request, f"{_CUSTOMER}.balance"):
+            # What each open bill and each statement line leaves owing adds up to the balance.
+            for line in statement:
+                line.pop("balance", None)
+            for row in (*open_invoices, *open_debit_notes):
+                row.pop("balance", None)
+        return success_response("Customer retrieved.", data=CustomerAccountSerializer({
+            "customer": customer,
             "summary": {
                 "current_balance": _money_obj(net),
                 "lifetime_paid": _money_obj(led.get("lifetime_paid", 0)),
@@ -714,7 +750,7 @@ class CustomerDetailView(_FinanceBase):
             "open_debit_notes": open_debit_notes,
             "transactions": transactions,
             "statement": statement,
-        })
+        }, context={"request": request}).data)
 
     @transaction.atomic
     # Handle PATCH requests for this endpoint.
@@ -734,6 +770,12 @@ class CustomerDetailView(_FinanceBase):
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
         body = request.data or {}
+        receivable_id = None
+        if "receivable_account" in body:
+            receivable_id = _resolve_account(
+                request, entity, body.get("receivable_account"), "receivable_account",
+                required=True).pk
+        self._assert_changes_writable(request, customer, body, receivable_id)
         if "opening_balance" in body and _money(
                 body.get("opening_balance"), "opening_balance") != customer.opening_balance:
             raise ValidationError({
@@ -750,16 +792,41 @@ class CustomerDetailView(_FinanceBase):
         }
         if "source_id" in changes:
             changes["source_id"] = str(changes["source_id"] or "")
-        if "receivable_account" in body:
-            changes["receivable_account_id"] = _resolve_account(
-                request, entity, body.get("receivable_account"), "receivable_account",
-                required=True).pk
+        if receivable_id is not None:
+            changes["receivable_account_id"] = receivable_id
         if "is_active" in body:
             changes["is_active"] = bool(body.get("is_active"))
         update_customer(customer, changes, actor_user=request.user)
         return success_response(
-            f"Customer {customer.code} updated.", data=CustomerSerializer(customer).data,
+            f"Customer {customer.code} updated.",
+            data=CustomerSerializer(customer, context={"request": request}).data,
         )
+
+    @staticmethod
+    def _assert_changes_writable(request, customer, body, receivable_id):
+        """Refuse a body that changes a customer field the caller may not change.
+
+        What is judged is the change: a form that sends a field back as stored
+        writes nothing to it. Each value is compared in the form the update
+        stores, so the receivable account is its resolved id and the opening
+        balance the kobo amount.
+        """
+        names = ("billing_email", "billing_phone", "billing_address", "source_type")
+        submitted_values = {name: body[name] for name in names if name in body}
+        current = {name: getattr(customer, name) for name in names}
+        if "source_id" in body:
+            submitted_values["source_id"] = str(body["source_id"] or "")
+            current["source_id"] = customer.source_id
+        if receivable_id is not None:
+            submitted_values["receivable_account"] = receivable_id
+            current["receivable_account"] = customer.receivable_account_id
+        if "is_active" in body:
+            submitted_values["is_active"] = bool(body.get("is_active"))
+            current["is_active"] = customer.is_active
+        if "opening_balance" in body:
+            submitted_values["opening_balance"] = _money_or_unparsed(body.get("opening_balance"))
+            current["opening_balance"] = customer.opening_balance
+        assert_writable(request, _CUSTOMER, submitted_values, current=current)
 
 
 # Group endpoint behavior for Customer Receipt View.
@@ -840,6 +907,7 @@ class CustomerSummaryView(_FinanceBase):
         from django.db.models import Q
 
         entity = resolve_entity(request)
+        refuse_hidden_filters(request, _CUSTOMER, {"is_active": ("is_active", "Active")})
         qs = Customer.objects.filter(branch_q(request, include_shared=True), entity=entity)
         if (search := request.query_params.get("search")):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
@@ -862,13 +930,13 @@ class CustomerSummaryView(_FinanceBase):
                 receivable += net
             elif net < 0:
                 on_credit += 1
-        return success_response("Customer summary retrieved.", data={
+        return success_response("Customer summary retrieved.", data=CustomerSummaryTotalsSerializer({
             "total": len(custs),
             "receivable": _money_obj(receivable),
             "on_credit": on_credit,
             "overdue": counts["OVERDUE"],
             "status_counts": counts,
-        })
+        }, context={"request": request}).data)
 
 
 # Group endpoint behavior for Payment List View.
@@ -1027,6 +1095,7 @@ class PaymentDetailView(_FinanceBase):
              "due_date": i.due_date.isoformat() if i.due_date else None,
              "balance": _money_obj(i.balance_due)}
             for i in Invoice.objects.filter(
+                transaction_branch_q(request),
                 entity=entity, customer=p.customer, status=DocumentStatus.POSTED,
             ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
             if i.balance_due > 0
@@ -1037,11 +1106,17 @@ class PaymentDetailView(_FinanceBase):
              "note_date": n.note_date.isoformat() if n.note_date else None,
              "balance": _money_obj(n.balance_due)}
             for n in CreditNote.objects.filter(
+                transaction_branch_q(request),
                 entity=entity, customer=p.customer, status=DocumentStatus.POSTED,
                 kind=CreditNoteKind.DEBIT,
             ).exclude(settlement_status=InvoicePaymentStatus.PAID).order_by("note_date", "id")
             if n.balance_due > 0
         ]
+        # The customer's open items are the registered finance.customer lists of the same
+        # names, and each item's balance is a part of the customer's balance.
+        if not customer_balance_readable(request):
+            for row in (*open_invoices, *open_debit_notes):
+                row.pop("balance")
         gl_postings = []
         if p.journal_id:
             for gl in p.journal.lines.all():
@@ -1049,13 +1124,16 @@ class PaymentDetailView(_FinanceBase):
                     "account_code": gl.account.code, "account_name": gl.account.name,
                     "debit": _money_obj(gl.debit), "credit": _money_obj(gl.credit),
                 })
-        return success_response("Receipt retrieved.", data={
+        data = {
             "payment": PaymentSerializer(p).data,
             "allocations": allocations,
-            "open_invoices": open_invoices,
-            "open_debit_notes": open_debit_notes,
             "gl_postings": gl_postings,
-        })
+        }
+        if can_read(request, "finance.customer.open_invoices"):
+            data["open_invoices"] = open_invoices
+        if can_read(request, "finance.customer.open_debit_notes"):
+            data["open_debit_notes"] = open_debit_notes
+        return success_response("Receipt retrieved.", data=data)
 
 
 # Group endpoint behavior for Payment Receipt View.
@@ -1638,7 +1716,10 @@ class CreditNoteListCreateView(_FinanceBase):
             )
         qs = _filter_credit_note_status(qs, request.query_params.get("status"))
         qs = filter_by_approval_param(qs, request.query_params)
-        return _paginate(request, qs.order_by("-note_date", "-id"), CreditNoteSerializer, self)
+        return _paginate(
+            request, qs.order_by("-note_date", "-id"), CreditNoteSerializer, self,
+            context={"request": request},
+        )
 
     @transaction.atomic
     # Handle POST requests for this endpoint.
@@ -1677,7 +1758,7 @@ class CreditNoteListCreateView(_FinanceBase):
         note.refresh_from_db()
         return success_response(
             f"{note.get_kind_display()} {note.document_number} created.",
-            data=CreditNoteSerializer(note).data, status=201,
+            data=CreditNoteSerializer(note, context={"request": request}).data, status=201,
         )
 
 
@@ -1755,7 +1836,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
         _, note = self._note(request, pk)
         return success_response(
             "Credit note retrieved.",
-            data=with_approval_request(CreditNoteSerializer(note).data, note),
+            data=with_approval_request(CreditNoteSerializer(note, context={"request": request}).data, note),
         )
 
     def patch(self, request, pk):
@@ -1818,7 +1899,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
                 )
         return success_response(
             f"{note.get_kind_display()} {note.document_number} corrected.",
-            data=with_approval_request(CreditNoteSerializer(note).data, note),
+            data=with_approval_request(CreditNoteSerializer(note, context={"request": request}).data, note),
         )
 
 
@@ -1855,7 +1936,7 @@ class CreditNotePostView(_CreditNoteActionBase):
         note.refresh_from_db()
         return success_response(
             f"{note.get_kind_display()} {note.document_number} posted.",
-            data=CreditNoteSerializer(note).data,
+            data=CreditNoteSerializer(note, context={"request": request}).data,
         )
 
 
@@ -1880,7 +1961,7 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
         note.refresh_from_db()
         return success_response(
             f"Credit note {note.document_number} allocated.",
-            data=CreditNoteSerializer(note).data,
+            data=CreditNoteSerializer(note, context={"request": request}).data,
         )
 
 
@@ -1913,7 +1994,7 @@ class CreditNoteSubmitView(_CreditNoteActionBase):
         return success_response(
             f"{note.get_kind_display()} {note.document_number} submitted "
             f"for approval.",
-            data=CreditNoteSerializer(note).data
+            data=CreditNoteSerializer(note, context={"request": request}).data
             | {"approval": release_svc.approval_block(instance)},
         )
 
@@ -1934,7 +2015,7 @@ class CreditNoteVoidView(_CreditNoteActionBase):
         note.refresh_from_db()
         return success_response(
             f"{note.get_kind_display()} {note.document_number} voided.",
-            data=CreditNoteSerializer(note).data,
+            data=CreditNoteSerializer(note, context={"request": request}).data,
         )
 
 
@@ -1976,6 +2057,10 @@ class RefundAvailabilityView(_FinanceBase):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
 
         customers = {customer.pk: customer for customer in qs}
+        # The credit a customer holds is their balance seen through the refund picker, so a
+        # caller who may not read that balance is offered no rows.
+        if not customer_balance_readable(request):
+            customers = {}
         # The branches a refund raised here may belong to, so each row is one it can pay.
         available = refundable_credit_by_branch(
             entity, list(customers), as_of=as_of, scope=transaction_branch_scope(request),
@@ -3035,7 +3120,10 @@ class ARAdjustmentListView(_FinanceBase):
                .filter(returned_condition(WriteOffRequest)).count() if sees_writeoffs else 0)
         )
         refundable_credit = None
-        if sees_refunds:
+        # The credit a reader could refund is customers' balances added up, so it
+        # is served only to a caller who may read the balance.
+        sees_credit = sees_refunds and customer_balance_readable(request)
+        if sees_credit:
             from .receivables import refundable_credit_by_branch
             active_customer_ids = _branch_visible(request, Customer.objects.filter(
                 entity=entity, is_active=True)).values_list("id", flat=True)
@@ -3070,7 +3158,7 @@ class ARAdjustmentListView(_FinanceBase):
                 "written_off_ytd": written_off_ytd,
                 "pending": pending,
                 "sent_back": sent_back,
-                "refundable_credit": refundable_credit,
+                **({"refundable_credit": refundable_credit} if customer_balance_readable(request) else {}),
             },
             "kinds": [kind for kind, seen in (("REFUND", sees_refunds), ("WRITEOFF", sees_writeoffs)) if seen],
             "data": _with_approval_overview(rows[start:start + page_size]),
@@ -3278,7 +3366,7 @@ class ConcessionListCreateView(_FinanceBase):
         qs = filter_by_approval_param(qs, request.query_params)
         paginator = XVSPagination()
         page = paginator.paginate_queryset(qs.order_by("-concession_date", "-id"), request, view=self)
-        return paginator.get_paginated_response(ConcessionSerializer(page, many=True).data)
+        return paginator.get_paginated_response(ConcessionSerializer(page, many=True, context={"request": request}).data)
 
     # Handle POST requests for this endpoint.
     def post(self, request):
@@ -3309,7 +3397,7 @@ class ConcessionListCreateView(_FinanceBase):
         )
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} created.",
-            data=ConcessionSerializer(concession).data, status=201,
+            data=ConcessionSerializer(concession, context={"request": request}).data, status=201,
         )
 
 
@@ -3360,7 +3448,7 @@ class ConcessionDetailView(_ConcessionActionBase):
         _, concession = self._concession(request, pk)
         return success_response(
             "Concession retrieved.",
-            data=with_approval_request(ConcessionSerializer(concession).data, concession),
+            data=with_approval_request(ConcessionSerializer(concession, context={"request": request}).data, concession),
         )
 
     def patch(self, request, pk):
@@ -3414,7 +3502,7 @@ class ConcessionDetailView(_ConcessionActionBase):
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} corrected.",
-            data=with_approval_request(ConcessionSerializer(concession).data, concession),
+            data=with_approval_request(ConcessionSerializer(concession, context={"request": request}).data, concession),
         )
 
 
@@ -3441,7 +3529,7 @@ class ConcessionPostView(_ConcessionActionBase):
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} posted.",
-            data=ConcessionSerializer(concession).data,
+            data=ConcessionSerializer(concession, context={"request": request}).data,
         )
 
 
@@ -3476,7 +3564,7 @@ class ConcessionSubmitView(_ConcessionActionBase):
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} "
             f"submitted for approval.",
-            data=ConcessionSerializer(concession).data
+            data=ConcessionSerializer(concession, context={"request": request}).data
             # Same contract as refunds, procurement and payouts: the client learns
             # here that nobody can approve this, and can offer to continue.
             | {"approval": release_svc.approval_block(instance)},
@@ -3499,7 +3587,7 @@ class ConcessionVoidView(_ConcessionActionBase):
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} voided.",
-            data=ConcessionSerializer(concession).data,
+            data=ConcessionSerializer(concession, context={"request": request}).data,
         )
 
 
@@ -3738,6 +3826,12 @@ class CustomerStatementView(_FinanceBase):
     today; an absent ``start`` runs from inception with a zero opening balance).
     Supports ``?export=csv|xlsx|pdf``. All money is reported in kobo + naira.
 
+    The figures are the registered ``finance.customer`` fields they restate, so a
+    caller is served only what they may read: the running, opening, closing and
+    total figures need ``balance``, the lines need ``statement``, and the age
+    analysis needs ``balance`` and ``account_status``. The statement printed or
+    emailed to the family is a different surface and is not filtered.
+
     docstring-name: Customer statement
     """
 
@@ -3760,57 +3854,68 @@ class CustomerStatementView(_FinanceBase):
 
         from .exports import ReportTable
 
-        columns = ["Date", "Type", "Document", "Description", "Debit", "Credit", "Balance"]
+        balance_ok = customer_balance_readable(request)
+        lines_ok = can_read(request, "finance.customer.statement")
+        aging_ok = customer_aging_readable(request)
+        columns = ["Date", "Type", "Document", "Description", "Debit", "Credit"]
+        if balance_ok:
+            columns.append("Balance")
         rows = [
             [
                 format_date(e.date, entity.tenant), e.doc_type, e.document_number, e.description,
                 format_naira(e.debit) if e.debit else "",
                 format_naira(e.credit) if e.credit else "",
-                format_naira(e.balance),
+                *([format_naira(e.balance)] if balance_ok else []),
             ]
-            for e in stmt.entries
+            for e in (stmt.entries if lines_ok else [])
         ]
-        summary = ["", "", "", "TOTAL",
-                   format_naira(stmt.total_debits), format_naira(stmt.total_credits),
-                   format_naira(stmt.closing_balance)]
+        summary_rows = []
+        if balance_ok:
+            summary_rows = [["", "", "", "TOTAL",
+                             format_naira(stmt.total_debits), format_naira(stmt.total_credits),
+                             format_naira(stmt.closing_balance)]]
         period = statement_period(stmt, entity.tenant)
+        subtitle = f"{entity.code} · {stmt.customer_code} · {period}"
+        if balance_ok:
+            subtitle += f" · opening {format_naira(stmt.opening_balance)}"
         export = _maybe_export(request, ReportTable(
             title=f"Statement of Account - {stmt.customer_name}",
-            subtitle=f"{entity.code} · {stmt.customer_code} · {period} · "
-                     f"opening {format_naira(stmt.opening_balance)}",
+            subtitle=subtitle,
             columns=columns,
             rows=rows,
-            summary_rows=[summary],
+            summary_rows=summary_rows,
         ), filename=f"statement_{entity.code}_{stmt.customer_code}")
         if export is not None:
             return export
 
-        return success_response(
-            "Customer statement retrieved.",
-            data={
-                "entity": entity.code,
-                "customer": {
-                    "id": stmt.customer_id, "code": stmt.customer_code,
-                    "name": stmt.customer_name,
-                },
-                "start_date": str(stmt.start_date) if stmt.start_date else None,
-                "end_date": str(stmt.end_date),
-                "opening_balance": _money_pair(stmt.opening_balance),
-                "entries": [
-                    {
-                        "date": str(e.date), "doc_type": e.doc_type,
-                        "document_number": e.document_number, "description": e.description,
-                        "debit": _money_pair(e.debit), "credit": _money_pair(e.credit),
-                        "balance": _money_pair(e.balance),
-                    }
-                    for e in stmt.entries
-                ],
-                "total_debits": _money_pair(stmt.total_debits),
-                "total_credits": _money_pair(stmt.total_credits),
-                "closing_balance": _money_pair(stmt.closing_balance),
-                "aging": {b: _money_pair(v) for b, v in stmt.aging.items()},
+        data = {
+            "entity": entity.code,
+            "customer": {
+                "id": stmt.customer_id, "code": stmt.customer_code,
+                "name": stmt.customer_name,
             },
-        )
+            "start_date": str(stmt.start_date) if stmt.start_date else None,
+            "end_date": str(stmt.end_date),
+        }
+        if balance_ok:
+            data["opening_balance"] = _money_pair(stmt.opening_balance)
+        if lines_ok:
+            data["entries"] = [
+                {
+                    "date": str(e.date), "doc_type": e.doc_type,
+                    "document_number": e.document_number, "description": e.description,
+                    "debit": _money_pair(e.debit), "credit": _money_pair(e.credit),
+                    **({"balance": _money_pair(e.balance)} if balance_ok else {}),
+                }
+                for e in stmt.entries
+            ]
+        if balance_ok:
+            data["total_debits"] = _money_pair(stmt.total_debits)
+            data["total_credits"] = _money_pair(stmt.total_credits)
+            data["closing_balance"] = _money_pair(stmt.closing_balance)
+        if aging_ok:
+            data["aging"] = {b: _money_pair(v) for b, v in stmt.aging.items()}
+        return success_response("Customer statement retrieved.", data=data)
 
 
 # --------------------------------------------------------------------------- #
@@ -4006,6 +4111,11 @@ class DunningSummaryView(_FinanceBase):
 
     ``due_soon`` is the next 7 days (not yet overdue); the rest are days past due.
 
+    The buckets are an age analysis of what customers owe, so they restate two
+    registered customer fields. A caller who may not read ``account_status``
+    (how late a customer is) is served no buckets, and one who may not read
+    ``balance`` is served each bucket's count without its amount.
+
     docstring-name: Dunning summary
     """
 
@@ -4017,6 +4127,8 @@ class DunningSummaryView(_FinanceBase):
         from django.db.models import F
 
         entity = resolve_entity(request)
+        if not can_read(request, "finance.customer.account_status"):
+            return success_response("Dunning summary retrieved.", data={})
         buckets = {k: {"amount": 0, "count": 0} for k in
                    ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}
         # Drop fully-settled invoices in SQL (balance_due is a property); only the
@@ -4044,6 +4156,9 @@ class DunningSummaryView(_FinanceBase):
                 continue
             buckets[key]["amount"] += bal
             buckets[key]["count"] += 1
+        if not customer_balance_readable(request):
+            for bucket in buckets.values():
+                bucket.pop("amount")
         return success_response("Dunning summary retrieved.", data=buckets)
 
 

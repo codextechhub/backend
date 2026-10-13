@@ -403,17 +403,22 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
 
 
 def _guardian_rules(serializer):
-    """The school's guardian rules, read once per request however many rows ask.
+    """The school's guardian rules as they bind this caller, read once per request.
 
     Cached in the root serializer's context, which is one dict per request, so
-    an enrolment naming three guardians reads the settings once.
+    an enrolment naming three guardians reads the settings once. The views
+    hand the cached rules on to the services that create the guardian, so the
+    serializer and the service never disagree about what binds the caller
+    (``GuardianRules.binding``).
     """
     from .services.guardian_rules import read_guardian_rules
 
     context = serializer.context
     rules = context.get("_guardian_rules")
     if rules is None:
-        rules = read_guardian_rules(_context_tenant(serializer))
+        rules = read_guardian_rules(_context_tenant(serializer)).binding(
+            context.get("request"),
+        )
         context["_guardian_rules"] = rules
     return rules
 
@@ -707,20 +712,28 @@ def _plausible_birth_date(value, tenant, branch=None):
     return value
 
 
-def _required_field_errors(tenant, attrs, *, only_sent):
+def _required_field_errors(tenant, attrs, *, only_sent, request=None, creating=False):
     """``{field: sentence}`` for each field the school requires that is blank.
 
     With *only_sent*, a field missing from *attrs* is not checked, which is how
     an edit refuses blanking a required field without refusing a record that
     predates the rule and was never asked for it.
+
+    A requirement binds only a caller able to satisfy it. One who cannot read
+    and write the field (or, on a create, supply it) is not refused for
+    leaving it blank: the record is saved without it and somebody with Write
+    completes it later (``EnrolmentRules.binding_required_fields``).
     """
     from .constants import REQUIRABLE_FIELDS
-    from .services.rules import required_fields
+    from .services.rules import EnrolmentRules, required_fields
 
     if tenant is None:
         return {}
     errors = {}
-    for field in required_fields(tenant):
+    binding = EnrolmentRules(
+        required_fields=required_fields(tenant),
+    ).binding_required_fields(request, creating=creating)
+    for field in binding:
         if only_sent and field not in attrs:
             continue
         if not str(attrs.get(field) or "").strip():
@@ -769,7 +782,10 @@ class StudentWriteSerializer(FieldAccessMixin, serializers.ModelSerializer):
                 "A student cannot be moved to another branch by editing their "
                 "record.",
             )
-        errors = _required_field_errors(_context_tenant(self), attrs, only_sent=True)
+        errors = _required_field_errors(
+            _context_tenant(self), attrs, only_sent=True,
+            request=self.context.get("request"),
+        )
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
@@ -855,9 +871,10 @@ class EnrolmentWriteSerializer(FieldAccessMixin, serializers.Serializer):
             errors["applied_for"] = "Say which level this applicant applied for."
         # The school's own required fields, for an applicant as for an
         # enrolment: an application is where the record's details are taken.
-        errors.update(
-            _required_field_errors(_context_tenant(self), attrs, only_sent=False),
-        )
+        errors.update(_required_field_errors(
+            _context_tenant(self), attrs, only_sent=False,
+            request=self.context.get("request"), creating=True,
+        ))
         if errors:
             raise serializers.ValidationError(errors)
         return attrs

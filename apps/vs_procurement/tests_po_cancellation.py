@@ -154,7 +154,8 @@ class PurchaseOrderCancellationTests(TestCase):
             entity=self.entity, action=FinanceAuditAction.PURCHASE_ORDER_CANCELLED,
         ).first()
         self.assertIsNotNone(row)
-        self.assertIn("Vendor went out of business", row.message)
+        self.assertNotIn("Vendor went out of business", row.message)
+        self.assertEqual(row.metadata["reason"], "Vendor went out of business")
 
     def test_the_approval_behind_a_cancelled_order_still_reads_approved(self, _perm):
         """It was approved, and hiding that would lose who authorised the spend."""

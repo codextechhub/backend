@@ -41,6 +41,8 @@ from django.db.models import Count, Q
 
 from vs_config.clock import tenant_today
 from vs_rbac.evaluator import has_permission
+from vs_rbac.field_enforcement import can_read
+from vs_rbac.scoping import transaction_branch_scope_for_user
 
 PERM_SCHOOLS_VIEW = "platform.schools.view"
 PERM_TEAM_VIEW = "platform.team.view"
@@ -258,7 +260,7 @@ SIGNAL_WINDOW_HOURS = 24
 CONTRACT_EXPIRY_DAYS = 30
 
 
-def _signals(user, tenant) -> dict:
+def _signals(user, tenant, request=None) -> dict:
     """Module signals: conditions someone should act on soon.
 
     Same contract as every other section, applied twice over: a signal is
@@ -293,6 +295,14 @@ def _signals(user, tenant) -> dict:
     artefact. Attribution is by the run's requester, which is always set and
     indexed, and the cost is one COUNT over a two-table join bounded by one
     person's own live exports.
+
+    A count of documents is a count of the caller's branches' documents only
+    (:func:`vs_rbac.scoping.transaction_branch_scope_for_user`): Lekki's bursar
+    is not told how many of Ikeja's invoices are overdue. Each finance count
+    restates a registered figure and is omitted when ``request``'s caller may
+    not read it: ``fiscal_runway`` is the dashboard's fiscal calendar runway,
+    ``overdue_invoices`` its who-owes-and-who-is-late counts, and
+    ``unallocated_credit`` its credit held for payers.
     """
     from django.utils import timezone
 
@@ -302,8 +312,11 @@ def _signals(user, tenant) -> dict:
     if tenant is None:
         return signals
     since = timezone.now() - timezone.timedelta(hours=SIGNAL_WINDOW_HOURS)
+    reach = transaction_branch_scope_for_user(user, tenant=tenant)
 
-    if has_permission(user, PERM_FINANCE_REPORT_VIEW, tenant=tenant):
+    if has_permission(user, PERM_FINANCE_REPORT_VIEW, tenant=tenant) and can_read(
+        request, "finance.dashboard.fiscal_runway",
+    ):
         # Worst fiscal runway across active entities - the same computation the
         # finance dashboard banner uses, read entity-by-entity (entities are the
         # org's own few ledgers, so this stays a handful of LIMIT-1 queries).
@@ -396,24 +409,28 @@ def _signals(user, tenant) -> dict:
             if unattributed:
                 signals["unattributed_webhook_failures_24h"] = {"count": unattributed}
 
-    if has_permission(user, PERM_FINANCE_INVOICE_VIEW, tenant=tenant):
+    if has_permission(user, PERM_FINANCE_INVOICE_VIEW, tenant=tenant) and can_read(
+        request, "finance.dashboard.receivables_summary",
+    ):
         # Posted invoices past due and not fully settled - dunning pressure.
         from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
         from vs_finance.models import Invoice
 
         overdue = (
-            Invoice.objects.filter(
+            reach.filter(Invoice.objects.filter(
                 status=DocumentStatus.POSTED,
                 due_date__lt=tenant_today(tenant),
                 entity__tenant=tenant,
-            )
+            ))
             .exclude(payment_status=InvoicePaymentStatus.PAID)
             .count()
         )
         if overdue:
             signals["overdue_invoices"] = {"count": overdue}
 
-    if has_permission(user, PERM_FINANCE_PAYMENT_VIEW, tenant=tenant):
+    if has_permission(user, PERM_FINANCE_PAYMENT_VIEW, tenant=tenant) and can_read(
+        request, "finance.dashboard.credit_held",
+    ):
         # Receipts whose cash is still sitting as customer credit (2140):
         # amount beyond what's been allocated to invoices or refunded back out.
         from django.db.models import F
@@ -421,11 +438,11 @@ def _signals(user, tenant) -> dict:
         from vs_finance.constants import DocumentStatus
         from vs_finance.models import Payment
 
-        idle = Payment.objects.filter(
+        idle = reach.filter(Payment.objects.filter(
             status=DocumentStatus.POSTED,
             amount__gt=F("allocated_amount") + F("refunded_amount") + F("transferred_amount"),
             entity__tenant=tenant,
-        ).count()
+        )).count()
         if idle:
             signals["unallocated_credit"] = {"count": idle}
 
@@ -436,8 +453,8 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.models import VendorInvoice
 
         unpaid = (
-            VendorInvoice.objects.filter(
-                status=FinStatus.POSTED, entity__tenant=tenant)
+            reach.filter(VendorInvoice.objects.filter(
+                status=FinStatus.POSTED, entity__tenant=tenant))
             .exclude(payment_status=PayStatus.PAID)
             .count()
         )
@@ -560,7 +577,7 @@ def console_overview(request) -> dict:
         data["health"] = _health()
 
     # Module signals follow the same rule: absent when quiet or not permitted.
-    signals = _signals(user, tenant)
+    signals = _signals(user, tenant, request)
     if signals:
         data["signals"] = signals
 

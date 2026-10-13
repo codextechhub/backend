@@ -176,6 +176,6 @@ def remove_attachment(document, attachment_id, *, reason=None, actor_user=None) 
     row.save(update_fields=["superseded_at", "superseded_by", "superseded_reason", "updated_at"])
     _audit(
         document, FinanceAuditAction.ATTACHMENT_SUPERSEDED, row,
-        f"Superseded '{row.original_name}': {reason}"[:255], actor_user=actor_user,
+        f"Superseded '{row.original_name}'.", actor_user=actor_user,
         reason=reason,
     )

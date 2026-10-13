@@ -161,12 +161,23 @@ def _same_branch_account(bank, branch_id, *, side):
         )
 
 
-def _audit_both(transfer, action, message, *, actor_user=None, **metadata):
-    """Write ``action`` once under each branch, so each branch's readers find it."""
+def _audit_both(transfer, action, message, *, actor_user=None, after=None, **metadata):
+    """Write ``action`` once under each branch, so each branch's readers find it.
+
+    ``message`` names the branches and the act, never the amount or the purpose.
+    Those travel in ``after`` under the registered field names (``amount``,
+    ``purpose``, ``decline_reason``), which the finance trail shows only to a
+    reader of ``finance.interbranch`` fields.
+    """
+    after = {
+        "amount": int(transfer.amount),
+        **({"purpose": transfer.purpose} if transfer.purpose else {}),
+        **(after or {}),
+    }
     for branch_id in (transfer.branch_id, transfer.to_branch_id):
         record(
             entity=transfer.entity, action=action, actor_user=actor_user, target=transfer,
-            branch=branch_id, message=message, amount=int(transfer.amount),
+            branch=branch_id, message=message, after=after, amount=int(transfer.amount),
             kind=transfer.kind, from_branch_id=transfer.branch_id,
             to_branch_id=transfer.to_branch_id, **metadata,
         )
@@ -281,8 +292,7 @@ def request_cash_transfer(entity, *, from_branch, to_branch, amount, transfer_da
         )
         _audit_both(
             transfer, FinanceAuditAction.INTER_BRANCH_REQUESTED,
-            f"{to_branch.name} asked {from_branch.name} for {format_naira(transfer.amount)}: "
-            f"{transfer.purpose}",
+            f"{to_branch.name} asked {from_branch.name} for money.",
             actor_user=actor_user,
         )
     return transfer
@@ -438,7 +448,7 @@ def _post_money_transfer_atomic(transfer, *, actor_user=None):
     transfer.save(update_fields=["status", "sent_by", "sent_at", "receipt", "updated_at"])
     _audit_both(
         transfer, FinanceAuditAction.INTER_BRANCH_SENT,
-        f"{sender} sent {format_naira(amount)} to {receiver}: {transfer.purpose}",
+        f"{sender} sent money to {receiver}.",
         actor_user=actor_user, from_account_id=source_bank.pk, to_account_id=target_bank.pk,
         receipt_id=transfer.receipt_id,
     )
@@ -467,9 +477,9 @@ def decline_request(transfer, *, reason="", actor_user=None):
     transfer.save(update_fields=["status", "declined_by", "declined_at", "decline_reason", "updated_at"])
     _audit_both(
         transfer, FinanceAuditAction.INTER_BRANCH_DECLINED,
-        f"{transfer.branch.name} declined {transfer.to_branch.name}'s request for "
-        f"{format_naira(transfer.amount)}" + (f": {transfer.decline_reason}" if transfer.decline_reason else "."),
+        f"{transfer.branch.name} declined {transfer.to_branch.name}'s request.",
         actor_user=actor_user,
+        after={"decline_reason": transfer.decline_reason} if transfer.decline_reason else None,
     )
     return transfer
 
@@ -499,8 +509,7 @@ def confirm_arrival(transfer, *, arrival_date=None, actor_user=None):
     transfer.save(update_fields=["received_by", "received_at", "arrival_date", "updated_at"])
     _audit_both(
         transfer, FinanceAuditAction.INTER_BRANCH_CONFIRMED,
-        f"{transfer.to_branch.name} confirmed {format_naira(transfer.amount)} from "
-        f"{transfer.branch.name} arrived.",
+        f"{transfer.to_branch.name} confirmed the money from {transfer.branch.name} arrived.",
         actor_user=actor_user, arrival_date=str(arrived),
     )
     return transfer
@@ -572,9 +581,10 @@ def post_held_receipt(held, *, actor_user=None):
             entity=held.entity, action=FinanceAuditAction.HELD_RECEIPT_POSTED,
             actor_user=actor_user, target=held, branch=branch_id,
             message=(
-                f"{held.branch.name} received {format_naira(held.amount)} from "
+                f"{held.branch.name} received money from "
                 f"{held.customer.name} that belongs to {held.for_branch.name}."
             ),
+            after={"amount": int(held.amount), "customer_id": held.customer_id},
             amount=int(held.amount), journal_id=entry.pk, for_branch_id=held.for_branch_id,
         )
     return held
@@ -754,7 +764,7 @@ def void_held_receipt(held, *, actor_user=None, date=None, payer_payment=None):
             entity=held.entity, action=FinanceAuditAction.HELD_RECEIPT_VOIDED,
             actor_user=actor_user, target=held, branch=branch_id,
             message=f"Voided held receipt {held.document_number}.",
-            amount=int(held.amount), journal_id=held.journal_id, reversal_id=reversal.pk,
+            before={"amount": int(held.amount)}, amount=int(held.amount), journal_id=held.journal_id, reversal_id=reversal.pk,
         )
     return held
 
@@ -1142,9 +1152,8 @@ def _move_open_receivables(customer, source, target, actor, *, on, key, purpose,
         _audit_both(
             transfer, FinanceAuditAction.RECEIVABLE_TRANSFERRED,
             f"{customer.name}'s balance moved from {source.name} to {target.name}: "
-            f"{format_naira(owed)} owed on {counted(result.invoice_count, 'invoice')} and "
-            f"{counted(result.debit_note_count, 'debit note')}, {format_naira(credit_total)} of credit "
-            f"and {format_naira(deferred_total)} of income not yet earned.",
+            f"{counted(result.invoice_count, 'invoice')} and "
+            f"{counted(result.debit_note_count, 'debit note')} went with it.",
             actor_user=actor, customer_id=customer.pk, invoice_ids=list(result.invoice_ids),
             owed=owed, credit=credit_total, deferred=deferred_total, net=result.amount,
         )
@@ -1347,8 +1356,8 @@ def book_income_given_back(adjustment_entry, *, holder_branch_id, invoice, defer
     _finish(transfer)
     _audit_both(
         transfer, FinanceAuditAction.INCOME_GIVEN_BACK,
-        f"{label} at {giver.name} took back {format_naira(amount)} of invoice "
-        f"{invoice.document_number}'s income booked at {holder.name}.",
+        f"{label} at {giver.name} took back income of invoice "
+        f"{invoice.document_number} booked at {holder.name}.",
         actor_user=actor_user, invoice_id=invoice.pk, adjustment_journal_id=adjustment_entry.pk,
         deferred=deferred, other=sum(lines.values()),
     )
@@ -1487,10 +1496,13 @@ def run_recharge(entity, *, paying_branch, expense_account, amount, recharge_dat
                 entity=entity, action=FinanceAuditAction.RECHARGE_POSTED,
                 actor_user=actor_user, target=recharge, branch=branch_id,
                 message=(
-                    f"{payer.name} recharged {format_naira(amount)} of {recharge.narration}"
-                    + (f"; this branch's share is {format_naira(shares[branch_id])}."
-                       if branch_id in owing else ".")
+                    f"{payer.name} recharged a shared cost"
+                    + ("; this branch owes a share of it." if branch_id in owing else ".")
                 ),
+                after={
+                    "amount": amount, "purpose": recharge.narration,
+                    **({"shares": {str(branch_id): int(shares[branch_id])}} if branch_id in owing else {}),
+                },
                 amount=amount, share=int(shares.get(branch_id, 0)), basis=basis,
             )
     return recharge
@@ -1513,7 +1525,8 @@ def void_recharge(recharge, *, actor_user=None, date=None):
         record(
             entity=recharge.entity, action=FinanceAuditAction.RECHARGE_VOIDED,
             actor_user=actor_user, target=recharge, branch=branch_id,
-            message=f"Voided recharge {recharge.document_number}.", amount=int(recharge.amount),
+            message=f"Voided recharge {recharge.document_number}.",
+            before={"amount": int(recharge.amount)}, amount=int(recharge.amount),
         )
     return recharge
 
@@ -1549,7 +1562,7 @@ def book_goods_transfer(entity, *, from_branch, to_branch, amount, transfer_date
         _finish(transfer)
         _audit_both(
             transfer, FinanceAuditAction.INTER_BRANCH_SENT,
-            f"{source.name} issued goods worth {format_naira(amount)} to {target.name}: {purpose}",
+            f"{source.name} issued goods to {target.name}.",
             actor_user=actor_user,
         )
     return transfer
@@ -1587,8 +1600,8 @@ def book_bank_split_difference(entity, *, from_branch, to_branch, amount, split_
         _finish(transfer)
         _audit_both(
             transfer, FinanceAuditAction.INTER_BRANCH_SENT,
-            f"{target.name} owes {source.name} {format_naira(amount)} agreed when a shared "
-            f"bank account was split: {purpose}",
+            f"{target.name} owes {source.name} cash agreed when a shared "
+            f"bank account was split.",
             actor_user=actor_user,
         )
     return transfer

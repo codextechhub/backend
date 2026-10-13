@@ -342,7 +342,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
     record(  # Log the successful vendor invoice post.
         entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,
         actor_user=actor_user, target=invoice,
-        message=f"Posted bill from {vendor.code} ({format_naira(invoice.total)}).",
+        message=f"Posted bill from {vendor.code}.",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
         match_status=str(match_status), allow_variance=bool(allow_variance),
         variance_override_used=bool(allow_variance and match_status in MATCH_BLOCKING),
@@ -606,10 +606,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     record(  # Log the successful vendor payment post.
         entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POSTED,
         actor_user=actor_user, target=payment,
-        message=(
-            f"Paid {vendor.code} ({format_naira(payment.net_amount)} net, "
-            f"{format_naira(payment.wht_amount)} WHT)."
-        ),
+        message=f"Paid {vendor.code}.",
         journal_id=entry.pk, gross=payment.gross_amount,
         net=payment.net_amount, wht=payment.wht_amount,
         wht_source=payment.wht_source,
@@ -620,7 +617,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         record(  # Log the settlement the posting journal carried out.
             entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
             actor_user=actor_user, target=payment,
-            message=f"Allocated {format_naira(settled)} across {counted(len(created_rows), 'bill')}.",
+            message=f"Allocated the payment across {counted(len(created_rows), 'bill')}.",
             journal_id=entry.pk, allocated=settled, unallocated=advance,
             effective_date=str(payment.payment_date),
         )
@@ -895,7 +892,7 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     record(  # Write the allocation audit event.
         entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
-        message=f"Allocated {format_naira(applied)} of vendor advance across {counted(len(created), 'bill')}.",
+        message=f"Allocated vendor advance across {counted(len(created), 'bill')}.",
         journal_id=entry.pk, allocated=payment.allocated_amount,
         unallocated=payment.advance_remaining, effective_date=str(effective),
     )
@@ -1134,8 +1131,7 @@ def _post_opening_vendor_invoice_atomic(invoice, *, actor_user=None):
         actor_user=actor_user, target=invoice,
         message=(
             f"Carried in an opening bill from {vendor.code} dated "
-            f"{format_date(invoice.invoice_date, invoice.entity.tenant)} "
-            f"({format_naira(invoice.total)})."
+            f"{format_date(invoice.invoice_date, invoice.entity.tenant)}."
         ),
         journal_id=entry.pk, total=invoice.total, invoice_date=str(invoice.invoice_date),
         journal_date=str(journal_date),

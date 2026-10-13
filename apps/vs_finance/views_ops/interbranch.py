@@ -262,13 +262,7 @@ class InterBranchTransferSerializer(FieldAccessMixin, ApprovalStateMixin, serial
         sender = {"id": obj.branch_id, "name": obj.branch.name}
         receiver = {"id": obj.to_branch_id, "name": obj.to_branch.name}
         owed_by, owed_to = (receiver, sender) if net > 0 else (sender, receiver)
-        request = self.context.get("request")
-        if not (
-            can_read(request, f"{self.field_resource}.sending_branch")
-            and can_read(request, f"{self.field_resource}.receiving_branch")
-        ):
-            owed_by = owed_to = None
-        return visible(request, self.field_resource, {
+        return visible(self.context.get("request"), self.field_resource, {
             "amount": abs(net), "owed_by": owed_by, "owed_to": owed_to,
         })
 
@@ -373,26 +367,6 @@ def _field_context(request, **extra):
     return {"request": request, **extra}
 
 
-def _field_text(request, name, value, fallback):
-    """Use a field in response copy only when the caller may read it."""
-    return str(value) if can_read(request, f"finance.interbranch.{name}") else fallback
-
-
-def _document_text(request, document):
-    return _field_text(request, "document_number", document.document_number, "the document")
-
-
-def _document_subject(request, document, noun):
-    if can_read(request, "finance.interbranch.document_number"):
-        return f"{noun} {document.document_number}"
-    return f"The {noun.lower()}"
-
-
-def _branch_text(request, branch, *, receiving=False):
-    field = "receiving_branch" if receiving else "sending_branch"
-    return _field_text(request, field, branch.name, "the branch")
-
-
 def _transfer_data(request, transfer):
     return InterBranchTransferSerializer(
         transfer, context=_field_context(request),
@@ -457,8 +431,8 @@ def _route(request, transfer, *, verb):
         transfer.refresh_from_db()
         return success_response(
             message=(
-                f"{_document_subject(request, transfer, 'Transfer')} is waiting for approval at "
-                f"{_branch_text(request, transfer.branch)}. It is sent once it is approved."
+                f"Transfer {transfer.document_number} is waiting for approval at "
+                f"{transfer.branch.name}. It is sent once it is approved."
             ),
             data=_transfer_data(request, transfer)
             | {"approval": release_svc.approval_block(instance)},
@@ -468,8 +442,7 @@ def _route(request, transfer, *, verb):
     post_inter_branch_transfer(transfer, actor_user=request.user)
     transfer.refresh_from_db()
     return success_response(
-        message=(f"{verb} {_branch_text(request, transfer.to_branch, receiving=True)} "
-                 f"as {_document_text(request, transfer)}."),
+        message=f"{verb} {transfer.to_branch.name} as {transfer.document_number}.",
         data=_transfer_data(request, transfer), status=201,
     )
 
@@ -590,8 +563,7 @@ class InterBranchRequestView(_FinanceBase):
         )
         transfer = _transfer_or_404(request, entity, transfer.pk)
         return success_response(
-            f"Asked {_branch_text(request, from_branch)} for the money as "
-            f"{_document_text(request, transfer)}.",
+            f"Asked {from_branch.name} for the money as {transfer.document_number}.",
             data=_transfer_data(request, transfer), status=201,
         )
 
@@ -667,7 +639,7 @@ class InterBranchDeclineView(_FinanceBase):
         decline_request(transfer, reason=_text(body.get("reason"), "reason", 255),
                         actor_user=request.user)
         transfer = _transfer_or_404(request, entity, pk)
-        return success_response(f"{_document_subject(request, transfer, 'Request')} declined.",
+        return success_response(f"Request {transfer.document_number} declined.",
                                 data=_transfer_data(request, transfer))
 
 
@@ -696,7 +668,7 @@ class InterBranchConfirmView(_FinanceBase):
         )
         transfer = _transfer_or_404(request, entity, pk)
         return success_response(
-            f"{_document_subject(request, transfer, 'Transfer')} confirmed as arrived.",
+            f"Transfer {transfer.document_number} confirmed as arrived.",
                                 data=_transfer_data(request, transfer))
 
 
@@ -728,7 +700,7 @@ class InterBranchVoidView(_FinanceBase):
             transfer, actor_user=request.user, date=_date(body.get("date"), "date"),
         )
         transfer = _transfer_or_404(request, entity, pk)
-        return success_response(f"{_document_subject(request, transfer, 'Transfer')} voided.",
+        return success_response(f"Transfer {transfer.document_number} voided.",
                                 data=_transfer_data(request, transfer))
 
 
@@ -751,13 +723,6 @@ class InterBranchBalancesView(_FinanceBase):
         entity = resolve_entity(request)
         reach = _reach(request)
         balances = pair_balances(entity, branch_ids=None if reach is None else set(reach))
-        branches_visible = (
-            can_read(request, "finance.interbranch.sending_branch")
-            and can_read(request, "finance.interbranch.receiving_branch")
-        )
-        if not branches_visible:
-            balances["pairs"] = []
-            balances["held"] = []
         balances = visible(request, "finance.interbranch", balances)
         if not can_read(request, "finance.interbranch.amount"):
             balances.pop("net_total", None)
@@ -908,8 +873,7 @@ class HeldReceiptListCreateView(_FinanceBase):
             post_held_receipt(held, actor_user=request.user)
         held = _held_or_404(request, entity, held.pk)
         return success_response(
-            f"Held for {_branch_text(request, for_branch, receiving=True)} as "
-            f"{_document_text(request, held)}.",
+            f"Held for {for_branch.name} as {held.document_number}.",
             data=_held_data(request, held), status=201,
         )
 
@@ -1027,7 +991,7 @@ class HeldReceiptVoidView(_FinanceBase):
         void_held_receipt(held, actor_user=request.user,
                           date=_date(body.get("date"), "date"))
         held = _held_or_404(request, entity, pk)
-        return success_response(f"{_document_subject(request, held, 'Held receipt')} voided.",
+        return success_response(f"Held receipt {held.document_number} voided.",
                                 data=_held_data(request, held))
 
 
@@ -1139,7 +1103,7 @@ class RechargeListCreateView(_FinanceBase):
         )
         recharge = _recharge_or_404(request, entity, recharge.pk)
         return success_response(
-            f"Recharged as {_document_text(request, recharge)}.",
+            f"Recharged as {recharge.document_number}.",
             data=_recharge_data(request, recharge), status=201,
         )
 
@@ -1179,7 +1143,7 @@ class RechargeVoidView(_FinanceBase):
         void_recharge(recharge, actor_user=request.user,
                       date=_date(body.get("date"), "date"))
         recharge = _recharge_or_404(request, entity, pk)
-        return success_response(f"{_document_subject(request, recharge, 'Recharge')} voided.",
+        return success_response(f"Recharge {recharge.document_number} voided.",
                                 data=_recharge_data(request, recharge))
 
 

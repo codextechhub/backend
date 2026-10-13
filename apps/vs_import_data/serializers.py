@@ -6,7 +6,7 @@ import re
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from rest_framework import serializers
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .constants import ImportPermission
 
@@ -748,6 +748,7 @@ class ImportBatchDetailSerializer(
         }
 
     def get_domain_context(self, obj):
+        """The bank statement upload behind a batch, without the balances a hidden switch withholds."""
         if obj.dataset_type != "bank_statements":
             return None
         try:
@@ -756,7 +757,7 @@ class ImportBatchDetailSerializer(
             return None
         from vs_finance.money import to_naira
 
-        return {
+        payload = {
             "type": "bank_statement",
             "bank_account_id": context.bank_account_id,
             "bank_account_name": context.bank_account.name,
@@ -770,6 +771,14 @@ class ImportBatchDetailSerializer(
             "closing_balance_major": str(to_naira(context.closing_balance)),
             "published_statement_id": context.published_statement_id,
         }
+        # The statement's balances are the registered finance.bankaccount.statement_balance.
+        if not can_read(self.context.get("request"), "finance.bankaccount.statement_balance"):
+            for name in (
+                "opening_balance", "opening_balance_major", "closing_balance",
+                "closing_balance_major",
+            ):
+                payload.pop(name)
+        return payload
 
 
 def batch_field_readable(request, batch, name) -> bool:

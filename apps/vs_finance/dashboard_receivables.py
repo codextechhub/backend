@@ -10,7 +10,9 @@ what was given away in concessions and adjustments, what credit payers hold, and
 who owes the most.
 
 Every block needs the key behind it and answers under the reader's branches,
-as on the overview; a block the reader may not see is ``None``.
+as on the overview; a block the reader may not see is ``None``. A block the
+reader's Field Access closes (``finance.dashboard``) is not computed and its key
+is left out of the response (:mod:`vs_finance.dashboard_serializers`).
 
 The collection curve
     Week by week from the window's start, the share of the window's fees paid
@@ -443,6 +445,7 @@ def receivables_view(entity, *, reader, window=None, period=None, user=None) -> 
     as_of = current.end_date if period is not None and current is not None else tenant_today(entity.tenant)
     chosen, windows = resolve_window(entity, as_of, current, window)
     scope = reader.scope
+    show = reader.shows
     invoices = reader.can("finance.invoice.view")
     payments = reader.can("finance.payment.view")
     return {
@@ -455,16 +458,31 @@ def receivables_view(entity, *, reader, window=None, period=None, user=None) -> 
         "windows": [{"key": w.key, "label": w.label, "name": w.name} for w in windows],
         "collections": (
             collections(entity, chosen, scope=scope, billed_ok=invoices, collected_ok=payments)
-            if invoices or payments else None
+            if (invoices or payments) and show("collections") else None
         ),
-        "days_to_pay": days_to_pay(entity, chosen, scope) if invoices else None,
-        "receivables_summary": receivables_summary(entity, as_of, scope=scope) if invoices else None,
-        "credit": credit_held(entity, as_of, scope) if payments else None,
-        "curve": collection_curve(entity, chosen, as_of, scope) if invoices and payments else None,
-        "plans": payment_plans(entity, as_of, scope) if reader.can("finance.paymentplan.view") else None,
-        "groups": by_group(entity, chosen, scope) if invoices else None,
-        "dunning": dunning(entity, chosen, as_of, scope) if reader.can("finance.dunning.view") else None,
-        "concessions": concessions(entity, chosen, as_of, scope) if reader.can("finance.concession.view") else None,
-        "adjustments": adjustments(entity, chosen, as_of, reader),
-        "largest": largest_balances(entity, as_of, scope) if invoices else None,
+        "days_to_pay": days_to_pay(entity, chosen, scope) if invoices and show("days_to_pay") else None,
+        "receivables_summary": (
+            receivables_summary(entity, as_of, scope=scope)
+            if invoices and show("receivables_summary") else None
+        ),
+        "credit": credit_held(entity, as_of, scope) if payments and show("credit_held") else None,
+        "curve": (
+            collection_curve(entity, chosen, as_of, scope)
+            if invoices and payments and show("collection_curve") else None
+        ),
+        "plans": (
+            payment_plans(entity, as_of, scope)
+            if reader.can("finance.paymentplan.view") and show("payment_plans") else None
+        ),
+        "groups": by_group(entity, chosen, scope) if invoices and show("groups") else None,
+        "dunning": (
+            dunning(entity, chosen, as_of, scope)
+            if reader.can("finance.dunning.view") and show("dunning") else None
+        ),
+        "concessions": (
+            concessions(entity, chosen, as_of, scope)
+            if reader.can("finance.concession.view") and show("concessions") else None
+        ),
+        "adjustments": adjustments(entity, chosen, as_of, reader) if show("adjustments") else None,
+        "largest": largest_balances(entity, as_of, scope) if invoices and show("largest_balances") else None,
     }

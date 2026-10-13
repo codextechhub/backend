@@ -202,6 +202,7 @@ class GuardianRulesShapeTests(_GuardianRulesFixture):
         self.assertEqual(data, {
             "min_per_student": 1,
             "email_required": False,
+            "binding_email_required": False,
             "matching": "EMAIL_THEN_PHONE",
             "matching_options": [
                 {"value": "EMAIL_THEN_PHONE", "label": "Email, then phone"},

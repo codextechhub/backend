@@ -190,7 +190,7 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
         entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_ACTIVATED,  # Audit action.
         actor_user=actor_user, target=plan,  # Actor and target context.
         message=f"Activated {plan.installment_count}-installment plan "  # Human-readable activation message.
-                f"for {plan.customer.code} ({format_naira(plan.total_amount)}).",  # Customer and amount.
+                f"for {plan.customer.code}.",  # Customer context.
         total=plan.total_amount, installments=plan.installment_count,  # Structured metadata.
     )
     # Reflect any settlement already on the linked invoice.  # Keep schedule progress current immediately.
@@ -466,7 +466,7 @@ def _post_concession_atomic(concession, *, actor_user=None):
     record(  # Audit successful concession.
         entity=concession.entity, action=FinanceAuditAction.CONCESSION_POSTED,  # Audit action.
         actor_user=actor_user, target=concession,  # Actor and target context.
-        message=f"Granted {label.lower()} of {format_naira(amount)} on invoice "  # Human-readable message.
+        message=f"Granted {label.lower()} on invoice "  # Human-readable message.
                 f"{invoice.document_number} for {customer.code}.",  # Invoice and customer context.
         journal_id=entry.pk, amount=amount, kind=concession.kind,  # Structured concession metadata.
         balance_after=invoice.balance_due,  # Remaining invoice balance.

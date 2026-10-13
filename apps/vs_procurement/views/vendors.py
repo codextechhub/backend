@@ -6,11 +6,23 @@ purchase documents.
 
 The create and update routes apply the body themselves rather than through a
 serializer, so each one asks Field Access whether the caller may write the
-names it carries. Contact, tax and banking details are refused with 403 for a
-role whose switches do not reach them, on the same terms the vendor serializer
-applies when it hides them on the way out. Creating a vendor is a create path,
-so a field declared open on create is allowed there and governed by its switch
-only afterwards.
+names it carries. Contact, tax, banking, category, terms and compliance values
+are refused with 403 for a role whose switches do not reach them, on the same
+terms the vendor serializer applies when it hides them on the way out. Creating
+a vendor is a create path, so a field declared open on create is allowed there
+and governed by its switch only afterwards. The compliance values (KYC status,
+risk, hold) additionally need ``procurement.vendor.verify``: the switch says
+which roles may see and change the value, the key says who may take the
+decision.
+
+A vendor's contact people are a second resource, ``procurement.vendor_contact``.
+Replacing the list needs Write on at least one of a contact's name, email,
+phone and four routing flags (primary, receives quotation requests, receives
+purchase orders, active); adding or removing a contact needs Write on the
+email, which identifies the person; and a value the caller cannot write keeps
+what the contact already holds, so a clerk who maintains names and emails never
+wipes the phone numbers they cannot see or re-routes the orders they cannot
+read the routing of.
 """
 from __future__ import annotations
 
@@ -25,7 +37,12 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_finance.constants import AccountType, DocumentStatus
-from vs_rbac.field_enforcement import assert_writable
+from vs_rbac.field_enforcement import (
+    FieldWriteDenied,
+    assert_writable,
+    can_read,
+)
+from vs_rbac.field_registry import get_declaration
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 from vs_config.clock import tenant_today
@@ -37,6 +54,7 @@ from ..models import (
     VendorCategory,
     VendorInvoice,
 )
+from ..vendor_field_access import require_vendor_field
 from ..serializers import (
     VendorCategorySerializer,
     VendorListSerializer,
@@ -58,16 +76,33 @@ from .base import (
 # Vendor categories + vendors                                                 #
 # --------------------------------------------------------------------------- #
 
-#: The vendor's contact, tax and banking names, which are the registered
-#: fields of ``procurement.vendor``. Whether a caller may write one is Field
+#: The vendor's own registered client names that carry a switch and are written
+#: by the create and update routes. Whether a caller may write one is Field
 #: Access's answer, not this set's; the set survives as the single written
 #: record of which vendor names carry switches, which the registry tests check
-#: the declaration against.
+#: the declaration against. ``category`` is a body name for the registered
+#: ``category_id`` and ``category_code`` (a write alias), and the contact people
+#: belong to ``procurement.vendor_contact``.
 _SENSITIVE_VENDOR_FIELDS = {
     "email", "phone", "address", "tax_id",
-    "bank_name", "bank_code", "bank_account_number", "bank_account_name", "contacts",
+    "bank_name", "bank_code", "bank_account_number", "bank_account_name",
+    "payment_terms", "kyc_status", "risk", "on_hold",
 }
 _COMPLIANCE_VENDOR_FIELDS = {"kyc_status", "risk", "on_hold"}
+
+_CONTACT_RESOURCE = "procurement.vendor_contact"
+_CONTACT_DETAILS = ("name", "email", "phone")
+_CONTACT_LIMITS = {"name": 160, "phone": 32}
+
+#: The routing flags of a contact, each with the value a new contact holds when
+#: its row leaves the flag out.
+_CONTACT_FLAGS = {
+    "is_primary": False,
+    "receives_rfqs": True,
+    "receives_purchase_orders": False,
+    "is_active": True,
+}
+_CONTACT_FIELDS = _CONTACT_DETAILS + tuple(_CONTACT_FLAGS)
 
 
 def _normalise_code(value):
@@ -100,30 +135,118 @@ def _validate_email(value):
     return value
 
 
-def _replace_vendor_contacts(vendor, raw):
-    """Validate and replace a vendor's active quotation contacts."""
+def _contact_label(detail):
+    """The Field Access label of a contact detail, for a refusal read by a person."""
+    declaration = get_declaration("procurement", "vendor_contact")
+    return next(spec.label for spec in declaration.fields if spec.name == detail)
+
+
+def _writable_contact_details(request):
+    """The contact fields (details and routing flags) the caller may change, as a set of names.
+
+    A request of ``None`` is a write made for nobody, which Field Access
+    refuses nothing.
+    """
+    allowed = set()
+    for detail in _CONTACT_FIELDS:
+        try:
+            assert_writable(request, _CONTACT_RESOURCE, [detail])
+        except FieldWriteDenied:
+            continue
+        allowed.add(detail)
+    return allowed
+
+
+def _clean_contact_detail(detail, value):
+    """A submitted contact detail, trimmed and bounded the way it is stored."""
+    text = str(value or "").strip()
+    if detail == "email":
+        return text.lower()
+    return text[:_CONTACT_LIMITS[detail]]
+
+
+def _matching_contact(row, by_id, by_email, used):
+    """The existing contact a submitted row stands for, or ``None`` for a new person.
+
+    A row names its contact by ``id`` or, failing that, by email. An id that no
+    longer belongs to the vendor is ignored rather than refused, because a form
+    that saved twice without reloading carries ids the first save replaced.
+    """
+    candidate = None
+    raw_id = row.get("id")
+    if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+        candidate = by_id.get(raw_id)
+    elif isinstance(raw_id, str) and raw_id.isdigit():
+        candidate = by_id.get(int(raw_id))
+    if candidate is None and "email" in row:
+        candidate = by_email.get(str(row.get("email") or "").strip().lower())
+    if candidate is not None and candidate.pk in used:
+        return None
+    return candidate
+
+
+def _replace_vendor_contacts(vendor, raw, *, request=None):
+    """Validate and replace a vendor's quotation contacts.
+
+    Field Access decides what the caller may put in the list. Submitting one
+    at all needs Write on a name, an email, a phone or a routing flag; adding
+    or removing a contact needs Write on the email; and each value the caller
+    may not write keeps what the matching contact holds (the default for a new
+    one), so the list a restricted form posts back never erases or re-routes
+    what it could not show. A routing flag a row leaves out keeps the stored
+    value for the same reason, and a new contact's flags start at the model's
+    defaults, except that the first contact of a vendor with none is primary.
+    """
     if not isinstance(raw, list):
         raise ValidationError({"contacts": "Expected a list of vendor contacts."})
     if len(raw) > 20:
         raise ValidationError({"contacts": "A vendor may have up to 20 contacts."})
+    allowed = _writable_contact_details(request)
+    if not allowed:
+        labels = {field: _contact_label(field) for field in _CONTACT_FIELDS}
+        raise FieldWriteDenied(list(_CONTACT_FIELDS), labels=labels)
+    existing = list(vendor.contacts.all())
+    by_id = {contact.pk: contact for contact in existing}
+    by_email = {contact.email.lower(): contact for contact in existing}
+    used = set()
     cleaned = []
     seen = set()
     for index, row in enumerate(raw):
         if not isinstance(row, dict):
             raise ValidationError({"contacts": "Every contact must be an object."})
-        email = _validate_email(str(row.get("email") or "").strip().lower())
+        match = _matching_contact(row, by_id, by_email, used)
+        if match is not None:
+            used.add(match.pk)
+        submitted = {
+            detail: _clean_contact_detail(detail, row[detail])
+            for detail in _CONTACT_DETAILS if detail in row
+        }
+        submitted.update({flag: bool(row[flag]) for flag in _CONTACT_FLAGS if flag in row})
+        if match is not None:
+            stored = {"name": match.name, "email": match.email.lower(), "phone": match.phone}
+            stored.update({flag: getattr(match, flag) for flag in _CONTACT_FLAGS})
+        else:
+            stored = {"name": "", "phone": "", **_CONTACT_FLAGS}
+            stored["is_primary"] = not existing and index == 0
+        assert_writable(
+            request, _CONTACT_RESOURCE, submitted, creating=match is None,
+            current={field: stored[field] for field in submitted if field in stored},
+        )
+        values = {}
+        for field in _CONTACT_FIELDS:
+            if field in allowed and field in submitted:
+                values[field] = submitted[field]
+            elif field in _CONTACT_FLAGS or field not in allowed:
+                values[field] = stored.get(field, "")
+            else:
+                values[field] = ""
+        email = _validate_email(values["email"])
         if not email or email in seen:
             raise ValidationError({"contacts": "Every contact needs a unique email address."})
         seen.add(email)
-        cleaned.append({
-            "name": str(row.get("name") or "").strip()[:160],
-            "email": email,
-            "phone": str(row.get("phone") or "").strip()[:32],
-            "is_primary": bool(row.get("is_primary", index == 0)),
-            "receives_rfqs": bool(row.get("receives_rfqs", True)),
-            "receives_purchase_orders": bool(row.get("receives_purchase_orders", False)),
-            "is_active": bool(row.get("is_active", True)),
-        })
+        cleaned.append({**values, "email": email})
+    if "email" not in allowed and any(contact.pk not in used for contact in existing):
+        raise FieldWriteDenied(["email"], labels={"email": _contact_label("email")})
     if cleaned and not any(row["is_primary"] for row in cleaned):
         cleaned[0]["is_primary"] = True
     first_primary = next((i for i, row in enumerate(cleaned) if row["is_primary"]), None)
@@ -133,6 +256,9 @@ def _replace_vendor_contacts(vendor, raw):
     VendorContact.objects.bulk_create([VendorContact(vendor=vendor, **row) for row in cleaned])
 
 
+def _may_write_contact_email(request):
+    """Whether the caller may change a contact's email, which the vendor's own email mirrors."""
+    return "email" in _writable_contact_details(request)
 
 
 def _has_vendor_verification_access(request):
@@ -328,7 +454,9 @@ class VendorCategoryListCreateView(_VendorCategoryWriteMixin, _ProcBase):
             qs = qs.filter(is_active=active == "true")
         if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
-        return self.paginate(request, qs.order_by("code"), VendorCategorySerializer)
+        return self.paginate(
+            request, qs.order_by("code"), VendorCategorySerializer, context={"request": request},
+        )
 
     @transaction.atomic
     def post(self, request):
@@ -355,7 +483,7 @@ class VendorCategoryListCreateView(_VendorCategoryWriteMixin, _ProcBase):
         except IntegrityError as exc:
             raise _category_duplicate_error(exc) from exc
         return success_response(
-            "Vendor category created.", data=VendorCategorySerializer(cat).data, status=201,
+            "Vendor category created.", data=VendorCategorySerializer(cat, context={"request": request}).data, status=201,
         )
 
 
@@ -393,7 +521,7 @@ class VendorCategoryDetailView(_VendorCategoryWriteMixin, _ProcBase):
         """Retrieve one category and its direct, entity-safe usage aggregates."""
         entity = resolve_entity(request)
         category = self._get(entity, pk)
-        return success_response("Vendor category retrieved.", data=VendorCategorySerializer(category).data)
+        return success_response("Vendor category retrieved.", data=VendorCategorySerializer(category, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -429,7 +557,7 @@ class VendorCategoryDetailView(_VendorCategoryWriteMixin, _ProcBase):
         category.child_count = category.children.filter(entity=entity).count()
         category.catalog_item_count = category.catalog_items.filter(entity=entity).count()
         return success_response(
-            "Vendor category updated.", data=VendorCategorySerializer(category).data,
+            "Vendor category updated.", data=VendorCategorySerializer(category, context={"request": request}).data,
         )
 
 
@@ -439,12 +567,17 @@ class VendorCategoryInsightsView(_ProcBase):
     Spend is the bills the reader can open: a branch-bound reader's figures are
     their own branches' bills, the same population their bill list and the spend
     analysis report add up, and never the school's total.
+
+    The whole answer is spend grouped by a vendor's category, so a reader who
+    cannot read the category field is refused: what was left would be a set of
+    totals that still says which vendors were filed together.
     """
 
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
         """Return posted-invoice spend in integer kobo for bounded date windows."""
+        require_vendor_field(request, "category", "Category")
         entity = resolve_entity(request)
         today = tenant_today(entity.tenant)
         month_start = today.replace(day=1)
@@ -520,8 +653,10 @@ class VendorListCreateView(_ProcBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (hold := request.query_params.get("on_hold")) in ("true", "false"):
+            require_vendor_field(request, "on_hold", "On hold")
             qs = qs.filter(on_hold=hold == "true")
         if (kyc := request.query_params.get("kyc_status")):
+            require_vendor_field(request, "kyc_status", "KYC status")
             qs = qs.filter(kyc_status=kyc)
         if request.query_params.get("purchase_eligible") == "true":
             # Eligibility uses the entity's KYC threshold plus universal active and hold checks.
@@ -534,8 +669,15 @@ class VendorListCreateView(_ProcBase):
             ):
                 qs = qs.filter(kyc_status=VendorKycStatus.VERIFIED)
         if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
-            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search) | Q(category__name__icontains=search))
-        return self.paginate(request, qs.order_by("code"), VendorListSerializer)
+            match = Q(code__icontains=search) | Q(name__icontains=search)
+            # A match on the category name would say which category a vendor is in.
+            if can_read(request, "procurement.vendor.category"):
+                match |= Q(category__name__icontains=search)
+            qs = qs.filter(match)
+        return self.paginate(
+            request, qs.order_by("code"), VendorListSerializer,
+            context={"request": request},
+        )
 
     @transaction.atomic
     def post(self, request):
@@ -546,7 +688,19 @@ class VendorListCreateView(_ProcBase):
         name = _clean_text(body, "name", 200)
         if not name:
             raise ValidationError({"name": "A vendor name is required."})
-        assert_writable(request, "procurement.vendor", body, creating=True)
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
+        # Onboarding sets compliance itself, so a form that posts the starting
+        # values back is not asking to change them.
+        assert_writable(
+            request, "procurement.vendor", body, creating=True,
+            current={
+                "kyc_status": VendorKycStatus.PENDING.value,
+                "risk": VendorRisk.LOW.value,
+                "on_hold": False,
+                "payment_terms": policy.default_payment_terms,
+            },
+        )
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
         if body.get("payable_account"):
             payable = _validate_account_type(
@@ -563,8 +717,6 @@ class VendorListCreateView(_ProcBase):
             _resolve_account(request, entity, body.get("default_expense_account"), "default_expense_account"),
             "default_expense_account", {AccountType.EXPENSE},
         )
-        from ..settings import resolve_procurement_settings
-        policy = resolve_procurement_settings(entity)
         payment_terms = _validate_choice(
             body.get("payment_terms") or policy.default_payment_terms,
             PaymentTerms.values, "payment_terms",
@@ -589,8 +741,8 @@ class VendorListCreateView(_ProcBase):
         except IntegrityError as exc:
             raise _duplicate_error(exc) from exc
         if "contacts" in body:
-            _replace_vendor_contacts(vendor, body["contacts"])
-        elif vendor.email:
+            _replace_vendor_contacts(vendor, body["contacts"], request=request)
+        elif vendor.email and _may_write_contact_email(request):
             VendorContact.objects.create(
                 vendor=vendor, name=vendor.name, email=vendor.email,
                 is_primary=True, receives_rfqs=True, receives_purchase_orders=True,
@@ -619,15 +771,24 @@ class VendorSummaryView(_ProcBase):
             _branch_q(request, entity),
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=year_start,
         ).aggregate(total=Sum("total"))["total"] or 0
-        terms = [PAYMENT_TERM_DAYS.get(value, 0) for value in vendors.values_list("payment_terms", flat=True)]
-        return success_response("Vendor summary retrieved.", data={
-            "active": vendors.filter(is_active=True, on_hold=False).count(),
+        data = {
+            "active": vendors.filter(is_active=True).count(),
             "inactive": vendors.filter(is_active=False).count(),
-            "on_hold": vendors.filter(on_hold=True).count(),
-            "kyc_pending": vendors.filter(kyc_status=VendorKycStatus.PENDING).count(),
             "total_spend_ytd": spend,
-            "average_payment_days": round(sum(terms) / len(terms)) if terms else None,
-        })
+        }
+        # A count by hold, KYC status or terms says how many vendors have them.
+        if can_read(request, "procurement.vendor.on_hold"):
+            data["on_hold"] = vendors.filter(on_hold=True).count()
+            data["active"] = vendors.filter(is_active=True, on_hold=False).count()
+        if can_read(request, "procurement.vendor.kyc_status"):
+            data["kyc_pending"] = vendors.filter(kyc_status=VendorKycStatus.PENDING).count()
+        if can_read(request, "procurement.vendor.payment_terms"):
+            terms = [
+                PAYMENT_TERM_DAYS.get(value, 0)
+                for value in vendors.values_list("payment_terms", flat=True)
+            ]
+            data["average_payment_days"] = round(sum(terms) / len(terms)) if terms else None
+        return success_response("Vendor summary retrieved.", data=data)
 
 
 class VendorDetailView(_ProcBase):
@@ -735,8 +896,8 @@ class VendorDetailView(_ProcBase):
         except IntegrityError as exc:
             raise _duplicate_error(exc) from exc
         if "contacts" in body:
-            _replace_vendor_contacts(vendor, body["contacts"])
-        elif vendor.email:
+            _replace_vendor_contacts(vendor, body["contacts"], request=request)
+        elif vendor.email and _may_write_contact_email(request):
             primary = vendor.contacts.filter(is_primary=True).first()
             if primary and primary.email.lower() == str(previous_email or "").lower():
                 primary.email = vendor.email

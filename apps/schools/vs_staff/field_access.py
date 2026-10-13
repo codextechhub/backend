@@ -45,6 +45,9 @@ from vs_rbac.field_registry import FieldSpec, register_fields
 
 _TENANT = "TENANT"
 
+#: The exit date field, under its full registry key.
+EXIT_DATE_FIELD = "school.teachers.exit_date"
+
 #: The employment status switch, under its full registry key.
 EMPLOYMENT_STATUS_FIELD = "school.teachers.employment_status"
 
@@ -59,6 +62,36 @@ EMPLOYMENT_STATUS_NAMES = (
     "display_employment_status", "display_employment_status_label",
     "on_roll", "is_exited", "lifecycle",
 )
+
+
+def register_audit_words():
+    """Hold what an employment status move records to the switches that govern it.
+
+    A move is audited on the staff profile
+    (``entity_type="StaffProfile"``, ``STAFF_EMPLOYMENT_STATUS_CHANGED``) with
+    the statuses it moved between, the reason given, the day it took effect
+    and, for a leaver, the last working day in the row's metadata. The
+    employment status switch governs the statuses, the reason and the
+    effective date, and the summary ("Employment status moved from X to Y.")
+    is cut where the statuses begin. The exit date switch governs the last
+    working day. The invitation that failed at go-live is audited under the
+    same action without these keys, and is not a status move.
+    """
+    from vs_audit.protected_words import ProtectedWords, register_protected_words
+
+    move = frozenset({"from_status", "to_status", "effective_date"})
+    action = frozenset({"STAFF_EMPLOYMENT_STATUS_CHANGED"})
+    register_protected_words("school.teachers.employment_status_move", ProtectedWords(
+        field_key=EMPLOYMENT_STATUS_FIELD, entity_type="StaffProfile",
+        action_types=action, metadata_keys=move,
+        metadata_key="reason", summary_marker=" from ",
+        metadata_hide=move,
+    ))
+    register_protected_words("school.teachers.exit_date_move", ProtectedWords(
+        field_key=EXIT_DATE_FIELD, entity_type="StaffProfile",
+        action_types=action, metadata_keys=move, metadata_key="",
+        metadata_hide=frozenset({"last_working_day"}),
+    ))
 
 
 def register():

@@ -47,7 +47,20 @@ def _collections(scope):
 
 # Payout instructions in the entity and within the exporting caller's branches.
 def _payouts(scope):
-    return _reach(scope).payouts()
+    """Payout lines, with a vendor line's bank values cut where the vendor switch is closed.
+
+    The beneficiary columns read the ``export_*`` annotations
+    (:func:`vs_payments.payout_access.export_beneficiary_annotations`), so a
+    line that copies a vendor's banking carries it only for a reader who may
+    read it on the vendor too. A scope with no person keeps every value.
+    """
+    from vs_exports.engine import readable_fields
+
+    from .payout_access import export_beneficiary_annotations
+
+    user = getattr(scope, "user", None)
+    readable = readable_fields(user, scope.tenant) if user is not None else None
+    return _reach(scope).payouts().annotate(**export_beneficiary_annotations(readable))
 
 
 _COLLECTION_STATUS = choice_labels("vs_payments.constants.CollectionStatus")
@@ -126,12 +139,15 @@ def register_datasets():
             Field("narration", "Narration", "Payout", KIND_TEXT),
             Field("created_at", "Created", "Record", KIND_DATETIME),
             Field("beneficiary_name", "Beneficiary", "Beneficiary", KIND_TEXT, sensitive=True,
+                  source="export_beneficiary_name",
                   description="Restricted: beneficiary banking data.",
                   access="payments.payout.beneficiary_name"),
             Field("beneficiary_account_number", "Account number", "Beneficiary", KIND_TEXT, sensitive=True,
+                  source="export_beneficiary_account_number",
                   description="Restricted: beneficiary banking data.",
                   access="payments.payout.beneficiary_account_number"),
             Field("beneficiary_bank_code", "Bank code", "Beneficiary", KIND_TEXT, sensitive=True,
+                  source="export_beneficiary_bank_code",
                   description="Restricted: beneficiary banking data.",
                   access="payments.payout.beneficiary_bank_code"),
         ),

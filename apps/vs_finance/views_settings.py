@@ -5,6 +5,7 @@ from rest_framework.permissions import SAFE_METHODS
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.field_enforcement import UNPARSED, assert_writable
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import WholeTenantWriteMixin
 
@@ -29,22 +30,74 @@ from .document_settings import (
     serialize_finance_document_settings,
     update_finance_document_settings,
 )
-from .settings_history import finance_setting_fields, settings_history
+from .settings_history import (
+    BANK_SUMMARY_FIELDS,
+    finance_setting_fields,
+    settings_history,
+)
 from .settings_ownership import (
     ACCOUNT_MAPPING_CONSUMERS,
     BANKING_SETTING_CONSUMERS,
     CALENDAR_SETTING_CONSUMERS,
     DOCUMENT_SETTING_CONSUMERS,
 )
+from .field_guards import readable
 from .views import resolve_entity
 
 
-def _settings_history(entity, action):
+def _hide_bank_copies(request, settings: dict) -> dict:
+    """The document settings with each bank summary reduced to what the caller may read.
+
+    The collection account and the account options are summaries of bank
+    accounts, so the bank and currency they repeat follow the switches
+    of ``finance.bankaccount``. The account's id and name identify it.
+    """
+    hidden = {key for key, field in BANK_SUMMARY_FIELDS
+              if not readable(request, "finance.bankaccount", field)}
+    if not hidden:
+        return settings
+
+    def strip(summary):
+        return {k: v for k, v in summary.items() if k not in hidden} if summary else summary
+
+    out = dict(settings)
+    for key in ("primary_collection_bank_account",):
+        out[key] = strip(out.get(key))
+    for key in ("primary_collection_bank_accounts", "bank_account_options"):
+        out[key] = [strip(row) for row in out.get(key) or []]
+    return out
+
+
+def _assert_collection_account_writable(request, entity, reference) -> None:
+    """Refuse choosing a different fee collection account to a caller who may not write that flag.
+
+    Choosing the account that already collects, or clearing a choice there is
+    not, changes nothing and passes. Any other choice flips
+    ``is_primary_collection`` on a bank account, so it is judged under that
+    field's Write switch like every other path that sets it.
+    """
+    from .models import BankAccount
+
+    if reference in (None, ""):
+        unchanged = not BankAccount.objects.filter(entity=entity, is_primary_collection=True).exists()
+    else:
+        try:
+            chosen = BankAccount.objects.filter(entity=entity, pk=int(reference)).first()
+        except (TypeError, ValueError):
+            chosen = None
+        unchanged = chosen is not None and chosen.is_primary_collection
+    if not unchanged:
+        assert_writable(
+            request, "finance.bankaccount", {"is_primary_collection": UNPARSED})
+
+
+def _settings_history(entity, action, *, request=None):
     """The last ten changes to one of the entity's finance settings, labelled.
 
-    See :func:`vs_finance.settings_history.settings_history`.
+    See :func:`vs_finance.settings_history.settings_history`. A ``request``
+    narrows each change to the settings its caller may read.
     """
-    return settings_history(entity, action, finance_setting_fields(action))
+    return settings_history(entity, action, finance_setting_fields(action), request=request)
 
 
 class WholeTenantSettingsMixin(WholeTenantWriteMixin):
@@ -140,28 +193,35 @@ class FinanceDocumentSettingsView(_FinanceSettingsView):
         return success_response(
             "Finance document settings retrieved.",
             data={
-                "settings": serialize_finance_document_settings(
+                "settings": _hide_bank_copies(request, serialize_finance_document_settings(
                     resolve_finance_document_settings(entity),
-                ),
+                )),
                 "consumers": DOCUMENT_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
+                    request=request,
                 ),
             },
         )
 
     def patch(self, request):
         entity = resolve_entity(request)
+        body = request.data or {}
+        if "primary_collection_bank_account" in body:
+            _assert_collection_account_writable(
+                request, entity, body["primary_collection_bank_account"])
         settings = update_finance_document_settings(
-            entity=entity, data=request.data or {}, actor_user=request.user,
+            entity=entity, data=body, actor_user=request.user,
         )
         return success_response(
             "Finance document settings saved.",
             data={
-                "settings": serialize_finance_document_settings(settings),
+                "settings": _hide_bank_copies(
+                    request, serialize_finance_document_settings(settings)),
                 "consumers": DOCUMENT_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
+                    request=request,
                 ),
             },
         )
@@ -275,3 +335,4 @@ class FinancePayrollSettingsView(_FinanceSettingsView):
         return success_response(
             "Finance payroll settings saved.", data=self._payload(entity, settings),
         )
+

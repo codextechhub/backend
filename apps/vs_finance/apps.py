@@ -21,6 +21,10 @@ class VsFinanceConfig(AppConfig):
         from .field_access import register as register_field_access
 
         register_field_access()
+        # The central trail keeps who did what to which document, never a value.
+        from .audit import register_mirror_rule
+
+        register_mirror_rule()
         # Publish this tenant's adjustment-approval ladders when its books are
         # created. Finance registers its own provisioner through the same seam
         # procurement and payments use, rather than calling itself from the

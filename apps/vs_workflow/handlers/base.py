@@ -127,6 +127,15 @@ class BaseWorkflowHandler:
               "link": str,   # optional deep link to the source record
             }
 
+        ``title`` and ``subtitle`` are copied into the queue row, the search
+        filter and every notification, none of which knows who will read them.
+        They hold identifying labels only: a document number, a person's name
+        and job title, a document type. A value from a Field Access registered
+        field belongs in ``fields``, built with
+        :func:`vs_workflow.presentation.summary_fields` so each row names the
+        registry key that governs it, and the approver whose roles cannot read
+        that field is not given the row.
+
         Default is empty - override to surface details.
         """
         return {}

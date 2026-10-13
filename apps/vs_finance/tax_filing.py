@@ -668,8 +668,9 @@ def _audit_per_share(filing, shares, *, action, actor_user, describe):
     """Audit ``action`` on ``filing`` once per branch share, each under its branch.
 
     A return is booked per branch, so its trail is too: Lagoon View's VAT
-    return has an Ikeja share and a Lekki share, and Lekki's bursar reads
-    Lekki's N30,000 without ever seeing Ikeja's figures or the return's total.
+    return has an Ikeja share and a Lekki share, and Lekki's bursar reads the
+    entry about Lekki's share without ever seeing Ikeja's. The sentence names
+    the share and never its figures, which travel in the entry's metadata.
     The whole-school total is the sum of the shares' entries. ``describe(share)``
     returns ``(message, metadata)`` for one share. A return with no shares is
     audited once, under its own branch, with ``describe(None)``.
@@ -795,8 +796,7 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
         filing, shares.values(), action=FinanceAuditAction.TAX_FILING_PREPARED,
         actor_user=actor_user,
         describe=lambda share: (
-            f"Prepared {obligation.code} filing for {period}: {_whose(share)}, "
-            f"{format_naira((share or filing).amount_due)} due.",
+            f"Prepared {obligation.code} filing for {period}: {_whose(share)}.",
             _share_figures(share, filing),
         ),
     )
@@ -954,8 +954,7 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
         filing, shares.values(), action=FinanceAuditAction.TAX_FILING_FILED,
         actor_user=actor_user,
         describe=lambda share: (
-            f"Filed {obligation.code} return {label}: {_whose(share)}, "
-            f"{format_naira((share or filing).amount_due)} due.",
+            f"Filed {obligation.code} return {label}: {_whose(share)}.",
             {**_share_figures(share, filing),
              "journal_id": share.filing_journal_id if share is not None else None},
         ),
@@ -1253,7 +1252,7 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, branch, actor_
             entity=filing.entity, action=FinanceAuditAction.TAX_FILING_PAID,
             actor_user=actor_user, target=filing, branch=entry.branch_id,
             message=(
-                f"Remitted {format_naira(pay)} of {obligation.code} filing {label}: {_whose(share)}."
+                f"Remitted {obligation.code} filing {label}: {_whose(share)}."
             )[:255],
             journal_id=entry.pk, amount=pay, payment_status=share.payment_status,
         )
@@ -1329,8 +1328,8 @@ def _reverse_remittance_atomic(remittance, *, reason, date, actor_user):
         entity=filing.entity, action=FinanceAuditAction.TAX_REMITTANCE_REVERSED,
         actor_user=actor_user, target=filing, branch=remittance.branch_id,
         message=(
-            f"Reversed a {format_naira(remittance.amount)} remittance of "
-            f"{filing.obligation.code} return {filing.document_number or filing.pk}: {reason}"
+            f"Reversed a remittance of "
+            f"{filing.obligation.code} return {filing.document_number or filing.pk}."
         )[:255],
         journal_id=remittance.journal_id, reversal_id=reversal.pk,
         amount=int(remittance.amount), branch_id=remittance.branch_id, reason=reason,

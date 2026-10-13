@@ -467,8 +467,8 @@ def cancel_notice(notice, *, reason="", actor_user=None):
     record(  # Audit the cancellation.
         entity=notice.entity, action=FinanceAuditAction.DUNNING_NOTICE_CANCELLED,  # Audit action for cancellation.
         actor_user=actor_user, target=notice,  # Actor and target context.
-        message=f"Dunning notice {notice.document_number} cancelled."  # Human-readable cancellation message.
-                + (f" Reason: {reason}" if reason else ""),  # Append optional reason.
+        message=f"Dunning notice {notice.document_number} cancelled.",  # Human-readable cancellation message.
+        reason=reason or "",  # Free-text reason, kept out of the sentence.
         level=notice.level,  # Structured escalation level.
     )
     return notice  # Return the cancelled notice.

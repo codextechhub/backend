@@ -17,6 +17,7 @@ class VsSchoolsConfig(AppConfig):
         from . import field_access, signals  # noqa: F401
 
         field_access.register()
+        field_access.register_audit_words()
 
         from .media_policies import register as register_media_policies
 

@@ -12,6 +12,8 @@ from vs_finance.wording import choice_options, choose_one_of, counted
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
+from vs_rbac.field_enforcement import UNPARSED
+
 from .audit import record
 from .constants import (
     FinanceAuditAction, PayerPaymentSplit, PayerPaymentSurplus, RevenueRecognitionMethod,
@@ -143,6 +145,49 @@ def _validated_values(data):
                 raise ValidationError({field: choose_one_of(choices)})
             values[field] = value
     return values
+
+
+def _plain(value):
+    """A choice as its code: an unsaved policy holds the member, a stored one the string."""
+    return getattr(value, "value", value)
+
+
+def stored_policy_values(policy) -> dict:
+    """The policy's settings in the form :func:`update_receivables_policy` stores them.
+
+    What a write is compared with when Field Access judges whether a submitted
+    setting changes anything (:func:`vs_rbac.field_enforcement.assert_writable`):
+    bands as ascending ``{over_days, rate_bps}`` rows, choices as their codes.
+    """
+    return {
+        "revenue_recognition": _plain(policy.revenue_recognition),
+        "provision_bands": [
+            {"over_days": days, "rate_bps": rate} for days, rate in provision_bands(policy)
+        ],
+        "deposits_offset_unpaid_bills": policy.deposits_offset_unpaid_bills,
+        "unclaimed_deposit_years": policy.unclaimed_deposit_years,
+        **{field: _plain(getattr(policy, field)) for field in CHOICE_SETTINGS},
+    }
+
+
+def normalised_submission(data) -> dict:
+    """Each submitted setting as :func:`update_receivables_policy` would store it.
+
+    A value that does not validate becomes :data:`~vs_rbac.field_enforcement.UNPARSED`,
+    which counts as a change, so a caller who may not write a setting is refused
+    before they are told what is wrong with the value. A name that is not a
+    setting is passed on untouched for the write to refuse.
+    """
+    submitted = {}
+    for name, value in data.items():
+        if name not in SETTING_FIELDS:
+            submitted[name] = value
+            continue
+        try:
+            submitted[name] = _validated_values({name: value})[name]
+        except ValidationError:
+            submitted[name] = UNPARSED
+    return submitted
 
 
 @transaction.atomic

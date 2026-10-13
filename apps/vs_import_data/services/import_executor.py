@@ -15,6 +15,7 @@ from ..models import (
     ImportRowActionChoices,
 )
 from .audit_service import create_import_audit_log
+from vs_rbac.field_enforcement import FieldWriteDenied
 
 
 # =========================================================
@@ -159,10 +160,25 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
         branch           optional - blank means across the whole school
         send_invitation  optional - Yes or No, blank means Yes
     """
-    from schools.vs_staff.imports import create_staff_from_row, resolve_row
+    from schools.vs_staff.imports import (
+        create_staff_from_row,
+        resolve_row,
+        staff_row_write_refusal,
+    )
     from schools.vs_staff.services.scoping import branch_dimension_applies
 
+    from ..field_writes import import_request
+
     tenant = import_batch.tenant
+
+    # The runner's Field Access first: a field they may not write refuses the
+    # row, in the words the preview used, before the row is read any further.
+    refusal = staff_row_write_refusal(
+        import_request(queued_by, tenant, import_batch), payload,
+    )
+    if refusal is not None:
+        raise refusal
+
     row = resolve_row(
         payload,
         tenant=tenant,
@@ -247,13 +263,22 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     """
     from schools.vs_students.imports import (
         create_student_from_row,
+        import_request,
         import_session,
         resolve_row,
+        student_row_write_refusal,
     )
     from schools.vs_students.services.scoping import branch_dimension_applies
 
     tenant = import_batch.tenant
     session = import_session(tenant)
+
+    # The runner's Field Access first: a field they may not write refuses the
+    # row, in the words the preview used, before the row is read any further.
+    request = import_request(queued_by, tenant, import_batch)
+    refusal = student_row_write_refusal(request, payload)
+    if refusal is not None:
+        raise refusal
 
     row = resolve_row(
         payload,
@@ -261,6 +286,7 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         session=session,
         batch_branch=import_batch.branch,
         multi_branch=branch_dimension_applies(tenant),
+        request=request,
     )
     if not row.ok:
         # Validation should have caught these and refused the batch. Reaching
@@ -272,6 +298,7 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 
     student = create_student_from_row(
         row, tenant=tenant, session=session, created_by=queued_by,
+        request=request,
     )
     return ImportExecutionResult(
         action=ImportRowActionChoices.CREATE,
@@ -287,6 +314,50 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 # =========================================================
 # CX users handler
 # =========================================================
+def cx_user_create_data(payload: dict) -> dict:
+    """The ``UserCreateSerializer`` input one CX users import row stands for.
+
+    The one reading of a row shared by execution and by the preview, so the
+    two cannot disagree about which details a row sets. Blank cells are left
+    out, as an untouched input of the Add form is.
+    """
+    data = {}
+    for field in (
+        "first_name", "last_name", "email", "role", "phone",
+        "gender", "employment_type", "position", "date_joined",
+    ):
+        value = (payload.get(field) or "").strip()
+        if value:
+            data[field] = value
+    return data
+
+
+def cx_user_row_write_refusal(payload: dict, actor, holder=None) -> FieldWriteDenied | None:
+    """The Field Access refusal adding this CX user as *actor* would meet, or None.
+
+    Asks the question the account serializer asks at execution
+    (:func:`vs_user.serializers.refuse_unwritable_staff_profile_fields`), of the
+    same input, and stops short of creating anything, so a preview tells an
+    operator whose write switches are closed what execution will tell them.
+    """
+    from vs_tenants.models import Tenant
+    from vs_user.serializers import refuse_unwritable_staff_profile_fields
+
+    from ..field_writes import import_request
+
+    platform_tenant = Tenant.objects.filter(
+        slug='codex', kind=Tenant.Kind.PLATFORM,
+    ).first()
+    request = import_request(actor, platform_tenant, holder)
+    if request is None or platform_tenant is None:
+        return None
+    try:
+        refuse_unwritable_staff_profile_fields(request, cx_user_create_data(payload))
+    except FieldWriteDenied as refusal:
+        return refusal
+    return None
+
+
 def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     """
     Import one CX (CodeX platform) staff row via UserCreateSerializer, entering
@@ -350,14 +421,7 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
             message=f"User with email '{email}' skipped: {refusal}",
         )
 
-    data = {}
-    for field in (
-        "first_name", "last_name", "email", "role", "phone",
-        "gender", "employment_type", "position", "date_joined",
-    ):
-        value = _s(field)
-        if value:
-            data[field] = value
+    data = cx_user_create_data(payload)
 
     # The target tenant, stated rather than inferred. UserCreateSerializer
     # reads request.tenant for an actor outside the platform tenant and returns
@@ -384,56 +448,15 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 # =========================================================
 # Schools handler
 # =========================================================
-def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
-    """
-    Import one school row using SchoolCreateSerializer.
+def school_create_payload(payload: dict) -> dict:
+    """The ``SchoolCreateSerializer`` body one schools import row stands for.
 
-    The flat ImportTemplateColumn.target_field names this handler reads:
-
-    School identity
-        name                    required
-        slug                    optional – auto-generated from name if blank
-        code                    optional
-        ownership_type          optional – PUBLIC / PRIVATE / FAITH_BASED / NGO
-        email                   required
-        phone                   required
-        address                 required
-        website                 optional
-        motto                   optional
-        term_structure          optional – 3_TERMS / 2_SEMESTERS
-        currency                optional – NGN / USD
-        registration_id         optional
-
-    School-level admin
-        school_admin_full_name  required when school_admin_email is present
-        school_admin_email      optional – if absent no school admin is created
-        school_admin_phone      optional
-        school_admin_role       optional – defaults to "IT Head"
-
-    Main branch  (one branch per row, always marked is_main=True)
-        branch_name             optional – defaults to "<school name> - Main Branch"
-        branch_address          optional – falls back to school address
-        branch_email            optional
-        branch_country          optional – defaults to "Nigeria"
-        branch_state            optional
-
-    Branch admin  (required – SchoolCreateSerializer enforces this)
-        branch_admin_full_name  required
-        branch_admin_email      required
-        branch_admin_phone      optional
-        branch_admin_role       optional – defaults to "Head Teacher"
-
-    Package setup
-        package_plan            optional – PackagePlan code e.g. basic / standard / premium
-        subscription_starts_at  required when package_plan is present – YYYY-MM-DD
-        agreed_price_per_student required for enterprise, amount in naira
-        minimum_billable_students optional – defaults to zero
-        subscription_expires_at optional – YYYY-MM-DD
+    The one reading of a row shared by execution and by the preview, so the
+    two cannot disagree about which fields a row sets. *payload* is the row
+    keyed by the template's target fields, as :func:`map_row_to_payload`
+    returns it; :func:`import_schools_row` lists the target fields read.
     """
     from decimal import Decimal
-    from types import SimpleNamespace
-    from schools.vs_schools.models import School
-    from schools.vs_schools.serializers import SchoolCreateSerializer
 
     def _s(key: str) -> str:
         return (payload.get(key) or "").strip()
@@ -443,24 +466,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
             return int(payload.get(key) or default)
         except (TypeError, ValueError):
             return default
-
-    # --- Duplicate check ---
-    slug = _s("slug")
-    name = _s("name")
-    if slug and School.objects.filter(slug=slug).exists():
-        return ImportExecutionResult(
-            action=ImportRowActionChoices.SKIP,
-            instance=None,
-            target_model="School",
-            message=f"School with slug '{slug}' already exists - skipped.",
-        )
-    elif not slug and name and School.objects.filter(name=name).exists():
-        return ImportExecutionResult(
-            action=ImportRowActionChoices.SKIP,
-            instance=None,
-            target_model="School",
-            message=f"School named '{name}' already exists - skipped.",
-        )
 
     # --- School-level admin ---
     school_admin_email = _s("school_admin_email")
@@ -540,9 +545,16 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     if package_setup_data:
         school_payload["package_setup_data"] = package_setup_data
 
+    return school_payload
+
+
+def school_import_context(queued_by) -> dict:
+    """The serializer context a schools import row runs under, acting as *queued_by*."""
+    from types import SimpleNamespace
+
     # SchoolCreateSerializer accesses context["request"].user as the acting user.
     # SimpleNamespace gives us a minimal stand-in without importing django.test.
-    context = {
+    return {
         "request": SimpleNamespace(user=queued_by),
         # The USER, not its id, despite the key's name. Every other caller of these
         # serializers puts a User object here and the audit emitter needs one: the
@@ -550,10 +562,102 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         "actor_id": queued_by,
     }
 
+
+def school_row_write_refusal(payload: dict, queued_by) -> FieldWriteDenied | None:
+    """The Field Access refusal executing a schools row as *queued_by* would meet, or None.
+
+    Runs the same serializer execution runs, over the same body, and stops
+    short of saving, so a preview tells an operator whose write switches are
+    closed what execution will tell them: which fields of which row they may
+    not set. Any other problem with the row is the validator's own to report
+    and is not this function's concern.
+    """
+    from schools.vs_schools.serializers import SchoolCreateSerializer
+
+    serializer = SchoolCreateSerializer(
+        data=school_create_payload(payload), context=school_import_context(queued_by),
+    )
+    try:
+        serializer.is_valid()
+    except FieldWriteDenied as refusal:
+        return refusal
+    return None
+
+
+def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """
+    Import one school row using SchoolCreateSerializer.
+
+    The flat ImportTemplateColumn.target_field names this handler reads:
+
+    School identity
+        name                    required
+        slug                    optional – auto-generated from name if blank
+        code                    optional
+        ownership_type          optional – PUBLIC / PRIVATE / FAITH_BASED / NGO
+        email                   required
+        phone                   required
+        address                 required
+        website                 optional
+        motto                   optional
+        term_structure          optional – 3_TERMS / 2_SEMESTERS
+        currency                optional – NGN / USD
+        registration_id         optional
+
+    School-level admin
+        school_admin_full_name  required when school_admin_email is present
+        school_admin_email      optional – if absent no school admin is created
+        school_admin_phone      optional
+        school_admin_role       optional – defaults to "IT Head"
+
+    Main branch  (one branch per row, always marked is_main=True)
+        branch_name             optional – defaults to "<school name> - Main Branch"
+        branch_address          optional – falls back to school address
+        branch_email            optional
+        branch_country          optional – defaults to "Nigeria"
+        branch_state            optional
+
+    Branch admin  (required – SchoolCreateSerializer enforces this)
+        branch_admin_full_name  required
+        branch_admin_email      required
+        branch_admin_phone      optional
+        branch_admin_role       optional – defaults to "Head Teacher"
+
+    Package setup
+        package_plan            optional – PackagePlan code e.g. basic / standard / premium
+        subscription_starts_at  required when package_plan is present – YYYY-MM-DD
+        agreed_price_per_student required for enterprise, amount in naira
+        minimum_billable_students optional – defaults to zero
+        subscription_expires_at optional – YYYY-MM-DD
+    """
+    from schools.vs_schools.models import School
+    from schools.vs_schools.serializers import SchoolCreateSerializer
+
+    def _s(key: str) -> str:
+        return (payload.get(key) or "").strip()
+
+    # --- Duplicate check ---
+    slug = _s("slug")
+    name = _s("name")
+    if slug and School.objects.filter(slug=slug).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="School",
+            message=f"School with slug '{slug}' already exists - skipped.",
+        )
+    elif not slug and name and School.objects.filter(name=name).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="School",
+            message=f"School named '{name}' already exists - skipped.",
+        )
+
     return run_create_serializer(
         serializer_class=SchoolCreateSerializer,
-        payload=school_payload,
-        context=context,
+        payload=school_create_payload(payload),
+        context=school_import_context(queued_by),
         target_model="School",
     )
 
@@ -939,6 +1043,21 @@ def execute_import(import_batch, queued_by):
                         "template_code": import_batch.template.code,
                     },
                 )
+
+        except FieldWriteDenied as exc:
+            create_row_result(
+                job=job,
+                row_number=row_number,
+                action=ImportRowActionChoices.FAILED,
+                target_model=import_batch.template.dataset_type,
+                target_object_pk="",
+                status_message=exc.message,
+                error_details={"field_write_denied": exc.fields},
+                row_payload=raw_row,
+                normalized_payload=normalized_payload,
+            )
+
+            failed_rows += 1
 
         except drf_serializers.ValidationError as exc:
             create_row_result(

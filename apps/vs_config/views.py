@@ -17,11 +17,14 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
+from vs_rbac.field_enforcement import can_read
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.plan_grants import unsettled_roles_note
 
 from . import labels as config_labels
+from .audit_access import setting_keys, visible_snapshots
 from .constants import ConfigPermissions
+from .entitlement_access import window_readable
 from .models import (
     Capability,
     CapabilityEntitlement,
@@ -129,9 +132,10 @@ class ConfigAPIView(APIView):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(queryset, request, view=self)
-        context = {}
+        context = {"request": request}
         if serializer_class is ConfigurationAuditEventSerializer:
             context["_target_labels"] = build_configuration_target_labels(page)
+            context["_setting_keys"] = setting_keys(page)
         return paginator.get_paginated_response(
             serializer_class(page, many=True, context=context).data
         )
@@ -729,7 +733,7 @@ class EntitlementListSetView(ConfigAPIView):
             reason=serializer.validated_data["reason"],
             unsettled_roles=unsettled,
         )
-        data = dict(CapabilityEntitlementSerializer(row).data)
+        data = dict(CapabilityEntitlementSerializer(row, context={"request": request}).data)
         data["roles_needing_attention"] = unsettled
         return success_response(
             "Capability entitlement saved." + unsettled_roles_note(unsettled),
@@ -812,31 +816,44 @@ class EntitlementCalendarView(ConfigAPIView):
         now = timezone.now()
         window_end = now + timedelta(days=window_days)
         recent_start = now - timedelta(days=30)
+        # A grant a school's plan wrote carries the school's subscription dates, so a date
+        # the caller may not read neither counts nor places the row on the calendar.
+        starts_ok, ends_ok = window_readable(request, CapabilityEntitlement.Source.PACKAGE)
+        plan_written = Q(source=CapabilityEntitlement.Source.PACKAGE)
+        ends_qs = queryset if ends_ok else queryset.exclude(plan_written)
+        starts_qs = queryset if starts_ok else queryset.exclude(plan_written)
         summary = {
-            "expired": queryset.filter(ends_at__lte=now).count(),
-            "expiring_7_days": queryset.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=7)).count(),
-            "expiring_30_days": queryset.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=30)).count(),
-            "expiring_90_days": queryset.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=90)).count(),
-            "scheduled": queryset.filter(starts_at__gt=now).count(),
+            "expired": ends_qs.filter(ends_at__lte=now).count(),
+            "expiring_7_days": ends_qs.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=7)).count(),
+            "expiring_30_days": ends_qs.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=30)).count(),
+            "expiring_90_days": ends_qs.filter(ends_at__gt=now, ends_at__lte=now + timedelta(days=90)).count(),
+            "scheduled": starts_qs.filter(starts_at__gt=now).count(),
         }
+        ends_window = Q(ends_at__gte=recent_start, ends_at__lte=window_end)
+        starts_window = Q(starts_at__gt=now, starts_at__lte=window_end)
+        if not ends_ok:
+            ends_window &= ~plan_written
+        if not starts_ok:
+            starts_window &= ~plan_written
         calendar_rows = list(
-            queryset.filter(
-                Q(ends_at__gte=recent_start, ends_at__lte=window_end)
-                | Q(starts_at__gt=now, starts_at__lte=window_end)
-            ).order_by("ends_at", "starts_at", "tenant__name", "capability__label")[: self.CALENDAR_LIMIT + 1]
+            queryset.filter(ends_window | starts_window)
+            .order_by("ends_at", "starts_at", "tenant__name", "capability__label")[: self.CALENDAR_LIMIT + 1]
         )
         truncated = len(calendar_rows) > self.CALENDAR_LIMIT
         entries = []
         for row in calendar_rows[: self.CALENDAR_LIMIT]:
-            if row.ends_at and row.ends_at <= now:
+            row_starts_ok, row_ends_ok = window_readable(request, row.source)
+            starts_at = row.starts_at if row_starts_ok else None
+            ends_at = row.ends_at if row_ends_ok else None
+            if ends_at and ends_at <= now:
                 status_value = "expired"
                 warning = "expired"
-            elif row.starts_at and row.starts_at > now:
+            elif starts_at and starts_at > now:
                 status_value = "scheduled"
                 warning = "scheduled"
             else:
                 status_value = "active"
-                days_left = ceil((row.ends_at - now).total_seconds() / 86400) if row.ends_at else None
+                days_left = ceil((ends_at - now).total_seconds() / 86400) if ends_at else None
                 warning = (
                     "critical" if days_left is not None and days_left <= 7 else
                     "warning" if days_left is not None and days_left <= 30 else
@@ -850,15 +867,14 @@ class EntitlementCalendarView(ConfigAPIView):
                 "tenant_slug": row.tenant.slug if row.tenant else "",
                 "tenant_name": row.tenant.name if row.tenant else "Platform",
                 "scope": "school" if row.tenant else "platform",
-                "starts_at": row.starts_at.isoformat() if row.starts_at else None,
-                "ends_at": row.ends_at.isoformat() if row.ends_at else None,
+                **({"starts_at": starts_at.isoformat() if starts_at else None} if row_starts_ok else {}),
+                **({"ends_at": ends_at.isoformat() if ends_at else None} if row_ends_ok else {}),
                 "status": status_value,
                 "status_label": config_labels.CALENDAR_STATUS_LABELS[status_value],
                 "warning": warning,
-                "days_until_expiry": (
-                    ceil((row.ends_at - now).total_seconds() / 86400)
-                    if row.ends_at else None
-                ),
+                **({"days_until_expiry": (
+                    ceil((ends_at - now).total_seconds() / 86400) if ends_at else None
+                )} if row_ends_ok else {}),
             })
         return success_response(
             "Entitlement renewal calendar retrieved.",
@@ -919,7 +935,7 @@ class EntitlementBulkScheduleView(ConfigAPIView):
         rows = bulk_schedule_entitlements(**kwargs)
         return success_response(
             f"Scheduled {len(rows)} entitlements.",
-            CapabilityEntitlementSerializer(rows, many=True).data,
+            CapabilityEntitlementSerializer(rows, many=True, context={"request": request}).data,
         )
 
 
@@ -1272,8 +1288,12 @@ class AuditEventExportView(ConfigAPIView):
         writer = csv.writer(response)
         writer.writerow(AUDIT_CSV_HEADER)
         target_labels = build_configuration_target_labels(events)
+        keys = setting_keys(events)
         for event in events:
-            writer.writerow(audit_csv_row(event, target_labels))
+            writer.writerow(audit_csv_row(
+                event, target_labels,
+                visible_snapshots(event, lambda field_key: can_read(request, field_key), keys),
+            ))
         return response
 
 
@@ -1285,7 +1305,7 @@ class AuditEventDetailView(ConfigAPIView):
         event = get_object_or_404(_scoped_audit_queryset(request), pk=event_id)
         return success_response(
             "Configuration audit event retrieved.",
-            ConfigurationAuditEventSerializer(event).data,
+            ConfigurationAuditEventSerializer(event, context={"request": request}).data,
         )
 
 

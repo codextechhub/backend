@@ -99,16 +99,22 @@ CONVERSIONS: tuple[KeyConversion, ...] = (
             "procurement.vendor.bank_code",
             "procurement.vendor.bank_account_number",
             "procurement.vendor.bank_account_name",
-            "procurement.vendor.contacts",
+            "procurement.vendor_contact.name",
+            "procurement.vendor_contact.email",
+            "procurement.vendor_contact.phone",
         ),
         gates=_BOTH,
         survives=False,
         note=(
             "Reads: VendorSerializer.read_permissions. Writes: "
             "vs_procurement/views/vendors.py _require_sensitive_access over "
-            "_SENSITIVE_VENDOR_FIELDS, which is the same nine names. The same "
-            "key also decides whether a quotation request's invitations carry "
-            "vendor contact details (serializers.py get_invitations)."
+            "_SENSITIVE_VENDOR_FIELDS, which was nine names. The ninth, "
+            "``contacts``, was one switch over the whole nested contact list, "
+            "and is now the three details of ``procurement.vendor_contact`` "
+            "(see SUCCESSIONS): the key meant the same thing for each of them, "
+            "so it converts to all three. The same key also decided whether a "
+            "quotation request's invitations carried vendor contact details "
+            "(serializers.py get_invitations)."
         ),
     ),
     KeyConversion(
@@ -120,7 +126,10 @@ CONVERSIONS: tuple[KeyConversion, ...] = (
             "BankAccountSerializer.read_permissions. The serializer is never "
             "used for input: the number is written by the bank account create "
             "and update endpoints from the raw body, behind "
-            "finance.bankaccount.create and .update."
+            "finance.bankaccount.create and .update. Both endpoints assert "
+            "the account number's write switch before they save "
+            "(BankAccountListCreateView through _assert_create_writable, and "
+            "BankAccountDetailView on update)."
         ),
     ),
     KeyConversion(
@@ -387,6 +396,53 @@ ACCEPTED_DIFFERENCES: tuple[AcceptedDifference, ...] = (
         only_without_roles=True,
     ),
 )
+
+
+@dataclass(frozen=True)
+class FieldSuccession:
+    """One registered field that became several, and where its switches went.
+
+    A field is a switch an administrator has set per role, so splitting one
+    into finer fields must not reset what schools decided. ``old_key`` is the
+    field the registry no longer declares and ``new_keys`` the fields that
+    replace it; :func:`carry_over_successions` copies every role switch,
+    prebuilt-role default and personal exception from the first onto each of
+    the others, then removes the originals. A school that had opened the old
+    field for its Procurement Officer therefore finds every new field open for
+    her, and one that had left it closed finds them all closed.
+    """
+
+    old_key: str
+    new_keys: tuple[str, ...]
+    note: str = ""
+
+
+#: Every field the registry has split, in the order it was split.
+SUCCESSIONS: tuple[FieldSuccession, ...] = (
+    FieldSuccession(
+        old_key="procurement.vendor.contacts",
+        new_keys=(
+            "procurement.vendor_contact.name",
+            "procurement.vendor_contact.email",
+            "procurement.vendor_contact.phone",
+        ),
+        note=(
+            "One switch over a vendor's whole contact list, now a switch for "
+            "each contact's name, email and phone. The list was sensitive and "
+            "so are the three details, so a role with no switch stays closed."
+        ),
+    ),
+)
+
+
+def successor_keys() -> tuple[str, ...]:
+    """Every field a split field was carried onto, in order."""
+    seen: list[str] = []
+    for succession in SUCCESSIONS:
+        for key in succession.new_keys:
+            if key not in seen:
+                seen.append(key)
+    return tuple(seen)
 
 
 def converted_keys() -> set[str]:
@@ -779,3 +835,74 @@ def reverse_conversion(apps=None) -> dict:
         reason__startswith=CONVERSION_REASON_PREFIX,
     ).delete()[0]
     return removed
+
+
+def carry_over_successions(apps=None) -> dict:
+    """Move the switches of every split field onto the fields that replace it.
+
+    For each :class:`FieldSuccession` whose old field still has switches, copy
+    its role switches (``RoleFieldAccess``), prebuilt-role defaults
+    (``PrebuiltRoleFieldAccess``) and personal exceptions
+    (``UserFieldAccessOverride``) onto each new field that exists, then delete
+    the originals. A copy never overwrites a switch the new field already has,
+    so a decision made on the new field wins over one inherited from the old.
+
+    Deleting the originals is what makes the carry-over happen once: a school
+    that later resets a new field to its default (which deletes the row) is not
+    handed the old decision again by the next sync. It is also why nothing is
+    deleted until every new field exists, so a run that finds a new field not
+    synced yet leaves the old switches in place for the run that does.
+
+    Safe to run before or after the registry sync, and any number of times:
+    with nothing left to move it writes nothing. Returns a count per table.
+    """
+    models = _models(apps)
+    moved = {"role_field_access": 0, "prebuilt_role_field_access": 0, "user_field_access_override": 0}
+    for succession in SUCCESSIONS:
+        present = set(
+            models.FieldDefinition.objects.filter(key__in=succession.new_keys)
+            .values_list("key", flat=True)
+        )
+        if present != set(succession.new_keys):
+            continue
+        old = succession.old_key
+
+        for model, owner, extra, label in (
+            (models.RoleFieldAccess, "role_id", ("set_by_id", "set_at"), "role_field_access"),
+            (models.PrebuiltRoleFieldAccess, "prebuilt_role_id", (), "prebuilt_role_field_access"),
+        ):
+            stored = list(model.objects.filter(field_id=old).values(
+                owner, "can_read", "can_write", *extra,
+            ))
+            if not stored:
+                continue
+            held = set(
+                model.objects.filter(field_id__in=succession.new_keys)
+                .values_list(owner, "field_id")
+            )
+            rows = [
+                model(field_id=new_key, **row)
+                for row in stored for new_key in succession.new_keys
+                if (row[owner], new_key) not in held
+            ]
+            moved[label] += _bulk_create(model, rows)
+            model.objects.filter(field_id=old).delete()
+
+        exceptions = list(models.UserFieldAccessOverride.objects.filter(field_id=old).values(
+            "tenant_id", "user_id", "access", "mode", "reason", "created_by_id", "expires_at",
+        ))
+        if exceptions:
+            held = set(
+                models.UserFieldAccessOverride.objects.filter(field_id__in=succession.new_keys)
+                .values_list("user_id", "field_id", "access")
+            )
+            rows = [
+                models.UserFieldAccessOverride(field_id=new_key, **row)
+                for row in exceptions for new_key in succession.new_keys
+                if (row["user_id"], new_key, row["access"]) not in held
+            ]
+            moved["user_field_access_override"] += _bulk_create(
+                models.UserFieldAccessOverride, rows,
+            )
+            models.UserFieldAccessOverride.objects.filter(field_id=old).delete()
+    return moved

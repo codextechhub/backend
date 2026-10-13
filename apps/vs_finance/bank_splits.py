@@ -290,6 +290,7 @@ def split_shared_bank_account(
     split_date,
     agreement_reference,
     difference_treatment=BankSplitDifferenceTreatment.DEBT,
+    reveal_balance=True,
     actor_user=None,
 ):
     """Move one legacy unbranched bank ledger into explicitly agreed branch balances.
@@ -315,6 +316,10 @@ def split_shared_bank_account(
     split's audit entry, and when no share differs both treatments post the
     same plain reclassification. The transaction locks both legacy rows, and any
     failure rolls back every successor, transfer and journal.
+
+    The refusal that the agreed balances do not add up to the shared account's
+    balance states that balance unless ``reveal_balance`` is False, for a caller
+    who may not read it.
     """
     from .inter_branch import book_bank_split_difference, ensure_branches_open
     from .models import Account, BankAccount, JournalEntry, JournalLine
@@ -482,6 +487,9 @@ def split_shared_bank_account(
         raise BankAccountSplitError(
             f"The agreed opening balances add up to {format_naira(agreed_total)}, but the "
             f"shared account's balance on {day(split_date)} is {format_naira(legacy_balance)}."
+            if reveal_balance else
+            f"The agreed opening balances do not add up to the shared account's balance "
+            f"on {day(split_date)}."
         )
 
     book = dict(historical_balances)

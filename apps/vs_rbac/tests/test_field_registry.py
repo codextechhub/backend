@@ -20,6 +20,7 @@ of ``sync_field_registry``, which writes it to the database.
 """
 import importlib
 import pkgutil
+import re
 from io import StringIO
 from unittest import mock
 
@@ -60,17 +61,35 @@ EXPECTED_RESOURCES = {
     ("attendance", "register"),
     ("attendance", "staff"),
     ("finance", "bankaccount"),
+    ("finance", "banktransaction"),
+    ("finance", "banktransfer"),
+    ("finance", "customer"),
+    ("finance", "dashboard"),
+    ("finance", "deferredincome"),
+    ("finance", "deposit"),
+    ("finance", "fiscalyear"),
     ("finance", "interbranch"),
+    ("finance", "payer_link"),
+    ("finance", "payer_payment"),
     ("finance", "payrollrun"),
+    ("finance", "period"),
+    ("finance", "pettycash_return"),
+    ("finance", "provision"),
     ("finance", "salary"),
+    ("finance", "seal"),
+    ("finance", "settings"),
     ("import", "batches"),
     ("import", "jobs"),
     ("import", "templates"),
     ("payments", "payout"),
     ("payments", "virtual_account"),
     ("platform", "staff_profile"),
+    ("platform", "schools"),
     ("platform", "team"),
     ("procurement", "vendor"),
+    ("procurement", "vendor_contact"),
+    ("procurement", "approval"),
+    ("school", "branches"),
     ("school", "guardians"),
     ("school", "profile"),
     ("school", "students"),
@@ -85,6 +104,12 @@ EXPECTED_RESOURCES = {
 #: is read with the student key because the guardian endpoints carry it.
 ENDPOINT_GUARDED_RESOURCES = {
     ("attendance", "lesson"): "attendance.register.view",
+    ("finance", "dashboard"): "finance.report.view",
+    ("finance", "payer_link"): "finance.customer.view",
+    ("finance", "payer_payment"): "finance.payment.view",
+    ("finance", "pettycash_return"): "finance.pettycash.view",
+    ("procurement", "vendor_contact"): "procurement.vendor.view",
+    ("procurement", "approval"): "procurement.approval.view",
     ("school", "guardians"): "school.students.view",
     ("school", "profile"): "school.profile.view",
     ("school", "teachers"): "school.teachers.view",
@@ -154,6 +179,26 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_students.serializers.EnrolmentWriteSerializer", "address"):
         "The pupil's own address on the enrol form, not a guardian's; see the phone "
         "entry above.",
+    ("vs_finance.serializers.DirectEntryCreateSerializer", "date"):
+        "A journal's date on a direct entry belongs to the journal create permission, "
+        "not to the deferred income release date.",
+    ("vs_finance.views_ops.banking._BankStatementCorrectionSerializer", "period_label"):
+        "The label a bank statement correction gives the statement's own period, "
+        "guarded by the banking permission; not a deferred income accounting period.",
+    ("vs_finance.views_ops.banking._BankStatementWizardUploadSerializer", "period_label"):
+        "The label an uploaded bank statement gives its own period, guarded by the "
+        "banking permission; not a deferred income accounting period.",
+    **{
+        (f"vs_finance.views_ops.banking.{serializer}", "opening_balance"):
+            "The balance a bank statement opens with, guarded by the banking "
+            "permission; not the opening balance a branch agrees to take when a "
+            "shared bank account is split."
+        for serializer in ("_BankStatementCorrectionSerializer",
+                           "_BankStatementWizardUploadSerializer")
+    },
+    ("vs_finance.views_ops.banking._BankBranchAllocationSerializer", "opening_balance"):
+        "A branch's agreed share of a split bank account, a finance.bankaccount field; "
+        "a customer's opening balance is a different record's figure.",
     ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "amount"):
         "A corrected bank statement line's amount, not anybody's pay; it shares only "
         "the name of a voluntary deduction's amount.",
@@ -163,6 +208,16 @@ WRITE_PATH_ALLOWLIST = {
     ("schools.vs_schools.serializers.BranchInlineCreateSerializer", "address"):
         "The address of a branch CodeX provisions while creating a school, not the "
         "school profile's own address.",
+    ("schools.vs_schools.serializers.BranchInlineCreateSerializer", "email"):
+        "The email of a branch CodeX provisions while creating a school, not the "
+        "school's billing email.",
+    **{
+        (f"schools.vs_schools.serializers.{serializer}", name):
+            "The contact for the administrator named in the request, stored on the "
+            "administrator's own contact record and not the school's billing contact."
+        for serializer in ("BranchPrimaryAdminWriteSerializer", "SchoolPrimaryAdminWriteSerializer")
+        for name in ("email", "phone")
+    },
     **{
         ("schools.vs_schools.serializers.SchoolCreateSerializer", name):
             "The platform creates a school under platform.schools.create; tenant-scoped "
@@ -303,6 +358,33 @@ def _all_enforcing_serializers():
         if any(part == "tests" or part.startswith("test") for part in parts):
             continue
         yield cls
+
+
+class RegistryHoldsNoBranchOrDocumentNumberTests(SimpleTestCase):
+    """No field is a branch, and no field is a document number.
+
+    Owner rule: a branch's name always shows, and which branch a person may
+    choose is decided by their branch reach and permission keys, never by a
+    Field Access switch. A document number identifies a document the way a
+    name identifies a customer, so it is never a switch either. A figure that
+    merely concerns branches (a branch comparison card, each branch's own
+    balance, a month's close state per branch) is a different thing and may be
+    registered; the identifying branch and the identifying number may not.
+    """
+
+    BRANCH_NAME = re.compile(
+        r"^(from_|to_|for_|sending_|receiving_|split_)?branch(_id|_name)?$")
+    NUMBER_NAME = re.compile(r"(^|_)document_number$")
+
+    def test_no_registered_name_or_alias_identifies_a_branch_or_a_document_number(self):
+        for declaration in all_declarations():
+            for spec in declaration.fields:
+                names = {spec.name, *spec.resolved_api_names}
+                names.update(alias for alias, _ in declaration.write_aliases)
+                for name in names:
+                    with self.subTest(key=declaration.key_for(spec), name=name):
+                        self.assertIsNone(self.BRANCH_NAME.match(name))
+                        self.assertIsNone(self.NUMBER_NAME.search(name))
 
 
 class RegistryMatchesTheSerializersTests(SimpleTestCase):
@@ -595,6 +677,13 @@ class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
 #: Serializers that emit a registered name without enforcing it, each with the
 #: reason that is safe. Every entry must still match a real hit.
 READ_PATH_ALLOWLIST = {
+    **{
+        (f"schools.vs_schools.serializers.{serializer}", name):
+            "CodeX's own branch management, governed by the platform.branches keys rather "
+            "than the school's school.branches switches."
+        for serializer in ("BranchDetailSerializer", "BranchCreateSerializer", "BranchUpdateSerializer")
+        for name in ("address", "email")
+    },
     **{
         ("schools.vs_schools.serializers.SchoolDetailSerializer", name):
             "The CodeX platform school detail, governed by platform.schools.view rather "

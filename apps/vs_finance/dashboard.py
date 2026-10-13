@@ -17,6 +17,12 @@ block the reader may not see is ``None`` in the payload, not an empty value, so
 nothing about it leaves the server and the screen can leave the card out rather
 than draw an empty one.
 
+A card a role's Field Access switches close (``finance.dashboard``) is not
+computed for that reader at all, and the response leaves its key out
+(:mod:`vs_finance.dashboard_serializers`). A list that restates another card,
+such as the attention list's bank-lines item, shows an item only when the
+reader may read the card it restates.
+
 Every figure answers under the reader's branches. Figures read off the documents
 (invoices, receipts, vendor bills, approvals, journals) are narrowed to the
 reader's branches and the school-wide rows, the same rows their lists show. The
@@ -37,6 +43,8 @@ from django.db.models.functions import TruncMonth
 from vs_config.clock import tenant_today
 from vs_config.display import format_month
 from vs_rbac.scoping import UNNARROWED, BranchScope
+
+from .field_guards import readable
 
 from .constants import (
     AccountType,
@@ -72,10 +80,19 @@ class DashboardReader:
 
     keys: frozenset | None = None
     scope: BranchScope = UNNARROWED
+    request: object = field(default=None, compare=False, repr=False)
 
     def can(self, *keys: str) -> bool:
         """True when the reader holds any one of ``keys``."""
         return self.keys is None or any(key in self.keys for key in keys)
+
+    def shows(self, *cards: str) -> bool:
+        """True when the reader's Field Access lets them read every named card.
+
+        The names are registered fields of ``finance.dashboard``. A reader built
+        without a request (a test, an internal report) reads every card.
+        """
+        return all(readable(self.request, "finance.dashboard", card) for card in cards)
 
     @property
     def whole_tenant(self) -> bool:
@@ -83,7 +100,7 @@ class DashboardReader:
         return not self.scope.is_narrowed
 
     @classmethod
-    def for_user(cls, user, tenant) -> "DashboardReader":
+    def for_user(cls, user, tenant, request=None) -> "DashboardReader":
         """The reader behind a request's effective user.
 
         A key counts only when the role holds it and the school's plan reaches
@@ -91,7 +108,8 @@ class DashboardReader:
         A Procurement Admin holding the analytics key at a school whose plan
         stops short of analytics gets no spend figures here, just as the
         analytics screen refuses them. The plan's verdict is the door's own,
-        read through :func:`vs_rbac.plan_gate.keys_within_plan`.
+        read through :func:`vs_rbac.plan_gate.keys_within_plan`. ``request`` is
+        the request the caller's Field Access is read from.
         """
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.permissions import is_vision_super_admin
@@ -103,6 +121,7 @@ class DashboardReader:
         return cls(
             keys=keys,
             scope=transaction_branch_scope_for_user(user, tenant=tenant),
+            request=request,
         )
 
 
@@ -512,12 +531,16 @@ def _approvals(entity, reader=EVERY_BLOCK) -> dict:
 
 
 # Summarize period close checklist status.
-def _close_progress(entity, period) -> dict | None:
+def _close_progress(entity, period, reader=EVERY_BLOCK) -> dict | None:
     """How far ``period`` is from closing, read the way the close preview reads it.
 
     Depreciation and deferred income falling due are work the close does itself,
     so they count as done, with ``done_by_close`` set, rather than as outstanding:
     the card agrees with the checklist a bursar sees on pressing Close.
+
+    A check the reader's Field Access closes is left out and not counted, so the
+    card never shows a total that includes a check the checklist would hide
+    (:func:`vs_finance.close_access.check_readable`).
 
     ``period`` is the stored name ("2026-09") and ``period_label`` the month in
     words ("September 2026"), which is what the card shows.
@@ -530,7 +553,9 @@ def _close_progress(entity, period) -> dict | None:
         cl = close_checklist(entity, period, preview=True)  # Run close checks.
     except Exception:  # pragma: no cover - defensive
         return None  # Hide close progress instead of failing dashboard.
-    checks = [
+    from .close_access import readable_check_items
+
+    checks = readable_check_items(reader.request, [
         {
             "name": i.name,
             "passed": bool(i.passed),
@@ -538,7 +563,7 @@ def _close_progress(entity, period) -> dict | None:
             "done_by_close": bool(i.done_by_close),
         }
         for i in cl.items
-    ]
+    ])
     return {  # Return checklist summary.
         "period": period.name,  # Period stored name.
         "period_label": period_label(period, entity.tenant),  # The month in words.
@@ -662,6 +687,9 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
 
     # Ledger blocks read the reader's own journals when they are narrowed (see
     # vs_finance.branch_ledger); the budget and the period close stay school-wide.
+    # A card the reader's Field Access closes is not computed, and its key is left
+    # out of the response by the serializer (vs_finance.dashboard_serializers).
+    show = reader.shows
     ledger = reader.can("finance.report.view")
     school_ledger = ledger and reader.whole_tenant
     source = ledger_balances(entity, reader.scope)
@@ -672,37 +700,50 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
     kpis = {"cash_position": None, "receivables": None, "payables": None, "net_income_ytd": None}
     aging = None
     if invoices or ledger:
-        aging = _ar_aging_block(entity, as_of, scope)
+        # The aging total also stands in for the receivables card of a reader without the ledger.
+        if show("ar_aging") or (not ledger and show("kpi_receivables")):
+            aging = _ar_aging_block(entity, as_of, scope)
     if ledger:
-        kpis["cash_position"] = _kpi(_closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT, source))
-        kpis["receivables"] = _kpi(_closing_series(
-            set(  # Customer AR account ids.
-                Customer.objects.filter(entity=entity)
-                .exclude(receivable_account=None)
-                .values_list("receivable_account_id", flat=True)
-            ),
-            periods,
-            NormalBalance.DEBIT,  # AR is debit-natural.
-            source,
-        ))
-        kpis["payables"] = _kpi(_closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT, source))
-        kpis["net_income_ytd"] = _kpi(_net_income_series(entity, periods, source))
-    elif invoices:
+        if show("kpi_cash_position"):
+            kpis["cash_position"] = _kpi(
+                _closing_series(_cash_account_ids(entity), periods, NormalBalance.DEBIT, source))
+        if show("kpi_receivables"):
+            kpis["receivables"] = _kpi(_closing_series(
+                set(  # Customer AR account ids.
+                    Customer.objects.filter(entity=entity)
+                    .exclude(receivable_account=None)
+                    .values_list("receivable_account_id", flat=True)
+                ),
+                periods,
+                NormalBalance.DEBIT,  # AR is debit-natural.
+                source,
+            ))
+        if show("kpi_payables"):
+            kpis["payables"] = _kpi(
+                _closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT, source))
+        if show("kpi_net_income"):
+            kpis["net_income_ytd"] = _kpi(_net_income_series(entity, periods, source))
+    elif invoices and show("kpi_receivables"):
         # The reader's own open invoices: no GL history to draw a sparkline from.
         kpis["receivables"] = {"value": aging["total"], "delta_pct": None, "spark": []}
 
-    approvals = _approvals(entity, reader)
+    approvals = _approvals(entity, reader) if show("approvals") else {"items": [], "total": 0}
     chosen, windows = blocks.resolve_window(entity, as_of, current, window)
+    # The budget lines restate the income line of revenue against budget, so they
+    # are computed only for a reader who may read both.
     revenue_vs_budget = (
-        _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)) if school_ledger else None
+        _revenue_vs_budget(entity, getattr(current, "fiscal_year", None))
+        if school_ledger and show("revenue_vs_budget") else None
     )
     banks = (
         blocks.bank_accounts(entity)
-        if reader.whole_tenant and reader.can("finance.bankaccount.view") else None
+        if reader.whole_tenant and reader.can("finance.bankaccount.view") and show("bank_accounts")
+        else None
     )
     for bank in banks or []:
         # Each account's month-end balance over the same window as the headline tiles.
         bank["spark"] = _closing_series({bank.pop("gl_account_id")}, periods, NormalBalance.DEBIT)
+    vendor_bills = reader.can("procurement.vendor_invoice.view")
     return {  # Complete dashboard payload.
         "books": blocks.books_kind(entity),
         "reader_first_name": (getattr(user, "first_name", "") or "").strip() or None,
@@ -710,23 +751,29 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
         "windows": [{"key": w.key, "label": w.label, "name": w.name} for w in windows],
         "collections": (
             blocks.collections(entity, chosen, scope=scope, billed_ok=invoices, collected_ok=payments)
-            if invoices or payments else None
+            if (invoices or payments) and show("collections") else None
         ),
-        "channels": blocks.channels(entity, chosen, scope=scope) if payments else None,
+        "channels": blocks.channels(entity, chosen, scope=scope) if payments and show("channels") else None,
         "branches": (
-            blocks.branches(entity, chosen, as_of) if reader.whole_tenant and invoices else None
+            blocks.branches(entity, chosen, as_of)
+            if reader.whole_tenant and invoices and show("branch_comparison") else None
         ),
         "bank_accounts": banks,
         "budget": (
             blocks.budget_lines(entity, revenue_vs_budget, getattr(current, "fiscal_year", None), as_of)
+            if show("budget_lines") else None
         ),
-        "top_payers": blocks.top_payers(entity, as_of, scope=scope) if invoices else None,
-        "receivables_summary": blocks.receivables_summary(entity, as_of, scope=scope) if invoices else None,
-        "attention": blocks.attention(entity, as_of, reader, user, banks=banks),
-        "upcoming": blocks.upcoming(entity, as_of, reader),
+        "top_payers": blocks.top_payers(entity, as_of, scope=scope) if invoices and show("top_payers") else None,
+        "receivables_summary": (
+            blocks.receivables_summary(entity, as_of, scope=scope)
+            if invoices and show("receivables_summary") else None
+        ),
+        "attention": (
+            blocks.attention(entity, as_of, reader, user, banks=banks) if show("attention") else None
+        ),
+        "upcoming": blocks.upcoming(entity, as_of, reader) if show("upcoming") else None,
         "payables_due": (
-            blocks.payables_due(entity, as_of, reader)
-            if reader.can("procurement.vendor_invoice.view") else None
+            blocks.payables_due(entity, as_of, reader) if vendor_bills and show("payables_due") else None
         ),
         "entity": entity.code,  # Entity code.
         "fiscal_year": _fiscal_year_label(current),  # Fiscal year label.
@@ -736,25 +783,26 @@ def finance_dashboard(entity, *, period=None, reader=EVERY_BLOCK, window=None, u
         ),  # The month in words.
         "as_of": as_of.isoformat(),  # Dashboard as-of date.
         "narrowed": not reader.whole_tenant,  # Figures cover only the reader's branches.
-        "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
+        "fiscal_runway": _fiscal_runway(entity) if show("fiscal_runway") else None,  # Fiscal-calendar expiry warning.
         "kpis": kpis,  # Executive KPI cards.
         "revenue_vs_budget": revenue_vs_budget,
-        "ar_aging": aging,  # AR aging block.
+        "ar_aging": aging if show("ar_aging") else None,  # AR aging block.
         "trend": (
             _trend(entity, as_of, scope=scope, issued_ok=invoices, collected_ok=payments)
-            if invoices or payments else None
+            if (invoices or payments) and show("trend") else None
         ),
-        "top_overdue": _top_overdue(entity, as_of, scope) if invoices else None,
+        "top_overdue": _top_overdue(entity, as_of, scope) if invoices and show("top_overdue") else None,
         "vendor_due": (
-            _vendor_due(entity, reader.scope)
-            if reader.can("procurement.vendor_invoice.view") else None
+            _vendor_due(entity, reader.scope) if vendor_bills and show("vendor_due") else None
         ),
         "approvals": approvals if approvals["items"] else None,
         "close_progress": (
-            _close_progress(entity, current)
-            if reader.whole_tenant and reader.can("finance.period.view") else None
+            _close_progress(entity, current, reader)
+            if reader.whole_tenant and reader.can("finance.period.view") and show("close_progress")
+            else None
         ),
         "recent_journals": (
-            _recent_journals(entity, scope=scope) if reader.can("finance.journal.view") else None
+            _recent_journals(entity, scope=scope)
+            if reader.can("finance.journal.view") and show("recent_journals") else None
         ),
     }

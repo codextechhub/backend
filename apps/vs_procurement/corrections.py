@@ -532,11 +532,7 @@ def _post_vendor_credit_note_atomic(note, *, actor_user=None):
     record(
         entity=note.entity, action=FinanceAuditAction.VENDOR_CREDIT_NOTE_POSTED,
         actor_user=actor_user, target=note,
-        message=(
-            f"Posted credit note from {vendor.code} against bill {_label(invoice)} "
-            f"({format_naira(note.total)}; {format_naira(applied)} settled the bill, "
-            f"{format_naira(advance)} held as vendor credit)."
-        ),
+        message=f"Posted credit note from {vendor.code} against bill {_label(invoice)}.",
         journal_id=entry.pk, total=note.total, tax=note.tax_total,
         vendor_invoice_id=invoice.pk, applied=applied, vendor_credit=advance,
     )
@@ -701,7 +697,7 @@ def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill
     record(
         entity=note.entity, action=FinanceAuditAction.VENDOR_CREDIT_NOTE_ALLOCATED,
         actor_user=actor_user, target=note,
-        message=f"Applied {format_naira(applied)} of vendor credit across {counted(len(rows), 'bill')}.",
+        message=f"Applied vendor credit across {counted(len(rows), 'bill')}.",
         journal_id=entry.pk, allocated=note.allocated_amount,
         unallocated=note.advance_remaining, effective_date=str(effective),
     )
@@ -878,7 +874,7 @@ def _void_vendor_invoice_atomic(invoice, *, actor_user=None, date=None):
     record(
         entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_VOIDED,
         actor_user=actor_user, target=invoice,
-        message=f"Voided bill {_label(invoice)} from {invoice.vendor.code} ({format_naira(invoice.total)}).",
+        message=f"Voided bill {_label(invoice)} from {invoice.vendor.code}.",
         journal_id=invoice.journal_id, reversal_id=reversal.pk,
         before={"status": DocumentStatus.POSTED}, after={"status": DocumentStatus.REVERSED},
     )
@@ -1121,10 +1117,7 @@ def _return_goods_atomic(grn, *, return_date, reason, lines=None, actor_user=Non
     record(
         entity=grn.entity, action=FinanceAuditAction.GOODS_RETURNED,
         actor_user=actor_user, target=goods_return,
-        message=(
-            f"Returned goods on {_label(grn)} to {grn.vendor.code} "
-            f"({format_naira(total_value)} no longer waiting for a bill): {reason}"
-        ),
+        message=f"Returned goods on {_label(grn)} to {grn.vendor.code}.",
         journal_id=entry.pk, value=total_value, grn_id=grn.pk, reason=reason,
     )
     rematch_open_bills(set(returned_by_po_line))

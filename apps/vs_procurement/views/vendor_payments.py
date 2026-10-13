@@ -211,33 +211,19 @@ def _replace_plan(payment, plan):
     ])
 
 
-def _activity_message(log):
-    """Render immutable legacy audit rows without exposing internal kobo units."""
-    metadata = log.metadata or {}
-    if log.action == "VENDOR_PAYMENT_POSTED" and "net" in metadata:
-        return f"Payment posted: {format_naira(metadata['net'])} net, {format_naira(metadata.get('wht', 0))} WHT."
-    if log.action == "VENDOR_PAYMENT_ALLOCATED" and "allocated" in metadata:
-        return f"Allocated {format_naira(metadata['allocated'])} to vendor invoices."
-    return log.message
-
-
 def _vendor_payment_activity(entity, payment_id):
     """Finance-audit activity feed for one vendor payment, newest first, capped.
 
-    Messages are rendered from structured metadata by :func:`_activity_message`
-    rather than exposing the raw JSON field. Each row names who acted through
-    :func:`vs_finance.audit.activity_actor`, so an action taken under a proxy reads
-    "Ada Obi for Chioma Okafor" as it does on every other document drawer.
+    Each row is built by :func:`vs_finance.audit.activity_entry`: a sentence that
+    carries no figure (an entry written before that rule shows a rebuilt one), the
+    free-text ``reason`` behind the act beside it, and who acted, so an action
+    taken under a proxy reads "Ada Obi for Chioma Okafor" as it does on every other
+    document drawer. The raw metadata field is never exposed.
     """
-    from vs_finance.audit import activity_actor, prime_activity_actors
+    from vs_finance.audit import activity_entry, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
-    return [{
-        "id": log.id, "action": log.action, "message": _activity_message(log),
-        "status": log.status,
-        **activity_actor(log),
-        "created_at": log.created_at,
-    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
+    return [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=entity, target_type="VendorPayment", target_id=str(payment_id),
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 

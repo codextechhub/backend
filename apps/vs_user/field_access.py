@@ -13,6 +13,10 @@ the day it shipped. Each has a switch because each is a fact the platform may
 be asked about later. The name is held on the account, so it reaches the
 profile nested under ``user``, and correcting it on another person's account
 asks the same switch (``UserUpdateSerializer``).
+Adding a member of staff sets the details the Add form and the spreadsheet
+import carry as the record is created, and each is judged by its Write switch
+(``UserCreateSerializer``); the name is open on create, because nobody can be
+added without one.
 
 ``platform.team`` holds account security and invitation facts about another
 user. Reaching the account at all is ``platform.team.view``, which a school's
@@ -40,9 +44,11 @@ def register():
         ),
         fields=(
             FieldSpec("first_name", "First name", group="Name", scope=_PLATFORM,
-                      sort_order=10, description="Held on the staff member's account."),
+                      sort_order=10, open_on_create=True,
+                      description="Held on the staff member's account."),
             FieldSpec("last_name", "Last name", group="Name", scope=_PLATFORM,
-                      sort_order=20, description="Held on the staff member's account."),
+                      sort_order=20, open_on_create=True,
+                      description="Held on the staff member's account."),
             FieldSpec("date_of_birth", "Date of birth", group="Personal",
                       scope=_PLATFORM, sort_order=10),
             FieldSpec("marital_status", "Marital status", group="Personal",

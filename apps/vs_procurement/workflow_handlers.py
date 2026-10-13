@@ -43,6 +43,14 @@ UNPOSTED_STATUSES = frozenset({
 })
 
 
+#: The terms on an order are the vendor's terms copied at the time it was raised,
+#: so the order restates a field the vendor record lets a school close per role.
+#: An approver who cannot read the vendor's payment terms is not shown them here.
+#: The amounts, quantities and totals an approval document restates have no
+#: registered field to follow.
+VENDOR_PAYMENT_TERMS = "procurement.vendor.payment_terms"
+
+
 def _quantity(value) -> str:
     """Format a decimal quantity without database-scale trailing zeroes."""
     text = format(value, "f")
@@ -270,7 +278,7 @@ class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
                 ("Order date", document.order_date),
                 ("Expected date", document.expected_date or "-"),
                 ("Delivery address", document.delivery_address or "-"),
-                ("Payment terms", document.payment_terms or "-"),
+                ("Payment terms", document.payment_terms or "-", VENDOR_PAYMENT_TERMS),
                 ("Reference", document.reference or "-"),
                 ("Narration", document.narration),
                 ("Subtotal", format_naira(document.subtotal)),

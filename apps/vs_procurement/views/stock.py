@@ -53,6 +53,7 @@ from .base import (
     _strict_kobo,
     _text,
 )
+from ..stock_transfer_access import interbranch_readable, trim_receiving_leg
 from .catalog import _resolve_catalog_item
 
 # --------------------------------------------------------------------------- #
@@ -211,9 +212,9 @@ def _detail_payload(request, entity, pk):
     if item is None:
         raise NotFound("No such stock item in this entity.")
     held = _held_balances(request, entity)
-    context = {} if held is None else {
-        "location_balances": _summed_figures(held, [item.pk]),
-    }
+    context = {"request": request}
+    if held is not None:
+        context["location_balances"] = _summed_figures(held, [item.pk])
     return StockItemDetailSerializer(item, context=context).data
 
 
@@ -722,7 +723,7 @@ class StockIssueView(_ProcBase):
         return success_response(
             "Stock issued.",
             data={
-                "movement": StockMovementSerializer(movement).data,
+                "movement": StockMovementSerializer(movement, context={"request": request}).data,
                 "stock_item": _detail_payload(request, entity, item.pk),
             },
             status=201,
@@ -769,16 +770,19 @@ class StockTransferView(_ProcBase):
             reference=_text(body.get("reference", ""), "reference", 64),
             narration=_text(body.get("narration", ""), "narration", 255),
         )
-        return success_response(
-            "Stock transferred.",
-            data={
-                "movement": StockMovementSerializer(movement).data,
-                "received": StockMovementSerializer(movement.paired_movement).data,
-                "inter_branch_transfer_id": movement.inter_branch_transfer_id,
-                "stock_item": _detail_payload(request, entity, item.pk),
-            },
-            status=201,
-        )
+        context = {"request": request}
+        received = StockMovementSerializer(movement.paired_movement, context=context).data
+        # The receiving store may belong to a branch the sender cannot read.
+        if not _readable_movements(request, entity).filter(pk=movement.paired_movement_id).exists():
+            received = trim_receiving_leg(received)
+        data = {
+            "movement": StockMovementSerializer(movement, context=context).data,
+            "received": received,
+            "stock_item": _detail_payload(request, entity, item.pk),
+        }
+        if interbranch_readable(request, "related_documents"):
+            data["inter_branch_transfer_id"] = movement.inter_branch_transfer_id
+        return success_response("Stock transferred.", data=data, status=201)
 
 
 class StockRestockRequisitionView(_ProcBase):
@@ -971,4 +975,6 @@ class StockMovementListView(_ProcBase):
             qs = qs.filter(movement_type=mtype)
         if (loc := _resolve_location(request, entity, request.query_params.get("location"))):
             qs = qs.filter(location=loc)
-        return self.paginate(request, qs.order_by("-id"), StockMovementSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), StockMovementSerializer, context={"request": request},
+        )

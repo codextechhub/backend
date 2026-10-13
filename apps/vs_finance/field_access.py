@@ -53,6 +53,152 @@ with the pay breakdown, as NHF is on a payroll line. The body keys carry a
 ``brought_forward_`` prefix so that neither a form nor the audit trail can
 mistake them for the person's current pay. On a payroll line and a payslip
 they travel inside the PAYE working, so they go with PAYE there.
+
+A branch and a document number are never fields. A branch's name always shows,
+and which branch a person may choose is decided by their branch reach and
+permission keys; a document number identifies the document the way a name
+identifies a customer. Neither is registered on any resource, and
+``RegistryHoldsNoBranchOrDocumentNumberTests`` in ``vs_rbac`` keeps it so.
+
+The receivables accruals carry four resources of their own, all open to every
+role until a school closes a field:
+
+* ``finance.deferredincome``: what is waiting to be released, what has been
+  released, what falls due by month, and each release (its accounting
+  period, date, amount, journal and whether it can still be undone, with the
+  reason it cannot). The release date and the accounting period are the two
+  writable fields, because the release run submits ``up_to`` and the undo
+  submits ``period``. The sentence saying why an undo is blocked names a branch
+  and a month, so it is worded without the month when the period is hidden.
+* ``finance.provision``: a doubtful-debt run (its status, date,
+  narration, totals, policy snapshot and when it was raised) and each branch's
+  line of it (required, current, movement, age bands, journal). Only the
+  provision date and the narration are typed in, when a run is raised.
+* ``finance.deposit``: a refundable deposit and where it stands. Billing opens a
+  deposit and the release and forfeit runs close it, so every field is
+  read-only. The release and forfeit responses are rendered through the same
+  switches, and a caller who may not read a deposit's customer may not name one
+  to release.
+* ``finance.settings``: the receivables policy on the finance settings screen.
+  Each policy value is stored and submitted, so each has a Read and a Write
+  switch; the last change (when and by whom) is audit data and read-only. The
+  settings history shows a changed value only to a caller who may read that
+  setting.
+
+The customer master and the bank account master are open to every role until a
+school closes a field, apart from the account number:
+
+* ``finance.customer``: a customer's code and name identify it wherever it is
+  picked, printed or named in a message and carry no switch. Its billing email,
+  phone and address, its receivable account, opening balance, source
+  record (type and reference) and whether it is active are typed in, each under
+  its own switch; the date it was created is read-only. What its account holds
+  is worked out and read-only: the balance (with the signed figures that add up
+  to it, such as each open bill's balance and a statement line's running
+  balance), the account status, what it has paid, how many bills are open, how
+  many customers it pays for, and the lists of open bills, open debit notes,
+  transactions and statement lines. The billing email also travels as the
+  recipient of a document email, in the preview, the delivery history and the
+  message that says where a send went. A bill-to block printed on an invoice,
+  receipt or statement is the customer's own record of who was billed, so it is a
+  declared system surface (:data:`vs_rbac.field_enforcement.SYSTEM_SURFACES`).
+  The opening import writes bills and not the customer record, and the record a
+  school's billing contact is mirrored into on CodeX's own books is written
+  without a request, so neither is judged.
+* ``finance.bankaccount`` (the master): an account's name identifies it and
+  carries no switch. The bank, the bank's code at the payment provider (set by
+  the payments subaccount endpoint, so read-only here), the currency, the
+  ledger account, whether it is active, the main operating account
+  and the fee collection account are typed in, each under its own switch. The
+  balance on the books, the bank's statement balance, the reconciliation
+  progress, the recent ledger activity and the provider subaccount are worked
+  out and read-only. A reconciliation run restates the two balances, so it is
+  read under their switches, and the difference between them needs both.
+
+Bank documents, the split of a shared bank account, payments from a payer and
+petty cash returns carry resources of their own, all open to every role until a
+school closes a field:
+
+* ``finance.banktransaction`` and ``finance.banktransfer``: money in or out of
+  a bank account, and money between two of a branch's own accounts. The bank
+  account (or the two accounts of a transfer), the amount, the date, the
+  narration and the reference are typed in; the status and
+  where the document stands with its approval route and the journal are
+  produced by the books and read-only. A
+  correction of a draft is judged by what it changes: a form that sends a
+  figure back exactly as stored writes nothing to it.
+* ``finance.bankaccount`` (the branch split): the one-time cutover of a bank
+  account shared by several branches into one account per branch. The split
+  date, the agreement reference, the way differences are treated, and each
+  branch's share (its agreed opening balance and the code and name of
+  its new ledger account) are typed in. The balance of the shared ledger, the
+  part not yet given a branch, each branch's own balance, the accounts opened,
+  their journals and the debts between branches are worked out and read-only.
+  A debt between branches is an inter-branch document, so its figures are also
+  filtered by the ``finance.interbranch`` switches. The account number keeps
+  its switch.
+* ``finance.payer_link``: who pays for whom. The payer, the customer paid
+  for, whether the link is active, and the kind and reference of the record
+  that made it are one switch each. A link is not a customer master record, so
+  it has a resource of its own and its names (``customer``, ``is_active``) never
+  compete with the customer master's.
+* ``finance.payer_payment``: one payment split into a receipt per customer. The
+  payer, the receiving bank account, the amount, the date, the method, the
+  reference, the narration, the way it is split and each customer's share are
+  typed in; the status and what each
+  share settled (its kind, credit, bills and receipt) are read-only. A share
+  carries the amount that a hidden total withholds, so the credit and bill
+  figures that would restate it go with it. An ordinary receipt keeps the
+  switches of ``finance.payment``.
+* ``finance.pettycash_return``: the count of a tin and the cash banked back
+  from it. The cash counted, the new float, the cash banked, the bank account,
+  the date, who counted, the reason for a difference, the narration and the
+  reference are typed in; the books' balance, the difference and what the tin
+  keeps, the status, the journal and
+  who raised it are read-only. The fund a return belongs to is an identifying
+  label, as a bank account's name is, and has no switch of its own; a fund
+  keeps the switches of ``finance.pettycash``.
+
+These three are fields-only resources: they carry switches and no permission
+keys of their own. The endpoints that reach them are guarded by
+``finance.customer.view`` (links), ``finance.payment.view`` (payer payments) and
+``finance.pettycash.view`` (returns), and ``seed_finance_permissions`` mints the
+resources.
+
+The finance dashboards, the month-end close, the sealed figures and the year
+archive present figures the books work out and nobody types. Every field below
+is therefore read-only, and open to every role until a school closes it, so a
+deployment blanks nothing. Each switch hides one whole card, block, trend or
+exception list, with every key the block travels under; a block a role's
+permission keys already withhold stays withheld whatever the switch says.
+
+* ``finance.dashboard``: the three dashboard tabs (overview, receivables and
+  collections, cash and spend) in one fields-only resource with a group per tab.
+  The tabs share one resource because two of their cards, collections and
+  who-owes-and-who-is-late, are the same card on two tabs and one switch hides
+  it on both, and because a card on one tab is often restated on another (the
+  tax return due appears on the overview's attention list and on the cash tab).
+  A list that restates another card shows an item only to a role who may read
+  the card it restates: a bank-lines item needs Bank balances, a tax item needs
+  Tax owed, and so on, so hiding a card cannot be undone by reading the same
+  figure off a neighbouring list.
+* ``finance.period``: where a month stands in its close (its status, when it
+  closed and each branch's state), the progress of its checklist, and each
+  close check's result. A check names the figures it found, so it is read under
+  its own switch. The checks that restate a figure another resource guards (due
+  deferred income, the sealed figures, what branches owe each other) are shown
+  only to a role who may also read that figure. A refusal to close names the
+  failed checks the caller may read, and no others.
+* ``finance.seal``: the result of verifying the sealed figures of closed
+  periods and years: the verdict, each seal's identity, checksum and line
+  counts, and the balances that moved.
+* ``finance.fiscalyear``: a year's close state, whether it has been put away
+  (archived) and the net result its close carried to equity.
+
+``finance.dashboard`` carries no permission key of its own: the dashboards are
+open to anyone working in finance or payments, and ``seed_finance_permissions``
+mints the resource. ``finance.report.view`` is the key whose scope its fields
+follow.
 """
 from collections.abc import Mapping
 
@@ -96,16 +242,368 @@ def assert_pay_writable(request, resource: str, submitted: Mapping, *, current: 
     )
 
 
+def _bank_document_fields(*, account_label, account_name, date_name, date_label, account_api,
+                          extra):
+    """The fields a bank transaction and a transfer between own accounts share.
+
+    The two documents differ in their accounts (a bank account and the other
+    side of the entry, or the sending and the receiving account) and in the name
+    of their date; everything else about them is the same. ``extra`` carries the
+    fields the document has beyond the common ones.
+    """
+    return (
+        FieldSpec("status", "Status", group="Identity", writable=False, scope=_TENANT,
+                  sort_order=20, api_names=("status", "approval_state", "approval_returned")),
+        FieldSpec(account_name, account_label, group="Banking", scope=_TENANT,
+                  sort_order=410, api_names=account_api),
+        FieldSpec("amount", "Amount", group="Money", scope=_TENANT, sort_order=200),
+        FieldSpec(date_name, date_label, group="Money", scope=_TENANT, sort_order=220),
+        FieldSpec("narration", "Narration", group="Details", scope=_TENANT, sort_order=300),
+        FieldSpec("reference", "Reference", group="Details", scope=_TENANT, sort_order=310),
+        FieldSpec("journal", "Journal", group="Outcome", writable=False, scope=_TENANT,
+                  sort_order=700, api_names=("journal_id",)),
+        *extra,
+    )
+
+
+def _figure(name, label, group, sort_order, description="", api_names=()):
+    """A read-only, open-by-default figure the books work out.
+
+    Every dashboard card, close check result and verification result is
+    server-owned, so it carries a Read switch and no Write switch, and starts
+    open to every role.
+    """
+    return FieldSpec(name, label, group=group, description=description, writable=False,
+                     scope=_TENANT, sort_order=sort_order, api_names=api_names)
+
+
+#: Group names of the three dashboard tabs.
+OVERVIEW = "Overview"
+RECEIVABLES_TAB = "Receivables and collections"
+SPEND_TAB = "Cash, spend and compliance"
+
+
+def _dashboard_fields():
+    """One Read switch per dashboard card, block, trend and exception list."""
+    o, r, s = OVERVIEW, RECEIVABLES_TAB, SPEND_TAB
+    return (
+        _figure("kpi_cash_position", "Cash position card", o, 10,
+                "Cash and bank balance with its monthly sparkline.",
+                api_names=("cash_position",)),
+        _figure("kpi_receivables", "Receivables card", o, 20,
+                "What customers owe, with its monthly sparkline.",
+                api_names=("receivables",)),
+        _figure("kpi_payables", "Payables card", o, 30,
+                "What is owed to vendors, with its monthly sparkline.",
+                api_names=("payables",)),
+        _figure("kpi_net_income", "Net income this year card", o, 40,
+                "Net income so far this fiscal year, with its monthly sparkline.",
+                api_names=("net_income_ytd",)),
+        _figure("collections", "Billed and collected", o, 50,
+                "Fees billed and collected in the window and the share collected. "
+                "Shown on the overview and on the receivables tab."),
+        _figure("channels", "How money was received", o, 60,
+                "Money received in the window by how it was paid."),
+        _figure("branch_comparison", "Branch comparison", o, 70,
+                "Billed, collected and overdue for each branch.",
+                api_names=("branches",)),
+        _figure("bank_accounts", "Bank balances and reconciliation", o, 80,
+                "Each bank account's balance and unmatched statement lines."),
+        _figure("revenue_vs_budget", "Revenue against budget", o, 90,
+                "Income and spending against the school's plan."),
+        _figure("budget_lines", "Budget lines", o, 100,
+                "The income line and the three biggest spending lines against the plan. "
+                "Shown only to a role who also reads Revenue against budget, because its "
+                "first line restates it.",
+                api_names=("budget",)),
+        _figure("top_payers", "Payers owing the most", o, 110,
+                "The payers with the most past their due date."),
+        _figure("receivables_summary", "Who owes and who is late", o, 120,
+                "Counts of payers who owe, who are overdue and who fall due this week. "
+                "Shown on the overview and on the receivables tab."),
+        _figure("ar_aging", "Receivables by age", o, 130,
+                "What customers owe, grouped by how long it has been due."),
+        _figure("trend", "Invoiced and collected by month", o, 140,
+                "Twelve months of fees invoiced against money collected."),
+        _figure("top_overdue", "Largest overdue invoices", o, 150),
+        _figure("vendor_due", "Vendor bills due this week", o, 160),
+        _figure("payables_due", "Vendor bills falling due", o, 170,
+                "How many vendor bills fall due in the next 30 days and how many are late."),
+        _figure("approvals", "Spend approvals waiting", o, 180,
+                "Purchase requisitions, orders and vendor bills waiting to be approved."),
+        _figure("attention", "Things that need attention", o, 190,
+                "The list of things someone should act on. An item is shown only to a "
+                "role who may read the card it restates: bank lines need Bank balances, "
+                "tax needs Tax owed, payment plans need Payment plans, unapplied receipts "
+                "need Credit held for payers and low floats need Petty cash floats."),
+        _figure("upcoming", "Money due in the next 30 days", o, 200,
+                "Payroll, instalments, vendor bills and tax due. An item is shown only to a "
+                "role who may read the card it restates."),
+        _figure("close_progress", "Month close progress", o, 210,
+                "How far the month is from closing. Each check is shown only to a role who "
+                "may read that check's result."),
+        _figure("fiscal_runway", "Fiscal calendar runway", o, 220,
+                "How long the fiscal calendar lasts before nothing can be posted."),
+        _figure("recent_journals", "Recent journals", o, 230),
+
+        _figure("days_to_pay", "Days to pay", r, 300,
+                "The usual number of days from invoice to final payment."),
+        _figure("credit_held", "Credit held for payers", r, 310,
+                "Money payers have with the school that no invoice has used yet.",
+                api_names=("credit",)),
+        _figure("collection_curve", "Collection curve", r, 320,
+                "Week by week share of the window's fees paid, against last window and the target.",
+                api_names=("curve",)),
+        _figure("payment_plans", "Payment plans", r, 330,
+                "Plans on track and behind, and the next instalments.",
+                api_names=("plans",)),
+        _figure("groups", "Collections by group", r, 340,
+                "Billed and collected for each group of payers, such as a class."),
+        _figure("dunning", "Reminders and their results", r, 350),
+        _figure("concessions", "Concessions given", r, 360),
+        _figure("adjustments", "Credit notes, refunds and write-offs", r, 370),
+        _figure("largest_balances", "Largest balances", r, 380,
+                "The payers owing the most, by age, and the last thing done about it.",
+                api_names=("largest",)),
+
+        _figure("runway", "Cash runway", s, 400,
+                "Months of cash at the recent average monthly outflow."),
+        _figure("cash_movement", "Cash movement", s, 410,
+                "Opening cash, each kind of money in and out, and cash today."),
+        _figure("operating_spend", "Spending against the last window", s, 420,
+                api_names=("spend",)),
+        _figure("spending", "Spending breakdown", s, 430,
+                "Spending by cost centre, or by expense account."),
+        _figure("reconciliation", "Bank reconciliation", s, 440),
+        _figure("unmatched", "Unmatched bank lines", s, 450),
+        _figure("budgets", "Budgets used", s, 460),
+        _figure("payroll", "Payroll run", s, 470,
+                "The latest payroll run due and what it is made of."),
+        _figure("expense_claims", "Expense claims", s, 480, api_names=("claims",)),
+        _figure("petty_cash", "Petty cash floats", s, 490),
+        _figure("tax_owed", "Tax owed", s, 500,
+                "Everything owed on open returns and the next one due."),
+        _figure("tax_calendar", "Tax calendar", s, 510),
+        _figure("fixed_assets", "Fixed assets", s, 520,
+                "What the register is worth by category and the window's depreciation.",
+                api_names=("assets",)),
+    )
+
+
+#: Finance's own close checks, each registered under ``finance.period`` by its
+#: machine name. A check another module contributes is read under
+#: ``other_checks`` (:mod:`vs_finance.close_access`).
+CLOSE_CHECKS = (
+    ("trial_balance_balanced", "Trial balance agrees"),
+    ("no_draft_journals", "Draft journals left in the month"),
+    ("ar_reconciled", "Receivables reconciled"),
+    ("depreciation_posted", "Depreciation posted"),
+    ("earlier_periods_closed", "Earlier months closed"),
+    ("deferred_income_released", "Deferred income released"),
+    ("inter_branch_balanced", "Inter-branch balances agree"),
+    ("sealed_figures_unchanged", "Closed figures unchanged"),
+    ("depreciation_posted_for_year", "The year's depreciation posted"),
+)
+
+#: The check names other modules contribute to the close today.
+OTHER_CHECK_NAMES = ("ap_reconciled", "grir_explained")
+
+
+def _period_fields():
+    """The close state of a month, its checklist progress and each check's result."""
+    checks = tuple(
+        _figure(name, label, "Close checks", 100 + 10 * index,
+                "What this check found, and whether it passed.")
+        for index, (name, label) in enumerate(CLOSE_CHECKS)
+    )
+    return (
+        _figure("close_state", "Close state of the month", "Close state", 10,
+                "Whether the month is open, soft-closed, closed or locked, when it closed "
+                "and where each branch stands.",
+                api_names=("status", "closed_at", "branch_states", "branch_period")),
+        _figure("checklist_progress", "Checklist progress", "Close state", 20,
+                "Whether the checklist passed and how many checks are done.",
+                api_names=("passed", "done", "total")),
+        *checks,
+        _figure("other_checks", "Checks added by other modules", "Close checks", 300,
+                "Payables reconciled and goods received not billed, and any check another "
+                "module adds to the close.",
+                api_names=OTHER_CHECK_NAMES),
+    )
+
+
 def register():
     """Publish the finance field declarations to the Field Access registry."""
     register_fields(
         "finance",
+        "customer",
+        surfaces=(
+            "vs_finance.serializers.CustomerSerializer",
+            "vs_finance.serializers.CustomerListSerializer",
+            "vs_finance.serializers.CustomerAccountSerializer",
+            "vs_finance.serializers.CustomerStandingSerializer",
+            "vs_finance.serializers.CustomerSummaryTotalsSerializer",
+            "vs_finance.serializers.FinanceDocumentDeliverySerializer",
+            "vs_finance.serializers.DocumentEmailPreviewSerializer",
+        ),
+        fields=(
+            FieldSpec("billing_email", "Billing email", group="Contact", scope=_TENANT,
+                      sort_order=10, api_names=("billing_email", "recipients"),
+                      open_on_create=True),
+            FieldSpec("billing_phone", "Billing phone", group="Contact", scope=_TENANT,
+                      sort_order=20, open_on_create=True),
+            FieldSpec("billing_address", "Billing address", group="Contact", scope=_TENANT,
+                      sort_order=30),
+            FieldSpec("receivable_account", "Receivable account", group="Account",
+                      scope=_TENANT, sort_order=110,
+                      api_names=("receivable_account_id", "receivable_account_code",
+                                 "receivable_account_name")),
+            FieldSpec("opening_balance", "Opening balance", group="Account", scope=_TENANT,
+                      sort_order=120, api_names=("opening_balance", "opening_balance_naira"),
+                      open_on_create=True),
+            FieldSpec("source_type", "Source record type", group="Account", scope=_TENANT,
+                      sort_order=130),
+            FieldSpec("source_id", "Source record reference", group="Account", scope=_TENANT,
+                      sort_order=140),
+            FieldSpec("is_active", "Active", group="Account", scope=_TENANT, sort_order=150),
+            FieldSpec("created_at", "Created", group="Account", writable=False, scope=_TENANT,
+                      sort_order=160),
+            FieldSpec("balance", "Balance", group="Standing", writable=False, scope=_TENANT,
+                      sort_order=200,
+                      api_names=("balance", "balance_naira", "current_balance", "receivable",
+                                 "on_credit")),
+            FieldSpec("account_status", "Account status", group="Standing", writable=False,
+                      scope=_TENANT, sort_order=210,
+                      api_names=("account_status", "overdue", "status_counts")),
+            FieldSpec("lifetime_paid", "Paid to date", group="Standing", writable=False,
+                      scope=_TENANT, sort_order=220),
+            FieldSpec("open_invoice_count", "Open invoices", group="Standing", writable=False,
+                      scope=_TENANT, sort_order=230),
+            FieldSpec("pays_for_count", "Customers paid for", group="Standing", writable=False,
+                      scope=_TENANT, sort_order=240),
+            FieldSpec("open_invoices", "Open invoice list", group="Account history",
+                      writable=False, scope=_TENANT, sort_order=300),
+            FieldSpec("open_debit_notes", "Open debit note list", group="Account history",
+                      writable=False, scope=_TENANT, sort_order=310),
+            FieldSpec("transactions", "Transactions", group="Account history", writable=False,
+                      scope=_TENANT, sort_order=320),
+            FieldSpec("statement", "Statement of account", group="Account history",
+                      writable=False, scope=_TENANT, sort_order=330),
+        ),
+        write_aliases={
+            "receivable_account": "receivable_account",
+            "opening_date": "opening_balance",
+            "opening_branch": "opening_balance",
+        },
+    )
+    register_fields(
+        "finance",
         "bankaccount",
-        surfaces=("vs_finance.serializers.BankAccountSerializer",),
+        surfaces=(
+            "vs_finance.serializers.BankAccountSerializer",
+            "vs_finance.serializers.BankAccountMetricsSerializer",
+            "vs_finance.serializers.BankAccountActivitySerializer",
+            "vs_finance.serializers.BankAccountDetailSerializer",
+            "vs_finance.serializers.BankReconciliationSerializer",
+            "vs_finance.views_ops.banking._BankAccountBranchSplitSerializer",
+            "vs_finance.views_ops.banking._BankBranchAllocationSerializer",
+            "vs_finance.views_ops.banking.BankSplitPreviewSerializer",
+            "vs_finance.views_ops.banking.BankSplitResultSerializer",
+        ),
         fields=(
             FieldSpec("account_number", "Account number", group="Banking",
                       sensitive=True, scope=_TENANT, sort_order=10),
+            FieldSpec("bank_name", "Bank", group="Banking", scope=_TENANT, sort_order=20),
+            FieldSpec("bank_code", "Bank code at the payment provider", group="Banking",
+                      scope=_TENANT, sort_order=30, api_names=("settlement_bank_code",)),
+            FieldSpec("currency", "Currency", group="Account setup", scope=_TENANT,
+                      sort_order=40),
+            FieldSpec("ledger_account", "Ledger account", group="Account setup",
+                      scope=_TENANT, sort_order=50, open_on_create=True,
+                      api_names=("gl_account", "gl_account_name", "gl_account_id")),
+            FieldSpec("is_active", "Active", group="Account setup", scope=_TENANT,
+                      sort_order=70),
+            FieldSpec("is_primary", "Main operating account", group="Account setup",
+                      scope=_TENANT, sort_order=80),
+            FieldSpec("is_primary_collection", "Fee collection account", group="Account setup",
+                      scope=_TENANT, sort_order=90),
+            FieldSpec("gateway_subaccount", "Payment provider subaccount", group="Banking",
+                      writable=False, scope=_TENANT, sort_order=35,
+                      api_names=("gateway_subaccount_code", "gateway_subaccount_provider")),
+            FieldSpec("book_balance", "Book balance", group="Balances", writable=False,
+                      scope=_TENANT, sort_order=300,
+                      api_names=("book_balance", "book_balance_naira", "running_balance")),
+            FieldSpec("statement_balance", "Statement balance", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=310,
+                      api_names=("statement_balance", "statement_balance_naira",
+                                 "unreconciled_diff", "difference", "difference_naira")),
+            FieldSpec("reconciliation", "Reconciliation progress", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=320,
+                      api_names=("unreconciled_count", "last_reconciled_at")),
+            FieldSpec("recent_activity", "Recent ledger activity", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=330,
+                      api_names=("transactions",)),
+            FieldSpec("split_date", "Split date", group="Branch split", scope=_TENANT,
+                      sort_order=100),
+            FieldSpec("agreement_reference", "Agreement reference", group="Branch split",
+                      scope=_TENANT, sort_order=110),
+            FieldSpec("difference_treatment", "How differences are treated",
+                      group="Branch split", scope=_TENANT, sort_order=120),
+            FieldSpec("split_opening_balance", "Agreed opening balance", group="Branch split",
+                      scope=_TENANT, sort_order=140, api_names=("opening_balance",)),
+            FieldSpec("split_ledger_code", "New ledger account code", group="Branch split",
+                      scope=_TENANT, sort_order=150, api_names=("ledger_account_code",)),
+            FieldSpec("split_ledger_name", "New ledger account name", group="Branch split",
+                      scope=_TENANT, sort_order=155, api_names=("ledger_account_name",)),
+            FieldSpec("legacy_balance", "Balance of the shared account", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=200),
+            FieldSpec("unbranched_balance", "Part not yet given a branch", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=210),
+            FieldSpec("branch_balances", "Each branch's own balance", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=220, api_names=("branches",)),
+            FieldSpec("branch_accounts", "Branch accounts opened", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=230,
+                      api_names=("bank_accounts",)),
+            FieldSpec("split_journals", "Split journals", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=240, api_names=("journal_ids",)),
+            FieldSpec("branch_debts", "Debts between branches", group="Split result",
+                      writable=False, scope=_TENANT, sort_order=250,
+                      api_names=("inter_branch_transfers",)),
         ),
+    )
+    register_fields(
+        "finance",
+        "banktransaction",
+        surfaces=("vs_finance.views_ops.banking.BankTransactionSerializer",),
+        fields=_bank_document_fields(
+            account_label="Bank account", account_name="bank_account",
+            date_name="transaction_date", date_label="Transaction date",
+            account_api=("bank_account_id", "bank_account_name"),
+            extra=(
+                FieldSpec("direction", "Money in or out", group="Money", scope=_TENANT,
+                          sort_order=210),
+                FieldSpec("counter_account", "Other side of the entry", group="Banking",
+                          scope=_TENANT, sort_order=420,
+                          api_names=("counter_account_id", "counter_account_code",
+                                     "counter_account_name")),
+            ),
+        ),
+        write_aliases={"bank_account": "bank_account", "counter_account": "counter_account"},
+    )
+    register_fields(
+        "finance",
+        "banktransfer",
+        surfaces=("vs_finance.views_ops.banking.BankTransferSerializer",),
+        fields=_bank_document_fields(
+            account_label="Sending account", account_name="from_account",
+            date_name="transfer_date", date_label="Transfer date",
+            account_api=("from_account_id", "from_account_name"),
+            extra=(
+                FieldSpec("to_account", "Receiving account", group="Banking", scope=_TENANT,
+                          sort_order=420, api_names=("to_account_id", "to_account_name")),
+            ),
+        ),
+        write_aliases={"from_account": "from_account", "to_account": "to_account"},
     )
     register_fields(
         "finance",
@@ -169,8 +667,6 @@ def register():
             "vs_finance.views_ops.interbranch.SharedCostRuleSerializer",
         ),
         fields=(
-            FieldSpec("document_number", "Document number", group="Identity",
-                      writable=False, scope=_TENANT, sort_order=10),
             FieldSpec("kind", "Transfer kind", group="Identity", writable=False,
                       scope=_TENANT, sort_order=20, api_names=("kind", "kind_label")),
             FieldSpec("status", "Status", group="Identity", writable=False,
@@ -182,13 +678,6 @@ def register():
                       scope=_TENANT, sort_order=50),
             FieldSpec("is_active", "Active", group="Shared cost rule", scope=_TENANT,
                       sort_order=60),
-            FieldSpec("sending_branch", "Sending or paying branch", group="Branches",
-                      scope=_TENANT, sort_order=100,
-                      api_names=("branch_id", "branch_name")),
-            FieldSpec("receiving_branch", "Receiving branch", group="Branches",
-                      scope=_TENANT, sort_order=110,
-                      api_names=("to_branch_id", "to_branch_name",
-                                 "for_branch_id", "for_branch_name")),
             FieldSpec("amount", "Amount", group="Money", scope=_TENANT, sort_order=200),
             FieldSpec("transaction_date", "Transaction date", group="Money",
                       scope=_TENANT, sort_order=210,
@@ -245,10 +734,6 @@ def register():
                                  "adjustment_entry_id", "journal_id")),
         ),
         write_aliases={
-            "branch": "sending_branch",
-            "from_branch": "sending_branch",
-            "to_branch": "receiving_branch",
-            "for_branch": "receiving_branch",
             "from_bank_account": "source_bank_account",
             "bank_account": "source_bank_account",
             "to_bank_account": "destination_bank_account",
@@ -260,4 +745,291 @@ def register():
             "date": "transaction_date",
             "move_date": "transaction_date",
         },
+    )
+    register_fields(
+        "finance",
+        "deferredincome",
+        surfaces=(
+            "vs_finance.views_accruals.DeferredIncomeSummarySerializer",
+            "vs_finance.views_accruals.DeferredIncomeReleaseRowSerializer",
+            "vs_finance.views_accruals.DeferredIncomeRunSerializer",
+            "vs_finance.views_accruals.DeferredIncomePostedReleaseSerializer",
+            "vs_finance.views_accruals.DeferredIncomeReversalSerializer",
+        ),
+        fields=(
+            FieldSpec("pending_balance", "Waiting to be released", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=10, api_names=("pending",)),
+            FieldSpec("released_total", "Released so far", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=20, api_names=("released",)),
+            FieldSpec("monthly_releases", "Due by month", group="Balances",
+                      writable=False, scope=_TENANT, sort_order=30, api_names=("by_month",)),
+            FieldSpec("period", "Accounting period", group="Release", scope=_TENANT,
+                      sort_order=110,
+                      api_names=("period", "period_id", "period_name", "period_label",
+                                 "period_status", "branch_period_status")),
+            FieldSpec("release_date", "Release date", group="Release", scope=_TENANT,
+                      sort_order=120, api_names=("date", "month", "up_to")),
+            FieldSpec("release_amount", "Release amount", group="Release", writable=False,
+                      scope=_TENANT, sort_order=130, api_names=("amount",)),
+            FieldSpec("journal", "Journal", group="Release", writable=False, scope=_TENANT,
+                      sort_order=140, api_names=("journal_id", "journal_number")),
+            FieldSpec("reversal_state", "Reversal state", group="Reversal", writable=False,
+                      scope=_TENANT, sort_order=200,
+                      api_names=("reversed", "reversed_at", "can_reverse")),
+            FieldSpec("reverse_blocked_reason", "Why an undo is blocked", group="Reversal",
+                      writable=False, scope=_TENANT, sort_order=210),
+        ),
+    )
+    register_fields(
+        "finance",
+        "provision",
+        surfaces=(
+            "vs_finance.serializers.DoubtfulDebtProvisionSerializer",
+            "vs_finance.serializers.DoubtfulDebtProvisionLineSerializer",
+        ),
+        fields=(
+            FieldSpec("status", "Status", group="Provision run", writable=False,
+                      scope=_TENANT, sort_order=20,
+                      api_names=("status", "approval_state", "approval_returned",
+                                 "approval_required")),
+            FieldSpec("as_of", "Provision date", group="Provision run", scope=_TENANT,
+                      sort_order=30),
+            FieldSpec("narration", "Narration", group="Provision run", scope=_TENANT,
+                      sort_order=40),
+            FieldSpec("required_total", "Total required", group="Totals", writable=False,
+                      scope=_TENANT, sort_order=100),
+            FieldSpec("movement_total", "Total movement", group="Totals", writable=False,
+                      scope=_TENANT, sort_order=110),
+            FieldSpec("policy_snapshot", "Policy snapshot", group="Totals", writable=False,
+                      scope=_TENANT, sort_order=120),
+            FieldSpec("created_at", "Raised at", group="Provision run", writable=False,
+                      scope=_TENANT, sort_order=50),
+            FieldSpec("required", "Required", group="Branch lines", writable=False,
+                      scope=_TENANT, sort_order=210),
+            FieldSpec("current", "Current provision", group="Branch lines", writable=False,
+                      scope=_TENANT, sort_order=220),
+            FieldSpec("movement", "Movement", group="Branch lines", writable=False,
+                      scope=_TENANT, sort_order=230),
+            FieldSpec("bands", "Age bands", group="Branch lines", writable=False,
+                      scope=_TENANT, sort_order=240),
+            FieldSpec("journal", "Journal", group="Branch lines", writable=False,
+                      scope=_TENANT, sort_order=250, api_names=("journal_id",)),
+        ),
+    )
+    register_fields(
+        "finance",
+        "deposit",
+        surfaces=(
+            "vs_finance.serializers.CustomerDepositSerializer",
+            "vs_finance.views_accruals.DepositReleaseNoteSerializer",
+            "vs_finance.views_accruals.DepositForfeitureSerializer",
+            "vs_finance.views_accruals.DepositSkippedSerializer",
+        ),
+        fields=(
+            FieldSpec("customer", "Customer", group="Deposit", writable=False,
+                      scope=_TENANT, sort_order=10,
+                      api_names=("customer_id", "customer_code", "customer_name", "customer")),
+            FieldSpec("invoice", "Invoice", group="Deposit", writable=False, scope=_TENANT,
+                      sort_order=30, api_names=("invoice_id", "invoice_number", "invoice")),
+            FieldSpec("amount", "Amount", group="Deposit", writable=False, scope=_TENANT,
+                      sort_order=40, api_names=("amount", "amount_naira")),
+            FieldSpec("status", "Status", group="Deposit", writable=False, scope=_TENANT,
+                      sort_order=50),
+            FieldSpec("claim_opened_on", "Claim date", group="Deposit", writable=False,
+                      scope=_TENANT, sort_order=60),
+            FieldSpec("release_note", "Release note", group="Outcome", writable=False,
+                      scope=_TENANT, sort_order=100, api_names=("release_note_number",)),
+            FieldSpec("forfeiture", "Forfeiture", group="Outcome", writable=False,
+                      scope=_TENANT, sort_order=110,
+                      api_names=("forfeiture_id", "journal_id")),
+        ),
+    )
+    register_fields(
+        "finance",
+        "settings",
+        surfaces=("vs_finance.views_accruals.ReceivablesPolicySerializer",),
+        fields=(
+            FieldSpec("revenue_recognition", "Revenue recognition", group="Receivables policy",
+                      scope=_TENANT, sort_order=10,
+                      api_names=("revenue_recognition", "revenue_recognition_label",
+                                 "revenue_recognition_options")),
+            FieldSpec("provision_bands", "Provision bands", group="Receivables policy",
+                      scope=_TENANT, sort_order=20),
+            FieldSpec("deposits_offset_unpaid_bills", "Deposits offset unpaid bills",
+                      group="Receivables policy", scope=_TENANT, sort_order=30),
+            FieldSpec("unclaimed_deposit_years", "Unclaimed-deposit years",
+                      group="Receivables policy", scope=_TENANT, sort_order=40),
+            FieldSpec("payer_payment_split", "Payer payment split", group="Receivables policy",
+                      scope=_TENANT, sort_order=50,
+                      api_names=("payer_payment_split", "payer_payment_split_options")),
+            FieldSpec("payer_payment_surplus", "Payer payment surplus",
+                      group="Receivables policy", scope=_TENANT, sort_order=60,
+                      api_names=("payer_payment_surplus", "payer_payment_surplus_options")),
+            FieldSpec("last_changed", "Last changed", group="Receivables policy",
+                      writable=False, scope=_TENANT, sort_order=70,
+                      api_names=("updated_at", "updated_by")),
+        ),
+    )
+    register_fields(
+        "finance",
+        "payer_link",
+        surfaces=("vs_finance.views_payers.PayerLinkSerializer",),
+        fields=(
+            FieldSpec("payer", "Payer", group="Payer links", scope=_TENANT, sort_order=10),
+            FieldSpec("customer", "Linked customer", group="Payer links", scope=_TENANT,
+                      sort_order=20),
+            FieldSpec("is_active", "Link active", group="Payer links", scope=_TENANT,
+                      sort_order=30),
+            FieldSpec("source_type", "Source type", group="Payer links", scope=_TENANT,
+                      sort_order=40),
+            FieldSpec("source_id", "Source reference", group="Payer links", scope=_TENANT,
+                      sort_order=50),
+        ),
+    )
+    register_fields(
+        "finance",
+        "payer_payment",
+        surfaces=(
+            "vs_finance.views_payers.PayerPaymentSerializer",
+            "vs_finance.views_payers.PayerPaymentShareSerializer",
+        ),
+        fields=(
+            FieldSpec("status", "Status", group="Payer payments", writable=False,
+                      scope=_TENANT, sort_order=20),
+            FieldSpec("payer", "Payer", group="Payer payments", scope=_TENANT, sort_order=30),
+            FieldSpec("bank_account", "Receiving bank account", group="Payer payments",
+                      scope=_TENANT, sort_order=40),
+            FieldSpec("amount", "Amount", group="Payer payments", scope=_TENANT, sort_order=50),
+            FieldSpec("payment_date", "Payment date", group="Payer payments", scope=_TENANT,
+                      sort_order=60),
+            FieldSpec("method", "Payment method", group="Payer payments", scope=_TENANT,
+                      sort_order=70),
+            FieldSpec("split", "How the payment is split", group="Payer payments",
+                      scope=_TENANT, sort_order=80, api_names=("split", "split_label")),
+            FieldSpec("reference", "Reference", group="Payer payments", scope=_TENANT,
+                      sort_order=90),
+            FieldSpec("narration", "Narration", group="Payer payments", scope=_TENANT,
+                      sort_order=100),
+            FieldSpec("shares", "Customer shares", group="Payer payments", scope=_TENANT,
+                      sort_order=110),
+            FieldSpec("allocation_results", "What each share settled", group="Payer payments",
+                      writable=False, scope=_TENANT, sort_order=130,
+                      api_names=("kind", "credit", "outstanding", "bills", "document",
+                                 "forwarded_by")),
+        ),
+    )
+    register_fields(
+        "finance",
+        "pettycash_return",
+        surfaces=("vs_finance.serializers.PettyCashReturnSerializer",),
+        fields=(
+            FieldSpec("status", "Status", group="Petty cash returns", writable=False,
+                      scope=_TENANT, sort_order=20,
+                      api_names=("status", "approval_state", "approval_returned")),
+            FieldSpec("kind", "Kind of return", group="Petty cash returns", writable=False,
+                      scope=_TENANT, sort_order=30, api_names=("kind", "kind_label")),
+            FieldSpec("return_date", "Return date", group="Petty cash returns", scope=_TENANT,
+                      sort_order=60),
+            FieldSpec("counted_amount", "Cash counted", group="The count", scope=_TENANT,
+                      sort_order=100),
+            FieldSpec("book_balance", "Balance on the books", group="The count",
+                      writable=False, scope=_TENANT, sort_order=110),
+            FieldSpec("difference", "Over or short", group="The count", writable=False,
+                      scope=_TENANT, sort_order=120,
+                      api_names=("difference", "shortage", "overage")),
+            FieldSpec("difference_reason", "Reason for the difference", group="The count",
+                      scope=_TENANT, sort_order=130),
+            FieldSpec("counted_by", "Counted by", group="The count", scope=_TENANT,
+                      sort_order=140,
+                      api_names=("counted_by_id", "counted_by_name", "counted_by_is_exited")),
+            FieldSpec("amount", "Cash banked", group="Cash banked", scope=_TENANT,
+                      sort_order=200, api_names=("amount", "amount_naira")),
+            FieldSpec("bank_account", "Bank account", group="Cash banked", scope=_TENANT,
+                      sort_order=210, api_names=("bank_account_id", "bank_account_name")),
+            FieldSpec("previous_float_amount", "Float before", group="Cash banked",
+                      writable=False, scope=_TENANT, sort_order=220),
+            FieldSpec("new_float_amount", "Float after", group="Cash banked", scope=_TENANT,
+                      sort_order=230),
+            FieldSpec("cash_left", "Cash the tin keeps", group="Cash banked", writable=False,
+                      scope=_TENANT, sort_order=240),
+            FieldSpec("narration", "Narration", group="Details", scope=_TENANT, sort_order=300),
+            FieldSpec("reference", "Reference", group="Details", scope=_TENANT, sort_order=310),
+            FieldSpec("journal", "Journal", group="Outcome", writable=False, scope=_TENANT,
+                      sort_order=400, api_names=("journal_id",)),
+            FieldSpec("raised_by", "Raised by", group="Outcome", writable=False,
+                      scope=_TENANT, sort_order=410,
+                      api_names=("created_by_id", "created_by_name", "created_by_is_exited")),
+        ),
+        write_aliases={"bank_account": "bank_account", "counted_by": "counted_by"},
+    )
+    register_fields(
+        "finance",
+        "dashboard",
+        surfaces=(
+            "vs_finance.dashboard_serializers.FinanceKpisSerializer",
+            "vs_finance.dashboard_serializers.FinanceDashboardSerializer",
+            "vs_finance.dashboard_serializers.ReceivablesDashboardSerializer",
+            "vs_finance.dashboard_serializers.SpendDashboardSerializer",
+        ),
+        fields=_dashboard_fields(),
+    )
+    register_fields(
+        "finance",
+        "period",
+        surfaces=(
+            "vs_finance.serializers.FiscalPeriodSerializer",
+            "vs_finance.close_access.BranchPeriodStateSerializer",
+            "vs_finance.close_access.CloseChecksSerializer",
+            "vs_finance.close_access.CloseChecklistSerializer",
+            "vs_finance.close_access.PeriodChecklistPreviewSerializer",
+            "vs_finance.close_access.PeriodCloseResultSerializer",
+        ),
+        fields=_period_fields(),
+    )
+    register_fields(
+        "finance",
+        "seal",
+        surfaces=(
+            "vs_finance.seal_serializers.SealCheckSerializer",
+            "vs_finance.seal_serializers.SealVerificationSerializer",
+        ),
+        fields=(
+            _figure("verdict", "Whether the closed figures match", "Result", 10,
+                    "The overall and per-period verdict, and how many periods were checked "
+                    "and how many differ.",
+                    api_names=("ok", "checked", "mismatches")),
+            _figure("chain_breaks", "Seals that do not follow the one before", "Result", 20),
+            _figure("checks", "Each period or year checked", "Result", 30,
+                    "The list of seals that were checked."),
+            _figure("seal_name", "Period or year", "Each seal", 100,
+                    api_names=("seal_id", "label", "kind", "fiscal_year", "period_id")),
+            _figure("sealed_at", "When it was sealed", "Each seal", 110),
+            _figure("seal_checksum", "Seal checksum", "Each seal", 120),
+            _figure("line_counts", "Ledger lines sealed and now", "Each seal", 130,
+                    api_names=("line_count", "line_count_now")),
+            _figure("seal_agreement", "Whether the seal and its lines still match",
+                    "Each seal", 140, api_names=("seal_intact", "lines_match")),
+            _figure("differences", "Balances that moved", "Each seal", 150,
+                    "Each account balance that differs from the sealed figure, by branch, "
+                    "with what was sealed and what the ledger says now.",
+                    api_names=("differences", "summary")),
+        ),
+    )
+    register_fields(
+        "finance",
+        "fiscalyear",
+        surfaces=(
+            "vs_finance.serializers.FiscalYearSerializer",
+            "vs_finance.close_access.FiscalYearCloseResultSerializer",
+        ),
+        fields=(
+            _figure("close_state", "Close state of the year", "Fiscal year", 10,
+                    "Whether the year is open, closed or locked and where each branch stands.",
+                    api_names=("status", "branch_states")),
+            _figure("archive_state", "Whether the year is put away", "Fiscal year", 20,
+                    "Whether the year has been archived and when.",
+                    api_names=("is_archived", "archived_at")),
+            _figure("net_income", "Net result carried to equity", "Year close", 100,
+                    "The year's result the close rolled into retained earnings."),
+        ),
     )

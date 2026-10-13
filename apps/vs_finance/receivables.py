@@ -244,7 +244,7 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
     record(  # Record the successful invoice posting in the finance audit log.
         entity=invoice.entity, action=FinanceAuditAction.INVOICE_POSTED,
         actor_user=actor_user, target=invoice,
-        message=f"Posted invoice for {customer.code} ({format_naira(invoice.total)}).",
+        message=f"Posted invoice for {customer.code}.",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
     )
     apply_customer_credit(invoice, actor_user=actor_user)  # Credit already held pays the new bill.
@@ -1032,7 +1032,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     record(  # Log the successful payment posting in the audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_POSTED,
         actor_user=actor_user, target=payment,
-        message=f"Posted receipt from {customer.code} ({format_naira(payment.amount)}).",
+        message=f"Posted receipt from {customer.code}.",
         journal_id=entry.pk, amount=payment.amount,
         allocated=applied, unallocated=excess,
     )
@@ -1106,7 +1106,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     record(  # Log the allocation in the finance audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
-        message=f"Applied {format_naira(applied)} of customer credit across {counted(len(created), 'invoice')}.",
+        message=f"Applied customer credit across {counted(len(created), 'invoice')}.",
         journal_id=entry.pk, allocated=payment.allocated_amount,
         unallocated=payment.credit_remaining, effective_date=str(effective),
     )

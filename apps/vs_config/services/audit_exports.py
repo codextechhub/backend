@@ -18,6 +18,7 @@ from django.utils import timezone
 from ..clock import branch_zone
 from ..labels import audit_action_label, audit_target_type_label
 from ..models import ConfigurationAuditEvent, ConfigurationAuditExportJob
+from ..audit_access import setting_keys, visible_snapshots
 from ..serializers import build_configuration_target_labels
 from .audit import record_configuration_event
 
@@ -82,7 +83,7 @@ AUDIT_CSV_HEADER = (
 )
 
 
-def audit_csv_row(event, target_labels):
+def audit_csv_row(event, target_labels, snapshots=None):
     """One audit event as a CSV row, in the words the audit screen uses.
 
     The action and the kind of record are written as their labels, and a record
@@ -90,8 +91,11 @@ def audit_csv_row(event, target_labels):
     an action code or a class name. ``target_labels`` is the map
     :func:`~vs_config.serializers.build_configuration_target_labels` builds for
     the batch. The before and after snapshots stay as recorded JSON: they are
-    the evidence.
+    the evidence. ``snapshots`` is the ``(before, after)`` pair the reader may
+    see (:func:`vs_config.audit_access.visible_snapshots`); left out, the event's
+    own are written.
     """
+    before, after = snapshots if snapshots is not None else (event.before_data, event.after_data)
     kind = audit_target_type_label(event.target_type)
     return [
         event.created_at.isoformat(),
@@ -102,15 +106,19 @@ def audit_csv_row(event, target_labels):
         event.actor.email if event.actor else "",
         event.reason,
         event.scope_key,
-        json.dumps(event.before_data, ensure_ascii=True, sort_keys=True),
-        json.dumps(event.after_data, ensure_ascii=True, sort_keys=True),
+        json.dumps(before, ensure_ascii=True, sort_keys=True),
+        json.dumps(after, ensure_ascii=True, sort_keys=True),
     ]
 
 
-def _write_rows(writer, events):
+def _write_rows(writer, events, can_read):
+    """Write *events* as the person *can_read* stands for may read them."""
     labels = build_configuration_target_labels(events)
+    keys = setting_keys(events)
     for event in events:
-        writer.writerow(audit_csv_row(event, labels))
+        writer.writerow(audit_csv_row(
+            event, labels, visible_snapshots(event, can_read, keys),
+        ))
 
 
 def execute_configuration_audit_export(job_id):
@@ -138,6 +146,13 @@ def execute_configuration_audit_export(job_id):
     job.save(update_fields=["status", "started_at", "failure_message"])
     storage_name = ""
     try:
+        # The file carries what the person who asked could have read on screen.
+        from vs_exports.engine import readable_fields
+
+        can_read = (
+            readable_fields(job.requested_by, job.tenant) if job.requested_by_id
+            else (lambda field_key: False)
+        )
         queryset = scoped_configuration_audit_queryset(
             tenant=job.tenant, branch=job.branch,
         ).order_by("-created_at")
@@ -157,7 +172,7 @@ def execute_configuration_audit_export(job_id):
                         raise ValueError("ROW_LIMIT")
                     chunk.append(event)
                     if len(chunk) == 500:
-                        _write_rows(writer, chunk)
+                        _write_rows(writer, chunk, can_read)
                         chunk = []
                         # Stop as soon as the file passes what storage accepts,
                         # rather than generating the rest and failing at save.
@@ -165,7 +180,7 @@ def execute_configuration_audit_export(job_id):
                         if handle.tell() > size_limit:
                             raise ValueError("SIZE_LIMIT")
                 if chunk:
-                    _write_rows(writer, chunk)
+                    _write_rows(writer, chunk, can_read)
                 text.flush()
                 if handle.tell() > size_limit:
                     raise ValueError("SIZE_LIMIT")

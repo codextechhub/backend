@@ -549,19 +549,27 @@ def _audit_by_branch(document, action, *, actor_user=None, **metadata):
             held = int(document.amount) - figure
             extra.update(received=int(document.amount), held_for_other_branches=held)
             message = (
-                f"{verb} {format_naira(document.amount)} from {document.payer.name} into "
-                f"{document.bank_account.name}: {format_naira(figure)} for "
-                f"{counted(len(own), 'customer')} here"
-                + (f", {format_naira(held)} held for other branches." if held else ".")
+                f"{verb} a payment from {document.payer.name} into "
+                f"{document.bank_account.name} for {counted(len(own), 'customer')} here"
+                + ("; part of it is held for other branches." if held else ".")
             )
+            snapshot = {"bank_account": document.bank_account_id}
         else:
             message = (
-                f"{verb} {format_naira(figure)} from {document.payer.name}, received at "
+                f"{verb} a payment from {document.payer.name}, received at "
                 f"{document.branch.name} for {counted(len(own), 'customer')} here."
             )
+            snapshot = {}
+        snapshot.update(
+            amount=figure, payer=document.payer.code,
+            shares=[{
+                "customer": s.customer.code, "amount": int(s.amount), "credit": int(s.surplus),
+            } for s in own],
+        )
         record(
             entity=document.entity, action=action, actor_user=actor_user, target=document,
-            branch=branch_id, message=message, amount=figure, payer=document.payer.code,
+            branch=branch_id, message=message, **{"before" if voided else "after": snapshot},
+            amount=figure, payer=document.payer.code,
             shares=[{
                 "customer": s.customer.code, "amount": int(s.amount), "credit": int(s.surplus),
                 "document": (s.receipt or s.held_receipt).document_number,

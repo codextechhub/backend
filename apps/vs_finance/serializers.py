@@ -13,7 +13,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from core.media import signed_url
-from vs_rbac.field_enforcement import FieldAccessMixin, visible
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read, visible
 
 from .models import (
     Account,
@@ -259,6 +259,25 @@ class AccountSerializer(serializers.ModelSerializer):
             return "CASH"
         return None
 
+    def to_representation(self, instance):
+        """The account, without what restates a bank account the caller may not read.
+
+        A ledger account behind a bank account carries that account's book
+        balance as its own, and ``bank_account_id`` is the registered link
+        between them (``finance.bankaccount.ledger_account``). The chart
+        therefore drops each when its switch is closed, so a role that cannot
+        read a bank account's balance or its ledger account cannot learn either
+        from the chart of accounts.
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and self._bank(instance) is not None:
+            if not can_read(request, "finance.bankaccount.ledger_account"):
+                data.pop("bank_account_id", None)
+            if not can_read(request, "finance.bankaccount.book_balance"):
+                data.pop("balance", None)
+        return data
+
 
 class BranchStatesMixin:
     """Add ``branch_states`` when the view primed them (``context["branch_states"]``).
@@ -305,23 +324,33 @@ class PeriodLabelMixin:
         return period_label(period, self._tenant_of(period.entity_id))
 
 
-class FiscalPeriodSerializer(PeriodLabelMixin, BranchStatesMixin, serializers.ModelSerializer):
+class FiscalPeriodSerializer(
+    FieldAccessMixin, PeriodLabelMixin, BranchStatesMixin, serializers.ModelSerializer,
+):
     """A fiscal period; ``label`` is how a person picking it reads it.
 
     ``name`` is the stored name ("2026-09"), kept for a client that keys on it;
     ``label`` is the month in words ("September 2026", through
     :func:`vs_finance.wording.period_label`), what a picker or a list shows.
+
+    Where the month stands in its close (``status``, ``closed_at`` and, when a
+    list asks for them, ``branch_states``) is one switch of ``finance.period``.
+    ``branch_states`` is declared so the registry can see it, and stays absent
+    until the view primes it (:class:`BranchStatesMixin`).
     """
+
+    field_resource = "finance.period"
 
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
     status = serializers.SerializerMethodField()
     label = serializers.SerializerMethodField()
+    branch_states = serializers.ListField(read_only=True)
 
     class Meta:
         model = FiscalPeriod
         fields = [
             "id", "period_no", "name", "label", "fiscal_year",
-            "start_date", "end_date", "status", "closed_at", "is_closing",
+            "start_date", "end_date", "status", "closed_at", "is_closing", "branch_states",
         ]
 
     def get_status(self, obj):
@@ -331,15 +360,27 @@ class FiscalPeriodSerializer(PeriodLabelMixin, BranchStatesMixin, serializers.Mo
         return self.label_period(obj)
 
 
-class FiscalYearSerializer(BranchStatesMixin, serializers.ModelSerializer):
-    """A fiscal year; ``is_archived`` says whether it is put away (:mod:`vs_finance.archive`)."""
+class FiscalYearSerializer(FieldAccessMixin, BranchStatesMixin, serializers.ModelSerializer):
+    """A fiscal year; ``is_archived`` says whether it is put away (:mod:`vs_finance.archive`).
+
+    ``status`` and ``branch_states`` are the year's close state and ``is_archived``
+    and ``archived_at`` its archive state, one switch each in ``finance.fiscalyear``.
+    ``branch_states`` is declared so the registry can see it, and stays absent
+    until the view primes it (:class:`BranchStatesMixin`).
+    """
+
+    field_resource = "finance.fiscalyear"
 
     is_archived = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    branch_states = serializers.ListField(read_only=True)
 
     class Meta:
         model = FiscalYear
-        fields = ["id", "year", "start_date", "end_date", "status", "is_archived", "archived_at"]
+        fields = [
+            "id", "year", "start_date", "end_date", "status", "is_archived", "archived_at",
+            "branch_states",
+        ]
 
     def get_is_archived(self, obj) -> bool:
         return obj.archived_at is not None
@@ -559,14 +600,23 @@ class DirectEntryCreateSerializer(serializers.Serializer):
         return value
 
 
-class CustomerSerializer(serializers.ModelSerializer):
-    """Read shape for a customer / payer (the AR sub-ledger party).
+class CustomerSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One customer / payer (the AR sub-ledger party), under ``finance.customer``.
+
+    ``code`` and ``name`` identify the customer wherever it is named (pickers,
+    documents, messages) and carry no switch. Every other field is registered:
+    a caller whose roles cannot read one gets the customer without it, and the
+    create and update endpoints refuse a role that cannot change it.
 
     ``branch_id`` is the branch the customer is filed under, or empty for one
     every branch shares. A document raised against a filed customer takes its
     branch; one raised against a shared customer names its own, so a form asks
     for a branch only when this is empty.
     """
+
+    field_resource = "finance.customer"
+    field_access_detail = True
+    field_write_aliases = True
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     receivable_account_code = serializers.CharField(
@@ -579,13 +629,117 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = [
             "id", "code", "name", "billing_email", "billing_phone", "billing_address",
-            "receivable_account_code", "receivable_account_name", "opening_balance",
-            "opening_balance_naira", "source_type", "source_id", "is_active",
-            "branch_id", "branch_name",
+            "receivable_account_id", "receivable_account_code", "receivable_account_name",
+            "opening_balance", "opening_balance_naira", "source_type", "source_id",
+            "is_active", "branch_id", "branch_name", "created_at",
         ]
 
     def get_opening_balance_naira(self, obj) -> str:
         return format_naira(obj.opening_balance)
+
+
+class CustomerListSerializer(CustomerSerializer):
+    """A row of the customers list: the customer and where its account stands.
+
+    The standing comes from maps the list view works out once for the page
+    (``standing``: customer id to ledger figures, ``pays_for``: customer id to
+    the count of customers it pays for), so the page costs two queries however
+    many rows it holds.
+    """
+
+    field_access_detail = False
+
+    balance = serializers.SerializerMethodField()
+    balance_naira = serializers.SerializerMethodField()
+    account_status = serializers.SerializerMethodField()
+    pays_for_count = serializers.SerializerMethodField()
+
+    class Meta(CustomerSerializer.Meta):
+        fields = CustomerSerializer.Meta.fields + [
+            "balance", "balance_naira", "account_status", "pays_for_count",
+        ]
+
+    def _net(self, obj) -> int:
+        led = (self.context.get("standing") or {}).get(obj.pk, {})
+        return led.get("outstanding", 0) - led.get("credit", 0)
+
+    def get_balance(self, obj) -> int:
+        return self._net(obj)
+
+    def get_balance_naira(self, obj) -> str:
+        return format_naira(self._net(obj))
+
+    def get_account_status(self, obj) -> str:
+        from .views_ar import _account_status
+
+        led = (self.context.get("standing") or {}).get(obj.pk, {})
+        return _account_status(self._net(obj), led.get("overdue", False))
+
+    def get_pays_for_count(self, obj) -> int:
+        return (self.context.get("pays_for") or {}).get(obj.pk, 0)
+
+
+class CustomerStandingSerializer(FieldAccessMixin, serializers.Serializer):
+    """The summary block of a customer's detail: where the account stands."""
+
+    field_resource = "finance.customer"
+
+    current_balance = serializers.ReadOnlyField()
+    lifetime_paid = serializers.ReadOnlyField()
+    open_invoice_count = serializers.ReadOnlyField()
+    account_status = serializers.ReadOnlyField()
+
+
+class CustomerAccountSerializer(FieldAccessMixin, serializers.Serializer):
+    """A customer's detail response: the customer, its standing and its account history.
+
+    The history blocks are the customer's documents as the account shows
+    them. A statement line's running ``balance`` repeats the customer's
+    balance, so it leaves the statement when the balance is hidden (the view
+    builds the lines that way), and a standing block with nothing left in it
+    is dropped rather than served empty.
+    """
+
+    field_resource = "finance.customer"
+
+    customer = CustomerSerializer(read_only=True)
+    summary = CustomerStandingSerializer(read_only=True)
+    open_invoices = serializers.ReadOnlyField()
+    open_debit_notes = serializers.ReadOnlyField()
+    transactions = serializers.ReadOnlyField()
+    statement = serializers.ReadOnlyField()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "summary" in data and not data["summary"]:
+            data.pop("summary")
+        return data
+
+
+class CustomerSummaryTotalsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The header cards of the customers screen, under ``finance.customer``.
+
+    ``total`` counts the customers the list holds and is not a switch.
+    ``status_counts`` counts inactive customers beside the account statuses,
+    so it needs both the account status and the active flag.
+    """
+
+    field_resource = "finance.customer"
+
+    total = serializers.ReadOnlyField()
+    receivable = serializers.ReadOnlyField()
+    on_credit = serializers.ReadOnlyField()
+    overdue = serializers.ReadOnlyField()
+    status_counts = serializers.ReadOnlyField()
+
+    def to_representation(self, instance):
+        from vs_rbac.field_enforcement import can_read
+
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if "status_counts" in data and not can_read(request, "finance.customer.is_active"):
+            data.pop("status_counts")
+        return data
 
 
 class FeeItemSerializer(serializers.ModelSerializer):
@@ -815,6 +969,11 @@ class IncomeGivenBackMixin(serializers.Serializer):
     document screen can link to it. Empty for a document that took nothing from
     another branch, and for a draft. The transfers are party to the document's
     own branch, so whoever reads the document may read them.
+
+    Each row restates a transfer of the registered ``finance.interbranch``
+    resource, so its amount and status are served only to a caller who may read
+    them; the transfer's number and the branch it was given back to identify it
+    and always show.
     """
 
     income_given_back = serializers.SerializerMethodField()
@@ -822,7 +981,9 @@ class IncomeGivenBackMixin(serializers.Serializer):
     def get_income_given_back(self, obj) -> list:
         if obj.journal_id is None:
             return []
-        return prime_income_given_back(self.context, (obj.journal_id,))[obj.journal_id]
+        rows = prime_income_given_back(self.context, (obj.journal_id,))[obj.journal_id]
+        request = self.context.get("request")
+        return [visible(request, "finance.interbranch", row) for row in rows]
 
 
 class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
@@ -849,6 +1010,18 @@ class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalSta
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def to_representation(self, instance):
+        """The credit note, without the customer's credit left once their balance is hidden.
+
+        ``credit_remaining`` is what is still owed back to the customer, which
+        is the customer's balance seen through one document.
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not can_read(request, "finance.customer.balance"):
+            data.pop("credit_remaining", None)
+        return data
 
 
 class RefundSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.ModelSerializer):
@@ -1145,11 +1318,16 @@ def _reads_gateway_route(request) -> bool:
 
 
 class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
-    """One funding account, with the number behind its own switch.
+    """One funding account, under the ``finance.bankaccount`` switches.
 
-    The account number is the registered field of ``finance.bankaccount``: a
-    caller whose roles cannot read it gets the account without it, and the
-    endpoints that write it refuse a role that cannot change it.
+    The account's ``name`` identifies it wherever it is picked or printed and
+    carries no switch. Everything else about it is registered: the bank and
+    its code, the account number, the currency, the ledger account, the
+    branch, whether it is active, the main operating account and the fee
+    collection account, and the figures worked out from the books (balance,
+    reconciliation progress). A caller whose roles cannot read one gets the
+    account without it, and the endpoints that write them refuse a role that
+    cannot change them.
 
     ``gateway_subaccount_code``, ``gateway_subaccount_provider`` and
     ``settlement_bank_code`` say how the payment provider settles the branch's
@@ -1157,7 +1335,9 @@ class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     subaccount endpoint writes them), and present only for a caller who
     reaches the whole tenant or holds ``payments.settings.view``, the readers
     of the custody setting they belong to (:func:`_reads_gateway_route`); for
-    anybody else the three keys are absent, not blanked.
+    anybody else the three keys are absent, not blanked. A caller who passes
+    that gate is still filtered by the switches on the subaccount and the
+    bank code.
     """
 
     field_resource = "finance.bankaccount"
@@ -1215,6 +1395,54 @@ class BankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
         return last
 
 
+class BankAccountMetricsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The figures at the head of a bank account's detail, under ``finance.bankaccount``.
+
+    The difference between the books and the statement is worked out from both
+    balances, so a caller who may read it must be able to read both: with
+    either hidden, the other could be recovered from it.
+    """
+
+    field_resource = "finance.bankaccount"
+
+    book_balance = serializers.ReadOnlyField()
+    statement_balance = serializers.ReadOnlyField()
+    unreconciled_diff = serializers.ReadOnlyField()
+    unreconciled_count = serializers.ReadOnlyField()
+
+    def to_representation(self, instance):
+        from vs_rbac.field_enforcement import can_read
+
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if "unreconciled_diff" in data and not (
+            can_read(request, "finance.bankaccount.book_balance")
+            and can_read(request, "finance.bankaccount.statement_balance")
+        ):
+            data.pop("unreconciled_diff")
+        return data
+
+
+class BankAccountActivitySerializer(FieldAccessMixin, serializers.Serializer):
+    """One recent ledger line of a bank account, under ``finance.bankaccount``.
+
+    The running balance walks back from the account's book balance, so it is
+    read under that switch. The whole list is the account's recent activity
+    and is read under its own.
+    """
+
+    field_resource = "finance.bankaccount"
+
+    id = serializers.ReadOnlyField()
+    date = serializers.ReadOnlyField()
+    description = serializers.ReadOnlyField()
+    reference = serializers.ReadOnlyField()
+    debit = serializers.ReadOnlyField()
+    credit = serializers.ReadOnlyField()
+    running_balance = serializers.ReadOnlyField()
+    matched = serializers.ReadOnlyField()
+
+
 class BankStatementLineSerializer(serializers.ModelSerializer):
     amount_naira = serializers.SerializerMethodField()
     match_source_display = serializers.CharField(source="get_match_source_display", read_only=True)
@@ -1261,6 +1489,20 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
 
 
 class BankStatementSerializer(serializers.ModelSerializer):
+    """One imported bank statement.
+
+    A statement's opening and closing balances are the bank's own figures, the
+    ones the account's registered ``statement_balance`` is read from, so they
+    are served only to a caller who may read that field
+    (``finance.bankaccount.statement_balance``). The statement's date, period,
+    state and line count identify it and always show.
+    """
+
+    #: The balances that go when ``finance.bankaccount.statement_balance`` is hidden.
+    BALANCE_FIELDS = (
+        "opening_balance", "opening_balance_naira", "closing_balance", "closing_balance_naira",
+    )
+
     line_count = serializers.IntegerField(read_only=True)
     opening_balance_naira = serializers.SerializerMethodField()
     closing_balance_naira = serializers.SerializerMethodField()
@@ -1277,6 +1519,14 @@ class BankStatementSerializer(serializers.ModelSerializer):
             "line_count", "status", "status_display", "can_edit", "edit_block_reason",
             "import_rollback",
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not can_read(request, "finance.bankaccount.statement_balance"):
+            for name in self.BALANCE_FIELDS:
+                data.pop(name, None)
+        return data
 
     def get_opening_balance_naira(self, obj) -> str:
         return format_naira(obj.opening_balance)
@@ -1307,7 +1557,17 @@ class BankStatementDetailSerializer(BankStatementSerializer):
         fields = [*BankStatementSerializer.Meta.fields, "lines"]
 
 
-class BankReconciliationSerializer(serializers.ModelSerializer):
+class BankReconciliationSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One reconciliation run: the books and the statement as they stood.
+
+    A run snapshots the account's book balance and the bank's statement
+    balance, so it is read under those two switches of ``finance.bankaccount``.
+    The difference is worked out from both, and leaves the run when either is
+    hidden.
+    """
+
+    field_resource = "finance.bankaccount"
+
     book_balance_naira = serializers.SerializerMethodField()
     statement_balance_naira = serializers.SerializerMethodField()
     difference_naira = serializers.SerializerMethodField()
@@ -1322,6 +1582,19 @@ class BankReconciliationSerializer(serializers.ModelSerializer):
             "difference_naira", "matched_count", "status", "status_display",
             "performed_by_name", "created_at",
         ]
+
+    def to_representation(self, instance):
+        from vs_rbac.field_enforcement import can_read
+
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if not (
+            can_read(request, "finance.bankaccount.book_balance")
+            and can_read(request, "finance.bankaccount.statement_balance")
+        ):
+            data.pop("difference", None)
+            data.pop("difference_naira", None)
+        return data
 
     def get_book_balance_naira(self, obj) -> str:
         return format_naira(obj.book_balance)
@@ -1339,6 +1612,34 @@ class BankReconciliationSerializer(serializers.ModelSerializer):
         name = " ".join(filter(None, [
             getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
         return name or getattr(u, "email", None)
+
+
+class BankAccountDetailSerializer(BankAccountSerializer):
+    """A bank account with the blocks its detail screen carries.
+
+    The view attaches ``detail_metrics``, ``detail_transactions``,
+    ``detail_statements`` and ``detail_reconciliations`` to the account before
+    rendering. Statements and reconciliations are documents of their own and
+    are not registered fields of the account.
+    """
+
+    metrics = BankAccountMetricsSerializer(source="detail_metrics", read_only=True)
+    transactions = BankAccountActivitySerializer(
+        source="detail_transactions", many=True, read_only=True)
+    statements = serializers.ReadOnlyField(source="detail_statements")
+    reconciliations = BankReconciliationSerializer(
+        source="detail_reconciliations", many=True, read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get("metrics") == {}:
+            data.pop("metrics")
+        return data
+
+    class Meta(BankAccountSerializer.Meta):
+        fields = BankAccountSerializer.Meta.fields + [
+            "metrics", "transactions", "statements", "reconciliations",
+        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -1542,8 +1843,13 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
         return f"{label} +{len(lines) - 1}" if len(lines) > 1 else label
 
 
-class PettyCashReturnSerializer(ApprovalStateMixin, serializers.ModelSerializer):
+class PettyCashReturnSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.ModelSerializer):
     """A petty cash return: the count, the books, what was banked and the float after.
+
+    Every key but the ids a client links by is a ``finance.pettycash_return`` field: a
+    caller who may not read one gets the return without it, and a detail
+    response lists in ``_read_only_fields`` the ones they may read and not
+    change.
 
     ``difference`` is the count less the books (positive over, negative short);
     ``cash_left`` is what the tin keeps after the return. ``counted_by_name`` and
@@ -1553,6 +1859,10 @@ class PettyCashReturnSerializer(ApprovalStateMixin, serializers.ModelSerializer)
     an approver handed back reads PENDING and returned, and is resumed or its
     request withdrawn, never cancelled underneath the request.
     """
+
+    field_resource = "finance.pettycash_return"
+    field_access_detail = True
+    field_write_aliases = True
 
     person_fields = ("counted_by", "created_by")
 
@@ -2415,8 +2725,38 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 #: Audit targets whose snapshots carry registered fields, and the Field Access
-#: resource those fields are registered under.
-AUDIT_SNAPSHOT_FIELDS = {"EmployeeSalary": "finance.salary"}
+#: resource those fields are registered under. The receivables policy's
+#: snapshots are keyed by the policy's own setting names, which are the client
+#: names ``finance.settings`` registers.
+AUDIT_SNAPSHOT_FIELDS = {
+    "EmployeeSalary": "finance.salary",
+    "FinanceReceivablesPolicy": "finance.settings",
+    "Customer": "finance.customer",
+    "BankAccount": "finance.bankaccount",
+    "BankTransaction": "finance.banktransaction",
+    "BankTransfer": "finance.banktransfer",
+    "DeferredIncomeRelease": "finance.deferredincome",
+    "DepositForfeiture": "finance.deposit",
+    "DoubtfulDebtProvision": "finance.provision",
+    "PettyCashReturn": "finance.pettycash_return",
+    "InterBranchTransfer": "finance.interbranch",
+    "HeldForBranchReceipt": "finance.interbranch",
+    "InterBranchRecharge": "finance.interbranch",
+    "PayerPayment": "finance.payer_payment",
+    "PayrollRun": "finance.payrollrun",
+    "FiscalYear": "finance.fiscalyear",
+}
+
+
+#: Audit targets whose snapshots carry a figure a registered field guards under
+#: another name: target type -> (Field Access key, snapshot keys it governs). A
+#: bank statement's balances are the bank's own, read under the account's
+#: ``statement_balance`` switch.
+AUDIT_SNAPSHOT_GUARDS = {
+    "BankStatement": (
+        "finance.bankaccount.statement_balance", ("opening_balance", "closing_balance"),
+    ),
+}
 
 
 class FinanceAuditPeopleListSerializer(serializers.ListSerializer):
@@ -2458,6 +2798,18 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     (:data:`AUDIT_SNAPSHOT_FIELDS`): an auditor with pay figures switched off
     reads that Ada was added and by whom, and none of her pay. A render with no
     request in its context keeps the snapshot whole.
+
+    ``message`` says what happened to which document and where, and carries no
+    amount, balance, address, narration or reason: those are the snapshot's, so
+    Field Access reaches them. An entry written before sentences were
+    figure-free shows the sentence rebuilt from its action and document number
+    (:func:`vs_finance.audit.entry_sentence`); its stored text is never served.
+
+    ``reason`` is the free-text reason the person gave for the act (cancelling
+    an order, terminating a contract, declining a request), served beside the
+    sentence and never inside it (:func:`vs_finance.audit.entry_reason`). It is
+    empty when there is none, and when it belongs to a field the caller cannot
+    read.
     """
 
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
@@ -2468,13 +2820,14 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     acted_label = serializers.SerializerMethodField()
     actor_is_exited = serializers.SerializerMethodField()
     effective_user_is_exited = serializers.SerializerMethodField()
+    reason = serializers.CharField(read_only=True, default="")
 
     class Meta:
         model = FinanceAuditLog
         list_serializer_class = FinanceAuditPeopleListSerializer
         fields = [
             "id", "action", "action_display", "status", "actor", "target_type",
-            "target_id", "document_number", "message", "before", "after", "created_at",
+            "target_id", "document_number", "message", "reason", "before", "after", "created_at",
             "real_actor_name", "proxied_user_name", "acted_label", "branch_id", "branch_name",
             "actor_is_exited", "effective_user_is_exited",
         ]
@@ -2495,12 +2848,24 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         return audit_row_attribution(obj)
 
     def to_representation(self, obj):
+        from .audit import entry_reason, entry_sentence
+
         data = super().to_representation(obj)
+        data["message"] = entry_sentence(obj)
+        request = self.context.get("request")
         resource = AUDIT_SNAPSHOT_FIELDS.get(obj.target_type)
         if resource is not None:
-            request = self.context.get("request")
             data["before"] = visible(request, resource, data.get("before") or {})
             data["after"] = visible(request, resource, data.get("after") or {})
+        guard = AUDIT_SNAPSHOT_GUARDS.get(obj.target_type)
+        if guard is not None and not can_read(request, guard[0]):
+            for name in ("before", "after"):
+                if isinstance(data.get(name), dict):
+                    data[name] = {k: v for k, v in data[name].items() if k not in guard[1]}
+        data["reason"] = entry_reason(
+            obj, can_read=lambda key: can_read(request, key),
+            snapshots={"before": data.get("before"), "after": data.get("after")},
+        )
         return data
 
     def get_real_actor_name(self, obj) -> str | None:
@@ -2518,7 +2883,8 @@ class SettingsHistorySerializer(FinanceAuditLogSerializer):
 
     ``changes`` is built from the ``before`` and ``after`` this row would show
     anyway, after any Field Access filtering, so it can never reveal more than
-    they do. The context carries ``fields`` (the family's
+    they do. A bank summary in a snapshot (the collection account) loses the
+    bank and currency of a bank account the caller may not read. The context carries ``fields`` (the family's
     :class:`~vs_finance.settings_history.SettingField` map), ``tenant`` for date
     formats and ``accounts`` (code to name) for account mappings; see
     :func:`vs_finance.settings_history.settings_history`.
@@ -2527,7 +2893,12 @@ class SettingsHistorySerializer(FinanceAuditLogSerializer):
     def to_representation(self, obj):
         from .settings_history import describe_changes
 
+        from .settings_history import hide_bank_summary_copies
+
         data = super().to_representation(obj)
+        request = self.context.get("request")
+        data["before"] = hide_bank_summary_copies(request, data.get("before"))
+        data["after"] = hide_bank_summary_copies(request, data.get("after"))
         data["changes"] = describe_changes(
             self.context.get("fields") or {}, data.get("before"), data.get("after"),
             tenant=self.context.get("tenant"), accounts=self.context.get("accounts"),
@@ -2550,7 +2921,7 @@ class FinanceDeliveryPeopleListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
-class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
+class FinanceDocumentDeliverySerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One attempt to email a customer document.
 
     ``recipients`` and ``bcc`` are the addresses the send actually used, which is the
@@ -2558,7 +2929,15 @@ class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
     just a status. They are the customer's own billing address and the finance CC, so
     nothing here discloses a third party. ``notification_ids`` stays internal - it is a
     correlation handle for support, with no reader value.
+
+    ``recipients`` is the customer's billing email as it stood when the send was made,
+    so it is read under the billing email switch of ``finance.customer``: a caller who
+    may not read that field sees that a send happened, to how many addresses, and not
+    which. ``bcc`` is the finance monitoring copy and belongs to the school, not to the
+    customer.
     """
+
+    field_resource = "finance.customer"
 
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True)
@@ -2603,8 +2982,27 @@ class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
         return obj.status == FinanceDeliveryStatus.FAILED
 
 
-class DoubtfulDebtProvisionLineSerializer(serializers.ModelSerializer):
-    """One branch's figures in a provision run."""
+class DocumentEmailPreviewSerializer(FieldAccessMixin, serializers.Serializer):
+    """What a send of a customer document would do, under ``finance.customer``.
+
+    ``recipients`` is the customer's billing email, so a caller who may not read it
+    is told whether a send is possible and not where it would go.
+    """
+
+    field_resource = "finance.customer"
+
+    recipients = serializers.ReadOnlyField()
+    bcc = serializers.ReadOnlyField()
+    subject = serializers.ReadOnlyField()
+    can_send = serializers.ReadOnlyField()
+    blocked_reason = serializers.ReadOnlyField()
+    deliveries = FinanceDocumentDeliverySerializer(many=True, read_only=True)
+
+
+class DoubtfulDebtProvisionLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One branch's figures in a provision run, under the ``finance.provision`` switches."""
+
+    field_resource = "finance.provision"
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
@@ -2616,7 +3014,7 @@ class DoubtfulDebtProvisionLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, ApprovalStateMixin,
+class DoubtfulDebtProvisionSerializer(FieldAccessMixin, ApprovalGatedMixin, ApprovalStateMixin,
                                       serializers.ModelSerializer):
     """A doubtful-debt provision run, whole or as the reader's branches' part of it.
 
@@ -2634,7 +3032,21 @@ class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, ApprovalStateMixin,
     tenant). Without that key the run is shown whole, which is right only for
     the writes, every one of which a whole-tenant caller makes; every read
     passes the key.
+
+    The run and its lines are the ``finance.provision`` resource. A branch
+    part is cut by each line's ``branch_id``, which is always present. The
+    part's totals replace the run's only when the payload carries them: a total
+    the caller may not read stays out.
+
+    The policy snapshot is the provision bands the run was worked out with, and
+    each line's age bands are keyed by the bands' thresholds with the amount
+    each provides, which gives the rate away. Both are the receivables policy's
+    ``finance.settings.provision_bands`` seen through a run, so they are served
+    only to a caller who may read that setting.
     """
+
+    field_resource = "finance.provision"
+    field_access_detail = True
 
     lines = DoubtfulDebtProvisionLineSerializer(many=True, read_only=True)
     partial_view = serializers.SerializerMethodField()
@@ -2661,20 +3073,29 @@ class DoubtfulDebtProvisionSerializer(ApprovalGatedMixin, ApprovalStateMixin,
 
     def to_representation(self, obj):
         data = super().to_representation(obj)
+        if not can_read(self.context.get("request"), "finance.settings.provision_bands"):
+            data.pop("policy_snapshot", None)
+            for row in data.get("lines", []):
+                row.pop("bands", None)
         reach = self._part_reach()
-        if reach is None:
-            return data
-        lines = [line for line in obj.lines.all() if line.branch_id in reach]
-        data.update({
-            "lines": [row for row in data["lines"] if row["branch_id"] in reach],
-            "required_total": sum(int(line.required) for line in lines),
-            "movement_total": sum(abs(int(line.movement)) for line in lines),
-        })
+        if reach is not None:
+            lines = [line for line in obj.lines.all() if line.branch_id in reach]
+            data["lines"] = [row for row in data["lines"] if row["branch_id"] in reach]
+            if "required_total" in data:
+                data["required_total"] = sum(int(line.required) for line in lines)
+            if "movement_total" in data:
+                data["movement_total"] = sum(abs(int(line.movement)) for line in lines)
         return data
 
 
-class CustomerDepositSerializer(serializers.ModelSerializer):
-    """A customer's refundable deposit and where it stands."""
+class CustomerDepositSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """A customer's refundable deposit and where it stands.
+
+    Every field is a ``finance.deposit`` field. A deposit is opened by billing
+    and closed by the release and forfeit runs, so none is writable.
+    """
+
+    field_resource = "finance.deposit"
 
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)

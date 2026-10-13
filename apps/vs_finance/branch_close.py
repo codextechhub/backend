@@ -100,6 +100,8 @@ def close_branch_period(entity, period, branch, *, actor_user=None, soft=False,
             f"{said} is not ready to close{_at(state.branch)}. "
             f"{failures_sentence(checklist.failures)}.",
             failures=[i.name for i in checklist.failures],
+            failure_items=checklist.failures,
+            lead=f"{said} is not ready to close{_at(state.branch)}.",
         )
     state.status = PeriodStatus.SOFT_CLOSED if soft else PeriodStatus.CLOSED
     state.closed_at = timezone.now()
@@ -119,6 +121,11 @@ def close_branch_period(entity, period, branch, *, actor_user=None, soft=False,
                 f"Every branch has closed {said}, but the school's books are not ready "
                 f"to close it. {failures_sentence(tenant_checklist.failures)}.",
                 failures=[i.name for i in tenant_checklist.failures],
+                failure_items=tenant_checklist.failures,
+                lead=(
+                    f"Every branch has closed {said}, but the school's books are not "
+                    f"ready to close it."
+                ),
             )
         _transition(
             period, PeriodStatus.CLOSED, actor_user=actor_user,

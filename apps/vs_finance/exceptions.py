@@ -369,8 +369,17 @@ class PeriodCloseError(FinanceError):
     http_status = 409  # Closing conflicts are state conflicts.
 
     # Initialize this object with its required state.
-    def __init__(self, message=None, *, failures=None, **kwargs):
+    def __init__(self, message=None, *, failures=None, failure_items=None, lead="", **kwargs):
+        """A close that could not go ahead.
+
+        ``failure_items`` are the failed checklist items behind a "not ready to
+        close" refusal and ``lead`` the sentence that opens it, kept so a view
+        can word the refusal again naming only the checks its caller may read
+        (:func:`vs_finance.close_access.redact_close_refusal`).
+        """
         self.failures = failures or []  # Preserve the list of close failures for callers.
+        self.failure_items = list(failure_items or [])
+        self.lead = lead
         super().__init__(message, failures=self.failures, **kwargs)  # Pass structured failure context upstream.
 
 

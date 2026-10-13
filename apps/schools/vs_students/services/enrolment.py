@@ -135,7 +135,7 @@ def issue_number(tenant, *, branch, policy, write):
 def enrol(
     *, tenant, actor, branch, data, guardian_rows, as_applicant=False,
     school_class=None, allow_over_capacity=False, confirm_duplicate=False,
-    documents=None,
+    documents=None, guardian_rules=None,
 ):
     """Create a student and everything that must exist with them.
 
@@ -147,6 +147,10 @@ def enrol(
     roll (``applicants.documents.required_to_confirm``) is refused with
     ``DOCUMENTS_MISSING`` unless every one of them is among *documents*; that
     is checked first. An applicant needs none.
+
+    *guardian_rules* are the school's guardian rules as they bind the caller,
+    when the caller is bound by fewer than the school sets
+    (``GuardianRules.binding``); read from the school when not given.
     """
     from .admission import assert_enrolment_documents
     from .documents import attach
@@ -217,7 +221,7 @@ def enrol(
     if student is None:
         student = create(number)
 
-    guardian_rules = read_guardian_rules(tenant)
+    guardian_rules = guardian_rules or read_guardian_rules(tenant)
     for row in guardian_rows:
         guardian = row.get("guardian")
         if guardian is None:

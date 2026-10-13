@@ -18,7 +18,7 @@ from rest_framework_simplejwt.serializers import (
 from core.media import signed_url
 from core.validators import phone_validator
 from vs_rbac.models import TenantRoleTemplate
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, assert_writable
 from vs_tenants.references import resolve_branch_reference
 from vs_tenants.models import Tenant
 from .email_normalization import normalize_email
@@ -306,6 +306,32 @@ class UserListSerializer(FieldAccessMixin, serializers.ModelSerializer):
         return inv.expires_at.isoformat() if inv and inv.expires_at else None
 
 
+#: The inputs of an account create that set a registered ``platform.staff_profile``
+#: field on the CX staff member being added. The organogram seat (``position``)
+#: places the person in the structure and is not one of those fields.
+PLATFORM_STAFF_CREATE_FIELDS = (
+    'first_name', 'last_name', 'employee_id', 'job_title', 'employment_type',
+    'date_joined', 'date_of_birth', 'marital_status', 'nationality',
+    'state_of_origin',
+)
+
+
+def refuse_unwritable_staff_profile_fields(request, data) -> None:
+    """Refuse an add of CX staff that sets a profile detail the caller may not write.
+
+    Every route that adds a member of CodeX staff (the Add form, the draft
+    save, the spreadsheet import) sets these details as the record is created,
+    so each is judged by its Write switch on ``platform.staff_profile`` unless
+    the registry declares it open on create. An empty input sets nothing and is
+    not judged, as on every other create form.
+    """
+    submitted = {
+        name: data[name] for name in PLATFORM_STAFF_CREATE_FIELDS
+        if data.get(name) not in (None, '')
+    }
+    assert_writable(request, 'platform.staff_profile', submitted, creating=True)
+
+
 class UserCreateSerializer(serializers.Serializer):
     first_name  = serializers.CharField(max_length=100)
     last_name   = serializers.CharField(max_length=100)
@@ -400,6 +426,8 @@ class UserCreateSerializer(serializers.Serializer):
         creating_platform_staff = (
             getattr(target_tenant, 'kind', None) == Tenant.Kind.PLATFORM
         )
+        if creating_platform_staff:
+            refuse_unwritable_staff_profile_fields(self.context['request'], attrs)
 
         # The branch rule, asked of the model so there is one statement of it -
         # see User.branch_assignment_error. Judged on whether any branch was

@@ -18,6 +18,7 @@ from vs_rbac.scoping import caller_reaches_whole_tenant
 
 from .audit import record
 from .constants import FinanceAuditAction
+from .field_guards import readable
 from .money import format_naira
 from .serializers import FiscalYearSerializer
 from .views import _FiscalCalendarWriteMixin, _resolve_fiscal_year, resolve_entity
@@ -59,6 +60,7 @@ class LedgerSealVerifyView(APIView):
         from vs_tenants.models import Branch
 
         from .models import Account
+        from .seal_serializers import SealVerificationSerializer
         from .seals import describe, verify_entity
 
         entity = resolve_entity(request)
@@ -103,15 +105,26 @@ class LedgerSealVerifyView(APIView):
             }
             for c in result.checks
         ]
+        context = {"request": request}
+        if not readable(request, "finance.seal", "verdict"):
+            message = "Closed figures checked."
+        else:
+            message = (
+                "Closed figures verified." if result.ok
+                else "Closed figures differ from the ledger."
+            )
         return success_response(
-            "Closed figures verified." if result.ok else "Closed figures differ from the ledger.",
-            data={
-                "ok": result.ok,
-                "checked": len(checks),
-                "mismatches": sum(1 for c in checks if not c["ok"]),
-                "chain_breaks": result.chain_breaks,
-                "checks": checks,
-            },
+            message,
+            data=SealVerificationSerializer(
+                {
+                    "ok": result.ok,
+                    "checked": len(checks),
+                    "mismatches": sum(1 for c in checks if not c["ok"]),
+                    "chain_breaks": result.chain_breaks,
+                    "checks": checks,
+                },
+                context=context,
+            ).data,
         )
 
 
@@ -149,7 +162,7 @@ class FiscalYearArchiveView(_FiscalCalendarWriteMixin, APIView):
         verb = "archived" if self.archive else "unarchived"
         return success_response(
             f"Fiscal year {fiscal_year.year} {verb}.",
-            data=FiscalYearSerializer(fiscal_year).data,
+            data=FiscalYearSerializer(fiscal_year, context={"request": request}).data,
         )
 
 

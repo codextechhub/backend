@@ -188,6 +188,26 @@ FINANCE_RESOURCES = [
     ("seal",         "closed period figures",  [("view", "NORMAL")]),
 ]
 
+#: Resources that carry Field Access fields and no permission keys.
+#:
+#: A payer link, a payment from a payer and a petty cash return are records the
+#: customer, payment and petty cash keys already open, so a key of their own
+#: would be a switch governing nothing, while their fields still need a resource
+#: apart from the customer master, the ordinary receipt and the petty cash fund
+#: whose names they share. A resource is otherwise created as a side effect of
+#: the first key naming it, and ``sync_field_registry`` refuses a declaration
+#: whose resource is missing.
+#:
+#: The dashboards are open to anyone working in finance or payments and
+#: withhold each card by the keys behind it, so the cards have no key of their
+#: own to hang a resource on.
+FIELD_ONLY_RESOURCES = [
+    ("payer_link", "payer links"),
+    ("payer_payment", "payer payments"),
+    ("pettycash_return", "petty cash returns"),
+    ("dashboard", "dashboard cards"),
+]
+
 
 class Command(BaseCommand):
     help = "Seed vs_finance permission keys and grant them to platform admin roles."
@@ -298,6 +318,22 @@ class Command(BaseCommand):
                     created_perms += 1
                     self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
                 all_perms.append(perm)
+
+        # Resources that carry fields and no keys, registered in the same phase
+        # because the field sync refuses a declaration whose resource is missing.
+        for resource_name, resource_label in FIELD_ONLY_RESOURCES:
+            resource, _ = PermissionResource.objects.get_or_create(
+                module=module,
+                name=resource_name,
+                defaults={
+                    "description": f"{resource_label.capitalize()} ({MODULE_NAME}).",
+                    "is_active": True,
+                },
+            )
+            if not resource.label:
+                PermissionResource.objects.filter(pk=resource.pk, label="").update(
+                    label=sentence_label(resource_label),
+                )
 
         # ── Grant every key to the platform admin roles (codex tenant) ────────
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()

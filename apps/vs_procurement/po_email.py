@@ -25,16 +25,21 @@ from vs_finance.constants import DocumentStatus, FinanceAuditAction, FinanceAudi
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_notifications.models import Notification, NotificationStatus
+from vs_rbac.field_enforcement import can_read
 
 from .constants import (
     ProcApprovalState,
     PurchaseOrderVendorDeliverySource,
     PurchaseOrderVendorDeliveryStatus,
 )
+from .field_access import CONTACT_ACTIVE, CONTACT_PRIMARY, CONTACT_RECEIVES_ORDERS
 from .models import PurchaseOrder, PurchaseOrderVendorDelivery
 
 logger = logging.getLogger(__name__)
 MAX_BUYER_MESSAGE_LENGTH = 1000
+
+#: The contact flags that choose which contacts an order goes to.
+_ORDER_ROUTING_KEYS = (CONTACT_ACTIVE, CONTACT_RECEIVES_ORDERS, CONTACT_PRIMARY)
 
 
 class PurchaseOrderEmailError(Exception):
@@ -65,20 +70,37 @@ def procurement_bcc(recipients=None):
     ]
 
 
-def resolve_recipients(po: PurchaseOrder) -> list[str]:
-    """Resolve explicit PO contacts first, then the primary contact, then vendor email."""
+def _resolve(po: PurchaseOrder) -> tuple[list[str], str]:
+    """The addresses an order goes to, and whether they are a contact's or the vendor's own."""
     contacts = list(po.vendor.contacts.all())
     opted_in = [
         contact.email for contact in contacts
         if contact.is_active and contact.receives_purchase_orders and contact.email
     ]
     if opted_in:
-        return _dedupe(opted_in)
+        return _dedupe(opted_in), "contact"
     primary = next(
         (contact.email for contact in contacts if contact.is_active and contact.is_primary and contact.email),
         "",
     )
-    return _dedupe([primary or po.vendor.email])
+    if primary:
+        return _dedupe([primary]), "contact"
+    return _dedupe([po.vendor.email]), "vendor"
+
+
+def routing_readable(request) -> bool:
+    """Whether the caller may read all three flags that choose who an order goes to.
+
+    A count of the people an order went to is a statement of those flags, so
+    it is shown only to a caller who may read every one of them.
+    ``request=None`` is a render for nobody and reads them all.
+    """
+    return all(can_read(request, flag) for flag in _ORDER_ROUTING_KEYS)
+
+
+def resolve_recipients(po: PurchaseOrder) -> list[str]:
+    """Resolve explicit PO contacts first, then the primary contact, then vendor email."""
+    return _resolve(po)[0]
 
 
 def _subject(po):
@@ -89,10 +111,28 @@ def _user_name(user):
     return (getattr(user, "full_name", "") or getattr(user, "email", "")).strip() if user else ""
 
 
-def preview(po: PurchaseOrder) -> dict:
-    recipients = resolve_recipients(po)
-    return {
-        "recipients": recipients,
+def preview(po: PurchaseOrder, *, request=None) -> dict:
+    """What sending the order would do, as the person about to send it sees it.
+
+    The addresses are a contact person's email, or the vendor's own when the
+    vendor has no contact to write to, and each is shown only to a caller who
+    may read the field it came from: a clerk who may send orders but not read
+    contact details is told how many people the order goes to, not who they
+    are. A contact's address is also the outcome of the routing flags (active,
+    receives purchase orders, primary contact), so the addresses and their
+    count are withheld from a caller who may not read all three: the list
+    would otherwise say which contacts hold the flags. ``request=None`` is a
+    render for nobody and shows every address.
+    """
+    recipients, source = _resolve(po)
+    key = "procurement.vendor_contact.email" if source == "contact" else "procurement.vendor.email"
+    routing_readable = source != "contact" or all(
+        can_read(request, flag) for flag in _ORDER_ROUTING_KEYS
+    )
+    payload = {
+        "recipients": recipients if request is None or (
+            routing_readable and can_read(request, key)
+        ) else [],
         "bcc": procurement_bcc(recipients),
         "subject": _subject(po),
         "can_schedule": po.status == DocumentStatus.DRAFT
@@ -100,6 +140,9 @@ def preview(po: PurchaseOrder) -> dict:
         "can_send": po.status == DocumentStatus.APPROVED
         and po.approval_state == ProcApprovalState.APPROVED,
     }
+    if routing_readable:
+        payload["recipient_count"] = len(recipients)
+    return payload
 
 
 def _clean_message(value) -> str:
@@ -113,7 +156,14 @@ def _clean_message(value) -> str:
     return value
 
 
-def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditStatus.SUCCESS):
+def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditStatus.SUCCESS,
+           **details):
+    """Write one purchase-order email entry.
+
+    ``message`` names the order and the act and never the addresses, which are the
+    vendor's and its contacts' and travel in the entry's metadata (``recipients``,
+    ``bcc``) with any free-text ``details`` such as a cancellation reason.
+    """
     return record(
         entity=delivery.purchase_order.entity,
         action=action,
@@ -126,6 +176,7 @@ def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditSta
         recipients=delivery.recipients,
         bcc=delivery.bcc,
         notification_ids=delivery.notification_ids,
+        **details,
     )
 
 
@@ -204,8 +255,8 @@ def cancel_awaiting(po: PurchaseOrder, *, reason: str, actor_user=None):
         delivery.save(update_fields=["status", "cancelled_at", "failure_reason", "updated_at"])
         _audit(
             delivery, FinanceAuditAction.PURCHASE_ORDER_EMAIL_CANCELLED,
-            f"Cancelled scheduled vendor email for purchase order {po.document_number}: {delivery.failure_reason}",
-            actor_user=actor_user,
+            f"Cancelled scheduled vendor email for purchase order {po.document_number}.",
+            actor_user=actor_user, reason=delivery.failure_reason,
         )
     return deliveries
 

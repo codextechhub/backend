@@ -57,7 +57,6 @@ from .constants import (
     RevenueRecognitionMethod,
 )
 from .exceptions import PeriodCloseError, PostingError
-from .money import format_naira
 
 
 def month_end(day: datetime.date) -> datetime.date:
@@ -466,7 +465,8 @@ def release_deferred_income(entity, *, up_to, actor_user=None, allow_restricted=
         record(
             entity=entity, action=FinanceAuditAction.DEFERRED_INCOME_RELEASED,
             actor_user=actor_user, target=release,
-            message=f"Released {format_naira(total)} of deferred income for {day:%B %Y}.",
+            message=f"Released deferred income for {day:%B %Y}.",
+            after={"amount": total},
             journal_id=journal.pk, amount=total, branch_id=key[0],
             invoices=sorted({row.invoice_id for row in rows}),
         )
@@ -523,7 +523,8 @@ def reverse_deferred_release(entity, period, *, actor_user=None):
         record(
             entity=entity, action=FinanceAuditAction.DEFERRED_RELEASE_REVERSED,
             actor_user=actor_user, target=release,
-            message=f"Reversed a deferred income release of {format_naira(release.amount)}.",
+            message="Reversed a deferred income release.",
+            before={"amount": release.amount},
             journal_id=release.journal_id, reversal_id=reversal.pk,
         )
     return len(releases)

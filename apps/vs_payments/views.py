@@ -41,6 +41,7 @@ from vs_rbac.permissions import (
 from vs_rbac.scoping import branch_q, transaction_branch_q, transaction_branch_scope
 
 from . import reconciliation, services, webhooks
+from .payout_access import may_read_beneficiary
 from .reach import PaymentsReach
 from .constants import (
     COLLECTION_GROUPS,
@@ -1116,7 +1117,7 @@ _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
     "amount", "status", "narration", "provider_reference", "confirmed_at",
     "email", "account_code", "account_name", "beneficiary_account",
-    "sent_amount", "wht_amount",
+    "sent_amount", "wht_amount", "vendor_payout",
 ]
 
 
@@ -1133,10 +1134,11 @@ def _movement_querysets(reach, *, provider=None, group=None):
     held settlement paying one of its branches reads as a ``settlement``
     transfer from the platform's balance into that branch's bank.
     """
-    from django.db.models import BigIntegerField, Case, CharField, F, Value, When
+    from django.db.models import BigIntegerField, BooleanField, Case, CharField, F, Value, When
     from django.db.models.functions import Coalesce
 
     from .constants import PayoutPurpose
+    from .payout_access import vendor_backed_expression
 
     cols = reach.collections()
     pos = reach.payouts()
@@ -1161,6 +1163,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
         account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
         sent_amount=F("amount"), wht_amount=Value(0, output_field=BigIntegerField()),
+        vendor_payout=Value(False, output_field=BooleanField()),
     ).values(*_MOVEMENT_COLS)
     pv = pos.annotate(
         kind=Case(settling, default=Value("payout"), output_field=CharField()),
@@ -1172,6 +1175,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
         beneficiary_account=F("beneficiary_account_number"),
         sent_amount=services.payout_sent_expression(),
         wht_amount=services.payout_wht_expression(),
+        vendor_payout=vendor_backed_expression(),
     ).values(*_MOVEMENT_COLS)
     hv = held.annotate(
         kind=Value("settlement", output_field=CharField()), gateway_id=F("id"),
@@ -1188,22 +1192,24 @@ def _movement_querysets(reach, *, provider=None, group=None):
         account_name=F("bank_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
         sent_amount=F("amount"), wht_amount=Value(0, output_field=BigIntegerField()),
+        vendor_payout=Value(False, output_field=BooleanField()),
     ).values(*_MOVEMENT_COLS)
     return cv, pv, hv  # Common-shape querysets for the feed.
 
 
 #: The feed's own column names for the two payout fields Field Access governs,
-#: and the registry keys behind them.
+#: and the payout field each restates.
 #:
 #: The feed puts a collection and a payout in one row shape, so its names are
 #: neither side's: ``party`` is the customer on a collection and the
 #: beneficiary on a payout, and no single switch could cover both. Registering
 #: the feed's names as the payout field's own would therefore make one switch
 #: mean two things, so the mapping lives here, at the one call site that needs
-#: it, instead of in the registry.
+#: it, instead of in the registry. A line that pays a vendor is also held to
+#: the vendor's matching bank switch (:mod:`vs_payments.payout_access`).
 _MOVEMENT_PAYOUT_FIELDS = {
-    "party": "payments.payout.beneficiary_name",
-    "beneficiary_account": "payments.payout.beneficiary_account_number",
+    "party": "beneficiary_name",
+    "beneficiary_account": "beneficiary_account_number",
 }
 
 
@@ -1224,7 +1230,8 @@ class MovementsView(APIView):
     a collection.
 
     A payout row carries the beneficiary's name and account number only for a
-    caller whose roles let them read those fields; for anybody else the keys
+    caller whose roles let them read those fields, and, on a line that pays a
+    vendor, the vendor's matching bank fields too; for anybody else the keys
     are absent rather than masked, so the feed says no more about a payment
     than the payment's own record would.
 
@@ -1252,16 +1259,22 @@ class MovementsView(APIView):
 
         paginator = XVSPagination()  # Build the shared paginator.
         page = paginator.paginate_queryset(union, request, view=self)  # Slice the union query.
-        # Evaluated once for the page; the map behind it is cached on the request.
-        hidden = [
-            name for name, key in _MOVEMENT_PAYOUT_FIELDS.items()
-            if not can_read(request, key)
-        ]
+        # Evaluated once for the page: the feed names the caller may not read, by whether the line pays a vendor.
+        hidden = {
+            vendor_backed: [
+                feed_name for feed_name, field in _MOVEMENT_PAYOUT_FIELDS.items()
+                if not may_read_beneficiary(
+                    lambda key: can_read(request, key), field, vendor_backed=vendor_backed,
+                )
+            ]
+            for vendor_backed in (False, True)
+        }
         rows = []  # Build the response rows explicitly so the beneficiary can be dropped.
         for m in page:  # Convert each result row into a serializable mapping.
             row = dict(m)  # Coerce the projected row into a plain dict.
+            vendor_backed = row.pop("vendor_payout")  # Routing only; never part of the feed.
             if row["kind"] in ("payout", "settlement"):  # A collection's party is its customer.
-                for name in hidden:  # Absent, not masked: a marker is itself an answer.
+                for name in hidden[bool(vendor_backed)]:  # Absent, not masked: a marker is itself an answer.
                     row.pop(name, None)
             row["gross_amount"] = row["amount"]  # The record's own figure.
             row["amount"] = row.pop("sent_amount")  # What moved, net of any WHT.

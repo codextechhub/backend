@@ -11,16 +11,27 @@ display string so a client never needs to know the divisor.
 """
 from __future__ import annotations
 
+import re
+
+from django.db.models import Q
 from rest_framework import serializers
 
 from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
+from vs_rbac.scoping import branch_q
 from vs_config.clock import branch_today
 
 from .constants import CLOSED_PO_STATUSES, ProcApprovalState, QuotationStatus
+from .field_access import (
+    CONTACT_ACTIVE,
+    CONTACT_EMAIL,
+    CONTACT_KEYS,
+    CONTACT_RECEIVES_RFQS,
+)
 from .purchasing import po_receipt_stage
+from .stock_transfer_access import trim_transfer_leg
 from .models import (
     CatalogItem,
     ContractMilestone,
@@ -128,6 +139,18 @@ class VendorCategorySerializer(serializers.ModelSerializer):
     parent_name = serializers.CharField(source="parent.name", read_only=True, default=None)
     level = serializers.SerializerMethodField()
 
+    def to_representation(self, instance):
+        """Serialise the category, leaving out the count of vendors filed under it.
+
+        The count restates which vendors carry the category, so it follows the
+        vendor's category switch. A render with no request passes every key.
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not can_read(request, "procurement.vendor.category"):
+            data.pop("vendor_count", None)
+        return data
+
     def get_level(self, category):
         # Parent and grandparent are select_related by category views, so depth is query-free.
         if category.parent_id is None:
@@ -143,7 +166,16 @@ class VendorCategorySerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorContactSerializer(serializers.ModelSerializer):
+class VendorContactSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One person at a vendor, with the details and routing flags a role may be denied.
+
+    Name, email and phone, and the four routing flags that say how the person
+    is used, are the registered fields of ``procurement.vendor_contact``. The
+    row's id is transport only and always travels.
+    """
+
+    field_resource = "procurement.vendor_contact"
+
     class Meta:
         model = VendorContact
         fields = [
@@ -152,14 +184,35 @@ class VendorContactSerializer(serializers.ModelSerializer):
         ]
 
 
+class RfqInvitationRecipientSerializer(FieldAccessMixin, serializers.Serializer):
+    """A person a quotation request was sent to, as the request screen lists them.
+
+    The snapshot taken when the invitation went out carries the contact's name
+    and email, so the same two switches that govern the vendor's contact list
+    govern it here.
+    """
+
+    field_resource = "procurement.vendor_contact"
+
+    name = serializers.CharField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+
+
 class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Vendor detail shape with account labels and per-role field access.
 
-    Contact, tax and banking details are the registered fields of
-    ``procurement.vendor``: a caller whose roles cannot read one gets the
-    vendor without it, and one who can read but not change it gets the name in
-    ``_read_only_fields``. The record itself is never refused, so an ordinary
-    purchasing screen keeps the master data it needs whatever the switches say.
+    Contact, tax, banking, category, terms and compliance values are the
+    registered fields of ``procurement.vendor``: a caller whose roles cannot
+    read one gets the vendor without it, and one who can read but not change
+    it gets the name in ``_read_only_fields``. The record itself is never
+    refused, so an ordinary purchasing screen keeps the master data it needs
+    whatever the switches say.
+
+    The contact people are the registered fields of
+    ``procurement.vendor_contact``. A caller who may read none of a contact's
+    name, email and phone gets no ``contacts`` list at all, since a list of
+    rows carrying only routing flags would still say how many people the
+    vendor has, to a role that sees no contact details.
     """
 
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
@@ -174,6 +227,7 @@ class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     field_resource = "procurement.vendor"
     field_access_detail = True
+    field_write_aliases = True
 
     class Meta:
         model = Vendor
@@ -188,17 +242,31 @@ class VendorSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "contacts",
         ]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        access = self._field_access()
+        if (
+            access is not None and "contacts" in data
+            and not any(access.can_read(key) for key in CONTACT_KEYS)
+        ):
+            data.pop("contacts")
+        return data
 
-class VendorListSerializer(serializers.ModelSerializer):
+
+class VendorListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Non-sensitive vendor row shape; detail-only fields never leave the list API.
 
     ``branch_id`` is the branch that keeps the vendor, or empty for one every
     branch shares, so a picker can tell which vendors a branch clerk may pay.
+    Category, terms, KYC status, risk and hold are the same registered fields
+    the detail carries, so a role denied one is denied it down the list too.
     """
 
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     active_po_count = serializers.IntegerField(read_only=True, default=0)
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+    field_resource = "procurement.vendor"
 
     class Meta:
         model = Vendor
@@ -267,14 +335,10 @@ def _contract_activity(entity, contract_id):
     first, capped. Contract lifecycle *and* milestone-completion events both record with
     ``target=contract``, so they all land here. Only called on single-record detail reads.
     """
-    from vs_finance.audit import activity_actor, prime_activity_actors
+    from vs_finance.audit import activity_entry, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
-    return [{
-        "id": log.id, "action": log.action, "message": log.message, "status": log.status,
-        **activity_actor(log),
-        "created_at": log.created_at,
-    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
+    return [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
         entity=entity, target_type="VendorContract", target_id=str(contract_id),
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
@@ -499,11 +563,18 @@ class StockItemDetailSerializer(StockItemListSerializer):
                 obj.movements.select_related("created_by", "stock_item")
                 .order_by("-id")[:50]
             )
-        return StockMovementSerializer(movements, many=True).data
+        return StockMovementSerializer(
+            movements, many=True, context=self.context,
+        ).data
 
     def get_activity(self, obj):
         # Finance-audit feed (receipts/issues/adjustments target the stock item).
-        return _sourcing_activity(obj.entity_id, "StockItem", obj.pk)
+        # An item is shared, but each entry in its feed belongs to the store's branch.
+        request = self.context.get("request")
+        return _sourcing_activity(
+            obj.entity_id, "StockItem", obj.pk,
+            narrow=None if request is None else branch_q(request),
+        )
 
 
 class StockLocationSerializer(serializers.ModelSerializer):
@@ -583,6 +654,15 @@ class StockMovementSerializer(serializers.ModelSerializer):
             "cost_center_id", "cost_center_name", "created_by_name",
             "created_by_is_exited", "created_at",
         ]
+
+    def to_representation(self, instance):
+        """Serialise the movement, holding a booked transfer leg to its inter-branch switches.
+
+        The request in context is the caller; a render without one passes every key.
+        """
+        return trim_transfer_leg(
+            self.context.get("request"), super().to_representation(instance), instance,
+        )
 
     def get_created_by_name(self, obj) -> str:
         # The actor who recorded the movement, else "System" (GRN receipts may be unattributed).
@@ -721,22 +801,21 @@ class RequisitionSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
 # Sourcing - shared helpers                                                   #
 # --------------------------------------------------------------------------- #
 
-def _sourcing_activity(entity, target_type, target_id):
+def _sourcing_activity(entity, target_type, target_id, *, narrow=None):
     """Finance-audit activity feed for one sourcing document.
+
+    ``narrow`` is an extra ``Q`` over the audit rows, for a record shared by
+    several branches whose entries each belong to one of them.
 
     Same shape/pattern as the vendor-invoice / vendor-payment drawers: the immutable
     :class:`FinanceAuditLog` rows for this exact document, newest first, capped. Only
     called on single-record detail reads, so the bounded query is not an N+1 concern.
     """
-    from vs_finance.audit import activity_actor, prime_activity_actors
+    from vs_finance.audit import activity_entry, prime_activity_actors
     from vs_finance.models import FinanceAuditLog
 
-    return [{
-        "id": log.id, "action": log.action, "message": log.message, "status": log.status,
-        **activity_actor(log),
-        "created_at": log.created_at,
-    } for log in prime_activity_actors(FinanceAuditLog.objects.filter(
-        entity=entity, target_type=target_type, target_id=str(target_id),
+    return [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
+        narrow or Q(), entity=entity, target_type=target_type, target_id=str(target_id),
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
@@ -911,9 +990,7 @@ class RfqDetailSerializer(serializers.ModelSerializer):
             # The view orders created_at DESC, id DESC, so first is deterministically newest.
             quote_by_vendor.setdefault(q.vendor_id, q)
         # The people a request was sent to are the vendor's contacts, so the
-        # switch that hides them on a vendor hides them here too.
-        request = self.context.get("request")
-        can_view_contacts = can_read(request, "procurement.vendor.contacts")
+        # switches that hide their details on a vendor hide them here too.
         rows = []
         for inv in obj.invitations.all():
             quote = quote_by_vendor.get(inv.vendor_id)
@@ -938,11 +1015,25 @@ class RfqDetailSerializer(serializers.ModelSerializer):
                 "submitted_at": inv.submitted_at,
                 "declined_at": inv.declined_at,
                 "decline_reason": inv.decline_reason,
-                "recipients": [
-                    {"name": row.name, "email": row.email} for row in inv.recipients.all()
-                ] if can_view_contacts else [],
+                "recipients": self._recipients(inv),
             })
         return rows
+
+    def _recipients(self, invitation):
+        """The invitation's recipients, less the details the caller may not read.
+
+        A recipient left with no detail at all is dropped, so a caller who may
+        read none of them is not told how many people the request went to. The
+        people are the contacts that receive quotation requests and are
+        active, so a caller who may read neither flag is shown none of them.
+        """
+        request = self.context.get("request")
+        if not (can_read(request, CONTACT_RECEIVES_RFQS) and can_read(request, CONTACT_ACTIVE)):
+            return []
+        rows = RfqInvitationRecipientSerializer(
+            invitation.recipients.all(), many=True, context=self.context,
+        ).data
+        return [dict(row) for row in rows if row]
 
     def get_amendments(self, obj):
         return [
@@ -1056,9 +1147,12 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_submissions(self, obj):
+        """The vendor's portal submissions, the submitter's email only to a reader of contact emails."""
+        show_email = can_read(self.context.get("request"), CONTACT_EMAIL)
         return [
             {"id": row.id, "revision": row.revision, "rfq_version": row.rfq_version,
-             "submitted_at": row.submitted_at, "submitted_by_email": row.submitted_by_email}
+             "submitted_at": row.submitted_at,
+             **({"submitted_by_email": row.submitted_by_email} if show_email else {})}
             for row in obj.submissions.all()
         ]
 
@@ -1147,6 +1241,10 @@ class POInvoiceDocumentSerializer(serializers.ModelSerializer):
         fields = ["id", "document_number", "invoice_date", "total", "status", "match_status"]
 
 
+#: An email address inside free text, for taking it out of a message.
+_EMAIL_ADDRESS = re.compile(r"<?[\w.+'-]+@[\w-]+(?:\.[\w-]+)+>?")
+
+
 class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
     """Operational history without exposing recipient addresses through ordinary PO reads."""
 
@@ -1171,6 +1269,31 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
 
     def get_requested_by_is_exited(self, obj):
         return _is_exited(self.context, obj.requested_by_id)
+
+    def to_representation(self, instance):
+        """Serialise the delivery, holding what it says about recipients to the contact switches.
+
+        The number of people an order went to restates the flags that chose them
+        (active, receives purchase orders, primary), as the order email preview
+        does, so it follows those switches. ``bcc_count`` counts the school's own
+        monitoring mailbox, which is no vendor value and which the preview lists
+        in full. A mail failure often quotes the address it could not reach, so
+        the reason is shown with any address in it taken out unless the caller
+        may read both a contact's email and the vendor's own.
+        """
+        from .po_email import routing_readable
+
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is None:
+            return data
+        if not routing_readable(request):
+            data.pop("recipient_count", None)
+        if data.get("failure_reason") and not (
+            can_read(request, CONTACT_EMAIL) and can_read(request, "procurement.vendor.email")
+        ):
+            data["failure_reason"] = _EMAIL_ADDRESS.sub("a recipient", data["failure_reason"])
+        return data
 
     def get_recipient_count(self, obj):
         return len(obj.recipients or [])

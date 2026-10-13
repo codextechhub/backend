@@ -801,6 +801,7 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
         raise PeriodCloseError(
             f"{said} is not ready to close. {failures_sentence(checklist.failures)}.",
             failures=[i.name for i in checklist.failures],  # Machine names, for a screen to key on.
+            failure_items=checklist.failures, lead=f"{said} is not ready to close.",
         )
 
     new_status = PeriodStatus.SOFT_CLOSED if soft else PeriodStatus.CLOSED  # Choose requested close strength.
@@ -1170,6 +1171,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             f"FY{fiscal_year.year} is not ready to close. "
             f"{failures_sentence(checklist.failures)}.",
             failures=[i.name for i in checklist.failures],
+            failure_items=checklist.failures,
+            lead=f"FY{fiscal_year.year} is not ready to close.",
         )
 
     buckets = _closing_buckets(entity, fiscal_year)
@@ -1281,10 +1284,11 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
         actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
         message=(
-            f"Closed FY{fiscal_year.year}: {'profit' if net_income >= 0 else 'loss'} of "
-            f"{format_naira(abs(net_income))} rolled to retained earnings."
+            f"Closed FY{fiscal_year.year}; {counted(len(journals), 'closing journal')} "
+            f"rolled the result to retained earnings."
             if journals else f"Closed FY{fiscal_year.year} (no P&L activity)."
         ),
+        after={"net_income": net_income},
         journal_ids=[j.pk for j in journals], net_by_branch=net_by_branch,
         fiscal_year=fiscal_year.year, net_income=net_income,
         **({"seal_checksum": seal.seal_checksum} if seal is not None else {}),

@@ -329,7 +329,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         action=(FinanceAuditAction.DEBIT_NOTE_POSTED if is_debit  # Debit note audit action.
                 else FinanceAuditAction.CREDIT_NOTE_POSTED),  # Credit note audit action.
         actor_user=actor_user, target=note,  # Actor and target context.
-        message=f"Posted {label.lower()} for {customer.code} ({format_naira(note.total)}).",  # Summary.
+        message=f"Posted {label.lower()} for {customer.code}.",  # Summary.
         journal_id=entry.pk, total=note.total, note_kind=note.kind,  # Structured metadata.
     )
     return note  # Return posted note.
@@ -451,7 +451,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     record(  # Audit credit-note allocation.
         entity=note.entity, action=FinanceAuditAction.CREDIT_NOTE_ALLOCATED,  # Audit action.
         actor_user=actor_user, target=note,  # Actor and target context.
-        message=f"Applied {format_naira(applied)} of customer credit across {counted(len(created), 'invoice')}.",  # Summary.
+        message=f"Applied customer credit across {counted(len(created), 'invoice')}.",  # Summary.
         journal_id=entry.pk, allocated=note.allocated_amount,  # Structured metadata.
         unallocated=note.credit_remaining, effective_date=str(effective),  # Credit left and effective date.
     )
@@ -669,7 +669,7 @@ def _post_refund_atomic(refund, *, actor_user=None):
     record(  # Audit successful refund.
         entity=refund.entity, action=FinanceAuditAction.REFUND_POSTED,  # Audit action.
         actor_user=actor_user, target=refund,  # Actor and target context.
-        message=f"Refunded {format_naira(refund.amount)} to {customer.code}.",  # Summary.
+        message=f"Refunded {customer.code}.",  # Summary.
         journal_id=entry.pk, amount=refund.amount,  # Structured metadata.
         drawn_from=[  # Which credit parcels funded the payout.
             {
@@ -858,7 +858,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     record(  # Audit successful write-off.
         entity=invoice.entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,  # Audit action.
         actor_user=actor_user, target=invoice,  # Actor and invoice target.
-        message=f"Wrote off {format_naira(amount)} of invoice {invoice.document_number} "  # Human-readable summary.
+        message=f"Wrote off invoice {invoice.document_number} "  # Human-readable summary.
                 f"for {customer.code}.",  # Customer context.
         journal_id=entry.pk, amount=amount, balance_after=invoice.balance_due,  # Journal and balance metadata.
         narration=narration or "", customer_code=customer.code, customer_name=customer.name,  # Extra audit context.
@@ -1030,7 +1030,7 @@ def _recover_write_off_atomic(write_off, payment, *, amount=None, actor_user=Non
     record(
         entity=invoice.entity, action=FinanceAuditAction.WRITE_OFF_RECOVERED,
         actor_user=actor_user, target=write_off,
-        message=(f"Recovered {format_naira(amount)} of written-off invoice {invoice.document_number} "
+        message=(f"Recovered written-off invoice {invoice.document_number} "
                  f"from receipt {payment.document_number}."),
         journal_id=journal.pk, amount=amount, payment_id=payment.pk,
         invoice_id=invoice.pk, customer_code=customer.code,

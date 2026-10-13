@@ -19,6 +19,8 @@ class VsStaffConfig(AppConfig):
         from . import field_access
 
         field_access.register()
+        # The audit rows whose values those switches govern.
+        field_access.register_audit_words()
 
         # The rows a staff profile can be read as at an earlier date.
         from . import history

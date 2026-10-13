@@ -188,6 +188,18 @@ def statement_period(statement, tenant) -> str:
 
 # Build customer identity block for invoice/receipt templates.
 def _customer_block(customer) -> dict:
+    """The bill-to block: the customer's own contact details on a document addressed to them.
+
+    The billing address, email and phone are registered fields of
+    ``finance.customer``, and this render is a declared exception to filtering
+    them by the caller (:data:`vs_rbac.field_enforcement.SYSTEM_SURFACES`): the
+    document is addressed to the customer, so it reads the same whoever
+    prints or sends it.
+    """
+    from vs_rbac.field_enforcement import assert_system_surface
+
+    assert_system_surface("vs_finance.documents._customer_block")
+
     return {  # Return a template-friendly customer structure.
         "customer_name": customer.name,  # Customer display name.
         "customer_code": customer.code,  # Customer account/reference code.

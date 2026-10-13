@@ -112,9 +112,8 @@ def terminate_contract(contract, *, reason="", actor_user=None):
     record(
         entity=contract.entity, action=FinanceAuditAction.VENDOR_CONTRACT_TERMINATED,
         actor_user=actor_user, target=contract,
-        message=f"Terminated contract {contract.reference}."
-                + (f" Reason: {reason}" if reason else ""),
-        vendor_id=contract.vendor_id,
+        message=f"Terminated contract {contract.reference}.",
+        vendor_id=contract.vendor_id, reason=reason or "",
     )
     supplied_contract.status = contract.status
     supplied_contract.updated_at = contract.updated_at

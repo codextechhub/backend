@@ -1,12 +1,13 @@
 """The approval-detail contract accepts only generic, display-safe blocks."""
 
 from types import SimpleNamespace
+from unittest import mock
 
 from django.test import SimpleTestCase
 
 from vs_workflow.presentation import (
     InvalidDocumentDetails, changes_section, document_details, fields_section,
-    table_section, validate_document_details,
+    for_reader, table_section, validate_document_details,
 )
 
 
@@ -87,3 +88,53 @@ class DocumentDetailsContractTests(SimpleTestCase):
         self.assertEqual(summary["fields"], [{"label": "Role", "value": "Operations"}])
         self.assertNotIn("ada@example.test", str(summary))
         self.assertIn("ada@example.test", str(details))
+
+
+class ColumnsFromSeveralFieldsTests(SimpleTestCase):
+    """A value copied from two registered fields needs both of them readable."""
+
+    def layout(self):
+        return document_details(
+            fields_section("Bank", [("Account", "0123", ("a.one", "b.two")), ("Name", "Ade", "a.one")]),
+            table_section(
+                "Lines",
+                [("account", "Account", ("a.one", "b.two")), ("amount", "Amount")],
+                [{"account": "0123", "amount": "10"}],
+            ),
+        )
+
+    def read_as(self, readable):
+        with mock.patch("vs_rbac.field_enforcement.can_read", side_effect=lambda _r, key: key in readable):
+            return for_reader(self.layout(), object())
+
+    def test_every_key_is_kept_and_checked(self):
+        layout = self.layout()
+        column = layout["sections"][1]["columns"][0]
+        self.assertEqual((column["access"], column["access_also"]), ("a.one", ["b.two"]))
+        self.assertEqual(self.layout(), validate_document_details(layout))
+
+    @staticmethod
+    def section(details, kind):
+        return next((s for s in details["sections"] if s["kind"] == kind), None)
+
+    def test_a_reader_of_every_key_sees_the_column(self):
+        shown = self.read_as({"a.one", "b.two"})
+        self.assertEqual([c["key"] for c in self.section(shown, "table")["columns"]],
+                         ["account", "amount"])
+        self.assertEqual(len(self.section(shown, "fields")["items"]), 2)
+
+    def test_a_reader_missing_either_key_loses_it(self):
+        for readable in ({"a.one"}, {"b.two"}):
+            with self.subTest(readable=readable):
+                shown = self.read_as(readable)
+                self.assertEqual([c["key"] for c in self.section(shown, "table")["columns"]],
+                                 ["amount"])
+        shown = self.read_as({"a.one"})
+        self.assertEqual([i["label"] for i in self.section(shown, "fields")["items"]], ["Name"])
+        self.assertIsNone(self.section(self.read_as({"b.two"}), "fields"))
+
+    def test_a_further_key_without_a_first_is_refused(self):
+        layout = self.layout()
+        del layout["sections"][1]["columns"][0]["access"]
+        with self.assertRaises(InvalidDocumentDetails):
+            validate_document_details(layout)

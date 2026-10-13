@@ -1396,6 +1396,35 @@ class PaymentEventTests(_PaymentsFixtureMixin, TestCase):
             ev.delete()
 
 
+    def test_no_sentence_or_metadata_carries_a_switched_value(self):
+        """A virtual account's number and name, and a payout beneficiary's name, account number
+        and bank code, are fields a role may switch off, so no event writes them."""
+        import re
+
+        entity, customer, vendor = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        services.set_virtual_account_status(va, status=VirtualAccountStatus.INACTIVE)
+        services.confirm_payout(
+            self.make_processing_payout(entity, vendor, amount=15000), status=PayoutStatus.PAID)
+        services.confirm_payout(
+            self.make_processing_payout(entity, vendor, amount=9000), status=PayoutStatus.FAILED)
+
+        events = list(PaymentEvent.objects.filter(entity=entity))
+        self.assertGreaterEqual(len(events), 4)
+        switched = [va.account_number, va.account_name, vendor.bank_account_name,
+                    vendor.bank_account_number]
+        for event in events:
+            text = f"{event.message} {event.metadata}"
+            for value in switched:
+                self.assertNotIn(value, text, event.action)
+            self.assertIsNone(re.search(rf"\b{vendor.bank_code}\b", text), event.action)
+            self.assertTrue(event.metadata.get("sentence_without_values"), event.action)
+        opened = next(e for e in events if e.action == "VIRTUAL_ACCOUNT_CREATED")
+        self.assertEqual(opened.message, f"Virtual account opened for {customer.code}.")
+        flipped = next(e for e in events if e.action == "VIRTUAL_ACCOUNT_STATUS_CHANGED")
+        self.assertEqual(flipped.message, f"Virtual account for {customer.code} set to INACTIVE.")
+
+
 # Group tests for Payments A P I Tests.
 class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
     """The /v1/payments/ REST surface, authenticated as a Vision super admin."""

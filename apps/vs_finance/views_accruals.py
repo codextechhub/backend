@@ -6,6 +6,15 @@ finance surface: entity-scoped via ``?entity=``, the ``{success, message, data}`
 envelope, one ``finance.<resource>.<action>`` key per route, and thin views over
 the services that own every posting.
 
+Each response is rendered through the Field Access switches of the resource it
+belongs to (``finance.deferredincome``, ``finance.provision``, ``finance.deposit``
+and ``finance.settings``): a serializer carrying
+:class:`~vs_rbac.field_enforcement.FieldAccessMixin` for every payload, including
+the responses of the runs, and a refusal of any list filter or body key that
+names a field the caller may not read or write. A sentence that names a month
+or a customer says it only to a caller who may read it; a branch and a document
+number are always named.
+
 The runs (release, reverse, provision, forfeit) act for every branch at once and
 write one journal per branch, so they are refused to a caller whose reach is not
 the whole tenant (:class:`~vs_rbac.scoping.WholeTenantWriteMixin`). Reads narrow to
@@ -16,14 +25,22 @@ from __future__ import annotations
 
 from vs_finance.wording import counted
 
-from vs_workflow.services.approval_filter import filter_by_approval_param
+from vs_workflow.services.approval_filter import APPROVAL_PARAM, filter_by_approval_param
 from django.db import transaction
 from django.db.models import Q
+from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import SAFE_METHODS
 
 from core.response import success_response
 from vs_config.clock import tenant_today
+from vs_rbac.field_enforcement import (
+    FieldAccessMixin,
+    FieldReadDenied,
+    assert_writable,
+    can_read,
+    visible,
+)
 from vs_rbac.scoping import (
     WholeTenantWriteMixin,
     assert_caller_may_change,
@@ -33,6 +50,7 @@ from vs_rbac.scoping import (
 
 from .approvals import with_approval_request
 from .constants import DepositStatus, FinanceAuditAction
+from .field_guards import refuse_hidden_filters, submitted
 from .models import (
     CustomerDeposit,
     DoubtfulDebtProvision,
@@ -53,12 +71,91 @@ from .views_ops.base import _filter_by_branch
 from .views_settings import _FinanceSettingsView, _settings_history
 
 
+_DEFERRED = "finance.deferredincome"
+_PROVISION = "finance.provision"
+_DEPOSIT = "finance.deposit"
+_SETTINGS = "finance.settings"
+
+
 def _release_payload(release):
     return {
         "id": release.pk, "branch_id": release.branch_id,
         "date": release.journal.date.isoformat(), "amount": release.amount,
         "journal_id": release.journal_id,
     }
+
+
+class DeferredIncomeSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """Deferred income waiting, released and due by month, under ``finance.deferredincome``.
+
+    ``by_month`` is a list of ``{month, amount}``. Its rows are the "Due by
+    month" figure, governed by that one switch as a whole: the ``month`` and
+    ``amount`` they carry are not a release's date and amount.
+    """
+
+    field_resource = _DEFERRED
+
+    pending = serializers.ReadOnlyField()
+    released = serializers.ReadOnlyField()
+    by_month = serializers.ReadOnlyField()
+
+
+class DeferredIncomeReleaseRowSerializer(FieldAccessMixin, serializers.Serializer):
+    """One release as the release list shows it, under ``finance.deferredincome``."""
+
+    field_resource = _DEFERRED
+
+    id = serializers.ReadOnlyField()
+    branch_id = serializers.ReadOnlyField()
+    branch_name = serializers.ReadOnlyField()
+    date = serializers.ReadOnlyField()
+    month = serializers.ReadOnlyField()
+    period_id = serializers.ReadOnlyField()
+    period_name = serializers.ReadOnlyField()
+    period_label = serializers.ReadOnlyField()
+    period_status = serializers.ReadOnlyField()
+    branch_period_status = serializers.ReadOnlyField()
+    amount = serializers.ReadOnlyField()
+    journal_id = serializers.ReadOnlyField()
+    journal_number = serializers.ReadOnlyField()
+    reversed = serializers.ReadOnlyField()
+    reversed_at = serializers.ReadOnlyField()
+    can_reverse = serializers.ReadOnlyField()
+    reverse_blocked_reason = serializers.ReadOnlyField()
+
+
+class DeferredIncomePostedReleaseSerializer(FieldAccessMixin, serializers.Serializer):
+    """A release the run just posted, under ``finance.deferredincome``."""
+
+    field_resource = _DEFERRED
+
+    id = serializers.ReadOnlyField()
+    branch_id = serializers.ReadOnlyField()
+    date = serializers.ReadOnlyField()
+    amount = serializers.ReadOnlyField()
+    journal_id = serializers.ReadOnlyField()
+
+
+class DeferredIncomeRunSerializer(FieldAccessMixin, serializers.Serializer):
+    """The response of a release run: the day released up to and each release posted."""
+
+    field_resource = _DEFERRED
+
+    up_to = serializers.ReadOnlyField()
+    releases = DeferredIncomePostedReleaseSerializer(many=True, read_only=True)
+
+
+class DeferredIncomeReversalSerializer(FieldAccessMixin, serializers.Serializer):
+    """The response of an undo: the period named and how many releases were reversed.
+
+    ``reversed`` is a count here, and a flag on a release row; both go with the
+    reversal state.
+    """
+
+    field_resource = _DEFERRED
+
+    period = serializers.ReadOnlyField()
+    reversed = serializers.ReadOnlyField()
 
 
 class _WholeTenantRun(WholeTenantWriteMixin, _FinanceBase):
@@ -71,6 +168,33 @@ class _WholeTenantRun(WholeTenantWriteMixin, _FinanceBase):
 # Policy                                                                      #
 # --------------------------------------------------------------------------- #
 
+class ReceivablesPolicySerializer(FieldAccessMixin, serializers.Serializer):
+    """The receivables policy as the settings screen shows it, under ``finance.settings``.
+
+    The names are those of :func:`vs_finance.receivables_policy.serialize_receivables_policy`.
+    Each policy value is a stored, submitted setting with its own Read and
+    Write switch, and the options and label beside a choice go with it. The
+    record's ``_read_only_fields`` names the settings the caller may read and
+    not change.
+    """
+
+    field_resource = _SETTINGS
+    field_access_detail = True
+
+    revenue_recognition = serializers.ReadOnlyField()
+    revenue_recognition_label = serializers.ReadOnlyField()
+    revenue_recognition_options = serializers.ReadOnlyField()
+    provision_bands = serializers.ReadOnlyField()
+    deposits_offset_unpaid_bills = serializers.ReadOnlyField()
+    unclaimed_deposit_years = serializers.ReadOnlyField()
+    payer_payment_split = serializers.ReadOnlyField()
+    payer_payment_split_options = serializers.ReadOnlyField()
+    payer_payment_surplus = serializers.ReadOnlyField()
+    payer_payment_surplus_options = serializers.ReadOnlyField()
+    updated_at = serializers.ReadOnlyField()
+    updated_by = serializers.ReadOnlyField()
+
+
 class FinanceReceivablesSettingsView(_FinanceSettingsView):
     """Read or update the entity's receivables policy.
 
@@ -78,20 +202,29 @@ class FinanceReceivablesSettingsView(_FinanceSettingsView):
     (``[{over_days, rate_bps}]``), ``deposits_offset_unpaid_bills`` and
     ``unclaimed_deposit_years``. Whole-tenant writes only.
 
+    Every setting is a ``finance.settings`` field. A setting the caller may not
+    read is absent from ``settings``, from ``consumers`` and from the history,
+    where a change that touched only such settings is left out and a change
+    that touched some is worded for the rest. A PATCH that changes a setting the
+    caller may not write is refused with the standard field refusal before
+    anything is saved; sending a setting back exactly as stored is not a change.
+
     docstring-name: Receivables settings
     """
 
     settings_subject = "the finance receivables settings"
 
-    def _payload(self, entity, policy):
+    def _payload(self, request, entity, policy):
         from .receivables_policy import serialize_receivables_policy
         from .settings_ownership import RECEIVABLES_SETTING_CONSUMERS
 
         return {
-            "settings": serialize_receivables_policy(policy),
-            "consumers": RECEIVABLES_SETTING_CONSUMERS,
+            "settings": ReceivablesPolicySerializer(
+                serialize_receivables_policy(policy), context={"request": request}).data,
+            "consumers": visible(request, _SETTINGS, RECEIVABLES_SETTING_CONSUMERS),
             "history": _settings_history(
-                entity, FinanceAuditAction.FINANCE_RECEIVABLES_SETTINGS_UPDATED),
+                entity, FinanceAuditAction.FINANCE_RECEIVABLES_SETTINGS_UPDATED,
+                request=request),
         }
 
     def get(self, request):
@@ -100,17 +233,28 @@ class FinanceReceivablesSettingsView(_FinanceSettingsView):
         entity = resolve_entity(request)
         return success_response(
             "Finance receivables settings retrieved.",
-            data=self._payload(entity, resolve_receivables_policy(entity)),
+            data=self._payload(request, entity, resolve_receivables_policy(entity)),
         )
 
     def patch(self, request):
-        from .receivables_policy import update_receivables_policy
+        from .receivables_policy import (
+            normalised_submission,
+            resolve_receivables_policy,
+            stored_policy_values,
+            update_receivables_policy,
+        )
 
         entity = resolve_entity(request)
+        body = request.data or {}
+        if isinstance(body, dict):
+            assert_writable(
+                request, _SETTINGS, normalised_submission(body),
+                current=stored_policy_values(resolve_receivables_policy(entity)),
+            )
         policy = update_receivables_policy(
-            entity=entity, data=request.data or {}, actor_user=request.user)
+            entity=entity, data=body, actor_user=request.user)
         return success_response(
-            "Finance receivables settings saved.", data=self._payload(entity, policy))
+            "Finance receivables settings saved.", data=self._payload(request, entity, policy))
 
 
 # --------------------------------------------------------------------------- #
@@ -123,6 +267,10 @@ class DeferredIncomeView(_FinanceBase):
     ``?branch=`` narrows it to one branch the caller works in; a branch outside
     their reach is answered like one that does not exist.
 
+    The figures are the ``finance.deferredincome`` fields ``pending``,
+    ``released`` and ``by_month``; a caller who may not read one does not
+    receive it.
+
     docstring-name: Deferred income
     """
 
@@ -134,10 +282,12 @@ class DeferredIncomeView(_FinanceBase):
 
         entity = resolve_entity(request)
         rows = _filter_by_branch(DeferredIncomeEntry.objects.all(), request, entity)
+        summary = deferred_income_summary(
+            entity, scope=transaction_branch_scope(request), rows=rows)
         return success_response(
             "Deferred income retrieved.",
-            data=deferred_income_summary(
-                entity, scope=transaction_branch_scope(request), rows=rows),
+            data=DeferredIncomeSummarySerializer(
+                summary, context={"request": request}).data,
         )
 
 
@@ -156,7 +306,11 @@ class DeferredIncomeReleaseListView(_FinanceBase):
     run that reverses every branch's release of the period together and refuses
     them all when one is sealed (:func:`vs_finance.deferred_income.sealed_release_branches`).
     ``reverse_blocked_reason`` says why a release not yet reversed cannot be
-    undone, and is null otherwise.
+    undone, and is null otherwise; it names the month only to a caller who may
+    read the period.
+    Every key of a row is a ``finance.deferredincome`` field and is absent for a
+    caller who may not read it; a filter on a field the caller may not read is
+    refused.
     Filters: ``?branch=`` (one branch in reach; another answers like an unknown
     one), ``?period=`` (id), ``?month=YYYY-MM`` and ``?reversed=true|false``.
     Paginated.
@@ -172,6 +326,11 @@ class DeferredIncomeReleaseListView(_FinanceBase):
 
         from .models import BranchFiscalPeriod, DeferredIncomeRelease
 
+        refuse_hidden_filters(request, _DEFERRED, {
+            "period": ("period", "Accounting period"),
+            "month": ("release_date", "Release date"),
+            "reversed": ("reversal_state", "Reversal state"),
+        })
         entity = resolve_entity(request)
         periods = FiscalPeriod.objects.filter(
             entity=entity, start_date__lte=OuterRef("journal__date"),
@@ -224,16 +383,25 @@ class DeferredIncomeReleaseListView(_FinanceBase):
         sealed = sealed_release_branches(entity, FiscalPeriod.objects.filter(
             pk__in={row.period_id for row in page if row.reversed_at is None},
         ))
-        return paginator.get_paginated_response(
-            [_release_row(row, sealed.get(row.period_id, ()), entity.tenant) for row in page])
+        return paginator.get_paginated_response(DeferredIncomeReleaseRowSerializer(
+            [_release_row(row, sealed.get(row.period_id, ()), entity.tenant, request)
+             for row in page],
+            many=True, context={"request": request},
+        ).data)
 
 
-def _reverse_blocked_reason(release, sealed_by, tenant) -> str | None:
+def _reverse_blocked_reason(release, sealed_by, tenant, request=None) -> str | None:
     """Why the month's undo would refuse ``release``, or None when it would reverse it.
 
     The month is named as the bursar names it ("January 2027", through
     :func:`vs_finance.wording.period_label`), never by the period's stored
     name ("2027-01"), which stays in the row's ``period_name`` for a client.
+
+    The sentence names a branch and a month. The branch is always named; the
+    month is named only to a caller who may read the period (``request`` is that
+    caller; without one the sentence is written whole). Without the period it
+    says "the month" and says only that the month is not open, since the
+    period's status is part of what the caller may not read.
     """
     from types import SimpleNamespace
 
@@ -244,12 +412,15 @@ def _reverse_blocked_reason(release, sealed_by, tenant) -> str | None:
         return None
     if release.period_id is None:
         return "No accounting period covers this release's date."
+    month_named = can_read(request, f"{_DEFERRED}.period")
     month = period_label(SimpleNamespace(
         start_date=release.period_start, end_date=release.period_end,
         name=release.period_name,
-    ), tenant)
+    ), tenant) if month_named else "the month"
     if release.period_status != PeriodStatus.OPEN:
-        return (f"{month} is {period_status_word(release.period_status)}; "
+        state = (f"is {period_status_word(release.period_status)}" if month_named
+                 else "is not open")
+        return (f"{month[:1].upper()}{month[1:]} {state}; "
                 f"its releases cannot be undone while the month is closed.")
     if release.branch_period_status != PeriodStatus.OPEN:
         return (f"{release.branch.name} has closed {month}; "
@@ -261,19 +432,21 @@ def _reverse_blocked_reason(release, sealed_by, tenant) -> str | None:
     return None
 
 
-def _release_row(release, sealed_by=(), tenant=None) -> dict:
-    """One release as the release list shows it.
+def _release_row(release, sealed_by=(), tenant=None, request=None) -> dict:
+    """One release as the release list shows it, before Field Access.
 
     ``sealed_by`` names the branches whose closed month refuses this release's
     period undo (:func:`vs_finance.deferred_income.sealed_release_branches`).
-    ``tenant`` is the one whose month words the refusal is written in.
+    ``tenant`` is the one whose month words the refusal is written in, and
+    ``request`` the caller the refusal's wording is for
+    (:func:`_reverse_blocked_reason`).
     """
     from types import SimpleNamespace
 
     from .wording import period_label
 
     date = release.journal.date
-    reason = _reverse_blocked_reason(release, sealed_by, tenant)
+    reason = _reverse_blocked_reason(release, sealed_by, tenant, request)
     period = SimpleNamespace(
         start_date=release.period_start, end_date=release.period_end, name=release.period_name,
     )
@@ -304,7 +477,9 @@ class DeferredIncomeReleaseView(_WholeTenantRun):
     """POST - release the deferred income due by ``up_to`` (default today). Idempotent.
 
     ``up_to`` may not be later than today: income is released for months that have
-    happened, never ahead of them.
+    happened, never ahead of them. It is the ``release_date`` field of
+    ``finance.deferredincome``: a caller who may not write it is refused before
+    anything is released, and one who may not read it is not told the day.
 
     docstring-name: Release deferred income
     """
@@ -315,6 +490,7 @@ class DeferredIncomeReleaseView(_WholeTenantRun):
         from .deferred_income import release_deferred_income
 
         entity = resolve_entity(request)
+        assert_writable(request, _DEFERRED, submitted(request.data, "up_to"))
         today = tenant_today(entity.tenant)
         up_to = _date((request.data or {}).get("up_to"), "up_to") or today
         if up_to > today:
@@ -323,13 +499,20 @@ class DeferredIncomeReleaseView(_WholeTenantRun):
         releases = release_deferred_income(entity, up_to=up_to, actor_user=request.user)
         return success_response(
             f"{counted(len(releases), 'deferred income release')} posted.",
-            data={"up_to": up_to.isoformat(),
-                  "releases": [_release_payload(release) for release in releases]},
+            data=DeferredIncomeRunSerializer(
+                {"up_to": up_to.isoformat(),
+                 "releases": [_release_payload(release) for release in releases]},
+                context={"request": request}).data,
         )
 
 
 class DeferredIncomeReverseView(_WholeTenantRun):
     """POST ``{period}`` - reverse the deferred income releases dated in an open period.
+
+    ``period`` is the ``period`` field of ``finance.deferredincome``: a caller who
+    may not write it is refused before anything is reversed. A field that can be
+    written can be read, so a caller who reaches the service's refusals can read
+    the month they name.
 
     docstring-name: Reverse deferred income releases
     """
@@ -340,6 +523,7 @@ class DeferredIncomeReverseView(_WholeTenantRun):
         from .deferred_income import reverse_deferred_release
 
         entity = resolve_entity(request)
+        assert_writable(request, _DEFERRED, submitted(request.data, "period"))
         ref = (request.data or {}).get("period")
         if ref in (None, "") or not str(ref).isdigit():
             raise ValidationError({"period": "Name the period by id."})
@@ -349,7 +533,8 @@ class DeferredIncomeReverseView(_WholeTenantRun):
         count = reverse_deferred_release(entity, period, actor_user=request.user)
         return success_response(
             f"{counted(count, 'deferred income release')} reversed.",
-            data={"period": period.pk, "reversed": count},
+            data=DeferredIncomeReversalSerializer(
+                {"period": period.pk, "reversed": count}, context={"request": request}).data,
         )
 
 
@@ -390,6 +575,10 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
     true). ``?branch=`` keeps the runs with a line for that branch, one the
     caller works in; a branch outside their reach is answered like an unknown one.
 
+    The run and its lines are the ``finance.provision`` resource. A filter on a
+    field the caller may not read is refused, and a POST that sets ``as_of`` or
+    ``narration`` is refused unless the caller may write it.
+
     docstring-name: Doubtful-debt provisions
     """
 
@@ -399,6 +588,7 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
                 else "finance.provision.create")
 
     def get(self, request):
+        refuse_hidden_filters(request, _PROVISION, {APPROVAL_PARAM: ("status", "Status")})
         entity = resolve_entity(request)
         qs = (_provisions_in_reach(request, entity)
               .select_related("entity__tenant", "branch").order_by("-id"))
@@ -413,13 +603,17 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(
+            request, _PROVISION, submitted(body, "as_of", "narration"), creating=True)
         provision = prepare_provision(
             entity, as_of=_date(body.get("as_of"), "as_of", required=True),
             narration=str(body.get("narration") or "")[:255], actor_user=request.user,
         )
         return success_response(
             f"Provision {provision.document_number} prepared.",
-            data=DoubtfulDebtProvisionSerializer(provision).data, status=201,
+            data=DoubtfulDebtProvisionSerializer(
+                provision, context=_reader_context(request)).data,
+            status=201,
         )
 
 
@@ -465,7 +659,8 @@ class DoubtfulDebtProvisionSubmitView(_ProvisionActionBase):
         provision.refresh_from_db()
         return success_response(
             f"Provision {provision.document_number} submitted for approval.",
-            data=DoubtfulDebtProvisionSerializer(provision).data
+            data=DoubtfulDebtProvisionSerializer(
+                provision, context=_reader_context(request)).data
             | {"approval": release_svc.approval_block(instance)},
         )
 
@@ -488,7 +683,8 @@ class DoubtfulDebtProvisionPostView(_ProvisionActionBase):
         provision.refresh_from_db()
         return success_response(
             f"Provision {provision.document_number} posted.",
-            data=DoubtfulDebtProvisionSerializer(provision).data)
+            data=DoubtfulDebtProvisionSerializer(
+                provision, context=_reader_context(request)).data)
 
 
 # --------------------------------------------------------------------------- #
@@ -541,11 +737,71 @@ class WriteOffRecoverView(_FinanceBase):
 # Customer deposits                                                           #
 # --------------------------------------------------------------------------- #
 
+class DepositReleaseNoteSerializer(FieldAccessMixin, serializers.Serializer):
+    """The credit note a release raised for one branch's deposits, under ``finance.deposit``.
+
+    The note is shown as the deposits it returned: the customer and the amount
+    are the deposit's own fields, so a caller who may not read one on
+    a deposit does not read it here. The note's number and date are the note's,
+    and its allocations and lines are read on the credit note screens.
+    """
+
+    field_resource = _DEPOSIT
+
+    id = serializers.IntegerField(read_only=True)
+    document_number = serializers.CharField(read_only=True)
+    note_date = serializers.DateField(read_only=True)
+    customer_id = serializers.IntegerField(read_only=True)
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    amount = serializers.IntegerField(source="total", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+    reason = serializers.CharField(read_only=True)
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.total)
+
+
+class DepositForfeitureSerializer(FieldAccessMixin, serializers.Serializer):
+    """One branch's forfeiture of unclaimed deposits, under ``finance.deposit``.
+
+    ``id`` is the forfeiture itself, so it goes with the deposit's forfeiture
+    field, as does the journal that took it to income.
+    """
+
+    field_resource = _DEPOSIT
+    field_aliases = {"id": "forfeiture_id"}
+
+    id = serializers.IntegerField(read_only=True)
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
+    amount = serializers.IntegerField(read_only=True)
+    journal_id = serializers.IntegerField(read_only=True)
+
+
+class DepositSkippedSerializer(FieldAccessMixin, serializers.Serializer):
+    """A deposit the forfeit run left alone, and why, under ``finance.deposit``.
+
+    ``customer`` is the customer's code and ``invoice`` the bill's number, so
+    they go with the deposit's customer and invoice fields.
+    """
+
+    field_resource = _DEPOSIT
+
+    deposit = serializers.ReadOnlyField()
+    customer = serializers.ReadOnlyField()
+    invoice = serializers.ReadOnlyField()
+    reason = serializers.ReadOnlyField()
+
+
 class CustomerDepositListView(_FinanceBase):
     """GET - refundable deposits in the caller's branches (``?customer=``, ``?status=``, ``?branch=``).
 
     ``?branch=`` names one branch the caller works in; a branch outside their
-    reach is answered like one that does not exist.
+    reach is answered like one that does not exist. Every key of a row is a
+    ``finance.deposit`` field, absent for a caller who may not read it, and a
+    filter on such a field is refused.
 
     docstring-name: Customer deposits
     """
@@ -553,6 +809,9 @@ class CustomerDepositListView(_FinanceBase):
     rbac_permission = "finance.deposit.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _DEPOSIT, {
+            "customer": ("customer", "Customer"), "status": ("status", "Status"),
+        })
         entity = resolve_entity(request)
         qs = (CustomerDeposit.objects.filter(transaction_branch_q(request), entity=entity)
               .select_related("customer", "invoice", "branch", "release_note"))
@@ -565,7 +824,8 @@ class CustomerDepositListView(_FinanceBase):
                 raise ValidationError({"status": f"Use one of {', '.join(DepositStatus.values)}."})
             qs = qs.filter(status=status)
         qs = _filter_by_branch(qs, request, entity)
-        return _paginate(request, qs.order_by("-id"), CustomerDepositSerializer, self)
+        return _paginate(request, qs.order_by("-id"), CustomerDepositSerializer, self,
+                         context={"request": request})
 
 
 class CustomerDepositReleaseView(_FinanceBase):
@@ -575,6 +835,11 @@ class CustomerDepositReleaseView(_FinanceBase):
     the customer's unpaid bills first, where the policy allows it. The caller must
     reach every branch that holds one of the deposits.
 
+    The customer is named by their code, so a caller who may not read a
+    deposit's customer is refused: they could not tell whose deposits they were
+    releasing. The credit notes come back as the deposits' own customer and
+    amount, each shown only to a caller who may read it.
+
     docstring-name: Release customer deposits
     """
 
@@ -583,8 +848,9 @@ class CustomerDepositReleaseView(_FinanceBase):
     @transaction.atomic
     def post(self, request):
         from .deposits import release_deposits
-        from .serializers import CreditNoteSerializer
 
+        if not can_read(request, f"{_DEPOSIT}.customer"):
+            raise FieldReadDenied(["customer"], labels={"customer": "Customer"})
         entity = resolve_entity(request)
         body = request.data or {}
         customer = _resolve_customer(request, entity, body.get("customer"))
@@ -603,12 +869,17 @@ class CustomerDepositReleaseView(_FinanceBase):
         notes = release_deposits(customer, offset=offset, actor_user=request.user)
         return success_response(
             f"Released {customer.code}'s deposits.",
-            data={"credit_notes": CreditNoteSerializer(notes, many=True).data},
+            data={"credit_notes": DepositReleaseNoteSerializer(
+                notes, many=True, context={"request": request}).data},
         )
 
 
 class CustomerDepositForfeitView(_WholeTenantRun):
     """POST ``{as_of?}`` - take deposits unclaimed past the policy's limit to income.
+
+    ``forfeitures`` rows (``id``, ``branch_id``, ``amount``, ``journal_id``) and
+    ``skipped`` rows (``deposit``, ``customer``, ``invoice``, ``reason``) are
+    ``finance.deposit`` fields and come back without any the caller may not read.
 
     docstring-name: Forfeit unclaimed deposits
     """
@@ -627,12 +898,10 @@ class CustomerDepositForfeitView(_WholeTenantRun):
         return success_response(
             f"{counted(len(outcome['forfeitures']), 'forfeiture journal')} posted.",
             data={
-                "forfeitures": [
-                    {"id": f.pk, "branch_id": f.branch_id, "amount": f.amount,
-                     "journal_id": f.journal_id}
-                    for f in outcome["forfeitures"]
-                ],
-                "skipped": outcome["skipped"],
+                "forfeitures": DepositForfeitureSerializer(
+                    outcome["forfeitures"], many=True, context={"request": request}).data,
+                "skipped": DepositSkippedSerializer(
+                    outcome["skipped"], many=True, context={"request": request}).data,
             },
         )
 

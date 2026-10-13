@@ -77,13 +77,16 @@ class _ProtectedWordsMixin:
         return reader_for(self.context.get("request"))
 
     def _hide_protected_words(self, obj, data):
-        from .protected_words import visible_metadata, visible_summary
+        from .protected_words import visible_metadata, visible_snapshot, visible_summary
 
         can_read = self._can_read()
         if "summary" in data:
             data["summary"] = visible_summary(obj, can_read)
         if "metadata" in data:
             data["metadata"] = visible_metadata(obj, can_read)
+        for snapshot in ("before_data", "diff_data"):
+            if snapshot in data:
+                data[snapshot] = visible_snapshot(obj, data[snapshot], can_read)
         return data
 
 class AuditEventPeopleListSerializer(serializers.ListSerializer):

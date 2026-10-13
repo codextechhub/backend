@@ -179,7 +179,7 @@ def _post_expense_claim_atomic(claim, *, actor_user=None):
     record(  # Audit the successful claim posting.
         entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_POSTED,  # Audit action for posted claim.
         actor_user=actor_user, target=claim,  # Actor and target context.
-        message=f"Posted expense claim ({format_naira(claim.total)}).",  # Human-readable audit message.
+        message="Posted expense claim.",  # Human-readable audit message.
         journal_id=entry.pk, total=claim.total, tax=claim.tax_total,  # Structured audit metadata.
     )
     return claim  # Return the posted claim.
@@ -316,7 +316,7 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
     record(  # Audit the successful reimbursement.
         entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_SETTLED,  # Audit action for settlement.
         actor_user=actor_user, target=claim,  # Actor and target context.
-        message=f"Reimbursed {format_naira(pay)} on claim {claim.document_number or claim.pk}.",  # Human-readable audit message.
+        message=f"Reimbursed claim {claim.document_number or claim.pk}.",  # Human-readable audit message.
         journal_id=entry.pk, amount=pay, payment_status=claim.payment_status,  # Structured audit metadata.
     )
     return claim  # Return the settled claim.

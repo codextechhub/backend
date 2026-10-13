@@ -29,6 +29,14 @@ A row creates the account, the invitation, the grant and the staff record
 through the same service a single add uses. A second creation path would be a
 second set of rules about who may be created where, and the two would drift.
 
+**Field Access binds the person running the file as it binds the Add form.**
+Every non-blank cell is a value set on a record being created: a registered
+``school.teachers`` field the runner may not write refuses the row, unless the
+registry declares it open on create (the name and the sign-in address), and a
+blank cell sets nothing (:func:`staff_row_write_refusal`). The preview reports
+the refusal against its row and column and execution fails the row with the
+same sentence.
+
 FRD M12 v2.1 FR-016.
 """
 from __future__ import annotations
@@ -60,6 +68,17 @@ COLUMNS = (
 )
 
 REQUIRED_COLUMNS = ("first_name", "last_name", "email")
+
+#: The registered ``school.teachers`` field each column writes, keyed by the
+#: template's target field. The branch and the invitation choice are not
+#: registered details of the person, so they are not here.
+STAFF_WRITES: dict[str, tuple[str, ...]] = {
+    target: (target,)
+    for target in (
+        "first_name", "middle_name", "last_name", "email", "phone", "gender",
+        "staff_number", "job_title", "employment_type", "hire_date",
+    )
+}
 
 #: Headers a school's older file may still carry for the role it no longer sets.
 _ROLE_HEADERS = frozenset({"role", "role key", "role_key"})
@@ -143,6 +162,19 @@ class ResolvedRow:
 def _text(payload: dict, key: str) -> str:
     raw = payload.get(key)
     return "" if raw is None else str(raw).strip()
+
+
+def staff_row_write_refusal(request, payload: dict):
+    """The refusal an uploaded staff row meets from a runner without Write on its fields.
+
+    *request* is the stand-in for whoever runs the import
+    (:func:`vs_import_data.field_writes.import_request`); ``None`` refuses
+    nothing. A staff number the school issues itself is not a cell, so a blank
+    one is never refused.
+    """
+    from vs_import_data.field_writes import write_refusal
+
+    return write_refusal(request, payload, (("school.teachers", STAFF_WRITES, ""),))
 
 
 def _date(value: str):
@@ -464,8 +496,12 @@ def _payload_of(raw_row: dict, columns) -> dict:
     return {c.target_field: raw_row.get(c.column_name) for c in columns}
 
 
-def validate_rows(import_batch) -> list[dict]:
+def validate_rows(import_batch, actor=None) -> list[dict]:
     """The validation pass, reading every row through :func:`resolve_row`.
+
+    With an *actor*, each row is also read as that person will import it: every
+    field they may not write is reported against its row and column, in the
+    words execution uses (:func:`staff_row_write_refusal`).
 
     Also catches what a per-row resolver cannot: the same address twice in one
     file. Two rows that each pass on their own would create one account and then
@@ -477,6 +513,7 @@ def validate_rows(import_batch) -> list[dict]:
     ignored.
     """
     from schools.vs_staff.services.scoping import branch_dimension_applies
+    from vs_import_data.field_writes import import_request, write_refusal_issue
 
     template = import_batch.template
     if template is None:
@@ -484,6 +521,7 @@ def validate_rows(import_batch) -> list[dict]:
 
     tenant = import_batch.tenant
     multi = branch_dimension_applies(tenant)
+    request = import_request(actor, tenant, import_batch)
     columns = list(template.columns.all())
     # Back the other way, for the issue's own label. A reader looking at their
     # spreadsheet is looking for "First Name", not `first_name`.
@@ -503,8 +541,12 @@ def validate_rows(import_batch) -> list[dict]:
         issues.append(note)
 
     for number, raw_row in enumerate(import_batch.preview_rows or [], start=1):
+        payload = _payload_of(raw_row, columns)
+        refusal = staff_row_write_refusal(request, payload)
+        for field in refusal.fields if refusal is not None else ():
+            issues.append(write_refusal_issue(refusal, field, number, header))
         row = resolve_row(
-            _payload_of(raw_row, columns), tenant=tenant,
+            payload, tenant=tenant,
             batch_branch=import_batch.branch, multi_branch=multi,
             actor=import_batch.uploaded_by, role=role,
         )

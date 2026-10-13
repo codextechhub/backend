@@ -277,6 +277,7 @@ def plan_overview(school, unsettled_roles=()):
                 "ends_at": uplift.ends_at,
                 "live": _is_live(uplift),
                 "reason": uplift.reason,
+                "source": uplift.source,
             },
             "bands": [
                 {

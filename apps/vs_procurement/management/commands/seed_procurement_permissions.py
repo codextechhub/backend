@@ -89,6 +89,17 @@ PROCUREMENT_RESOURCES = [
                                                  ("allocate", "SENSITIVE"), ("attach", "NORMAL")]),
 ]
 
+#: Resources that carry Field Access fields and no permission keys.
+#:
+#: The people at a vendor are read and corrected with the vendor keys, so a key
+#: of their own would be a switch governing nothing, while their name, email and
+#: phone still need a resource to hang their own switches on. A resource is
+#: otherwise created as a side effect of the first key naming it, and
+#: ``sync_field_registry`` refuses a declaration whose resource is missing.
+FIELD_ONLY_RESOURCES = [
+    ("vendor_contact", "vendor contacts"),
+]
+
 
 class Command(BaseCommand):
     """Materialise procurement's declarative permission matrix in platform RBAC.
@@ -185,6 +196,22 @@ class Command(BaseCommand):
                     created_perms += 1
                     self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
                 all_perms.append(perm)
+
+        # Resources that carry fields and no keys, registered in the same phase
+        # because the field sync refuses a declaration whose resource is missing.
+        for resource_name, resource_label in FIELD_ONLY_RESOURCES:
+            resource, _ = PermissionResource.objects.get_or_create(
+                module=module,
+                name=resource_name,
+                defaults={
+                    "description": f"{resource_label.capitalize()} ({MODULE_NAME}).",
+                    "is_active": True,
+                },
+            )
+            if not resource.label:
+                PermissionResource.objects.filter(pk=resource.pk, label="").update(
+                    label=sentence_label(resource_label),
+                )
 
         # ── Grant every key to the platform admin roles (codex tenant) ────────
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()

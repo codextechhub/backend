@@ -36,7 +36,6 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import FinanceError, PostingError
-from .money import format_naira
 from .wording import state_word
 
 
@@ -243,8 +242,14 @@ def _post_provision_atomic(provision, *, actor_user=None):
     record(
         entity=entity, action=FinanceAuditAction.PROVISION_POSTED,
         actor_user=actor_user, target=provision,
-        message=(f"Posted doubtful-debt provision {provision.document_number}: allowance "
-                 f"required {format_naira(provision.required_total)}."),
+        message=f"Posted doubtful-debt provision {provision.document_number}.",
+        after={
+            "required_total": provision.required_total,
+            "required": [{"branch_id": line.branch_id, "required": line.required,
+                          "current": line.current, "movement": line.movement}
+                         for line in lines],
+            "bands": provision.policy_snapshot,
+        },
         as_of=str(provision.as_of), required=provision.required_total,
         lines=[{"branch_id": line.branch_id, "required": line.required,
                 "current": line.current, "movement": line.movement,

@@ -145,6 +145,36 @@ def describe_value(field, value, *, tenant=None, accounts=None) -> str:
     return str(value)
 
 
+#: The bank account fields a bank summary repeats, by the summary's key and the
+#: ``finance.bankaccount`` field that governs it. A document-settings bank
+#: summary is stored in the history snapshot of ``primary_collection_bank_account``.
+BANK_SUMMARY_FIELDS = (("bank_name", "bank_name"), ("currency", "currency"))
+
+
+def hide_bank_summary_copies(request, snapshot):
+    """The settings snapshot with each bank summary reduced to what the caller may read.
+
+    A change to the collection account stores the account's bank and currency
+    beside its name, so the history repeats the values ``finance.bankaccount``
+    guards. A caller who may not read the bank (or currency) of a bank account
+    does not read it here either. Without a ``request`` the snapshot is kept
+    whole.
+    """
+    from vs_rbac.field_enforcement import can_read
+
+    if request is None or not isinstance(snapshot, dict):
+        return snapshot
+    hidden = {key for key, field in BANK_SUMMARY_FIELDS
+              if not can_read(request, f"finance.bankaccount.{field}")}
+    if not hidden:
+        return snapshot
+    out = dict(snapshot)
+    for key, value in snapshot.items():
+        if isinstance(value, dict) and "bank_name" in value:
+            out[key] = {k: v for k, v in value.items() if k not in hidden}
+    return out
+
+
 def describe_changes(fields, before, after, *, tenant=None, accounts=None) -> list[dict]:
     """Each setting a change touched, with its label and before and after in words.
 
@@ -167,12 +197,18 @@ def describe_changes(fields, before, after, *, tenant=None, accounts=None) -> li
     return changes
 
 
-def settings_history(entity, action, fields, *, limit=10):
+def settings_history(entity, action, fields, *, limit=10, request=None):
     """The last ``limit`` changes to one of the entity's settings, newest first.
 
     Each row is a :class:`~vs_finance.serializers.FinanceAuditLogSerializer` row
     with ``changes`` added (see the module docstring); ``before`` and ``after``
     stay as stored, for any client that reads them.
+
+    With a ``request``, a setting registered under Field Access is shown only
+    to a caller who may read it: its values leave ``before``, ``after`` and
+    ``changes``. A change that touched none the caller may read is left out of
+    the list, because its actor, time and count would say that something they
+    may not see changed; one that touched some is worded for those alone.
 
     Not narrowed to the caller's branches. The settings belong to the whole
     tenant, so every entry here carries no branch, and a branch-bound reader who
@@ -197,10 +233,35 @@ def settings_history(entity, action, fields, *, limit=10):
         accounts = dict(
             Account.objects.filter(entity=entity, code__in=codes).values_list("code", "name")
         )
-    return SettingsHistorySerializer(
-        rows, many=True,
-        context={"fields": fields, "tenant": entity.tenant, "accounts": accounts},
-    ).data
+    context = {"fields": fields, "tenant": entity.tenant, "accounts": accounts}
+    if request is not None:
+        context["request"] = request
+    data = SettingsHistorySerializer(rows, many=True, context=context).data
+    return data if request is None else _readable_changes(rows, data)
+
+
+def _readable_changes(rows, data) -> list:
+    """``data`` without the changes the caller may read none of, the rest reworded.
+
+    A row's ``changes`` lists every setting its snapshots still carry once
+    Field Access has filtered them, so a row whose ``changes`` are fewer than the
+    settings it stored lost some to the caller's switches.
+    """
+    from .wording import counted
+
+    kept = []
+    for row, entry in zip(rows, data):
+        stored = {
+            key for snapshot in (row.before, row.after) if isinstance(snapshot, dict)
+            for key in snapshot
+        }
+        shown = len(entry["changes"])
+        if stored and not shown:
+            continue
+        if shown < len(stored):
+            entry["message"] = f"Updated {counted(shown, 'setting')}."
+        kept.append(entry)
+    return kept
 
 
 ACCOUNT_SETTING_FIELDS = {

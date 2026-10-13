@@ -36,7 +36,7 @@ from vs_config.clock import tenant_today
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
 from vs_finance.payroll import PAYROLL_SCOPE_CHOICES
-from vs_rbac.field_enforcement import FieldAccessMixin, can_read
+from vs_rbac.field_enforcement import FieldAccessMixin, assert_writable, can_read
 from vs_user.email_normalization import normalize_email
 from vs_tenants.app_urls import school_app_url
 
@@ -228,13 +228,17 @@ class BranchLifecycleSerializer(serializers.ModelSerializer):
 # Package Setup serializers
 # ---------------------------------------------------------------
 
-class PackagePlanSerializer(serializers.ModelSerializer):
+class PackagePlanSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Read-only representation of a PackagePlan catalog entry.
 
-    Used for listing available plans in the Package Plan dropdown. Carries the
-    depth the tier reaches and the modules it reaches differently, because
-    those two are now the whole of what distinguishes one plan from another.
+    Used for listing available plans in the Package Plan dropdown, and nested
+    in a school's package setup. Carries the depth the tier reaches and the
+    modules it reaches differently, because those two are now the whole of what
+    distinguishes one plan from another. The catalogue price is a Field Access
+    field of its own, separate from the price agreed with any one school.
     """
+
+    field_resource = "platform.schools"
 
     default_depth_label = serializers.SerializerMethodField()
     module_depths = serializers.SerializerMethodField()
@@ -270,8 +274,10 @@ class PackagePlanSerializer(serializers.ModelSerializer):
         ]
 
 
-class PackagePlanPriceSerializer(serializers.ModelSerializer):
+class PackagePlanPriceSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Change the catalogue rate used by future school subscriptions."""
+
+    field_resource = "platform.schools"
 
     price_per_student = serializers.IntegerField(min_value=1)
 
@@ -290,14 +296,44 @@ class PackagePlanPriceSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class ChangeSchoolPlanSerializer(serializers.Serializer):
+def refuse_unwritable_catalogue_price(request, rate, *, stored, creating=False):
+    """Refuse a plan that copies *rate* over an agreed price the caller may not change.
+
+    A plan with a catalogue rate sets the school's agreed price to it, so
+    choosing the plan changes the agreed price whether or not the body names
+    it. The write switch of ``agreed_price_per_student`` therefore governs the
+    copy as much as a figure typed into the form: Tunde may move a school onto
+    Standard, and if Bright Star's negotiated rate would be replaced by
+    Standard's catalogue rate, the move is refused and names the agreed price.
+    A move that leaves the price as it is passes, except for a caller who may
+    not read the price, who is refused either way so the refusal cannot be
+    used to find out whether the two rates match
+    (:func:`vs_rbac.field_enforcement.assert_writable`).
+
+    *stored* is the price held now; on a create, where no price is held yet,
+    ``None``.
+    """
+    assert_writable(
+        request, "platform.schools", {"agreed_price_per_student": rate},
+        creating=creating, current={"agreed_price_per_student": stored},
+    )
+
+
+class ChangeSchoolPlanSerializer(FieldAccessMixin, serializers.Serializer):
     """Move a school onto another plan.
 
     Takes the plan's code rather than its primary key, matching every other
     package payload and the dropdown that emits it. Refuses a move to the plan
     the school is already on: a no-op that re-grants every module and writes an
     audit event for each reads, later, as a change somebody made.
+
+    A plan with a catalogue rate also sets the school's agreed price, so a
+    move that would change the stored price needs the write switch of the
+    agreed price as well as the plan's own
+    (:func:`refuse_unwritable_catalogue_price`).
     """
+
+    field_resource = "platform.schools"
 
     package_plan = serializers.SlugField(max_length=100)
     subscription_expires_at = serializers.DateField(required=False, allow_null=True)
@@ -339,6 +375,10 @@ class ChangeSchoolPlanSerializer(serializers.Serializer):
                     ),
                 })
         elif plan:
+            refuse_unwritable_catalogue_price(
+                self.context.get("request"), plan.price_per_student,
+                stored=self.context["school"].package_setup.agreed_price_per_student,
+            )
             attrs["agreed_price_per_student"] = plan.price_per_student
         return attrs
 
@@ -378,6 +418,121 @@ class SchoolPlanUpliftSerializer(serializers.Serializer):
         return attrs
 
 
+class SchoolPlanBandSerializer(serializers.Serializer):
+    """One band of a module and whether the school's depth reaches it."""
+
+    key = serializers.CharField()
+    label = serializers.CharField()
+    depth = serializers.IntegerField()
+    depth_label = serializers.CharField()
+    reached = serializers.BooleanField()
+
+
+class SchoolPlanUpliftReadSerializer(serializers.Serializer):
+    """An uplift in place on one module of one school.
+
+    An uplift the plan wrote (``source`` ``PACKAGE``) starts and ends with the
+    subscription, so its window is the school's subscription start and expiry
+    and follows their switches (:func:`vs_config.entitlement_access.window_readable`).
+    One an operator gave by hand has a window of its own. The source steers that
+    choice and is not part of the payload.
+    """
+
+    depth = serializers.IntegerField()
+    depth_label = serializers.CharField()
+    starts_at = serializers.DateTimeField(allow_null=True)
+    ends_at = serializers.DateTimeField(allow_null=True)
+    live = serializers.BooleanField()
+    reason = serializers.CharField(allow_blank=True)
+
+    def to_representation(self, instance):
+        from vs_config.entitlement_access import window_readable
+
+        data = super().to_representation(instance)
+        starts_readable, ends_readable = window_readable(
+            self.context.get("request"), instance.get("source", ""),
+        )
+        if not starts_readable:
+            data.pop("starts_at", None)
+        if not ends_readable:
+            data.pop("ends_at", None)
+        return data
+
+
+class SchoolPlanSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """The plan a school is on and the term it is paid for.
+
+    The identity and depth of the plan follow the package plan switch, so a
+    role that may not read the plan still reads the subscription's expiry and
+    whether the subscription is active.
+    """
+
+    field_resource = "platform.schools"
+    field_aliases = {
+        "code": "package_plan",
+        "name": "package_plan",
+        "default_depth": "package_plan",
+        "default_depth_label": "package_plan",
+    }
+
+    code = serializers.CharField()
+    name = serializers.CharField()
+    default_depth = serializers.IntegerField(allow_null=True)
+    default_depth_label = serializers.CharField()
+    subscription_expires_at = serializers.DateField()
+    is_active = serializers.BooleanField()
+
+
+class SchoolPlanModuleSerializer(FieldAccessMixin, serializers.Serializer):
+    """One module of a school's plan page: the depth reached and where it came from.
+
+    ``plan_depth``, ``plan_depth_label`` and ``source`` describe the plan, so
+    they follow the package plan switch; ``expires_at`` is the subscription's
+    expiry carried on the grant. ``source`` also names an uplift when one decides
+    the depth, so it is withheld from a reader who may not read uplifts.
+    """
+
+    field_resource = "platform.schools"
+    field_aliases = {
+        "plan_depth": "package_plan",
+        "plan_depth_label": "package_plan",
+        "source": "package_plan",
+        "expires_at": "subscription_expires_at",
+    }
+
+    key = serializers.CharField()
+    label = serializers.CharField()
+    granted = serializers.BooleanField()
+    depth = serializers.IntegerField(allow_null=True)
+    depth_label = serializers.CharField()
+    source = serializers.CharField()
+    plan_depth = serializers.IntegerField(allow_null=True)
+    plan_depth_label = serializers.CharField(allow_null=True)
+    expires_at = serializers.DateTimeField(allow_null=True)
+    uplift = SchoolPlanUpliftReadSerializer(allow_null=True)
+    bands = SchoolPlanBandSerializer(many=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get("source") == "uplift" and not can_read(
+            self.context.get("request"), "platform.schools.uplift",
+        ):
+            data.pop("source")
+        return data
+
+
+class SchoolPlanOverviewSerializer(FieldAccessMixin, serializers.Serializer):
+    """What a school is on, module by module, as the plan page reads it."""
+
+    field_resource = "platform.schools"
+
+    school = serializers.CharField()
+    plan = SchoolPlanSummarySerializer(allow_null=True)
+    provisioned = serializers.BooleanField()
+    modules = SchoolPlanModuleSerializer(many=True)
+    roles_needing_attention = serializers.ListField(child=serializers.JSONField())
+
+
 class XVSModuleSerializer(serializers.ModelSerializer):
     """
     Read-only representation of a platform module.
@@ -404,7 +559,7 @@ class XVSModuleSerializer(serializers.ModelSerializer):
         return [link.requires.key for link in obj.dependency_links.all()]
 
 
-class SchoolPackageSetupWriteSerializer(serializers.Serializer):
+class SchoolPackageSetupWriteSerializer(FieldAccessMixin, serializers.Serializer):
     """
     Write-only structure for submitting package setup during school creation.
 
@@ -421,7 +576,16 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     Validation enforces:
     - package_plan must exist and be active.
     - subscription_expires_at must not be in the past.
+
+    Every submitted field is a Field Access field of ``platform.schools``, so a
+    role that may create a school but not agree its terms is refused here
+    rather than creating the school with terms it was not allowed to set. A
+    plan with a catalogue rate also sets the agreed price, so choosing one
+    needs the agreed price's write switch too
+    (:func:`refuse_unwritable_catalogue_price`).
     """
+
+    field_resource = "platform.schools"
 
     package_plan = serializers.SlugRelatedField(
         slug_field="code",
@@ -472,6 +636,10 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
                     "Enter the agreed per-student rate for this quoted tier."
                 )
         else:
+            refuse_unwritable_catalogue_price(
+                self.context.get("request"), plan.price_per_student,
+                stored=None, creating=True,
+            )
             attrs["agreed_price_per_student"] = plan.price_per_student
 
         if errors:
@@ -480,11 +648,13 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
         return attrs
 
 
-class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
+class SchoolPackageSetupReadSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     Read-only nested representation of a package setup.
     Returned in SchoolDetailSerializer.
     """
+    field_resource = "platform.schools"
+
     package_plan = PackagePlanSerializer(read_only=True)
     enabled_modules = serializers.SerializerMethodField()
 
@@ -500,6 +670,10 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
         Entitlements are tenant-scoped, never school-scoped: the school
         reaches its own tenant. Filtering on the tenant (not a NULL-tenant
         platform grant) keeps one school from reading another's package.
+
+        The depth comes from the package, so a caller who may not read the
+        school's package plan receives the modules without ``depth`` or
+        ``depth_label``: the tiering would otherwise disclose the plan.
         """
         rows = CapabilityEntitlement.all_objects.filter(
             tenant_id=obj.school.tenant_id,
@@ -511,6 +685,8 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
             pk__in=list(depths), is_active=True,
         ).prefetch_related("dependency_links__requires")
         payload = XVSModuleSerializer(capabilities, many=True).data
+        if not can_read(self.context.get("request"), "platform.schools.package_plan"):
+            return payload
         for item, capability in zip(payload, capabilities):
             depth = depths.get(capability.pk)
             item["depth"] = depth
@@ -974,11 +1150,14 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 # School serializers (read)
 # -----------------------------------------------------------------------------
 
-class SchoolListSerializer(serializers.ModelSerializer):
+class SchoolListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     School list now shows tenant identity + status.
     Location fields moved to Branch (main branch can be shown via nested/flattened approach).
+    The billing email and phone are Field Access fields of ``platform.schools``.
     """
+    field_resource = "platform.schools"
+
     main_branch = BranchListSerializer(read_only=True)
     total_students = serializers.ReadOnlyField(default=0)
     logo = serializers.SerializerMethodField()
@@ -1025,11 +1204,17 @@ class SchoolListSerializer(serializers.ModelSerializer):
         )
 
 
-class SchoolDetailSerializer(serializers.ModelSerializer):
+class SchoolDetailSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     Detail includes tenant identity + nested branches.
     Location/contact details are on branches; main branch can be highlighted via main_branch field.
+    The billing email and phone, and the nested package setup, are Field Access
+    fields of ``platform.schools``; the branches are CodeX's own branch records,
+    read under ``platform.branches.view``.
     """
+    field_resource = "platform.schools"
+    field_access_detail = True
+
     branches = BranchDetailSerializer(many=True, read_only=True)
     main_branch = BranchDetailSerializer(read_only=True)
     branding = SchoolBrandingSerializer(read_only=True)
@@ -1132,7 +1317,7 @@ def _ignore_stage(step: str) -> None:
     """The stage reporter for a creation nobody is watching."""
 
 
-class SchoolCreateSerializer(serializers.ModelSerializer):
+class SchoolCreateSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     """
     Creates a School with its branches, plus optional:
@@ -1152,6 +1337,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
       - Exactly one branch must have is_main=True.
       - Branch names must be unique within the submission.
     """
+
+    field_resource = "platform.schools"
 
     slug = serializers.CharField(required=False, allow_blank=True)
     email = serializers.EmailField(required=True, allow_blank=False)
@@ -1598,7 +1785,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         return school
     
 
-class SchoolUpdateSerializer(serializers.ModelSerializer):
+class SchoolUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """
     Updates tenant identity fields only.
     Branch details are updated via BranchUpdateSerializer.
@@ -1622,6 +1809,8 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
     create path normalises instead, and correcting a typo should behave the
     same way.
     """
+
+    field_resource = "platform.schools"
 
     slug = serializers.CharField(required=False)
     email = serializers.EmailField(required=False, allow_blank=False)
@@ -2105,7 +2294,7 @@ class SchoolProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
         ]
 
 
-class SchoolProfileUpdateSerializer(FieldAccessMixin, SchoolUpdateSerializer):
+class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
     """What a school may change about itself.
 
     Subclasses the platform's updater rather than restating it, so the audit
@@ -2232,7 +2421,7 @@ class SchoolStaffSerializer(serializers.Serializer):
         return obj.status == "PENDING"
 
 
-class SchoolBranchSerializer(serializers.ModelSerializer):
+class SchoolBranchSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One branch, as a school's own branches screen reads it.
 
     Distinct from ``BranchListSerializer`` and ``BranchDetailSerializer``, which
@@ -2256,7 +2445,14 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
     A branch with no classes reports ``0``, which is a different claim from
     ``null`` and a true one - the school has this site and has built nothing on
     it yet.
+
+    ``address`` and ``email`` are Field Access fields of ``school.branches``,
+    each with its own Read switch and no Write switch, because CodeX alone
+    edits a branch. The name is the label that identifies the branch on every
+    screen and has no switch.
     """
+
+    field_resource = "school.branches"
 
     students_count = serializers.SerializerMethodField()
     teachers_count = serializers.SerializerMethodField()

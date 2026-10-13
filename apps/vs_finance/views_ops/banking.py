@@ -1,4 +1,17 @@
-"""Bank accounts, statement import, reconciliation.
+"""Bank accounts, statement import, reconciliation, bank transactions and transfers.
+
+Bank transactions and transfers between a branch's own accounts are rendered
+through the Field Access switches of ``finance.banktransaction`` and
+``finance.banktransfer``, and the branch split of a shared account through those
+of ``finance.bankaccount``: a serializer carrying
+:class:`~vs_rbac.field_enforcement.FieldAccessMixin` for every payload, a refusal
+of any list filter that names a field the caller may not read, a refusal of any
+body that changes a field the caller may not write, and sentences that name an
+amount only to a caller who may read it.
+
+Reconciliation serves other records: a statement line is the bank's own entry
+and a book line is a ledger line, so neither is a bank document's value
+re-served and neither is governed by those switches.
 """
 from __future__ import annotations
 
@@ -13,6 +26,9 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from vs_rbac.field_enforcement import (
+    FieldAccessMixin, FieldWriteDenied, assert_writable, can_read, visible,
+)
 from vs_rbac.scoping import (
     caller_reaches_whole_tenant,
     shared_write_refusal,
@@ -23,6 +39,7 @@ from core.response import success_response
 
 from ..approvals import with_approval_request
 from ..audit import record
+from ..field_guards import readable, refuse_hidden_filters, submitted
 from ..constants import (
     BankLineStatus,
     BankSplitDifferenceTreatment,
@@ -41,6 +58,7 @@ from ..models import (
     JournalLine,
 )
 from ..serializers import (
+    BankAccountDetailSerializer,
     BankAccountSerializer,
     BankReconciliationSerializer,
     BankStatementDetailSerializer,
@@ -138,6 +156,7 @@ class BankAccountListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
+        refuse_hidden_filters(request, _BANK_ACCOUNT, {"is_active": ("is_active", "Active")})
         qs = BankAccount.objects.filter(
             transaction_branch_q(request), entity=entity,
         ).select_related("gl_account")
@@ -149,10 +168,28 @@ class BankAccountListCreateView(_FinanceBase):
             ).data,
         )
 
+    @staticmethod
+    def _assert_create_writable(request, body):
+        """Refuse a create that sets a bank account field the caller may not write.
+
+        The ledger account belongs to the act of creating the account and is
+        open on create. A flag left at the
+        value a new account holds anyway is not a write.
+        """
+        values = submitted(body, *_BANK_BODY_KEYS)
+        for flag in ("is_active", "is_primary", "is_primary_collection"):
+            if flag in values:
+                values[flag] = _bool(values[flag], default=False)
+        assert_writable(
+            request, _BANK_ACCOUNT, values, creating=True,
+            current={"is_active": True, "is_primary": False, "is_primary_collection": False},
+        )
+
     # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        self._assert_create_writable(request, body)
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A bank account name is required."})
@@ -189,8 +226,89 @@ class BankAccountListCreateView(_FinanceBase):
         )
 
 
-class _BankBranchAllocationSerializer(serializers.Serializer):
-    """One explicitly agreed branch share of a legacy bank balance."""
+_BANK_ACCOUNT = "finance.bankaccount"
+
+#: The body keys of a bank account create and update that are registered
+#: fields of ``finance.bankaccount``. ``name`` identifies the account and is not one.
+_BANK_BODY_KEYS = (
+    "bank_name", "account_number", "gl_account", "currency", "is_active",
+    "is_primary", "is_primary_collection",
+)
+_TRANSACTION = "finance.banktransaction"
+_TRANSFER = "finance.banktransfer"
+
+
+def _split_names(body) -> set:
+    """Every ``finance.bankaccount`` field a split body sets, its allocations' included.
+
+    One refusal names them all: a serializer judges the body before it descends
+    into the allocations, so a caller correcting the form would otherwise be
+    told about the reference first and the shares second.
+    """
+    if not isinstance(body, dict):
+        return set()
+    names = set(submitted(body, "split_date", "agreement_reference", "difference_treatment"))
+    allocations = body.get("allocations")
+    for row in allocations if isinstance(allocations, list) else ():
+        names |= set(submitted(
+            row, "opening_balance", "ledger_account_code", "ledger_account_name",
+            "is_primary", "is_primary_collection"))
+    return names
+
+
+def _debt_row(request, transfer) -> dict:
+    """One debt between branches a split booked, as the inter-branch switches allow.
+
+    The row is an inter-branch document's own figures (its number, both
+    branches and amount), so its amount is filtered by ``finance.interbranch``
+    as it is everywhere else; the branches and the number always show.
+    """
+    return visible(request, "finance.interbranch", {
+        "id": transfer.pk,
+        "document_number": transfer.document_number,
+        "from_branch_id": transfer.branch_id,
+        "to_branch_id": transfer.to_branch_id,
+        "amount": int(transfer.amount),
+    })
+
+
+def _split_account_row(request, row) -> dict:
+    """One branch account a split opened, as the caller's switches let them read it.
+
+    The branch always shows. Each other value is the share the caller agreed
+    to, so it travels under the switch of the share it restates: the agreed
+    opening balance under *Agreed opening balance*, the new ledger account's
+    code under *New ledger account code*. The new account's own bank, ledger
+    account and flags are ``finance.bankaccount`` fields as they are on every
+    bank account, and are filtered by their own switches.
+    """
+    data = visible(request, _BANK_ACCOUNT, {
+        "id": row.id,
+        "name": row.name,
+        "branch_id": row.branch_id,
+        "gl_account_id": row.gl_account_id,
+        "is_primary": row.is_primary,
+        "is_primary_collection": row.is_primary_collection,
+    })
+    for name, value, field in (
+        ("gl_account_code", row.gl_account_code, "split_ledger_code"),
+        ("opening_balance", row.opening_balance, "split_opening_balance"),
+    ):
+        if readable(request, _BANK_ACCOUNT, field):
+            data[name] = value
+    return data
+
+
+class _BankBranchAllocationSerializer(FieldAccessMixin, serializers.Serializer):
+    """One explicitly agreed branch share of a legacy bank balance.
+
+    The agreed opening balance, the new ledger account and the two primary
+    choices are ``finance.bankaccount`` fields, so a share that sets one
+    the caller may not write is refused with the standard field refusal. The
+    new account's name identifies it and is not a switch.
+    """
+
+    field_resource = "finance.bankaccount"
 
     branch = serializers.IntegerField(min_value=1)
     opening_balance = serializers.IntegerField()
@@ -201,8 +319,10 @@ class _BankBranchAllocationSerializer(serializers.Serializer):
     is_primary_collection = serializers.BooleanField(required=True)
 
 
-class _BankAccountBranchSplitSerializer(serializers.Serializer):
+class _BankAccountBranchSplitSerializer(FieldAccessMixin, serializers.Serializer):
     """The cutover date, evidence reference, difference treatment and complete branch allocation."""
+
+    field_resource = "finance.bankaccount"
 
     split_date = serializers.DateField()
     agreement_reference = serializers.CharField(max_length=64, trim_whitespace=True)
@@ -215,6 +335,42 @@ class _BankAccountBranchSplitSerializer(serializers.Serializer):
         min_length=2,
         max_length=100,
     )
+
+
+class BankSplitPreviewSerializer(FieldAccessMixin, serializers.Serializer):
+    """What a split would start from, under ``finance.bankaccount``.
+
+    ``bank_account_id`` identifies the account being split and is not a switch.
+    The balances and the branch list are worked out from the ledger, so each is
+    read-only; ``branches`` is one block, each branch beside its own balance.
+    """
+
+    field_resource = "finance.bankaccount"
+
+    bank_account_id = serializers.ReadOnlyField()
+    legacy_balance = serializers.ReadOnlyField()
+    unbranched_balance = serializers.ReadOnlyField()
+    split_date = serializers.ReadOnlyField()
+    branches = serializers.ReadOnlyField()
+
+
+class BankSplitResultSerializer(FieldAccessMixin, serializers.Serializer):
+    """What a completed split produced, under ``finance.bankaccount``.
+
+    ``bank_accounts`` is the block of branch accounts opened, ``journal_ids``
+    the journals that moved the balances and ``inter_branch_transfers`` the
+    debts between branches a difference was booked as. Every row of the last is
+    filtered by the ``finance.interbranch`` switches as well.
+    """
+
+    field_resource = "finance.bankaccount"
+
+    legacy_bank_account_id = serializers.ReadOnlyField()
+    legacy_balance = serializers.ReadOnlyField()
+    bank_accounts = serializers.ReadOnlyField()
+    journal_ids = serializers.ReadOnlyField()
+    difference_treatment = serializers.ReadOnlyField()
+    inter_branch_transfers = serializers.ReadOnlyField()
 
 
 class BankAccountBranchSplitView(_FinanceBase):
@@ -236,6 +392,13 @@ class BankAccountBranchSplitView(_FinanceBase):
     It needs the bank-account view key through whole-tenant reach: a shared
     account is visible only to a whole-tenant reader, and the preview shows
     every branch's figure on it.
+
+    Every key of both responses and of the POST body is a ``finance.bankaccount``
+    field. A caller who may not read one does not receive it, and a split date
+    they may not read cannot be asked for; a POST that sets a field they may not
+    write is refused before anything is booked. The sentence that says the agreed
+    shares do not add up to the shared balance names the balance only to a caller
+    who may read it.
 
     docstring-name: Split a shared bank account by branch
     """
@@ -267,6 +430,8 @@ class BankAccountBranchSplitView(_FinanceBase):
         from ..bank_splits import split_preview
 
         entity, source = self._shared_source(request, pk)
+        refuse_hidden_filters(
+            request, _BANK_ACCOUNT, {"split_date": ("split_date", "Split date")})
         today = tenant_today(entity.tenant)
         split_date = _date(request.query_params.get("split_date"), "split_date") or today
         if split_date > today:
@@ -274,14 +439,18 @@ class BankAccountBranchSplitView(_FinanceBase):
         preview = split_preview(source, split_date=split_date)
         return success_response(
             f"Split preview for bank account '{source.name}' retrieved.",
-            data={"bank_account_id": source.pk, **preview},
+            data=BankSplitPreviewSerializer(
+                {"bank_account_id": source.pk, **preview}, context={"request": request},
+            ).data,
         )
 
     def post(self, request, pk):
         from ..bank_splits import split_shared_bank_account
 
         entity, source = self._shared_source(request, pk)
-        payload = _BankAccountBranchSplitSerializer(data=request.data or {})
+        body = request.data or {}
+        assert_writable(request, _BANK_ACCOUNT, _split_names(body), creating=True)
+        payload = _BankAccountBranchSplitSerializer(data=body, context={"request": request})
         payload.is_valid(raise_exception=True)
         values = payload.validated_data
         result = split_shared_bank_account(
@@ -290,39 +459,26 @@ class BankAccountBranchSplitView(_FinanceBase):
             split_date=values["split_date"],
             agreement_reference=values["agreement_reference"],
             difference_treatment=values["difference_treatment"],
+            reveal_balance=readable(request, _BANK_ACCOUNT, "legacy_balance"),
             actor_user=request.user,
         )
         return success_response(
             f"Bank account '{source.name}' split into branch accounts.",
-            data={
-                "legacy_bank_account_id": source.pk,
-                "legacy_balance": result.legacy_balance,
-                "bank_accounts": [
-                    {
-                        "id": row.id,
-                        "name": row.name,
-                        "branch_id": row.branch_id,
-                        "gl_account_id": row.gl_account_id,
-                        "gl_account_code": row.gl_account_code,
-                        "opening_balance": row.opening_balance,
-                        "is_primary": row.is_primary,
-                        "is_primary_collection": row.is_primary_collection,
-                    }
-                    for row in result.allocations
-                ],
-                "journal_ids": [entry.pk for entry in result.journals],
-                "difference_treatment": result.difference_treatment,
-                "inter_branch_transfers": [
-                    {
-                        "id": transfer.pk,
-                        "document_number": transfer.document_number,
-                        "from_branch_id": transfer.branch_id,
-                        "to_branch_id": transfer.to_branch_id,
-                        "amount": int(transfer.amount),
-                    }
-                    for transfer in result.transfers
-                ],
-            },
+            data=BankSplitResultSerializer(
+                {
+                    "legacy_bank_account_id": source.pk,
+                    "legacy_balance": result.legacy_balance,
+                    "bank_accounts": [
+                        _split_account_row(request, row) for row in result.allocations
+                    ],
+                    "journal_ids": [entry.pk for entry in result.journals],
+                    "difference_treatment": result.difference_treatment,
+                    "inter_branch_transfers": [
+                        _debt_row(request, transfer) for transfer in result.transfers
+                    ],
+                },
+                context={"request": request},
+            ).data,
             status=201,
         )
 
@@ -389,33 +545,57 @@ class BankAccountDetailView(_FinanceBase):
         stmt = statement_balance(bank)
         stmt_val = stmt if stmt is not None else book
         unreconciled = bank.statement_lines.filter(status=BankLineStatus.UNMATCHED).count()
-        data = BankAccountSerializer(bank, context={"request": request}).data
-        data["metrics"] = {
-            "book_balance": book, "statement_balance": stmt_val,
-            "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
-        }
-        data["transactions"] = self._transactions(bank, book_balance=book)
         acted_lines = BankStatementLine.objects.filter(
             statement=OuterRef("pk"),
         ).exclude(status=BankLineStatus.UNMATCHED)
         bulk_context = BankStatementImportContext.objects.filter(
             published_statement=OuterRef("pk"),
         )
-        data["statements"] = BankStatementSerializer(
+        bank.detail_metrics = {
+            "book_balance": book, "statement_balance": stmt_val,
+            "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
+        }
+        bank.detail_transactions = self._transactions(bank, book_balance=book)
+        bank.detail_statements = BankStatementSerializer(
             annotate_statement_rollback(bank.statements.annotate(
                 has_acted_lines=Exists(acted_lines),
                 is_bulk_import=Exists(bulk_context),
             ))[:50],
-            many=True,
+            many=True, context={"request": request},
         ).data
-        data["reconciliations"] = BankReconciliationSerializer(
-            bank.reconciliations.all()[:50], many=True).data
+        bank.detail_reconciliations = list(bank.reconciliations.all()[:50])
+        data = BankAccountDetailSerializer(bank, context={"request": request}).data
         return success_response("Bank account retrieved.", data=data)
+
+    @staticmethod
+    def _assert_changes_writable(request, bank, body, currency):
+        """Refuse a body that changes a bank account field the caller may not change.
+
+        What is judged is the change: a form that sends the bank, number,
+        currency and flags back as stored writes nothing and is not refused.
+        Each value is compared in the form the update stores.
+        """
+        values, current = {}, {}
+        for name in ("bank_name", "account_number"):
+            if name in body:
+                values[name] = str(body[name]).strip()
+                current[name] = getattr(bank, name)
+        if "currency" in body:
+            values["currency"] = getattr(currency, "pk", None)
+            current["currency"] = bank.currency_id
+        for name in ("is_active", "is_primary", "is_primary_collection"):
+            if name in body:
+                values[name] = _bool(body.get(name), default=getattr(bank, name))
+                current[name] = getattr(bank, name)
+        assert_writable(
+            request, _BANK_ACCOUNT, values, current=current)
 
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         bank = self._bank(request, pk)
         body = request.data or {}
+        currency = _resolve_currency(body.get("currency")) if "currency" in body else None
+        self._assert_changes_writable(request, bank, body, currency)
         if "name" in body:
             new_name = str(body["name"]).strip()
             if BankAccount.objects.filter(entity=bank.entity, name=new_name).exclude(pk=bank.pk).exists():
@@ -424,7 +604,7 @@ class BankAccountDetailView(_FinanceBase):
             if field in body:
                 setattr(bank, field, str(body[field]).strip())
         if "currency" in body:
-            bank.currency = _resolve_currency(body.get("currency"))
+            bank.currency = currency
         if "is_active" in body:
             bank.is_active = _bool(body.get("is_active"), default=bank.is_active)
         if "is_primary" in body:
@@ -684,13 +864,22 @@ class _BankStatementCorrectionLineSerializer(serializers.Serializer):
 
 
 class _BankStatementCorrectionSerializer(serializers.Serializer):
+    """A statement's corrected header and lines.
+
+    ``opening_balance`` is optional: a correction that leaves it out keeps the
+    figure on file, so a caller who cannot read it (``finance.bankaccount
+    .statement_balance``) corrects the statement's lines without ever having it.
+    Submitting it is a write of that figure, judged by
+    :meth:`BankStatementDetailView.patch`.
+    """
+
     statement_date = serializers.DateField()
     period_label = serializers.CharField(
         required=False,
         allow_blank=True,
         max_length=120,
     )
-    opening_balance = serializers.IntegerField()
+    opening_balance = serializers.IntegerField(required=False)
     lines = _BankStatementCorrectionLineSerializer(many=True, allow_empty=False)
 
     def validate_lines(self, lines):
@@ -773,13 +962,29 @@ class BankStatementDetailView(_FinanceBase):
         statement = self._statement(request, pk, statement_id)
         return success_response(
             "Bank statement retrieved.",
-            data=BankStatementDetailSerializer(statement).data,
+            data=BankStatementDetailSerializer(statement, context={"request": request}).data,
         )
 
     def patch(self, request, pk, statement_id):
+        """Correct the statement's date, period, opening balance and lines.
+
+        The opening balance is the bank's own figure, the one the account's
+        ``statement_balance`` switch governs. A caller who cannot read it may
+        not write it: submitting it, whatever its value, is refused with the
+        standard field refusal and nothing is saved. "Unchanged is accepted,
+        different is refused" would let such a caller find the figure by trying
+        values, so the refusal does not depend on what is on file. Leaving it
+        out keeps the figure on file.
+        """
         correction = _BankStatementCorrectionSerializer(data=request.data)
         correction.is_valid(raise_exception=True)
         values = correction.validated_data
+        if "opening_balance" in values and not can_read(
+            request, "finance.bankaccount.statement_balance",
+        ):
+            raise FieldWriteDenied(
+                ["opening_balance"], labels={"opening_balance": "Statement opening balance"},
+            )
 
         with transaction.atomic():
             statement = self._statement(
@@ -875,7 +1080,8 @@ class BankStatementDetailView(_FinanceBase):
 
             statement.statement_date = values["statement_date"]
             statement.period_label = str(values.get("period_label") or "").strip()
-            statement.opening_balance = int(values["opening_balance"])
+            if "opening_balance" in values:
+                statement.opening_balance = int(values["opening_balance"])
             statement.closing_balance = statement.opening_balance + movement
             statement.save(
                 update_fields=[
@@ -902,7 +1108,7 @@ class BankStatementDetailView(_FinanceBase):
 
         return success_response(
             "Bank statement corrected.",
-            data=BankStatementDetailSerializer(statement).data,
+            data=BankStatementDetailSerializer(statement, context={"request": request}).data,
         )
 
 
@@ -1168,7 +1374,8 @@ class BankReconcileCompleteView(_FinanceBase):
         recon = complete_reconciliation(bank, actor_user=request.user)
         return success_response(
             "Reconciliation recorded.",
-            data=BankReconciliationSerializer(recon).data, status=201,
+            data=BankReconciliationSerializer(recon, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -1430,8 +1637,19 @@ class _ApprovalStateMixin(serializers.Serializer):
         return self._approval(obj)[1]
 
 
-class BankTransactionSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
-    """A bank transaction with its bank account, counter-account and branch named."""
+class BankTransactionSerializer(FieldAccessMixin, _ApprovalStateMixin,
+                                serializers.ModelSerializer):
+    """A bank transaction with its bank account, counter-account and branch named.
+
+    Every key but the ids a client links by is a ``finance.banktransaction``
+    field: a caller who may not read one gets the transaction without it, and a
+    detail response lists in ``_read_only_fields`` the ones they may read and not
+    change.
+    """
+
+    field_resource = _TRANSACTION
+    field_access_detail = True
+    field_write_aliases = True
 
     bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
     counter_account_code = serializers.CharField(source="counter_account.code", read_only=True)
@@ -1485,15 +1703,18 @@ def _send_or_post(document, request, *, label, noun, serializer, post, status=20
 
     from ..approvals import approval_required, confirm_unconfigured_post
 
+    context = {"request": request}
+    subject = f"{label} {document.document_number}"
     if approval_required(document):
         instance = submit_for_approval(document, requested_by=request.user)
         document.refresh_from_db()
         return success_response(
             message=(
-                f"{label} {document.document_number} is waiting for approval. "
+                f"{subject} is waiting for approval. "
                 f"It reaches the books once it is approved."
             ),
-            data=serializer(document).data | {"approval": release_svc.approval_block(instance)},
+            data=serializer(document, context=context).data
+            | {"approval": release_svc.approval_block(instance)},
             status=status,
         )
     confirm_unconfigured_post(document, request, noun=noun)
@@ -1501,8 +1722,37 @@ def _send_or_post(document, request, *, label, noun, serializer, post, status=20
     document.refresh_from_db()
     return success_response(
         message=f"{label} posted as {document.document_number}.",
-        data=serializer(document).data, status=status,
+        data=serializer(document, context=context).data, status=status,
     )
+
+
+_TRANSACTION_BODY = (
+    "bank_account", "direction", "amount", "counter_account", "transaction_date",
+    "narration", "reference",
+)
+_TRANSFER_BODY = (
+    "from_account", "to_account", "amount", "transfer_date", "narration", "reference",
+)
+_RELATED_BODY = ("bank_account", "counter_account", "from_account", "to_account")
+
+
+def _assert_correction_writable(request, resource, document, body, fields, names) -> None:
+    """Refuse a correction that changes a field of the draft the caller may not write.
+
+    Judged by what the correction changes: *fields* are the values the body
+    would leave the draft holding, parsed exactly as they are written, and a
+    value equal to the draft's own is not a write, so a form that sends the whole
+    draft back with one corrected figure is refused only for that figure.
+    """
+    def stored(name):
+        return getattr(document, f"{name}_id") if name in _RELATED_BODY else getattr(document, name)
+
+    changing = {
+        name: (fields[name].pk if name in _RELATED_BODY else fields[name])
+        for name in names if name in body and name in fields
+    }
+    assert_writable(request, resource, changing,
+                    current={name: stored(name) for name in changing})
 
 
 def _transaction_fields(request, entity, body, *, editing=False) -> dict:
@@ -1573,6 +1823,10 @@ class BankTransactionListCreateView(_FinanceBase):
             else "finance.banktransaction.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _TRANSACTION, {
+            "bank_account": ("bank_account", "Bank account"),
+            "status": ("status", "Status"), "approval": ("status", "Status"),
+        })
         entity = resolve_entity(request)
         qs = _transactions_in_reach(request, entity).select_related(
             "bank_account", "counter_account", "branch")
@@ -1587,7 +1841,9 @@ class BankTransactionListCreateView(_FinanceBase):
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
-        fields = _transaction_fields(request, entity, request.data or {})
+        body = request.data or {}
+        assert_writable(request, _TRANSACTION, submitted(body, *_TRANSACTION_BODY), creating=True)
+        fields = _transaction_fields(request, entity, body)
         with transaction.atomic():
             txn = BankTransaction.objects.create(
                 entity=entity, created_by=request.user, **fields)
@@ -1631,19 +1887,23 @@ class BankTransactionDetailView(_FinanceBase):
         txn = _transaction_or_404(request, resolve_entity(request), pk)
         return success_response(
             "Bank transaction retrieved.",
-            data=with_approval_request(BankTransactionSerializer(txn).data, txn))
+            data=with_approval_request(
+                BankTransactionSerializer(txn, context={"request": request}).data, txn))
 
     def patch(self, request, pk):
         from ..banking import revise_bank_document
 
         entity = resolve_entity(request)
         txn = _transaction_or_404(request, entity, pk)
-        fields = _transaction_fields(request, entity, request.data or {}, editing=True)
+        body = request.data or {}
+        fields = _transaction_fields(request, entity, body, editing=True)
+        _assert_correction_writable(request, _TRANSACTION, txn, body, fields, _TRANSACTION_BODY)
         txn = revise_bank_document(txn, fields, actor_user=request.user)
         txn = _transaction_or_404(request, entity, pk)
         return success_response(
             f"Bank transaction {txn.document_number} corrected.",
-            data=with_approval_request(BankTransactionSerializer(txn).data, txn),
+            data=with_approval_request(
+                BankTransactionSerializer(txn, context={"request": request}).data, txn),
         )
 
 
@@ -1697,7 +1957,8 @@ class BankTransactionCancelView(_FinanceBase):
                                    actor_user=request.user)
         return success_response(
             f"Bank transaction {txn.document_number} cancelled.",
-            data=BankTransactionSerializer(_transaction_or_404(request, entity, pk)).data,
+            data=BankTransactionSerializer(
+                _transaction_or_404(request, entity, pk), context={"request": request}).data,
         )
 
 
@@ -1724,7 +1985,7 @@ class BankTransactionVoidView(_FinanceBase):
         txn.refresh_from_db()
         return success_response(
             f"Bank transaction {txn.document_number} voided.",
-            data=BankTransactionSerializer(txn).data,
+            data=BankTransactionSerializer(txn, context={"request": request}).data,
         )
 
 
@@ -1733,8 +1994,13 @@ class BankTransactionVoidView(_FinanceBase):
 # Transfers between a branch's own bank accounts                              #
 # --------------------------------------------------------------------------- #
 
-class BankTransferSerializer(_ApprovalStateMixin, serializers.ModelSerializer):
-    """A transfer with both accounts and its branch named."""
+class BankTransferSerializer(FieldAccessMixin, _ApprovalStateMixin,
+                             serializers.ModelSerializer):
+    """A transfer with both accounts and its branch named, under ``finance.banktransfer``."""
+
+    field_resource = _TRANSFER
+    field_access_detail = True
+    field_write_aliases = True
 
     from_account_name = serializers.CharField(source="from_account.name", read_only=True)
     to_account_name = serializers.CharField(source="to_account.name", read_only=True)
@@ -1830,6 +2096,10 @@ class BankTransferListCreateView(_FinanceBase):
             else "finance.banktransfer.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _TRANSFER, {
+            "bank_account": (("from_account", "to_account"), "Sending account and receiving account"),
+            "status": ("status", "Status"), "approval": ("status", "Status"),
+        })
         entity = resolve_entity(request)
         qs = _transfers_in_reach(request, entity)
         if (bank := request.query_params.get("bank_account")) and str(bank).isdigit():
@@ -1845,9 +2115,11 @@ class BankTransferListCreateView(_FinanceBase):
         from ..exceptions import PostingError
 
         entity = resolve_entity(request)
+        body = request.data or {}
+        assert_writable(request, _TRANSFER, submitted(body, *_TRANSFER_BODY), creating=True)
         transfer = BankTransfer(
             entity=entity, created_by=request.user,
-            **_transfer_fields(request, entity, request.data or {}),
+            **_transfer_fields(request, entity, body),
         )
         try:
             validate_bank_transfer(transfer)
@@ -1880,19 +2152,23 @@ class BankTransferDetailView(_FinanceBase):
         transfer = _transfer_or_404(request, resolve_entity(request), pk)
         return success_response(
             "Transfer retrieved.",
-            data=with_approval_request(BankTransferSerializer(transfer).data, transfer))
+            data=with_approval_request(
+                BankTransferSerializer(transfer, context={"request": request}).data, transfer))
 
     def patch(self, request, pk):
         from ..banking import revise_bank_document
 
         entity = resolve_entity(request)
         transfer = _transfer_or_404(request, entity, pk)
-        fields = _transfer_fields(request, entity, request.data or {}, current=transfer)
+        body = request.data or {}
+        fields = _transfer_fields(request, entity, body, current=transfer)
+        _assert_correction_writable(request, _TRANSFER, transfer, body, fields, _TRANSFER_BODY)
         transfer = revise_bank_document(transfer, fields, actor_user=request.user)
         transfer = _transfer_or_404(request, entity, pk)
         return success_response(
             f"Transfer {transfer.document_number} corrected.",
-            data=with_approval_request(BankTransferSerializer(transfer).data, transfer),
+            data=with_approval_request(
+                BankTransferSerializer(transfer, context={"request": request}).data, transfer),
         )
 
 
@@ -1940,7 +2216,8 @@ class BankTransferCancelView(_FinanceBase):
                                         actor_user=request.user)
         return success_response(
             f"Transfer {transfer.document_number} cancelled.",
-            data=BankTransferSerializer(_transfer_or_404(request, entity, pk)).data,
+            data=BankTransferSerializer(
+                _transfer_or_404(request, entity, pk), context={"request": request}).data,
         )
 
 
@@ -1967,5 +2244,5 @@ class BankTransferVoidView(_FinanceBase):
         transfer.refresh_from_db()
         return success_response(
             f"Transfer {transfer.document_number} voided.",
-            data=BankTransferSerializer(transfer).data,
+            data=BankTransferSerializer(transfer, context={"request": request}).data,
         )

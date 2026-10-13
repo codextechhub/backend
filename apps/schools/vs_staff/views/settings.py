@@ -114,7 +114,8 @@ class StaffNumberPolicyView(_SettingsView):
     rule's is. ``source`` is ``branch`` when the branch has a rule of its own,
     ``school`` when the school has set one, and ``default`` when nobody has.
     ``suggestion`` is the number the next person would be given, or "" when
-    the series cannot be continued.
+    the series cannot be continued; it is absent for a caller whose roles do
+    not grant Read on ``school.teachers.staff_number``.
 
     PUT with a branch writes that branch's own rule, all four values; DELETE
     with a branch removes it, so the branch follows the school's again. DELETE
@@ -145,12 +146,18 @@ class StaffNumberPolicyView(_SettingsView):
         return branch
 
     def _body(self, policy, branch):
+        from vs_rbac.field_enforcement import can_read
+
         from ..services.number_policy import suggest_number
 
-        return {
-            **policy.as_dict(),
-            "suggestion": suggest_number(self.tenant, policy=policy, branch=branch),
-        }
+        body = policy.as_dict()
+        # The next number restates the staff numbers already issued, so a
+        # caller who may not read them is not handed it.
+        if can_read(self.request, "school.teachers.staff_number"):
+            body["suggestion"] = suggest_number(
+                self.tenant, policy=policy, branch=branch,
+            )
+        return body
 
     def _assert_may_write(self, branch):
         from vs_rbac.scoping import assert_caller_may_configure

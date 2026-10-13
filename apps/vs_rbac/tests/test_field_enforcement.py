@@ -506,6 +506,156 @@ class RawCurrentValueTests(_Enforcement):
             assert_writable(self._request(), "fenf.vendor", {"phone": ""}, current={})
 
 
+class _VendorAliasKeysSerializer(_VendorSerializer):
+    """A vendor form whose body also carries keys that are not registered names."""
+
+    tel = serializers.CharField(required=False, allow_blank=True)
+    joined = serializers.CharField(required=False, allow_blank=True)
+    account = serializers.CharField(required=False, allow_blank=True)
+    title = serializers.CharField(required=False, allow_blank=True)
+
+
+class _RegisteredAliases(_Enforcement):
+    """``fenf.vendor`` declared with write aliases, as an app would register it.
+
+    ``tel`` follows the phone, which this caller reads and may not write;
+    ``joined`` follows the date opened, read-only after the record exists but
+    open while it is created; ``account`` follows the bank account number,
+    which the caller can neither read nor write; ``title`` follows the name,
+    which the caller may write.
+    """
+
+    ALIASES = (
+        ("account", "bank_account_number"), ("joined", "opened_on"),
+        ("tel", "phone"), ("title", "name"),
+    )
+
+    def setUp(self):
+        super().setUp()
+        declaration = FieldDeclaration(
+            module="fenf", resource="vendor", fields=(), surfaces=(),
+            write_aliases=self.ALIASES,
+        )
+        patcher = mock.patch.dict(
+            "vs_rbac.field_registry._REGISTRY", {("fenf", "vendor"): declaration},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class RegisteredWriteAliasRawTests(_RegisteredAliases):
+    """``assert_writable`` applies the resource's own write aliases without being told."""
+
+    def _refused(self, body, **kwargs):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            assert_writable(self._request(), "fenf.vendor", body, **kwargs)
+        return caught.exception
+
+    def test_an_alias_is_judged_under_the_field_it_follows(self):
+        refusal = self._refused({"tel": "08039999999", "title": "Ade Stationers Ltd"})
+        self.assertEqual(refusal.fields, ["tel"])
+        self.assertEqual(
+            refusal.message, "You do not have permission to change Phone.",
+        )
+
+    def test_an_alias_of_a_writable_field_passes(self):
+        self.assertIsNone(
+            assert_writable(self._request(), "fenf.vendor", {"title": "Ade Stationers Ltd"})
+        )
+
+    def test_a_field_closed_on_both_sides_refuses_its_alias(self):
+        self.assertEqual(self._refused({"account": "0123456789"}).fields, ["account"])
+
+    def test_an_alias_of_a_field_open_on_create_passes_only_while_creating(self):
+        body = {"joined": "2026-09-16"}
+        self.assertIsNone(assert_writable(self._request(), "fenf.vendor", body, creating=True))
+        self.assertEqual(self._refused(body).fields, ["joined"])
+
+    def test_an_unchanged_alias_passes_whatever_the_caller_may_read(self):
+        self.assertIsNone(assert_writable(
+            self._request(), "fenf.vendor", {"account": 4, "tel": "08030000000"},
+            current={"account": 4, "tel": "08030000000"},
+        ))
+        self.assertEqual(
+            self._refused({"account": 5}, current={"account": 4}).fields, ["account"],
+        )
+
+    def test_an_explicit_mapping_wins_over_the_registered_alias(self):
+        self.assertIsNone(assert_writable(
+            self._request(), "fenf.vendor", {"tel": "08039999999"},
+            aliases={"tel": "name"},
+        ))
+        self.assertEqual(
+            self._refused({"title": "Ade"}, aliases={"title": "phone"}).fields, ["title"],
+        )
+
+    def test_a_resource_with_no_aliases_is_judged_as_before(self):
+        with mock.patch.dict("vs_rbac.field_registry._REGISTRY", clear=True):
+            self.assertIsNone(
+                assert_writable(self._request(), "fenf.vendor", {"tel": "08039999999"})
+            )
+
+
+class RegisteredWriteAliasSerializerTests(_RegisteredAliases):
+    """``FieldAccessMixin`` judges a submitted alias as the field it follows."""
+
+    serializer = _VendorAliasKeysSerializer
+
+    def _refusal(self, data, instance=None):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            self.serializer(instance, data=data, context=self._context()).is_valid()
+        self.assertEqual(SAVED, [])
+        return caught.exception
+
+    def test_a_filled_alias_is_refused_on_create(self):
+        self.assertEqual(self._refusal({"tel": "08039999999"}).fields, ["tel"])
+
+    def test_an_empty_alias_is_dropped_on_create(self):
+        serializer = self.serializer(data={"name": "Ade", "tel": ""}, context=self._context())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertNotIn("tel", serializer.validated_data)
+
+    def test_an_alias_of_a_field_open_on_create_is_accepted_while_creating(self):
+        serializer = self.serializer(data={"joined": "2026-09-16"}, context=self._context())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["joined"], "2026-09-16")
+
+    def test_a_changed_alias_is_refused_on_update(self):
+        vendor = self._vendor(tel="08030000000")
+        self.assertEqual(self._refusal({"tel": "08039999999"}, vendor).fields, ["tel"])
+
+    def test_an_unchanged_alias_is_dropped_on_update(self):
+        vendor = self._vendor(tel="08030000000", joined="2026-09-16")
+        serializer = self.serializer(
+            vendor, data={"tel": "08030000000", "joined": "2026-09-16", "name": "Ade"},
+            context=self._context(),
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data, {"name": "Ade"})
+
+    def test_an_unchanged_alias_passes_when_the_caller_cannot_read_its_field(self):
+        vendor = self._vendor(account="0123456789")
+        serializer = self.serializer(
+            vendor, data={"account": "0123456789"}, context=self._context(),
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_an_alias_the_serializer_cannot_echo_is_refused_on_update(self):
+        with self.assertRaises(FieldWriteDenied) as caught:
+            _VendorSerializer(
+                self._vendor(account="0123456789"), data={"account": "0123456789"},
+                context=self._context(),
+            ).is_valid()
+        self.assertEqual(caught.exception.fields, ["account"])
+
+    def test_an_alias_of_a_writable_field_passes(self):
+        serializer = self.serializer(
+            self._vendor(), data={"title": "Ade Stationers Ltd"}, context=self._context(),
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data, {"title": "Ade Stationers Ltd"})
+
+
 class CostTests(_Enforcement):
     """Two hundred rows cost what one row costs: the answer is evaluated once."""
 

@@ -14,7 +14,6 @@ from django.db import transaction
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
-from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
 from vs_config.clock import branch_today
 from vs_config.display import format_date
@@ -249,8 +248,8 @@ def cancel_rfq(rfq, *, reason="", actor_user=None):
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_CANCELLED,
         actor_user=actor_user, target=rfq,
-        message=f"Cancelled RFQ {rfq.document_number}."
-                + (f" Reason: {reason}" if reason else ""),
+        message=f"Cancelled RFQ {rfq.document_number}.",
+        reason=reason or "",
         **({"released_requisition_lines": released} if released else {}),
     )
     return rfq
@@ -279,8 +278,8 @@ def close_rfq(rfq, *, reason="", actor_user=None):
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_CLOSED,
         actor_user=actor_user, target=rfq,
-        message=f"Closed RFQ {rfq.document_number} without award."
-                + (f" Reason: {reason}" if reason else ""),
+        message=f"Closed RFQ {rfq.document_number} without award.",
+        reason=reason or "",
         **({"released_requisition_lines": released} if released else {}),
     )
     return rfq
@@ -361,8 +360,7 @@ def submit_quotation(quotation, *, actor_user=None):
     record(
         entity=quotation.entity, action=FinanceAuditAction.QUOTATION_SUBMITTED,
         actor_user=actor_user, target=quotation,
-        message=f"Quotation {quotation.document_number} from {vendor.code} "
-                f"submitted ({format_naira(quotation.total)}).",
+        message=f"Quotation {quotation.document_number} from {vendor.code} submitted.",
         rfq_id=quotation.rfq_id, total=quotation.total,
     )
     # Preserve mutation/identity for direct service callers while all decisions use
@@ -621,7 +619,7 @@ def award_quotation(
         actor_user=actor_user, target=quotation,
         message=(
             f"Awarded quotation {quotation.document_number} from {vendor.code} to "
-            f"{counted(len(purchase_orders), 'purchase order')} ({format_naira(sum(p.total for p in purchase_orders))})."
+            f"{counted(len(purchase_orders), 'purchase order')}."
         ),
         rfq_id=rfq.pk, purchase_order_id=po.pk,
         purchase_order_ids=[row.pk for row in purchase_orders],

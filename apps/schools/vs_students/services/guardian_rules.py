@@ -159,11 +159,47 @@ class GuardianRules:
             {"value": Relationship.OTHER.value, "label": Relationship.OTHER.label},
         ]
 
-    def as_dict(self) -> dict:
-        """The body of ``GET /v1/students/guardian-rules/``."""
+    def binding(self, request) -> "GuardianRules":
+        """These rules as they bind *request*'s caller.
+
+        A guardian email the school requires does not bind a caller who cannot
+        read and write ``school.guardians.email``: the guardian is added
+        without it and somebody with Write completes it later. Every other
+        rule is unchanged, and so are these for ``request=None``.
+        """
+        from dataclasses import replace
+
+        from vs_rbac.field_enforcement import can_supply
+
+        if self.email_required and not can_supply(
+            request, "school.guardians", "email", creating=True,
+        ):
+            return replace(self, email_required=False)
+        return self
+
+    def email_required_after(self, request, submitted: bool) -> bool:
+        """Whether a guardian email is required after *request*'s caller saves *submitted*.
+
+        The requirement is about the guardian's email address, so a caller who
+        cannot read it can neither tighten nor relax it: their save leaves the
+        stored rule as it stands.
+        """
+        from vs_rbac.field_enforcement import can_read
+
+        if can_read(request, "school.guardians.email"):
+            return submitted
+        return self.email_required
+
+    def as_dict(self, request=None) -> dict:
+        """The body of ``GET /v1/students/guardian-rules/``.
+
+        With a *request*, ``binding_email_required`` says whether the school's
+        email rule binds that caller (see :meth:`binding`).
+        """
         return {
             "min_per_student": self.min_per_student,
             "email_required": self.email_required,
+            "binding_email_required": self.binding(request).email_required,
             "matching": self.matching,
             "matching_options": [
                 {"value": value, "label": label}

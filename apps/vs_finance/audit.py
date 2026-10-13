@@ -19,11 +19,106 @@ from django.db import transaction
 from .constants import FinanceAuditStatus
 
 
+#: The metadata keys of a mirrored entry that name no value: the finance action,
+#: the error code of a refusal and the proxy attribution. Every other key a
+#: caller passes stays in the finance trail and goes no further.
+MIRROR_METADATA_KEYS = frozenset({
+    "finance_action", "error_code", "impersonation_session_id", "effective_user_id",
+})
+
+#: Metadata key marking a mirrored entry written without values.
+MIRROR_MARKER = "recorded_without_values"
+
+#: Metadata key every finance entry carries from the moment its sentence was
+#: made figure-free. See :func:`entry_sentence` for how it divides the trail.
+ENTRY_MARKER = "sentence_without_values"
+
+
+def _action_words(action) -> str:
+    """The plain-words name of a finance action, whether or not it is a known one."""
+    from .constants import FinanceAuditAction
+
+    try:
+        return FinanceAuditAction(str(action)).label
+    except ValueError:
+        return str(action).replace("_", " ").capitalize()
+
+
+def mirror_summary(action, document_number="") -> str:
+    """The one sentence the central trail keeps about a finance entry.
+
+    It names the act and the document ("Invoice posted: INV-0042") and nothing
+    the entry's own sentence or metadata says: no amount, no third party, no
+    address, no narration, no reason. Who acted, in which branch and when are
+    the central event's own columns.
+    """
+    words = _action_words(action)
+    return f"{words}: {document_number}" if document_number else words
+
+
+def _legacy_summary(event) -> str:
+    """:func:`mirror_summary` for a central event written before the mirror was value-free."""
+    metadata = event.metadata if isinstance(event.metadata, dict) else {}
+    return mirror_summary(metadata.get("finance_action", ""), event.entity_label or "")
+
+
+def _legacy_summary_sql():
+    """:func:`_legacy_summary` as a database expression, for a search or an export."""
+    from django.db.models import Case, F, Q, TextField, Value, When
+    from django.db.models.functions import Concat
+
+    from .constants import FinanceAuditAction
+
+    words = Case(
+        *(
+            When(Q(metadata__finance_action=value), then=Value(label))
+            for value, label in FinanceAuditAction.choices
+        ),
+        default=Value("Finance entry"),
+        output_field=TextField(),
+    )
+    return Case(
+        When(entity_label="", then=words),
+        default=Concat(words, Value(": "), F("entity_label")),
+        output_field=TextField(),
+    )
+
+
+def register_mirror_rule():
+    """Keep every finance entry in the central trail free of values, old ones included.
+
+    The mirror writes only :func:`mirror_summary` and :data:`MIRROR_METADATA_KEYS`.
+    Entries mirrored before that rule carry the finance sentence and every
+    metadata argument, so the central trail rebuilds their sentence and cuts
+    their metadata to the same keys when it reads them
+    (:class:`vs_audit.protected_words.RecordOnly`). The stored rows are not
+    rewritten.
+    """
+    from vs_audit.models import AuditActionType, AuditModuleKey
+    from vs_audit.protected_words import RecordOnly, register_record_only
+
+    register_record_only("finance.mirror", RecordOnly(
+        module_key=AuditModuleKey.FINANCE,
+        entity_prefix="vs_finance",
+        action_types=frozenset({AuditActionType.FINANCIAL_TRANSACTION}),
+        required_keys=frozenset({"finance_action"}),
+        metadata_allow=MIRROR_METADATA_KEYS | {MIRROR_MARKER},
+        marker=MIRROR_MARKER,
+        summary_for=_legacy_summary,
+        summary_sql=_legacy_summary_sql,
+    ))
+
+
 # Support the mirror to central workflow.
 def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
-                       document_number, status, message, metadata, branch_id=None):
+                       document_number, status, metadata, branch_id=None):
     """Best-effort copy into central vs_audit. Never raises - the in-app log is truth.
 
+    The copy records who did what to which document, in which branch and when,
+    and carries no value. Its sentence is built from the action and the document
+    number alone (:func:`mirror_summary`) and its metadata is cut to
+    :data:`MIRROR_METADATA_KEYS`, so a figure, a name, an address or a reason a
+    caller adds to the finance entry later cannot travel into the central trail.
     The copy carries the entry's branch, so the platform trail narrows a
     branch-bound reader exactly as the finance trail does.
     """
@@ -31,6 +126,7 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
         from vs_audit.services import emit_audit_event
         from vs_audit.models import AuditModuleKey, AuditActionType
 
+        kept = {k: v for k, v in (metadata or {}).items() if k in MIRROR_METADATA_KEYS}
         emit_audit_event(  # Mirror the finance event into the platform audit log.
             module_key=AuditModuleKey.FINANCE,
             action_type=AuditActionType.FINANCIAL_TRANSACTION,
@@ -45,8 +141,8 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
             tenant=getattr(entity, "tenant", None),
             status="SUCCESS" if status == FinanceAuditStatus.SUCCESS else "FAILED",
             severity="INFO" if status == FinanceAuditStatus.SUCCESS else "WARNING",
-            summary=message or f"Finance: {action}",
-            metadata={"finance_action": str(action), **(metadata or {})},
+            summary=mirror_summary(action, document_number or str(target_id or "")),
+            metadata={"finance_action": str(action), **kept, MIRROR_MARKER: True},
             branch=branch_id,
         )
     except Exception:  # pragma: no cover - mirror is best-effort
@@ -95,6 +191,18 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
            **metadata):
     """Write an authoritative :class:`FinanceAuditLog` row (and mirror to vs_audit).
 
+    ``message`` is the entry's sentence and says what happened to which document and
+    where, in words a reader of any role may read: a document number, a person, a
+    customer, a vendor, a branch or a bank account is a label and may appear; an
+    amount, a balance, an address, a narration or a free-text reason is a value
+    and never does. Values travel as ``before``/``after`` (read through the
+    reader's Field Access, see ``AUDIT_SNAPSHOT_FIELDS``) or as metadata. Metadata
+    is never served whole; the one key a screen reads from it is ``reason``, the
+    free-text reason a person gave, which :func:`entry_reason` serves beside the
+    sentence. Every entry is stamped with :data:`ENTRY_MARKER`, which is how
+    :func:`entry_sentence` tells it from an entry written before sentences were
+    figure-free.
+
     Call this **inside** the same transaction as a successful action so the audit row
     shares its commit. For a *rejected* action - which rolls its transaction back -
     call it from outside that rolled-back atomic (see ``_record_rejection`` in
@@ -121,7 +229,8 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
 
     actor_user, effective_user, proxy_session = resolve_audit_identity(actor_user)
-    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
+    metadata = {**add_proxy_audit_metadata(metadata, effective_user, proxy_session),
+                ENTRY_MARKER: True}
 
     if target is not None:  # Allow callers to pass a model instance instead of manual identifiers.
         target_type = target_type or type(target).__name__  # Derive the target type from the instance.
@@ -149,9 +258,93 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
             action=action, actor_user=actor_user, entity=entity,
             target_type=target_type, target_id=target_id,
             document_number=document_number, status=status,
-            message=message, metadata=metadata, branch_id=log.branch_id,
+            metadata=metadata, branch_id=log.branch_id,
         )
     return log  # Return the authoritative finance audit row.
+
+
+def refusal_words(error_code) -> str:
+    """A refusal's sentence, made from its error code alone.
+
+    The refusal's own text can name an amount or a balance ("holds N, more than
+    a float of N"), so the sentence says only which rule refused; the text itself
+    stays in the entry's metadata.
+    """
+    words = str(error_code or "").replace("_", " ").strip().lower()
+    return f"Refused: {words}." if words else "Refused."
+
+
+def entry_sentence(log) -> str:
+    """The sentence a screen shows for *log*, whatever era the entry was written in.
+
+    An entry written now carries :data:`ENTRY_MARKER` in its metadata and its
+    stored ``message`` is figure-free by construction: it names the act, the
+    document, the people, the branches and the accounts, and no amount,
+    narration, address or reason, which travel in ``before``/``after`` (filtered
+    by Field Access) or in the metadata.
+
+    An entry without the marker predates that rule, and its stored sentence may
+    carry any of those values. The trail is append-only, so the row is never
+    rewritten; every screen shows the sentence the central mirror keeps for the
+    same act instead, built from the action's plain-words name and the document
+    number alone (:func:`mirror_summary`: "Invoice posted: INV-0042"). Presence
+    of the marker, not the shape of ``before``/``after``, is the cut-off: it is
+    set in one place (:func:`record`), by every writer, in the same row as the
+    sentence it vouches for, so no entry is ever judged by a guess.
+
+    Every feed that serves an entry's sentence (the finance trail and its
+    detail, the settings history, and the procurement document activity feeds)
+    passes the row through here.
+    """
+    metadata = log.metadata if isinstance(log.metadata, dict) else {}
+    if ENTRY_MARKER in metadata:
+        return log.message
+    return mirror_summary(log.action, log.document_number)
+
+
+#: Actions whose free-text ``reason`` belongs to a registered pay field, and the
+#: Field Access keys of which a reader needs at least one to read it. A change
+#: to someone's pay terms is explained in words about their pay, so the reason
+#: follows the pay switches.
+_PAY_KEYS = ("finance.salary.gross_amount", "finance.salary.paye_amount",
+             "finance.salary.pension_amount")
+GUARDED_METADATA_REASONS = {"SALARY_CHANGED": _PAY_KEYS}
+
+#: Actions whose reason is a registered field of the entry's own ``before`` or
+#: ``after`` snapshot: action -> (snapshot name, key in the snapshot). The
+#: snapshot the reader is given has already been through Field Access, so the
+#: reason is read from it and is absent whenever the field is hidden.
+SNAPSHOT_REASONS = {"INTER_BRANCH_DECLINED": ("after", "decline_reason")}
+
+
+def entry_reason(log, *, can_read=None, snapshots=None) -> str:
+    """The free-text reason a person gave for the act *log* records, or "".
+
+    Reasons for cancelling an order, closing a request for quotation,
+    terminating a contract, ignoring a statement line and the like are kept in
+    the entry's metadata and never in its sentence, so a screen shows them as a
+    value of their own beside the sentence. A reason no Field Access field
+    guards is shown to every reader of the entry.
+
+    A reason that belongs to a registered field follows that field. A pay terms
+    change needs a readable pay switch (:data:`GUARDED_METADATA_REASONS`); a
+    declined inter-branch request is read from the reader's own filtered
+    ``after`` (:data:`SNAPSHOT_REASONS`, passed as ``snapshots``). ``can_read``
+    answers Field Access for one key; a feed with no reader passes neither
+    argument, and a guarded reason then reads as empty.
+    """
+    metadata = log.metadata if isinstance(log.metadata, dict) else {}
+    action = str(log.action)
+    if action in SNAPSHOT_REASONS:
+        name, key = SNAPSHOT_REASONS[action]
+        value = (snapshots or {}).get(name)
+        text = value.get(key) if isinstance(value, dict) else ""
+        return text if isinstance(text, str) else ""
+    keys = GUARDED_METADATA_REASONS.get(action)
+    if keys is not None and not (can_read is not None and any(can_read(k) for k in keys)):
+        return ""
+    text = metadata.get("reason")
+    return text.strip() if isinstance(text, str) else ""
 
 
 # Handle the record rejection workflow.
@@ -166,6 +359,7 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
     caller is about to re-raise.
     """
     error_code = getattr(exc, "error_code", type(exc).__name__)  # Preserve a stable error code when possible.
+    detail = str(exc)[:255]
     try:  # Rejection logging must not mask the original exception.
         with transaction.atomic():
             record(  # Persist the failed finance action.
@@ -173,8 +367,9 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
                 target=target, target_type=target_type, target_id=target_id,
                 document_number=document_number, branch=branch,
                 status=FinanceAuditStatus.FAILED,
-                message=str(exc)[:255],
+                message=refusal_words(error_code),
                 error_code=error_code,
+                refusal=detail,
                 **metadata,
             )
     except Exception:  # pragma: no cover - never mask the real error
@@ -192,6 +387,23 @@ def prime_activity_actors(rows):
     for row in rows:
         row._person_exit_states = states
     return rows
+
+
+def activity_entry(log) -> dict:
+    """One row of a document's activity feed, built from a finance audit row.
+
+    ``message`` is the entry's sentence (:func:`entry_sentence`), ``reason`` the
+    free-text reason behind the act when there is one (:func:`entry_reason`),
+    and the actor keys are :func:`activity_actor`'s. The raw metadata is never
+    served. Callers select ``actor`` and ``effective_user`` with the rows and
+    prime them with :func:`prime_activity_actors`.
+    """
+    return {
+        "id": log.id, "action": log.action, "message": entry_sentence(log),
+        "reason": entry_reason(log), "status": log.status,
+        **activity_actor(log),
+        "created_at": log.created_at,
+    }
 
 
 def activity_actor(log) -> dict:

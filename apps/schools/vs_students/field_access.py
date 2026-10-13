@@ -109,15 +109,54 @@ _TENANT = "TENANT"
 STATUS_REASON_FIELD = "school.students.status_reason"
 
 
-def register_audit_words():
-    """Hold the reason a status or stage move carries to the reason's switch.
+#: The keys of a student's audit snapshot that repeat each registered field.
+#: A record edit stores the profile as its editor could read it (``before_data``)
+#: and each changed key as ``{"from", "to"}`` (``diff_data``), so a field is
+#: copied under every name the profile gives it: the one-line name is built
+#: from all three name parts and the age from the date of birth, so each of
+#: those keys follows every field it is made from. The suspension block holds
+#: the status reason under a nested key.
+STUDENT_SNAPSHOT_KEYS: dict[str, tuple[str, ...]] = {
+    "first_name": ("first_name", "full_name"),
+    "middle_name": ("middle_name", "full_name"),
+    "last_name": ("last_name", "full_name"),
+    "date_of_birth": ("date_of_birth", "age"),
+    "gender": ("gender",),
+    "nationality": ("nationality",),
+    "state_of_origin": ("state_of_origin",),
+    "photo": ("photo_url",),
+    "address": ("address",),
+    "phone": ("phone",),
+    "email": ("email",),
+    "emergency_contact_name": ("emergency_contact_name",),
+    "emergency_contact_phone": ("emergency_contact_phone",),
+    "previous_school": ("previous_school",),
+    "student_number": ("student_number",),
+    "blood_group": ("blood_group",),
+    "allergies": ("allergies",),
+    "conditions": ("conditions",),
+    "enrolment_date": ("enrolment_date",),
+    "status_reason": ("suspension.reason",),
+}
 
-    Both moves are audited on the pupil (``entity_type="Student"``) with the
-    reason in ``metadata["reason"]``, and older rows of both end their summary
-    in ``" Reason: ..."``. A status move is told apart by its action; a stage
-    move is audited as a plain ``UPDATE`` and told apart from a record edit by
-    the metadata only it writes. Every audit surface and the record history
-    tab read the words through :mod:`vs_audit.protected_words`.
+
+def register_audit_words():
+    """Hold what a student's audit rows repeat to the switches that govern it.
+
+    Both status and stage moves are audited on the pupil
+    (``entity_type="Student"``) with the reason in ``metadata["reason"]``, and
+    older rows of both end their summary in ``" Reason: ..."``. A status move
+    is told apart by its action; a stage move is audited as a plain ``UPDATE``
+    and told apart from a record edit by the metadata only it writes. Every
+    audit surface and the record history tab read the words through
+    :mod:`vs_audit.protected_words`.
+
+    A record edit repeats the profile itself in ``before_data`` and
+    ``diff_data``, so each registered field of ``school.students`` has a
+    snapshot rule (:data:`STUDENT_SNAPSHOT_KEYS`) and a reader sees a field's
+    old and new values in the trail only where they may read the field. The
+    pupil's name as the row's label and in its summary is the row's identity
+    and stays.
     """
     from vs_audit.protected_words import ProtectedWords, register_protected_words
 
@@ -133,6 +172,13 @@ def register_audit_words():
             field_key=STATUS_REASON_FIELD, entity_type="Student",
             action_types=frozenset(actions), metadata_keys=keys,
             metadata_key="reason", summary_marker=SUMMARY_REASON_MARKER,
+        ))
+
+    for name, keys in STUDENT_SNAPSHOT_KEYS.items():
+        register_protected_words(f"school.students.snapshot.{name}", ProtectedWords(
+            field_key=f"school.students.{name}", entity_type="Student",
+            action_types=frozenset({"CREATE", "UPDATE"}),
+            snapshot_keys=frozenset(keys),
         ))
 
 

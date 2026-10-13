@@ -445,7 +445,15 @@ def approvals_waiting_on(entity, user) -> dict | None:
 
 
 def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[dict]:
-    """Things someone should act on, most urgent first; each only for its key holders."""
+    """Things someone should act on, most urgent first; each only for its key holders.
+
+    An item restates a card of another list, and is shown only to a reader whose
+    Field Access lets them read that card (:meth:`DashboardReader.shows`): the
+    bank-lines item needs the bank balances (``banks`` is ``None`` when the
+    reader may not read them), the tax item needs Tax owed, the payment-plans
+    item Payment plans, the unapplied-receipts item Credit held for payers, and
+    the low-float item Petty cash floats.
+    """
     from .models import Payment, PaymentPlanInstallment, PettyCashFund, TaxFiling
 
     items = []
@@ -472,7 +480,7 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": n, "amount": _m(sum(b["unmatched_amount"]["kobo"] for b in banks)),
             })
 
-    if reader.whole_tenant and reader.can("finance.tax.view"):
+    if reader.whole_tenant and reader.can("finance.tax.view") and reader.shows("tax_owed"):
         due = (
             TaxFiling.objects.filter(
                 entity=entity, due_date__isnull=False,
@@ -496,7 +504,7 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": len(filings), "amount": _m(first.amount_due - first.amount_paid),
             })
 
-    if reader.can("finance.paymentplan.view"):
+    if reader.can("finance.paymentplan.view") and reader.shows("payment_plans"):
         behind = scope.filter(
             PaymentPlanInstallment.objects.filter(
                 plan__entity=entity, plan__plan_status="ACTIVE", due_date__lt=as_of,
@@ -512,7 +520,7 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": agg["plans"], "amount": _m(agg["owed"]),
             })
 
-    if reader.can("finance.payment.view"):
+    if reader.can("finance.payment.view") and reader.shows("credit_held"):
         agg = scope.filter(Payment.objects.filter(
             entity=entity, status=DocumentStatus.POSTED,
         )).filter(amount__gt=F("allocated_amount")).aggregate(
@@ -526,7 +534,7 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": agg["n"], "amount": _m(agg["amount"]),
             })
 
-    if reader.can("finance.pettycash.view"):
+    if reader.can("finance.pettycash.view") and reader.shows("petty_cash"):
         from .banking_settings import resolve_finance_banking_settings
 
         threshold = resolve_finance_banking_settings(entity).petty_cash_low_balance_threshold_bps
@@ -547,12 +555,17 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
 
 
 def upcoming(entity, as_of, reader) -> list[dict]:
-    """Money due in or out over the next 30 days, soonest first."""
+    """Money due in or out over the next 30 days, soonest first.
+
+    Each kind of item restates a card, and is listed only for a reader whose Field
+    Access lets them read it: payroll needs the Payroll run card, instalments
+    Payment plans, vendor bills Vendor bills falling due, and tax the Tax calendar.
+    """
     from .models import PaymentPlanInstallment, PayrollRun, TaxFiling
 
     end = as_of + datetime.timedelta(days=UPCOMING_DAYS)
     out = []
-    if reader.whole_tenant and reader.can("finance.payrollrun.view"):
+    if reader.whole_tenant and reader.can("finance.payrollrun.view") and reader.shows("payroll"):
         for run in PayrollRun.objects.filter(
             entity=entity, pay_date__gte=as_of, pay_date__lte=end,
             run_status__in=["DRAFT", "POSTED"],
@@ -563,7 +576,7 @@ def upcoming(entity, as_of, reader) -> list[dict]:
                 "detail": f"{run.heads} staff · {'draft' if run.run_status == 'DRAFT' else 'accrued, not paid'}",
                 "amount": _m(run.net_total or run.gross_total),
             })
-    if reader.can("finance.paymentplan.view"):
+    if reader.can("finance.paymentplan.view") and reader.shows("payment_plans"):
         rows = reader.scope.filter(
             PaymentPlanInstallment.objects.filter(
                 plan__entity=entity, plan__plan_status="ACTIVE",
@@ -579,7 +592,7 @@ def upcoming(entity, as_of, reader) -> list[dict]:
                 "detail": f"{r['plans']} plan{'s' if r['plans'] != 1 else ''} due",
                 "amount": _m(r["amount"]),
             })
-    if reader.can("procurement.vendor_invoice.view"):
+    if reader.can("procurement.vendor_invoice.view") and reader.shows("payables_due"):
         try:
             from vs_procurement.models import VendorInvoice
 
@@ -599,7 +612,7 @@ def upcoming(entity, as_of, reader) -> list[dict]:
                 })
         except Exception:  # pragma: no cover - procurement optional
             pass
-    if reader.whole_tenant and reader.can("finance.tax.view"):
+    if reader.whole_tenant and reader.can("finance.tax.view") and reader.shows("tax_calendar"):
         for f in TaxFiling.objects.filter(
             entity=entity, due_date__gte=as_of, due_date__lte=end,
         ).exclude(filing_status__in=["PAID", "CANCELLED"]).filter(

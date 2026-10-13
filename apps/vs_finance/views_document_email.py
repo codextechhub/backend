@@ -32,7 +32,8 @@ from .document_email import preview as build_preview
 from .document_email import retry as retry_delivery
 from .document_email import send_invoice, send_receipt, send_statement
 from .models import FinanceDocumentDelivery, Invoice, Payment
-from .serializers import FinanceDocumentDeliverySerializer
+from .field_guards import readable
+from .serializers import DocumentEmailPreviewSerializer, FinanceDocumentDeliverySerializer
 from .views import resolve_entity
 from .views_ops.base import _FinanceBase
 
@@ -53,6 +54,17 @@ def _date(raw, field):
         return datetime.date.fromisoformat(str(raw))
     except ValueError:
         raise ValidationError({field: "Use an ISO date (YYYY-MM-DD)."})
+
+
+def _sent_to(request, delivery) -> str:
+    """Where a send went: the addresses it used, or "the customer's billing email" when the caller may not read them."""
+    if readable(request, "finance.customer", "billing_email"):
+        return ", ".join(delivery.recipients)
+    return "the customer's billing email"
+
+
+def _delivery_data(request, delivery) -> dict:
+    return FinanceDocumentDeliverySerializer(delivery, context={"request": request}).data
 
 
 def _note(request) -> str:
@@ -84,10 +96,11 @@ class _DocumentEmailBase(_FinanceBase):
             customer=customer, document_type=self.document_type, entity=entity,
             document_number=getattr(subject, "document_number", ""),
         )
-        data["deliveries"] = FinanceDocumentDeliverySerializer(
-            self.deliveries(entity, subject), many=True,
-        ).data
-        return success_response("Email preview retrieved.", data=data)
+        data["deliveries"] = self.deliveries(entity, subject)
+        return success_response(
+            "Email preview retrieved.",
+            data=DocumentEmailPreviewSerializer(data, context={"request": request}).data,
+        )
 
 
 class InvoiceEmailView(_DocumentEmailBase):
@@ -112,8 +125,8 @@ class InvoiceEmailView(_DocumentEmailBase):
         _entity, invoice, _customer = self.resolve(request, pk)
         delivery = send_invoice(invoice, actor_user=request.user, note=_note(request))
         return success_response(
-            f"Invoice {invoice.document_number} sent to {', '.join(delivery.recipients)}.",
-            data=FinanceDocumentDeliverySerializer(delivery).data,
+            f"Invoice {invoice.document_number} sent to {_sent_to(request, delivery)}.",
+            data=_delivery_data(request, delivery),
         )
 
 
@@ -139,8 +152,8 @@ class PaymentEmailView(_DocumentEmailBase):
         _entity, payment, _customer = self.resolve(request, pk)
         delivery = send_receipt(payment, actor_user=request.user, note=_note(request))
         return success_response(
-            f"Receipt {payment.document_number} sent to {', '.join(delivery.recipients)}.",
-            data=FinanceDocumentDeliverySerializer(delivery).data,
+            f"Receipt {payment.document_number} sent to {_sent_to(request, delivery)}.",
+            data=_delivery_data(request, delivery),
         )
 
 
@@ -181,8 +194,8 @@ class CustomerStatementEmailView(_DocumentEmailBase):
             note=_note(request),
         )
         return success_response(
-            f"Statement for {customer.name} sent to {', '.join(delivery.recipients)}.",
-            data=FinanceDocumentDeliverySerializer(delivery).data,
+            f"Statement for {customer.name} sent to {_sent_to(request, delivery)}.",
+            data=_delivery_data(request, delivery),
         )
 
 
@@ -223,6 +236,6 @@ class FinanceDeliveryRetryView(_FinanceBase):
 
         new_delivery = retry_delivery(delivery, actor_user=request.user, note=_note(request) or None)
         return success_response(
-            f"Retrying delivery to {', '.join(new_delivery.recipients)}.",
-            data=FinanceDocumentDeliverySerializer(new_delivery).data,
+            f"Retrying delivery to {_sent_to(request, new_delivery)}.",
+            data=_delivery_data(request, new_delivery),
         )

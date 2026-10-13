@@ -151,6 +151,25 @@ def document_snapshot(handler, document, document_type: str, *, fallback_summary
     return summary, details
 
 
+def current_document_snapshot(instance, handler):
+    """``(summary, details)`` of ``instance``'s document as it now stands, or None.
+
+    None when the document can no longer be loaded: the snapshot already held is
+    then the best there is.
+    """
+    model = instance.document_content_type.model_class()
+    document = (
+        model._base_manager.filter(pk=instance.document_object_id).first()
+        if model is not None else None
+    )
+    if document is None:
+        return None
+    return document_snapshot(
+        handler, document, instance.document_type,
+        fallback_summary=instance.document_summary,
+    )
+
+
 def refresh_document_snapshot(instance, handler) -> None:
     """Rebuild ``instance``'s summary and details from its document as it now stands.
 
@@ -162,17 +181,10 @@ def refresh_document_snapshot(instance, handler) -> None:
     approver reads 40. A document that can no longer be loaded keeps its old
     snapshot.
     """
-    model = instance.document_content_type.model_class()
-    document = (
-        model._base_manager.filter(pk=instance.document_object_id).first()
-        if model is not None else None
-    )
-    if document is None:
+    snapshot = current_document_snapshot(instance, handler)
+    if snapshot is None:
         return
-    instance.document_summary, instance.document_details = document_snapshot(
-        handler, document, instance.document_type,
-        fallback_summary=instance.document_summary,
-    )
+    instance.document_summary, instance.document_details = snapshot
     instance.save(update_fields=["document_summary", "document_details", "updated_at"])
 
 

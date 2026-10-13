@@ -69,7 +69,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
     ).get(id=import_batch_id)
 
     try:
-        result = validate_import_batch(import_batch)
+        result = validate_import_batch(import_batch, actor=import_batch.uploaded_by)
 
         create_import_audit_log(
             tenant=import_batch.tenant,

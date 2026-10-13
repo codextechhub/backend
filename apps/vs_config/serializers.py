@@ -7,6 +7,7 @@ from rest_framework import serializers
 
 from . import labels
 from .constants import VALID_SCOPES
+from .entitlement_access import window_readable
 from .models import (
     Capability,
     CapabilityDepthGrant,
@@ -335,6 +336,22 @@ class CapabilityEntitlementSerializer(serializers.ModelSerializer):
     def get_source_label(self, obj):
         return labels.ENTITLEMENT_SOURCE_LABELS.get(obj.source, "Recorded grant")
 
+    def to_representation(self, instance):
+        """The grant, without the subscription dates its caller may not read.
+
+        The window of a grant a school's plan wrote is the school's
+        subscription window (:mod:`vs_config.entitlement_access`).
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None:
+            starts_ok, ends_ok = window_readable(request, instance.source)
+            if not starts_ok:
+                data.pop("starts_at", None)
+            if not ends_ok:
+                data.pop("ends_at", None)
+        return data
+
 
 class SetEntitlementSerializer(serializers.Serializer):
     # Scope is resolved from request.tenant, never from the payload.
@@ -527,6 +544,11 @@ class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
     saved views, filters and exports are keyed on them. ``action_label``,
     ``target_type_label`` and ``field_labels`` (one entry per key in either
     snapshot) are what a person reads.
+
+    The snapshots are filtered through the reader's Field Access
+    (:mod:`vs_config.audit_access`): the request in the context is the reader,
+    and a render with none keeps them whole. The ``field_labels`` follow the
+    keys that remain.
     """
 
     actor = ActorSerializer(read_only=True)
@@ -551,9 +573,33 @@ class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
     def get_target_type_label(self, obj):
         return labels.audit_target_type_label(obj.target_type)
 
+    def _snapshots(self, obj):
+        """``(before_data, after_data)`` as this reader may see them, worked out once per event."""
+        from .audit_access import setting_keys, visible_snapshots
+
+        request = self.context.get("request")
+        if request is None:
+            return obj.before_data, obj.after_data
+        cache = self.context.setdefault("_visible_snapshots", {})
+        if obj.pk not in cache:
+            from vs_rbac.field_enforcement import can_read
+
+            keys = self.context.get("_setting_keys")
+            if keys is None:
+                keys = self.context["_setting_keys"] = setting_keys([obj])
+            cache[obj.pk] = visible_snapshots(
+                obj, lambda field_key: can_read(request, field_key), keys,
+            )
+        return cache[obj.pk]
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        data["before_data"], data["after_data"] = self._snapshots(obj)
+        return data
+
     def get_field_labels(self, obj):
         keys = set()
-        for snapshot in (obj.before_data, obj.after_data):
+        for snapshot in self._snapshots(obj):
             if isinstance(snapshot, dict):
                 keys.update(snapshot)
         return {key: labels.audit_field_label(key) for key in sorted(keys)}

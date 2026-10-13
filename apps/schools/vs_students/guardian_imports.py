@@ -22,11 +22,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 
+from vs_import_data.field_writes import (
+    import_request,
+    write_refusal,
+    write_refusal_issue,
+)
+from vs_rbac.field_enforcement import FieldWriteDenied
+
 from .constants import Relationship
 from .imports import (
     RowIssue,
     _as_date,
     _digits,
+    _names_set,
     _text,
     guardian_name_of,
     read_guardian_name,
@@ -57,6 +65,19 @@ MAX_LENGTHS = {
     "guardian_full_name": 150,
     "guardian_phone": 32,
     "occupation": 100,
+}
+
+#: The registered ``school.guardians`` field each column of a household list
+#: writes. The student columns only identify a child and write nothing.
+GUARDIAN_WRITES: dict[str, tuple[str, ...]] = {
+    "guardian_first_name": ("first_name",),
+    "guardian_middle_name": ("middle_name",),
+    "guardian_last_name": ("last_name",),
+    "guardian_full_name": ("first_name", "middle_name", "last_name"),
+    "guardian_phone": ("phone",),
+    "guardian_email": ("email",),
+    "occupation": ("occupation",),
+    "address": ("address",),
 }
 
 _YES = frozenset({"yes", "y", "true", "1", "primary"})
@@ -120,18 +141,27 @@ class ResolvedLink:
         return self.guardian_email.casefold() or _digits(self.guardian_phone)
 
 
-def resolve_row(payload: dict, *, tenant, guardian_rules=None):
+def link_write_refusal(request, payload: dict):
+    """The refusal an uploaded household row meets from a caller without Write on its fields."""
+    return write_refusal(
+        request, payload, (("school.guardians", GUARDIAN_WRITES, ""),), names_set=_names_set,
+    )
+
+
+def resolve_row(payload: dict, *, tenant, guardian_rules=None, request=None):
     """Read one uploaded link. Everything a row can be wrong about alone.
 
     *guardian_rules* is the school's ``GuardianRules``, read when not given;
-    ``resolve_file`` reads it once for the whole file.
+    ``resolve_file`` reads it once for the whole file. *request* is the
+    stand-in for whoever runs the import: the school's guardian email rule
+    binds only a caller able to supply an email, as on the enrol form.
     """
     from django.core.exceptions import ValidationError as DjangoValidationError
     from django.core.validators import validate_email
 
     from .services.guardian_rules import read_guardian_rules
 
-    guardian_rules = guardian_rules or read_guardian_rules(tenant)
+    guardian_rules = (guardian_rules or read_guardian_rules(tenant)).binding(request)
     row = ResolvedLink(email_only=guardian_rules.email_only)
     read_guardian_name(row, payload, missing="A guardian's name is required on every row.")
     row.guardian_phone = _text(payload, "guardian_phone")
@@ -314,7 +344,7 @@ class ResolvedGuardianFile:
         self.issues.append((row_number, issue))
 
 
-def resolve_file(payloads, *, tenant):
+def resolve_file(payloads, *, tenant, request=None):
     """Every row, then what only the whole file shows.
 
     A row whose guardian nothing identifies (no email, at a school matching
@@ -323,7 +353,7 @@ def resolve_file(payloads, *, tenant):
     """
     from .services.guardian_rules import read_guardian_rules
 
-    guardian_rules = read_guardian_rules(tenant)
+    guardian_rules = read_guardian_rules(tenant).binding(request)
     out = ResolvedGuardianFile()
     #: student pk -> the row that makes somebody their primary contact.
     primaries: dict[int, int] = {}
@@ -483,15 +513,19 @@ def _check_students_left_without_a_primary(out, *, tenant):
         ))
 
 
-def build_links(resolved, *, tenant, actor):
-    """Create or reuse each guardian, and join them to their child."""
+def build_links(resolved, *, tenant, actor, request=None):
+    """Create or reuse each guardian, and join them to their child.
+
+    New guardians are created under the school's guardian rules as they bind
+    *request*'s caller, the rules the rows were resolved under.
+    """
     from django.db import transaction
 
     from .services import guardians as guardian_service
     from .services.guardian_rules import read_guardian_rules
 
     counts = {"guardians": 0, "links": 0}
-    guardian_rules = read_guardian_rules(tenant)
+    guardian_rules = read_guardian_rules(tenant).binding(request)
 
     with transaction.atomic():
         for _n, row in resolved.rows:
@@ -527,19 +561,29 @@ def _payload_of(raw_row: dict, columns) -> dict:
     return {c.target_field: raw_row.get(c.column_name) for c in columns}
 
 
-def validate_guardians_import_batch(import_batch) -> list[dict]:
-    """Every fault in an uploaded household list, in the engine's issue shape."""
+def validate_guardians_import_batch(import_batch, actor=None) -> list[dict]:
+    """Every fault in an uploaded household list, in the engine's issue shape.
+
+    With an *actor*, the file is read as that person will import it: every
+    field they may not write is reported against its row, in the words
+    execution uses, and an email requirement that does not bind them is not
+    demanded.
+    """
     template = import_batch.template
     if template is None:
         return []
 
     columns = list(template.columns.all())
     header = {c.target_field: c.column_name for c in columns}
-    resolved = resolve_file(
-        [_payload_of(raw, columns) for raw in (import_batch.preview_rows or [])],
-        tenant=import_batch.tenant,
-    )
-    return [
+    request = import_request(actor, import_batch.tenant, import_batch)
+    payloads = [_payload_of(raw, columns) for raw in (import_batch.preview_rows or [])]
+    refusals = []
+    for row_number, payload in enumerate(payloads, start=1):
+        refusal = link_write_refusal(request, payload)
+        for field in refusal.fields if refusal is not None else ():
+            refusals.append(write_refusal_issue(refusal, field, row_number, header))
+    resolved = resolve_file(payloads, tenant=import_batch.tenant, request=request)
+    return refusals + [
         {
             "severity": issue.severity,
             "code": issue.code,
@@ -558,6 +602,11 @@ def execute_guardians_import(import_batch, queued_by):
     Whole-file, because the primary-contact rules are read across rows: half a
     file could leave a child with two guardians and no primary, or move a
     primary contact and then fail before the row that was meant to replace it.
+
+    A file that sets a field its runner may not write is refused whole, with
+    the standard Field Access wording, before anything is written: the rows
+    that would have passed cannot be kept without breaking the primary-contact
+    rules they were read together under.
     """
     from django.db import transaction
     from django.utils import timezone
@@ -578,9 +627,16 @@ def execute_guardians_import(import_batch, queued_by):
             tenant = import_batch.tenant
             columns = list(import_batch.template.columns.all())
             raw_rows = import_batch.preview_rows or []
-            resolved = resolve_file(
-                [_payload_of(raw, columns) for raw in raw_rows], tenant=tenant,
-            )
+            payloads = [_payload_of(raw, columns) for raw in raw_rows]
+            request = import_request(queued_by, tenant, import_batch)
+            refused: dict[str, str] = {}
+            for payload in payloads:
+                refusal = link_write_refusal(request, payload)
+                if refusal is not None:
+                    refused.update(refusal.labels)
+            if refused:
+                raise FieldWriteDenied(refused, labels=refused)
+            resolved = resolve_file(payloads, tenant=tenant, request=request)
             blocking = [
                 issue for _n, issue in resolved.issues
                 if issue.severity == "error"
@@ -591,7 +647,9 @@ def execute_guardians_import(import_batch, queued_by):
                     "file and validate it again before importing."
                 )
 
-            counts = build_links(resolved, tenant=tenant, actor=queued_by)
+            counts = build_links(
+                resolved, tenant=tenant, actor=queued_by, request=request,
+            )
 
             ImportJobRowResult.objects.bulk_create([
                 ImportJobRowResult(
@@ -644,12 +702,18 @@ def execute_guardians_import(import_batch, queued_by):
             job.save(update_fields=["execution_summary", "updated_at"])
         return job
     except Exception as exc:
+        refused = isinstance(exc, FieldWriteDenied)
         job.status = ImportJobStatusChoices.FAILED
         job.completed_at = timezone.now()
-        job.last_error_code = "GUARDIANS_IMPORT_FAILED"
-        job.last_error_message = str(exc)
+        job.last_error_code = (
+            "FIELD_WRITE_DENIED" if refused else "GUARDIANS_IMPORT_FAILED"
+        )
+        job.last_error_message = exc.message if refused else str(exc)
         job.save(update_fields=[
             "status", "completed_at", "last_error_code", "last_error_message",
             "updated_at",
         ])
+        if refused:
+            # A plain sentence for the "Import failed: ..." line a caller shows.
+            raise ValueError(exc.message) from exc
         raise

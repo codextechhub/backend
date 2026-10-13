@@ -23,6 +23,8 @@ from core.mixins import RetrieveModelMixin
 from core.response import success_response
 from vs_config.clock import branch_day_q, branch_zone, tenant_today
 from vs_config.display import format_date, format_month
+from vs_rbac.field_enforcement import can_read
+from vs_rbac.field_enforcement import visible as field_visible
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -150,6 +152,20 @@ class _FiscalCalendarWriteMixin(WholeTenantWriteMixin):
             return APIView.check_permissions(self, request)
         return super().check_permissions(request)
 
+    def handle_exception(self, exc):
+        """Word a refused close naming only the checks the caller may read.
+
+        A "not ready to close" refusal lists the failed checks and what each
+        found, which is the checklist's own content; the checks the caller's
+        Field Access closes are left out of it (:func:`vs_finance.close_access.redact_close_refusal`).
+        """
+        from .close_access import redact_close_refusal
+        from .exceptions import PeriodCloseError
+
+        if isinstance(exc, PeriodCloseError):
+            redact_close_refusal(self.request, exc)
+        return super().handle_exception(exc)
+
 
 def _calendar_branch(request, entity):
     """Resolve and authorize an optional branch on a calendar action."""
@@ -195,13 +211,6 @@ def _annotate_calendar_status(qs, branch, model):
         **{parent: OuterRef("pk"), "branch_id": branch.pk},
     ).values("status")[:1]
     return qs.annotate(_branch_status=Coalesce(Subquery(state), F("status")))
-
-
-def _branch_period_data(state):
-    return {
-        "id": state.pk, "branch": state.branch_id, "status": state.status,
-        "closed_at": state.closed_at,
-    }
 
 
 def _single_branch(entity):
@@ -543,7 +552,8 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
             description=str(body.get("description", "")).strip(),
         )
         return success_response(
-            f"Account {account.code} created.", data=AccountSerializer(account).data, status=201,
+            f"Account {account.code} created.",
+            data=AccountSerializer(account, context={"request": request}).data, status=201,
         )
 
     def entity_qs(self, entity):
@@ -685,7 +695,7 @@ class AccountDetailView(APIView):
         from django.db.models import Sum
         from .constants import NormalBalance, AccountType
         from .models import FiscalYear
-        from .accounts import account_subtree_ids
+        from .accounts import account_subtree_ids, book_balance_hidden
         from .branch_ledger import ledger_lines
         from .reports import _accounts_gl_net
 
@@ -724,6 +734,11 @@ class AccountDetailView(APIView):
         line_count = ytd_lines.count()
         journal_count = ytd_lines.values("entry_id").distinct().count()
 
+        # A bank account's ledger account carries its book balance as its own, and
+        # a group adds up its descendants, so a group over a bank ledger account
+        # restates it too.
+        bank_balance_hidden = book_balance_hidden(request, account_ids)
+
         running = 0
         activity = []
         lines = (
@@ -744,7 +759,7 @@ class AccountDetailView(APIView):
                 "dimensions": ln.dimensions or {},
                 "debit": _money(ln.debit),
                 "credit": _money(ln.credit),
-                "running_balance": _money(running),
+                **({} if bank_balance_hidden else {"running_balance": _money(running)}),
             })
         activity.reverse()  # Newer first for the activity list (oldest first was used to accumulate the running balance).
 
@@ -753,13 +768,15 @@ class AccountDetailView(APIView):
         return success_response(
             "Account detail retrieved.",
             data={
-                "account": AccountSerializer(acc).data,
+                "account": AccountSerializer(acc, context={"request": request}).data,
                 "type_label": AccountType(acc.account_type).label if acc.account_type else "",
                 "summary": {
-                    "current_balance": _money(_accounts_gl_net(
-                        account_ids, acc.normal_balance, entity=entity, scope=scope,
-                    )),
-                    "opening_balance": _money(opening),
+                    **({} if bank_balance_hidden else {
+                        "current_balance": _money(_accounts_gl_net(
+                            account_ids, acc.normal_balance, entity=entity, scope=scope,
+                        )),
+                        "opening_balance": _money(opening),
+                    }),
                     "line_count": line_count,
                     "journal_count": journal_count,
                     "fiscal_year_start": fy_start.isoformat() if fy_start else None,
@@ -788,7 +805,10 @@ class AccountDetailView(APIView):
         if "is_postable" in body:
             acc.is_postable = bool(body["is_postable"])
         acc.save()
-        return success_response(f"Account {acc.code} updated.", data=AccountSerializer(acc).data)
+        return success_response(
+            f"Account {acc.code} updated.",
+            data=AccountSerializer(acc, context={"request": request}).data,
+        )
 
 
 class AccountActivityView(APIView):
@@ -804,7 +824,7 @@ class AccountActivityView(APIView):
     def get(self, request, pk):
         from django.db.models import Sum
         from core.pagination import XVSPagination
-        from .accounts import account_subtree_ids
+        from .accounts import account_subtree_ids, book_balance_hidden
         from .branch_ledger import ledger_lines
         from .constants import NormalBalance
         from .models import Account
@@ -862,11 +882,17 @@ class AccountActivityView(APIView):
             for line in page
         ]
         response = paginator.get_paginated_response(data)
-        response.data["totals"] = {
-            "debit": _money(debit),
-            "credit": _money(credit),
-            "net_movement": _money(sign * (debit - credit)),
-        }
+        # The movement of a bank account's ledger account adds up to its book
+        # balance, so totals over any bank ledger account are withheld with it,
+        # whether the account asked for is the bank's own, a group above it, or
+        # a bank picked out of a group with ``?account=``.
+        totalled = {int(raw_account)} if raw_account else account_ids
+        if not book_balance_hidden(request, totalled):
+            response.data["totals"] = {
+                "debit": _money(debit),
+                "credit": _money(credit),
+                "net_movement": _money(sign * (debit - credit)),
+            }
         return response
 
 
@@ -920,6 +946,11 @@ class FiscalPeriodListView(_BranchStatesListMixin, EntityScopedListMixin, generi
     def entity_qs(self, entity):
         from .archive import include_archived
 
+        from .field_guards import refuse_hidden_filters
+
+        refuse_hidden_filters(
+            self.request, "finance.period", {"status": ("close_state", "Close state")},
+        )
         branch = _calendar_branch(self.request, entity)
         qs = _annotate_calendar_status(
             FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year"),
@@ -1013,7 +1044,16 @@ class FiscalYearListView(
         from .models import FiscalYear
 
         from .archive import include_archived
+        from .field_guards import readable, refuse_hidden_filters
+        from vs_rbac.field_enforcement import FieldReadDenied
 
+        refuse_hidden_filters(
+            self.request, "finance.fiscalyear", {"status": ("close_state", "Close state")},
+        )
+        if include_archived(self.request) and not readable(
+            self.request, "finance.fiscalyear", "archive_state",
+        ):
+            raise FieldReadDenied(["include_archived"], labels={"include_archived": "Archive state"})
         branch = _calendar_branch(self.request, entity)
         qs = _annotate_calendar_status(FiscalYear.objects.filter(entity=entity), branch, FiscalYear)
         if not include_archived(self.request):
@@ -1066,12 +1106,13 @@ class FiscalYearListView(
             frequency=frequency,
             actor_user=request.user,
         )
+        context = self.get_serializer_context()
 
         return success_response(
             f"Fiscal year {year} opened with {len(periods)} {frequency.lower()} periods.",
             data={
-                "fiscal_year": FiscalYearSerializer(fiscal_year).data,
-                "periods": FiscalPeriodSerializer(periods, many=True).data,
+                "fiscal_year": FiscalYearSerializer(fiscal_year, context=context).data,
+                "periods": FiscalPeriodSerializer(periods, many=True, context=context).data,
             },
             status=201,
         )
@@ -1760,10 +1801,10 @@ class InvoiceDetailView(APIView):
                     "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 },
                 "lines": lines,
-                "deferred_income": {
+                "deferred_income": field_visible(request, "finance.deferredincome", {
                     "pending": _money(deferred["pending"]),
                     "released": _money(deferred["released"]),
-                },
+                }),
                 "payments": payments,
                 "settlements": settlements,
                 "gl_postings": gl_postings,
@@ -2101,6 +2142,8 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
         """
         from .close import close_checklist
 
+        from .close_access import PeriodChecklistPreviewSerializer
+
         entity, period = self._period(request, id)
         branch = _calendar_branch(request, entity)
         soft = str(request.query_params.get("soft", "")).lower() in ("1", "true", "yes")
@@ -2108,21 +2151,26 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
         items = _serialize_checklist(checklist)["items"]
         return success_response(
             message=f"Close checklist for {_period_said(period)}.",
-            data={
-                "period": FiscalPeriodSerializer(period).data,
-                "passed": checklist.passed,
-                "done": sum(1 for i in items if i["passed"]),
-                "total": len(items),
-                "items": items,
-                "branch": branch.pk if branch is not None else None,
-            },
+            data=PeriodChecklistPreviewSerializer(
+                {
+                    "period": period,
+                    "passed": checklist.passed,
+                    "done": sum(1 for i in items if i["passed"]),
+                    "total": len(items),
+                    "items": items,
+                    "branch": branch.pk if branch is not None else None,
+                },
+                context={"request": request},
+            ).data,
         )
 
     # Handle POST requests for this endpoint.
     def post(self, request, id):
         from .branch_close import close_branch_period
         from .close import close_period
+        from .close_access import PeriodCloseResultSerializer
 
+        context = {"request": request}
         entity, period = self._period(request, id)
         body = request.data or {}
         branch = _calendar_branch(request, entity)
@@ -2136,15 +2184,19 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
             )
             if _single_branch(entity):
                 return success_response(
-                    message=f"{_period_said(period)} is now {period_status_word(state.status)}.",
-                    data={"period": FiscalPeriodSerializer(period).data,
-                          "checklist": _serialize_checklist(checklist)},
+                    message=_close_message(request, period, state.status),
+                    data=PeriodCloseResultSerializer(
+                        {"period": period, "checklist": _serialize_checklist(checklist)},
+                        context=context,
+                    ).data,
                 )
             return success_response(
-                message=f"{_period_said(period)} is now {period_status_word(state.status)} at {branch.name}.",
-                data={"period": FiscalPeriodSerializer(period).data,
-                      "branch_period": _branch_period_data(state),
-                      "checklist": _serialize_checklist(checklist)},
+                message=_close_message(request, period, state.status, f" at {branch.name}"),
+                data=PeriodCloseResultSerializer(
+                    {"period": period, "branch_period": state,
+                     "checklist": _serialize_checklist(checklist)},
+                    context=context,
+                ).data,
             )
         period, checklist = close_period(
             entity, period, actor_user=request.user,
@@ -2155,11 +2207,11 @@ class PeriodCloseView(_FiscalCalendarWriteMixin, APIView):
             reason=body.get("reason"),
         )
         return success_response(
-            message=f"{_period_said(period)} is now {period_status_word(period.status)}.",
-            data={
-                "period": FiscalPeriodSerializer(period).data,
-                "checklist": _serialize_checklist(checklist),
-            },
+            message=_close_message(request, period, period.status),
+            data=PeriodCloseResultSerializer(
+                {"period": period, "checklist": _serialize_checklist(checklist)},
+                context=context,
+            ).data,
         )
 
 
@@ -2192,7 +2244,9 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
     def post(self, request, id):
         from .branch_close import reopen_branch_period
         from .close import reopen_period
+        from .close_access import PeriodCloseResultSerializer
 
+        context = {"request": request}
         entity, period = self._period(request, id)
         branch = _calendar_branch(request, entity)
         if branch is not None:
@@ -2203,12 +2257,13 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
             if _single_branch(entity):
                 return success_response(
                     message=f"{_period_said(period)} reopened.",
-                    data=FiscalPeriodSerializer(period).data,
+                    data=FiscalPeriodSerializer(period, context=context).data,
                 )
             return success_response(
                 message=f"{_period_said(period)} reopened at {branch.name}.",
-                data={"period": FiscalPeriodSerializer(period).data,
-                      "branch_period": _branch_period_data(state)},
+                data=PeriodCloseResultSerializer(
+                    {"period": period, "branch_period": state}, context=context,
+                ).data,
             )
         period = reopen_period(
             entity, period, actor_user=request.user,
@@ -2216,7 +2271,7 @@ class PeriodReopenView(_FiscalCalendarWriteMixin, APIView):
         )
         return success_response(
             message=f"{_period_said(period)} reopened.",
-            data=FiscalPeriodSerializer(period).data,
+            data=FiscalPeriodSerializer(period, context=context).data,
         )
 
 
@@ -2246,7 +2301,9 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
     def post(self, request, id):
         from .branch_close import lock_branch_period
         from .close import lock_period
+        from .close_access import PeriodCloseResultSerializer
 
+        context = {"request": request}
         entity, period = self._period(request, id)
         branch = _calendar_branch(request, entity)
         if branch is not None:
@@ -2254,17 +2311,18 @@ class PeriodLockView(_FiscalCalendarWriteMixin, APIView):
             if _single_branch(entity):
                 return success_response(
                     message=f"{_period_said(period)} locked.",
-                    data=FiscalPeriodSerializer(period).data,
+                    data=FiscalPeriodSerializer(period, context=context).data,
                 )
             return success_response(
                 message=f"{_period_said(period)} locked at {branch.name}.",
-                data={"period": FiscalPeriodSerializer(period).data,
-                      "branch_period": _branch_period_data(state)},
+                data=PeriodCloseResultSerializer(
+                    {"period": period, "branch_period": state}, context=context,
+                ).data,
             )
         period = lock_period(entity, period, actor_user=request.user)
         return success_response(
             message=f"{_period_said(period)} locked.",
-            data=FiscalPeriodSerializer(period).data,
+            data=FiscalPeriodSerializer(period, context=context).data,
         )
 
 
@@ -2303,6 +2361,7 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
         import datetime
 
         from .close import close_fiscal_year
+        from .close_access import FiscalYearCloseResultSerializer
         from .models import FiscalYear
 
         entity = resolve_entity(request)  # Resolve the tenant entity.
@@ -2328,17 +2387,37 @@ class FiscalYearCloseView(_FiscalCalendarWriteMixin, APIView):
             reason=body.get("reason"), branch=branch,
         )
         fy.refresh_from_db()  # Pick up the CLOSED status.
-        serialized = list(JournalEntryDetailSerializer(journals, many=True).data)
+        serialized = _year_end_journals(request, journals)
         return success_response(
             message=f"Fiscal year {fy.year} closed.",
-            data={
-                "fiscal_year": FiscalYearSerializer(fy).data,  # The sealed year.
-                "closing_journals": serialized,  # One per branch with P&L activity.
-                "closing_journal": serialized[0] if serialized else None,
-                "net_income": _money(net_income),  # Net result rolled to equity.
-                "branch": branch.pk if branch is not None else None,
-            },
+            data=FiscalYearCloseResultSerializer(
+                {
+                    "fiscal_year": fy,  # The sealed year.
+                    "closing_journals": serialized,  # One per branch with P&L activity.
+                    "closing_journal": serialized[0] if serialized else None,
+                    "net_income": _money(net_income),  # Net result rolled to equity.
+                    "branch": branch.pk if branch is not None else None,
+                },
+                context={"request": request},
+            ).data,
         )
+
+
+def _year_end_journals(request, journals) -> list:
+    """The year-end closing journals (or their reversals) as the close response embeds them.
+
+    Every line of a closing journal moves one profit-and-loss account into
+    retained earnings, so the lines and the totals they add up to are the
+    year's net result seen another way. A caller who may not read
+    ``finance.fiscalyear.net_income`` is served each journal's identity and
+    state without them.
+    """
+    rows = list(JournalEntryDetailSerializer(journals, many=True).data)
+    if not can_read(request, "finance.fiscalyear.net_income"):
+        for row in rows:
+            for name in ("lines", "total_debit", "total_credit"):
+                row.pop(name, None)
+    return rows
 
 
 # Group endpoint behavior for Fiscal Year Reopen View.
@@ -2363,6 +2442,7 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
 
     def post(self, request, id):
         from .close import reopen_fiscal_year
+        from .close_access import FiscalYearCloseResultSerializer
         from .models import FiscalYear
 
         entity = resolve_entity(request)
@@ -2376,10 +2456,13 @@ class FiscalYearReopenView(_FiscalCalendarWriteMixin, APIView):
         )
         return success_response(
             message=f"Fiscal year {fy.year} re-opened.",
-            data={
-                "fiscal_year": FiscalYearSerializer(fy).data,
-                "reversals": list(JournalEntryDetailSerializer(reversals, many=True).data),
-            },
+            data=FiscalYearCloseResultSerializer(
+                {
+                    "fiscal_year": fy,
+                    "reversals": _year_end_journals(request, reversals),
+                },
+                context={"request": request},
+            ).data,
         )
 
 
@@ -2415,6 +2498,21 @@ def _period_said(period) -> str:
     from .wording import period_words
 
     return period_words(period)
+
+
+def _close_message(request, period, status, where: str = "") -> str:
+    """"September 2026 is now soft-closed", or a neutral sentence when the state is hidden.
+
+    The sentence states the close state the response's ``status`` field carries,
+    so it follows the same switch: a caller who may not read close state is told
+    the close was recorded and not which state it left the month in.
+    """
+    from .field_guards import readable
+
+    said = _period_said(period)
+    if not readable(request, "finance.period", "close_state"):
+        return f"{said} close recorded."
+    return f"{said} is now {period_status_word(status)}{where}."
 
 
 # Support the line workflow.
@@ -3106,7 +3204,8 @@ class FinanceDashboardView(APIView):
     and its landing page is this one. What each reader receives is decided per
     block by :func:`vs_finance.dashboard.finance_dashboard`, from the keys they hold
     and the branches they reach, so a block they may not see is ``None`` rather
-    than a figure the screen then hides.
+    than a figure the screen then hides. A card their Field Access closes
+    (``finance.dashboard``) is absent from the payload altogether.
 
     docstring-name: Finance dashboard
     """
@@ -3117,16 +3216,19 @@ class FinanceDashboardView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request):
         from .dashboard import DashboardReader, finance_dashboard
+        from .dashboard_serializers import FinanceDashboardSerializer
 
         entity = resolve_entity(request)
         period = _resolve_period(entity, request)
-        reader = DashboardReader.for_user(request.user, getattr(request.user, "tenant", None))
+        reader = DashboardReader.for_user(
+            request.user, getattr(request.user, "tenant", None), request=request)
+        payload = finance_dashboard(
+            entity, period=period, reader=reader,
+            window=request.query_params.get("window"), user=request.user,
+        )
         return success_response(
             message="Finance dashboard retrieved.",
-            data=finance_dashboard(
-                entity, period=period, reader=reader,
-                window=request.query_params.get("window"), user=request.user,
-            ),
+            data=FinanceDashboardSerializer(payload, context={"request": request}).data,
         )
 
 
@@ -3147,17 +3249,20 @@ class FinanceReceivablesDashboardView(APIView):
     def get(self, request):
         from .dashboard import DashboardReader
         from .dashboard_receivables import receivables_view
+        from .dashboard_serializers import ReceivablesDashboardSerializer
 
         entity = resolve_entity(request)
+        payload = receivables_view(
+            entity,
+            reader=DashboardReader.for_user(
+                request.user, getattr(request.user, "tenant", None), request=request),
+            window=request.query_params.get("window"),
+            period=_resolve_period(entity, request),
+            user=request.user,
+        )
         return success_response(
             message="Receivables dashboard retrieved.",
-            data=receivables_view(
-                entity,
-                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
-                window=request.query_params.get("window"),
-                period=_resolve_period(entity, request),
-                user=request.user,
-            ),
+            data=ReceivablesDashboardSerializer(payload, context={"request": request}).data,
         )
 
 
@@ -3177,18 +3282,21 @@ class FinanceSpendDashboardView(APIView):
 
     def get(self, request):
         from .dashboard import DashboardReader
+        from .dashboard_serializers import SpendDashboardSerializer
         from .dashboard_spend import spend_view
 
         entity = resolve_entity(request)
+        payload = spend_view(
+            entity,
+            reader=DashboardReader.for_user(
+                request.user, getattr(request.user, "tenant", None), request=request),
+            window=request.query_params.get("window"),
+            period=_resolve_period(entity, request),
+            user=request.user,
+        )
         return success_response(
             message="Cash and spend dashboard retrieved.",
-            data=spend_view(
-                entity,
-                reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
-                window=request.query_params.get("window"),
-                period=_resolve_period(entity, request),
-                user=request.user,
-            ),
+            data=SpendDashboardSerializer(payload, context={"request": request}).data,
         )
 
 

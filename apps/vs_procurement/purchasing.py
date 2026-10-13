@@ -25,7 +25,6 @@ from vs_finance.constants import (
     GRIR_NAME, GRIR_PLAIN, DocumentStatus, FinanceAuditAction, JournalSource,
 )
 from vs_finance.exceptions import FinanceError, PostingError
-from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
@@ -323,7 +322,7 @@ def cancel_purchase_order(po, *, reason: str, actor_user=None):
         entity=po.entity, action=FinanceAuditAction.PURCHASE_ORDER_CANCELLED,
         actor_user=actor_user, target=po,
         document_number=po.document_number or str(po.pk),
-        message=f"Cancelled purchase order {po.document_number or po.pk}: {reason}",
+        message=f"Cancelled purchase order {po.document_number or po.pk}.",
         before={"status": previous}, after={"status": po.status}, reason=reason,
     )
     return po
@@ -758,10 +757,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     record(
         entity=grn.entity, action=FinanceAuditAction.GRN_POSTED,
         actor_user=actor_user, target=grn,
-        message=(
-            f"Received goods from {grn.vendor.code} worth {format_naira(total_value)}, "
-            f"not yet billed."
-        ),
+        message=f"Received goods from {grn.vendor.code}, not yet billed.",
         journal_id=entry.pk, value=total_value,
     )
     return grn

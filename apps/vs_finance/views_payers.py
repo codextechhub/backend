@@ -23,17 +23,30 @@ The keys are the receipt keys (``finance.payment.view``, ``.create``,
 ``.reverse``), because a payer payment is nothing but receipts and held receipts
 booked together. Links are customer records: ``finance.customer.view`` to read
 and ``finance.customer.update`` to change.
+
+Field Access: a link is rendered through the switches of the fields-only
+resource ``finance.payer_link`` and a payment through those of
+``finance.payer_payment``, for the list, the detail, the preview, the recording and the
+void alike. A caller who may not read a field receives the payload without it,
+may not filter by it, and is told in words that do not name it; a body that sets
+a field they may not write is refused before anything is booked, and so is a
+preview, whose body is the same input as recording one. Ending a link and
+switching an ended one back on both change whether it is active.
 """
 from __future__ import annotations
 
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
 
+from rest_framework import serializers
+
 from core.references import pick_by_code_or_id
 from core.response import success_response
+from vs_rbac.field_enforcement import FieldAccessMixin, assert_writable, can_read
 from vs_rbac.scoping import caller_branch_ids, inherited_branch_id, transaction_branch_scope
 
 from .constants import DocumentStatus, PaymentMethod
+from .field_guards import readable, refuse_hidden_filters, submitted
 from .models import CreditNote, PayerLink, PayerPayment
 from .payer_payments import split_choices, split_label
 from .views import resolve_entity
@@ -56,8 +69,98 @@ __all__ = [
 ]
 
 
+_LINK = "finance.payer_link"
+_PAYMENT = "finance.payer_payment"
+
+#: The body keys of a payment that name a field of ``finance.payer_payment``.
+_PAYMENT_BODY = (
+    "payer", "bank_account", "amount", "payment_date", "method", "reference",
+    "narration", "split", "shares",
+)
+
+
 def _reaches(reach, branch_id) -> bool:
     return reach is None or branch_id in reach
+
+
+class PayerLinkSerializer(FieldAccessMixin, serializers.Serializer):
+    """One payer link under the fields of ``finance.payer_link``.
+
+    ``payer`` and ``customer`` are each the customer's id, code and name, one
+    switch for the whole of it. ``id`` identifies the link and is not a switch.
+    The names are the link's own, so they never collide with the customer
+    master's fields.
+    """
+
+    field_resource = _LINK
+    field_access_detail = True
+
+    id = serializers.ReadOnlyField()
+    payer = serializers.ReadOnlyField()
+    customer = serializers.ReadOnlyField()
+    is_active = serializers.ReadOnlyField()
+    source_type = serializers.ReadOnlyField()
+    source_id = serializers.ReadOnlyField()
+
+
+class PayerPaymentShareSerializer(FieldAccessMixin, serializers.Serializer):
+    """One customer's share of a payment, or of its proposed split.
+
+    A payment's rows carry ``id``, ``document`` and ``forwarded_by`` and a
+    proposed split's carry ``outstanding``; a key the row does not hold is left
+    out. ``amount`` is the payment's amount switch: a caller who may not read it
+    must not recover it from what the share settled, so the credit, the
+    outstanding balance and the bills go with it.
+    """
+
+    field_resource = _PAYMENT
+
+    id = serializers.ReadOnlyField()
+    customer = serializers.ReadOnlyField()
+    branch_id = serializers.ReadOnlyField()
+    branch_name = serializers.ReadOnlyField()
+    kind = serializers.ReadOnlyField()
+    amount = serializers.ReadOnlyField()
+    credit = serializers.ReadOnlyField()
+    outstanding = serializers.ReadOnlyField()
+    bills = serializers.ReadOnlyField()
+    document = serializers.ReadOnlyField()
+    forwarded_by = serializers.ReadOnlyField()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"), f"{_PAYMENT}.amount"):
+            for name in ("credit", "outstanding", "bills"):
+                data.pop(name, None)
+        return data
+
+
+class PayerPaymentSerializer(FieldAccessMixin, serializers.Serializer):
+    """A payment from a payer, or the split proposed for one, under ``finance.payer_payment``.
+
+    A proposed split holds no document number, status, method, reference or
+    narration, and those keys are left out of it. ``id`` identifies the payment
+    and is not a switch.
+    """
+
+    field_resource = _PAYMENT
+    field_access_detail = True
+
+    id = serializers.ReadOnlyField()
+    document_number = serializers.ReadOnlyField()
+    status = serializers.ReadOnlyField()
+    payer = serializers.ReadOnlyField()
+    branch_id = serializers.ReadOnlyField()
+    branch_name = serializers.ReadOnlyField()
+    bank_account = serializers.ReadOnlyField()
+    amount = serializers.ReadOnlyField()
+    payment_date = serializers.ReadOnlyField()
+    method = serializers.ReadOnlyField()
+    split = serializers.ReadOnlyField()
+    split_label = serializers.ReadOnlyField()
+    reference = serializers.ReadOnlyField()
+    narration = serializers.ReadOnlyField()
+    shares = PayerPaymentShareSerializer(many=True, read_only=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +176,29 @@ def _link_row(link):
         "source_type": link.source_type,
         "source_id": link.source_id,
     }
+
+
+def _link_data(request, links):
+    """One link, or a list of them, as the caller may read it."""
+    if isinstance(links, list):
+        return PayerLinkSerializer(
+            [_link_row(link) for link in links], many=True, context={"request": request},
+        ).data
+    return PayerLinkSerializer(_link_row(links), context={"request": request}).data
+
+
+def _link_words(request, payer, customer, *, ended=False) -> str:
+    """Who pays for whom, naming the payer and the customer only to a caller who reads them."""
+    who = payer.name if readable(request, _LINK, "payer") else None
+    whom = customer.name if readable(request, _LINK, "customer") else None
+    verb = "no longer pays for" if ended else "pays for"
+    if who and whom:
+        return f"{who} {verb} {whom}."
+    if who:
+        return f"{who} {verb} a customer."
+    if whom:
+        return f"A payer {verb} {whom}."
+    return "The link has ended." if ended else "The link is recorded."
 
 
 def _links_in_reach(request, entity):
@@ -104,6 +230,10 @@ class PayerLinkListCreateView(_FinanceBase):
         return "finance.customer.update" if self.request.method == "POST" else "finance.customer.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _LINK, {
+            "payer": ("payer", "Payer"), "customer": ("customer", "Linked customer"),
+            "is_active": ("is_active", "Link active"),
+        })
         entity = resolve_entity(request)
         qs = _links_in_reach(request, entity)
         params = request.query_params
@@ -113,22 +243,26 @@ class PayerLinkListCreateView(_FinanceBase):
             qs = qs.filter(customer=_resolve_customer(request, entity, params.get("customer")))
         if (active := params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
-        rows = [_link_row(link) for link in qs.order_by("payer__code", "customer__code")[:500]]
-        return success_response("Payer links retrieved.", data=rows)
+        links = list(qs.order_by("payer__code", "customer__code")[:500])
+        return success_response("Payer links retrieved.", data=_link_data(request, links))
 
     def post(self, request):
         from .payer_payments import link_customer
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, _LINK, submitted(
+            body, "payer", "customer", "source_type", "source_id"), creating=True)
         payer = _resolve_customer(request, entity, body.get("payer"), "payer")
         customer = _resolve_customer(request, entity, body.get("customer"))
+        if PayerLink.objects.filter(payer=payer, customer=customer, is_active=False).exists():
+            assert_writable(request, _LINK, {"is_active": True})
         link = link_customer(
             payer, customer, actor_user=request.user,
             source_type=str(body.get("source_type") or ""), source_id=str(body.get("source_id") or ""),
         )
         return success_response(
-            f"{payer.name} pays for {customer.name}.", data=_link_row(link), status=201,
+            _link_words(request, payer, customer), data=_link_data(request, link), status=201,
         )
 
 
@@ -147,9 +281,11 @@ class PayerLinkDetailView(_FinanceBase):
         link = _links_in_reach(request, entity).filter(pk=pk).first()
         if link is None:
             raise NotFound("Payer link not found for this entity.")
+        assert_writable(request, _LINK, {"is_active": False})
         unlink_customer(link, actor_user=request.user)
         return success_response(
-            f"{link.payer.name} no longer pays for {link.customer.name}.", data=_link_row(link),
+            _link_words(request, link.payer, link.customer, ended=True),
+            data=_link_data(request, link),
         )
 
 
@@ -190,6 +326,7 @@ def _shares_from_body(entity, payer, raw):
 
 def _payment_inputs(request, entity):
     body = request.data or {}
+    assert_writable(request, _PAYMENT, submitted(body, *_PAYMENT_BODY), creating=True)
     payer = _resolve_customer(request, entity, body.get("payer"), "payer")
     bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
     method = body.get("method") or PaymentMethod.BANK_TRANSFER
@@ -215,7 +352,17 @@ def _branch_names(ids):
 
 
 def _plan_payload(request, plan):
-    """The proposal, with bill detail only for the branches the caller reaches."""
+    """The proposal, with bill detail only for the branches the caller reaches.
+
+    Rendered through the caller's ``finance.payer_payment`` switches, like a recorded
+    payment.
+    """
+    return PayerPaymentSerializer(
+        _plan_rows(request, plan), context={"request": request},
+    ).data
+
+
+def _plan_rows(request, plan):
     reach = caller_branch_ids(request)
     shares = plan.ordered_shares()
     names = _branch_names({plan.branch_id, *(s.branch_id for s in shares)})
@@ -254,6 +401,13 @@ def _plan_payload(request, plan):
 
 
 def _payment_payload(request, document):
+    """One payment as the caller may read it."""
+    return PayerPaymentSerializer(
+        _payment_rows(request, document), context={"request": request},
+    ).data
+
+
+def _payment_rows(request, document):
     """One payment; a caller outside the receiving branch sees only their branches' shares."""
     reach = caller_branch_ids(request)
     whole = _reaches(reach, document.branch_id)
@@ -306,6 +460,12 @@ def _payment_payload(request, document):
     }
 
 
+def _payment_words(request, document, verb, *, payer=True) -> str:
+    """"Payment PP-0001 from Mrs Okafor recorded.", naming the payer only if the caller may read it."""
+    who = document.payer.name if payer and readable(request, _PAYMENT, "payer") else ""
+    return f"Payment {document.document_number}" + (f" from {who}" if who else "") + f" {verb}."
+
+
 def _payments_in_reach(request, entity):
     """Payments received by the caller's branches, or holding money for them."""
     scope = transaction_branch_scope(request)
@@ -338,8 +498,9 @@ class PayerPaymentPreviewView(_FinanceBase):
 
     GET answers the choices the screen offers before it previews: ``split_options``
     (``[{value, label}]``, the receivables settings' own list and words),
-    ``split_default`` (the books' current setting) and ``split_default_label``. It
-    needs the same key as recording, so a bursar who may record a payment but not
+    ``split_default`` (the books' current setting) and ``split_default_label``, which
+    are left out for a caller who may not read ``finance.settings.payer_payment_split``.
+    It needs the same key as recording, so a bursar who may record a payment but not
     read the settings can still offer the choice.
 
     docstring-name: Preview a payment from a payer
@@ -348,9 +509,13 @@ class PayerPaymentPreviewView(_FinanceBase):
     rbac_permission = "finance.payment.create"
 
     def get(self, request):
-        return success_response(
-            "Payment split choices retrieved.", data=split_choices(resolve_entity(request)),
-        )
+        choices = split_choices(resolve_entity(request))
+        # The default is the receivables policy's ``payer_payment_split``, so a caller who
+        # may not read that setting is offered the options and not which one the books use.
+        if not readable(request, "finance.settings", "payer_payment_split"):
+            choices.pop("split_default", None)
+            choices.pop("split_default_label", None)
+        return success_response("Payment split choices retrieved.", data=choices)
 
     def post(self, request):
         from .payer_payments import plan_payer_payment
@@ -386,6 +551,9 @@ class PayerPaymentListCreateView(_FinanceBase):
         return "finance.payment.create" if self.request.method == "POST" else "finance.payment.view"
 
     def get(self, request):
+        refuse_hidden_filters(request, _PAYMENT, {
+            "payer": ("payer", "Payer"), "status": ("status", "Status"),
+        })
         entity = resolve_entity(request)
         qs = _payments_in_reach(request, entity)
         if request.query_params.get("payer"):
@@ -398,7 +566,9 @@ class PayerPaymentListCreateView(_FinanceBase):
         paginator = XVSPagination()
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("-payment_date", "-id"), request, view=self)
-        return paginator.get_paginated_response([_payment_payload(request, d) for d in page])
+        return paginator.get_paginated_response(PayerPaymentSerializer(
+            [_payment_rows(request, d) for d in page], many=True, context={"request": request},
+        ).data)
 
     def post(self, request):
         from .payer_payments import record_payer_payment
@@ -408,7 +578,7 @@ class PayerPaymentListCreateView(_FinanceBase):
         document = record_payer_payment(actor_user=request.user, **inputs)
         document = _payment_or_404(request, entity, document.pk)
         return success_response(
-            f"Payment {document.document_number} from {document.payer.name} recorded.",
+            _payment_words(request, document, "recorded"),
             data=_payment_payload(request, document), status=201,
         )
 
@@ -450,5 +620,6 @@ class PayerPaymentVoidView(_FinanceBase):
         )
         document = _payment_or_404(request, entity, pk)
         return success_response(
-            f"Payment {document.document_number} voided.", data=_payment_payload(request, document),
+            _payment_words(request, document, "voided", payer=False),
+            data=_payment_payload(request, document),
         )

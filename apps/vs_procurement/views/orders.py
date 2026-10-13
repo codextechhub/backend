@@ -330,7 +330,7 @@ class PurchaseOrderListCreateView(_ProcBase):
             po.contract = contract
             po.save(update_fields=["contract", "updated_at"])
         return success_response(
-            "Purchase order created.", data=PurchaseOrderSerializer(po).data, status=201,
+            "Purchase order created.", data=PurchaseOrderSerializer(po, context={"request": request}).data, status=201,
         )
 
 
@@ -354,7 +354,7 @@ class PurchaseOrderDetailView(_ProcBase):
             request, _purchase_order_queryset(entity), pk,
             "No such purchase order in this entity.",
         )
-        data = PurchaseOrderSerializer(po).data
+        data = PurchaseOrderSerializer(po, context={"request": request}).data
         data["workflow_instance_id"] = WorkflowInstance.objects.latest_id_for(po)
         return success_response("Purchase order retrieved.", data=data)
 
@@ -402,7 +402,7 @@ class PurchaseOrderDetailView(_ProcBase):
         # Re-read with the drawer's related-document shape after the locked update has completed.
         updated = _purchase_order_queryset(entity).filter(pk=po.pk).first()
         return success_response(
-            "Purchase order draft updated.", data=PurchaseOrderSerializer(updated).data,
+            "Purchase order draft updated.", data=PurchaseOrderSerializer(updated, context={"request": request}).data,
         )
 
 
@@ -438,7 +438,7 @@ class PurchaseOrderCancelView(_ProcBase):
         po.refresh_from_db()
         return success_response(
             f"Purchase order {po.document_number or po.pk} cancelled.",
-            data=PurchaseOrderSerializer(po).data,
+            data=PurchaseOrderSerializer(po, context={"request": request}).data,
         )
 
 
@@ -471,7 +471,7 @@ class PurchaseOrderEmailPreviewView(_ProcBase):
             ).prefetch_related("vendor__contacts"),
             pk, "No such purchase order in this entity.",
         )
-        return success_response("Purchase order email preview retrieved.", data=po_email.preview(po))
+        return success_response("Purchase order email preview retrieved.", data=po_email.preview(po, request=request))
 
 
 class PurchaseOrderEmailView(_ProcBase):
@@ -492,7 +492,7 @@ class PurchaseOrderEmailView(_ProcBase):
             raise ValidationError({"email": str(exc)}) from exc
         updated = _purchase_order_queryset(entity).get(pk=po.pk)
         return success_response(
-            "Purchase order email queued.", data=PurchaseOrderSerializer(updated).data, status=202,
+            "Purchase order email queued.", data=PurchaseOrderSerializer(updated, context={"request": request}).data, status=202,
         )
 
 
@@ -521,7 +521,7 @@ class PurchaseOrderEmailRetryView(_ProcBase):
             raise ValidationError({"email": str(exc)}) from exc
         updated = _purchase_order_queryset(entity).get(pk=pk)
         return success_response(
-            "Purchase order email retry queued.", data=PurchaseOrderSerializer(updated).data, status=202,
+            "Purchase order email retry queued.", data=PurchaseOrderSerializer(updated, context={"request": request}).data, status=202,
         )
 
 
@@ -1295,7 +1295,7 @@ class QuotationListCreateView(_ProcBase):
         sourcing.price_quotation(quotation)
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
-            "Quotation created.", data=QuotationDetailSerializer(quotation).data, status=201,
+            "Quotation created.", data=QuotationDetailSerializer(quotation, context={"request": request}).data, status=201,
         )
 
 
@@ -1320,7 +1320,7 @@ class QuotationDetailView(_ProcBase):
             ), pk,
             "No such quotation in this entity.",
         )
-        return success_response("Quotation retrieved.", data=QuotationDetailSerializer(quotation).data)
+        return success_response("Quotation retrieved.", data=QuotationDetailSerializer(quotation, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -1360,7 +1360,7 @@ class QuotationDetailView(_ProcBase):
             _write_quotation_lines(request, entity, quotation, quotation.rfq, _require_lines(body))
         sourcing.price_quotation(quotation)  # Re-roll net/tax/totals after any edit.
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
-        return success_response("Quotation updated.", data=QuotationDetailSerializer(quotation).data)
+        return success_response("Quotation updated.", data=QuotationDetailSerializer(quotation, context={"request": request}).data)
 
 
 class QuotationSubmitView(_ProcBase):
@@ -1379,7 +1379,7 @@ class QuotationSubmitView(_ProcBase):
         sourcing.submit_quotation(quotation, actor_user=request.user)
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
-            "Quotation submitted.", data=QuotationDetailSerializer(quotation).data,
+            "Quotation submitted.", data=QuotationDetailSerializer(quotation, context={"request": request}).data,
         )
 
 
@@ -1409,10 +1409,10 @@ class QuotationAwardView(_ProcBase):
         if isinstance(award, list):
             return success_response(
                 f"Quotation awarded to {len(award)} branch purchase orders.",
-                data=PurchaseOrderSerializer(award, many=True).data, status=201,
+                data=PurchaseOrderSerializer(award, many=True, context={"request": request}).data, status=201,
             )
         po = award
         return success_response(
             f"Quotation awarded → purchase order {po.document_number}.",
-            data=PurchaseOrderSerializer(po).data, status=201,
+            data=PurchaseOrderSerializer(po, context={"request": request}).data, status=201,
         )

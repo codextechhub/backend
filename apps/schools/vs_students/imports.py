@@ -18,6 +18,12 @@ import datetime as dt
 from dataclasses import dataclass, field as dc_field
 
 from vs_config.clock import branch_today
+from vs_import_data.field_writes import (
+    FieldWriteDenied,
+    import_request,
+    write_refusal,
+    write_refusal_issue,
+)
 
 from .ages import date_of_birth_problem
 from .constants import Gender, Relationship, StudentStatus
@@ -127,6 +133,67 @@ def _text(payload: dict, key: str) -> str:
     return "" if raw is None else str(raw).strip()
 
 
+# ── Field Access ───────────────────────────────────────────────────────────
+
+#: The registered ``school.students`` field each student column writes, keyed
+#: by the template's target field. The admission date is the registry's
+#: ``enrolment_date``.
+STUDENT_WRITES: dict[str, tuple[str, ...]] = {
+    "first_name": ("first_name",),
+    "middle_name": ("middle_name",),
+    "last_name": ("last_name",),
+    "date_of_birth": ("date_of_birth",),
+    "gender": ("gender",),
+    "student_number": ("student_number",),
+    "admission_date": ("enrolment_date",),
+    "address": ("address",),
+    "previous_school": ("previous_school",),
+}
+
+#: The registered ``school.guardians`` field each guardian column of the student
+#: roll writes. The roll's one ``address`` column is the child's home address
+#: and also becomes the address of a guardian created from the row, so it is
+#: judged under both resources. The one-line name is split into parts at write
+#: time (:func:`_names_set`).
+GUARDIAN_WRITES: dict[str, tuple[str, ...]] = {
+    "guardian_first_name": ("first_name",),
+    "guardian_middle_name": ("middle_name",),
+    "guardian_last_name": ("last_name",),
+    "guardian_full_name": ("first_name", "middle_name", "last_name"),
+    "guardian_phone": ("phone",),
+    "guardian_email": ("email",),
+    "address": ("address",),
+}
+
+
+def _names_set(target: str, names: tuple[str, ...], payload: dict) -> tuple[str, ...]:
+    """The registered fields a non-blank *target* cell sets, or none when it is blank.
+
+    A blank cell sets nothing, exactly as the enrol form's blank input is dropped
+    rather than refused. A one-line guardian name is split when written, so it
+    sets a middle name only when it has one.
+    """
+    value = _text(payload, target)
+    if not value:
+        return ()
+    if target == "guardian_full_name":
+        from .names import split_full_name
+
+        first, middle, last = split_full_name(value)
+        return tuple(
+            name for name, part in zip(names, (first, middle, last)) if part
+        )
+    return names
+
+
+def student_row_write_refusal(request, payload: dict) -> FieldWriteDenied | None:
+    """The refusal an uploaded roll row meets from a caller without Write on its fields."""
+    return write_refusal(request, payload, (
+        ("school.students", STUDENT_WRITES, ""),
+        ("school.guardians", GUARDIAN_WRITES, "Guardian "),
+    ), names_set=_names_set)
+
+
 def guardian_name_of(row) -> str:
     """The guardian's name as one line: the parts when given, else the one line."""
     from .names import compose_full_name
@@ -226,6 +293,7 @@ IMPORTABLE_REQUIRED_FIELDS = ("middle_name", "address", "previous_school")
 def resolve_row(
     payload: dict, *, tenant, session, batch_branch, multi_branch,
     policies=None, rules=None, guardian_rules=None, documents_owed=None,
+    request=None,
 ):
     """Read one uploaded row into the thing the handler will write.
 
@@ -242,6 +310,12 @@ def resolve_row(
     cache, which the validator passes so a file of a thousand rows reads each
     once; the executor, writing one row, passes none of them.
 
+    *request* is the stand-in for whoever runs the import (:func:`import_request`).
+    A requirement binds only a caller able to supply the field: the school's
+    required fields and its guardian email rule yield to a caller who cannot
+    write them, as they do on the enrol form, and somebody with Write completes
+    the record later. Without a *request* every rule binds.
+
     At a school that requires documents before a child joins the roll, the
     row is an applicant (see :func:`create_student_from_row`), and says so in
     one warning. A blank admission number is then never refused, because an
@@ -253,7 +327,8 @@ def resolve_row(
 
     row = ResolvedRow()
     rules = rules or read_rules(tenant)
-    guardian_rules = guardian_rules or read_guardian_rules(tenant)
+    guardian_rules = (guardian_rules or read_guardian_rules(tenant)).binding(request)
+    binding_fields = rules.binding_required_fields(request, creating=True)
     policies = {} if policies is None else policies
     row.documents_owed = (
         confirm_documents(tenant) if documents_owed is None else tuple(documents_owed)
@@ -341,7 +416,7 @@ def resolve_row(
             ))
 
     for field in IMPORTABLE_REQUIRED_FIELDS:
-        if field in rules.required_fields and not getattr(row, field):
+        if field in binding_fields and not getattr(row, field):
             from .constants import REQUIRABLE_FIELDS
 
             row.issues.append(RowIssue(
@@ -696,7 +771,9 @@ def _issue_imported_number(student, *, tenant):
     issue_number(tenant, branch=student.branch, policy=policy, write=write)
 
 
-def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
+def create_student_from_row(
+    row: ResolvedRow, *, tenant, session, created_by, request=None,
+):
     """Write the student this row describes, through the module's own services.
 
     Not a bespoke create: the same guardian matching, the same state machine
@@ -712,9 +789,14 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
     an applicant's number is issued when they are confirmed. A number typed
     on the row is kept. The child joins the roll once their documents are
     uploaded and they are confirmed, like any applicant.
+
+    *request* is the stand-in for whoever runs the import: the guardian is
+    created under the school's guardian rules as they bind that caller, the
+    same rules ``resolve_row`` judged the row by.
     """
     from .models import Student
     from .services import guardians as guardian_service
+    from .services.guardian_rules import read_guardian_rules
     from .services.placement import place
     from .services.status import transition
 
@@ -742,6 +824,7 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         middle_name=row.guardian_middle_name, last_name=row.guardian_last_name,
         full_name=row.guardian_full_name, phone=row.guardian_phone,
         email=row.guardian_email, address=row.address,
+        rules=read_guardian_rules(tenant).binding(request),
     )
     guardian_service.link(
         student, guardian, relationship=row.guardian_relationship,
@@ -776,7 +859,7 @@ def _payload_of(raw_row: dict, columns) -> dict:
     return {c.target_field: raw_row.get(c.column_name) for c in columns}
 
 
-def validate_students_import_batch(import_batch) -> list[dict]:
+def validate_students_import_batch(import_batch, actor=None) -> list[dict]:
     """Every fault in an uploaded roll, in the engine's issue shape.
 
     Errors block the import; warnings do not. The split follows one rule: what
@@ -797,6 +880,11 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     counted against a class's capacity and a row with no class is not warned
     about: the one warning that the child comes in as an applicant says what
     will happen.
+
+    With an *actor*, the file is read as that person will import it: every
+    field they may not write is reported against its row, in the words
+    execution uses (:func:`student_row_write_refusal`), and the school's
+    requirements that do not bind them are not demanded.
     """
     from .services.admission import confirm_documents
     from .services.guardian_rules import read_guardian_rules
@@ -817,6 +905,7 @@ def validate_students_import_batch(import_batch) -> list[dict]:
     documents_owed = confirm_documents(tenant)
     policies: dict = {}
     rows = import_batch.preview_rows or []
+    request = import_request(actor, tenant, import_batch)
 
     issues: list[dict] = []
     first_seen: dict[tuple, int] = {}
@@ -843,12 +932,16 @@ def validate_students_import_batch(import_batch) -> list[dict]:
         })
 
     for row_number, raw_row in enumerate(rows, start=1):
+        payload = _payload_of(raw_row, columns)
+        refusal = student_row_write_refusal(request, payload)
+        for field in refusal.fields if refusal is not None else ():
+            issues.append(write_refusal_issue(refusal, field, row_number, header))
         resolved = resolve_row(
-            _payload_of(raw_row, columns),
+            payload,
             tenant=tenant, session=session,
             batch_branch=import_batch.branch, multi_branch=multi_branch,
             policies=policies, rules=rules, guardian_rules=guardian_rules,
-            documents_owed=documents_owed,
+            documents_owed=documents_owed, request=request,
         )
         for issue in resolved.issues:
             record(row_number, issue)

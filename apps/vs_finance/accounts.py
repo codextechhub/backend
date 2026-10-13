@@ -35,6 +35,30 @@ def account_subtree_ids(account) -> set[int]:
     return subtree
 
 
+def book_balance_hidden(request, account_ids) -> bool:
+    """Whether a figure summed over *account_ids* would restate a bank balance the caller may not read.
+
+    A ledger account behind a bank account carries that account's book balance
+    as its own (``finance.bankaccount.book_balance``). A group account adds up
+    its descendants, so its balance and its movement restate the bank's
+    whenever one of them is a bank ledger account: a role that cannot read the
+    book balance reads it through the group as soon as the group has a single
+    bank-ledger descendant. The rule is therefore the stricter one: the figure
+    is withheld when *any* account it sums backs a bank account and the caller
+    cannot read the switch, whatever else the group holds.
+
+    ``request=None`` is the escape hatch Field Access gives a render that acts
+    for nobody, and reads everything.
+    """
+    from vs_rbac.field_enforcement import can_read
+
+    from .models import BankAccount
+
+    if request is None or can_read(request, "finance.bankaccount.book_balance"):
+        return False
+    return BankAccount.objects.filter(gl_account_id__in=account_ids).exists()
+
+
 # Resolve a configured chart account by code.
 def resolve_account(entity, code: str, *, label: str = ""):
     """Return the active, postable :class:`Account` with ``code`` for ``entity``.

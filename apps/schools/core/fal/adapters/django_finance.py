@@ -796,12 +796,12 @@ class DjangoStudentCustomerAdapter(StudentCustomerPort):
                     key=_pupil_move_key(move_ref, account.pk, from_id, target.pk),
                     purpose=purpose[:255],
                     arriving=(
-                        "Customer {code} ({name}) moved from {from_branch} with "
-                        "{balance}, with the pupil, who now attends here."
+                        "Customer {code} ({name}) moved from {from_branch}, "
+                        "with the pupil, who now attends here."
                     ),
                     leaving=(
-                        "Customer {code} ({name}) moved to {to_branch} with "
-                        "{balance}, with the pupil, who now attends there."
+                        "Customer {code} ({name}) moved to {to_branch}, "
+                        "with the pupil, who now attends there."
                     ),
                 ))
             return tuple(moved)
@@ -1019,17 +1019,6 @@ def _cohort_branches(structure, pairs, to_bill, *, raiser, run_branch):
     return branches, moves
 
 
-def _balance_words(amount):
-    """A moved balance as an audit entry says it: owed, in credit, or nothing owed."""
-    from vs_finance.money import format_naira
-
-    if amount > 0:
-        return f"{format_naira(amount)} owed"
-    if amount < 0:
-        return f"{format_naira(-amount)} in credit"
-    return "nothing owed"
-
-
 def _move_key(structure, period_key, customer_id, from_id, to_id):
     """The receivable move's idempotency key: one pupil, one branch pair, one run.
 
@@ -1091,12 +1080,12 @@ def _carry_account(customer, from_id, to_id, names, *, actor_user, on, key, purp
     the one way an account is changed, and the move is written to the finance
     audit trail once for each side, because a branch-bound reader sees only
     their own branches' entries. ``arriving`` and ``leaving`` are the two
-    sentences, with ``{code}``, ``{name}``, ``{from_branch}``, ``{to_branch}``
-    and ``{balance}`` filled in: the arriving one is filed under the new branch
+    sentences, with ``{code}``, ``{name}``, ``{from_branch}`` and
+    ``{to_branch}`` filled in: the arriving one is filed under the new branch
     (the account's branch as it now stands), the leaving one under the old.
     Both carry the branch ids before and after and the net balance that moved,
-    and no other figure: what each branch earned or holds is in its own books,
-    not in the other's trail.
+    as details and not in the sentence: what each branch earned or holds is in
+    its own books, not in the other's trail.
     """
     from vs_finance.audit import record
     from vs_finance.constants import DocumentStatus, FinanceAuditAction
@@ -1114,7 +1103,7 @@ def _carry_account(customer, from_id, to_id, names, *, actor_user, on, key, purp
         return _account_move(customer, from_id, to_id, names, moved)
     words = {
         "code": customer.code, "name": customer.name, "from_branch": names[from_id],
-        "to_branch": names[to_id], "balance": _balance_words(moved.amount),
+        "to_branch": names[to_id],
     }
     details = {
         "from_branch": names[from_id], "to_branch": names[to_id],
@@ -1220,12 +1209,12 @@ def _refile_accounts(to_bill, moves, *, actor_user, structure, period_key, on):
             key=_move_key(structure, period_key, customer.pk, from_id, to_id),
             purpose=f"Fee run: pupil attends {names[to_id]}",
             arriving=(
-                "Customer {code} ({name}) moved from {from_branch} with {balance}, "
+                "Customer {code} ({name}) moved from {from_branch}, "
                 "billed here where the pupil attends."
             ),
             leaving=(
                 "Customer {code} ({name}) moved to {to_branch}, where the pupil "
-                "attends, with {balance}."
+                "attends."
             ),
         ))
     return tuple(done)

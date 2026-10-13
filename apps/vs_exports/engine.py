@@ -168,9 +168,9 @@ def readable_fields(user, tenant):
     that arrived by email at seven in the morning carries what its owner could
     have seen on screen at the time, and nothing more.
     """
-    from vs_rbac.field_evaluator import get_field_access
+    from vs_rbac.field_evaluator import get_acting_field_access
 
-    access = get_field_access(user, tenant=tenant)
+    access = get_acting_field_access(user, tenant=tenant)
     return access.can_read
 
 

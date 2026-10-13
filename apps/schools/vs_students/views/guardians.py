@@ -590,12 +590,17 @@ class GuardianRulesView(StudentsViewMixin, APIView):
     def get(self, request):
         from ..services.guardian_rules import read_guardian_rules
 
-        return success_response(data=read_guardian_rules(self.tenant).as_dict())
+        return success_response(
+            data=read_guardian_rules(self.tenant).as_dict(request),
+        )
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
 
-        from ..services.guardian_rules import write_guardian_rules
+        from ..services.guardian_rules import (
+            read_guardian_rules,
+            write_guardian_rules,
+        )
 
         assert_caller_may_configure(
             request.user, self.tenant,
@@ -604,7 +609,11 @@ class GuardianRulesView(StudentsViewMixin, APIView):
         writer = GuardianRulesSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
+        # An email requirement the caller cannot read stays as stored.
+        data["email_required"] = read_guardian_rules(self.tenant).email_required_after(
+            request, data["email_required"],
+        )
         rules = write_guardian_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Guardian rules saved.", data=rules.as_dict())
+        return success_response("Guardian rules saved.", data=rules.as_dict(request))

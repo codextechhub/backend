@@ -161,27 +161,35 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         The beneficiary and the account are registered fields of
         ``payments.payout``, so the two columns carry their keys and an
         approver whose roles cannot read those fields is shown the batch
-        without them. The account is truncated to its last four digits here
-        whoever reads it: an approval document is kept for as long as the
-        approval is, and a complete account number does not need to be.
+        without them. A line that pays a vendor restates the vendor's banking
+        as well, so its columns also carry the vendor's matching bank keys
+        (:mod:`vs_payments.payout_access`). Those lines sit in a table of their
+        own whenever the batch also holds lines to the school's own bank, because
+        a column has one set of keys. The account is truncated to its last
+        four digits here whoever reads it: an approval document is kept for as
+        long as the approval is, and a complete account number does not need
+        to be.
         """
         from vs_finance.money import format_naira
 
-        instructions = document.instructions.order_by("id")
-        return document_details(
-            fields_section("Batch details", [
-                ("Provider", document.get_provider_display()),
-                ("Narration", document.narration),
-                ("Currency", getattr(document.currency, "code", "") or "-"),
-                ("Source account", str(document.source_account or "-")),
-            ]),
-            table_section(
-                "Beneficiaries",
+        from .payout_access import beneficiary_access, is_vendor_payout
+
+        instructions = list(document.instructions.order_by("id"))
+        groups = [
+            (vendor_backed, [row for row in instructions if is_vendor_payout(row) == vendor_backed])
+            for vendor_backed in (True, False)
+        ]
+        groups = [(vendor_backed, rows) for vendor_backed, rows in groups if rows] or [(False, [])]
+        titles = {True: "Vendor beneficiaries", False: "Other beneficiaries"}
+
+        def table(vendor_backed, rows):
+            return table_section(
+                titles[vendor_backed] if len(groups) > 1 else "Beneficiaries",
                 [
                     ("beneficiary", "Beneficiary",
-                     "payments.payout.beneficiary_name"),
+                     beneficiary_access("beneficiary_name", vendor_backed=vendor_backed)),
                     ("account", "Account",
-                     "payments.payout.beneficiary_account_number"),
+                     beneficiary_access("beneficiary_account_number", vendor_backed=vendor_backed)),
                     ("amount", "Amount"),
                     ("narration", "Narration"),
                 ],
@@ -192,9 +200,18 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
                         "amount": format_naira(row.amount),
                         "narration": row.narration or "-",
                     }
-                    for row in instructions
+                    for row in rows
                 ],
-            ),
+            )
+
+        return document_details(
+            fields_section("Batch details", [
+                ("Provider", document.get_provider_display()),
+                ("Narration", document.narration),
+                ("Currency", getattr(document.currency, "code", "") or "-"),
+                ("Source account", str(document.source_account or "-")),
+            ]),
+            *[table(vendor_backed, rows) for vendor_backed, rows in groups],
         )
 
     def on_submitted(self, instance, context) -> None:
