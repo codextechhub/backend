@@ -651,7 +651,13 @@ class Command(BaseCommand):
     # ── corrections, reminders, reasons ───────────────────────────────────
 
     def _corrections(self, tenant, admin, c1, no_email):
-        """Three corrections on C1's closed days: one waiting, one approved, one rejected."""
+        """Three corrections on C1's closed days: one waiting, one approved, one rejected.
+
+        The days are counted back from today, so on a later day they land on
+        different dates. Each correction is therefore recognised by its note
+        before its day and pupil are worked out: one already filed is kept, and
+        only one never filed is looked for on today's days.
+        """
         if len(c1.past) < 4:
             return
         teacher = c1.teacher_user
@@ -669,13 +675,20 @@ class Command(BaseCommand):
              False, "The gate log shows 08:40."),
         ]
         for day, student_id, to_mark, code, note, approve, decision_note in plan:
-            mark = StudentMark.objects.filter(
-                register__school_class=c1.school_class, register__date=day,
-                student_id=student_id,
-            ).first()
+            request = (
+                CorrectionRequest.objects.filter(
+                    tenant=tenant, mark__register__school_class=c1.school_class, note=note,
+                )
+                .select_related("mark__student").first()
+            )
+            mark = request.mark if request is not None else (
+                StudentMark.objects.filter(
+                    register__school_class=c1.school_class, register__date=day,
+                    student_id=student_id,
+                ).first()
+            )
             if mark is None:
                 raise CommandError(f"No mark for pupil {student_id} in {c1.name} on {day}.")
-            request = CorrectionRequest.objects.filter(mark=mark).first()
             if request is None:
                 ctx = load_context(tenant, teacher, c1.school_class.pk, day)
                 request = corrections.request_correction(

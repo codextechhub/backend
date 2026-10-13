@@ -126,10 +126,10 @@ class SeedAttendanceScenariosTests(TestCase):
         cls.after_first_run = {slug: _counts(t) for slug, t in cls.tenants.items()}
 
     @classmethod
-    def run_seed(cls, **options) -> str:
-        """Run the seeder on the Monday, with the notices it triggers sent as if committed."""
+    def run_seed(cls, at=MONDAY, **options) -> str:
+        """Run the seeder on *at* (the Monday), with the notices it triggers sent as if committed."""
         out = StringIO()
-        with school_clock(MONDAY), cls.captureOnCommitCallbacks(execute=True):
+        with school_clock(at), cls.captureOnCommitCallbacks(execute=True):
             call_command("seed_attendance_scenarios", stdout=out, **options)
         return out.getvalue()
 
@@ -149,6 +149,18 @@ class SeedAttendanceScenariosTests(TestCase):
         for slug, tenant in self.tenants.items():
             with self.subTest(school=slug):
                 self.assertEqual(_counts(tenant), self.after_first_run[slug])
+
+    def test_a_run_on_a_later_day_keeps_the_corrections_it_already_filed(self):
+        # The corrections' days are counted back from today, so the next day
+        # they point at other dates; the run must keep the three it made.
+        tuesday = MONDAY + dt.timedelta(days=1)
+        self.run_seed(at=tuesday)
+        for slug, tenant in self.tenants.items():
+            with self.subTest(school=slug):
+                statuses = sorted(
+                    CorrectionRequest.objects.filter(tenant=tenant).values_list("status", flat=True),
+                )
+                self.assertEqual(statuses, ["APPROVED", "PENDING", "REJECTED"])
 
     def test_one_school_can_be_seeded_alone(self):
         out = self.run_seed(only="lagoon-view")
