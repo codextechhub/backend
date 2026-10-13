@@ -6,7 +6,7 @@ the settings and the reasons for excused absences read with
 ``attendance.register.view``, corrections with either correction key, the
 reports with ``attendance.report.view`` and the day's lessons with
 ``attendance.register.mark_any``, because a teacher's own lessons are on their
-own registers screen.
+own registers screen, and the staff register with ``attendance.staff.view``.
 
 Each field of the settings screen is a ``vs_config`` definition, labelled in
 its own words and anchored at the field name the screen's endpoint uses
@@ -24,6 +24,7 @@ from .constants import (
     PERM_REGISTER_MARK_ANY,
     PERM_REGISTER_VIEW,
     PERM_REPORT_VIEW,
+    PERM_STAFF_VIEW,
 )
 
 CAPABILITY = "attendance"
@@ -63,6 +64,13 @@ register(
         description="Today's lessons in levels that mark them, and which are still unmarked.",
         keywords=("attendance", "lesson", "period register", "missed a lesson"),
         screen="attendance.lessons", permission=PERM_REGISTER_MARK_ANY,
+        capability=CAPABILITY,
+    ),
+    Place(
+        kind=ACTION, key="attendance.staff_register", label="Staff register",
+        description="Which staff were present, late or absent at each branch today.",
+        keywords=("attendance", "staff attendance", "teacher attendance", "who is at work"),
+        screen="attendance.staff_register", permission=PERM_STAFF_VIEW,
         capability=CAPABILITY,
     ),
     Place(
