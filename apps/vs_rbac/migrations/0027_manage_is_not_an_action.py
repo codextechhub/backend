@@ -7,7 +7,9 @@ changes, or publication because the view had no narrower key to request.
 Each old grant, deny, pending role change, and dependency is copied to the
 concrete replacement keys before the old permissions and action are removed.
 Permission-group membership moves only to unrestricted replacements because a
-group must never carry a restricted key. The reverse is deliberately a no-op:
+group must never carry a restricted key. Each replacement carries a
+description naming its own verb, so the role screens can tell "Create dunning
+notices." from "Update dunning notices." The reverse is deliberately a no-op:
 several concrete decisions cannot be collapsed back into one broad grant
 without discarding later choices.
 """
@@ -101,6 +103,21 @@ def target_metadata(key):
     return "SENSITIVE", True
 
 
+def replacement_description(old_description, action_name, resource):
+    """The description a split-out permission carries, naming its own verb.
+
+    A broad description reads "Manage <things>." and its leading word is
+    swapped for the replacement's verb. Any other wording is rebuilt from the
+    verb and the resource's readable name, because copying it unchanged would
+    leave every sibling reading the same.
+    """
+    verb = action_name.replace("_", " ").capitalize()
+    if old_description.startswith("Manage "):
+        return f"{verb} {old_description[len('Manage '):]}"
+    label = (resource.label or "").strip() or resource.name.replace("_", " ")
+    return f"{verb} {label[:1].lower()}{label[1:]}."
+
+
 def replace_manage_permissions(apps, schema_editor):
     Action = apps.get_model("vs_rbac", "PermissionAction")
     Permission = apps.get_model("vs_rbac", "Permission")
@@ -127,7 +144,9 @@ def replace_manage_permissions(apps, schema_editor):
                     "module_id": old.module_id,
                     "resource_id": old.resource_id,
                     "action": action,
-                    "description": old.description,
+                    "description": replacement_description(
+                        old.description, action_name, old.resource,
+                    ),
                     "sensitivity_level": sensitivity,
                     "scope": old.scope,
                     "is_restricted": is_restricted,
@@ -137,6 +156,11 @@ def replace_manage_permissions(apps, schema_editor):
             )
             if not created:
                 changed = []
+                if new.description == old.description:
+                    new.description = replacement_description(
+                        old.description, action_name, old.resource,
+                    )
+                    changed.append("description")
                 if new.sensitivity_level != sensitivity:
                     new.sensitivity_level = sensitivity
                     changed.append("sensitivity_level")
