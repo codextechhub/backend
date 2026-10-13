@@ -32,7 +32,7 @@ from ..views.registers import (
     RemindView,
     SubmitView,
 )
-from ..views.reports import ReportExportView, ReportView
+from ..views.reports import ClassChronicView, ReportExportView, ReportView
 from ..views.settings import (
     ReasonCodeDetailView,
     ReasonCodeListCreateView,
@@ -108,6 +108,9 @@ OTHER_ROUTES = {
     "attendance-reports": (ReportView, "/v1/attendance/reports/", {}),
     "attendance-report-export": (
         ReportExportView, "/v1/attendance/reports/export/", {},
+    ),
+    "attendance-class-chronic": (
+        ClassChronicView, "/v1/attendance/classes/7/chronic/", {"class_id": 7},
     ),
     "attendance-settings": (SettingsView, "/v1/attendance/settings/", {}),
     "attendance-reason-codes": (

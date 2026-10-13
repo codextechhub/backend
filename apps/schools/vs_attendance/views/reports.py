@@ -16,16 +16,19 @@ which term.
 from __future__ import annotations
 
 from django.http import HttpResponse
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
 from vs_audit.models import AuditActionType
 from vs_finance.exports import EXPORT_FORMATS, render
+from schools.vs_academics.models import SchoolClass
+from vs_rbac.evaluator import has_permission
 from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
 
-from ..constants import PERM_REPORT_EXPORT, PERM_REPORT_VIEW
-from ..serializers import ReportSerializer
+from ..constants import PERM_REGISTER_VIEW, PERM_REPORT_EXPORT, PERM_REPORT_VIEW
+from ..exceptions import NotYourClass
+from ..serializers import ClassChronicSerializer, ReportSerializer
 from ..services import audit
 from ..services.export import TABLES, build_table, filename_for
 from ..services.report import build_report
@@ -107,3 +110,45 @@ class ReportExportView(AttendanceViewMixin, APIView):
             f'attachment; filename="{filename_for(table, term)}.{extension}"'
         )
         return response
+
+
+class ClassChronicView(AttendanceViewMixin, APIView):
+    """GET /v1/attendance/classes/<class_id>/chronic/
+
+    The pupils of one class whose rate for the term (``?term=``, the current
+    one by default) is below the school's threshold: the report's chronic list,
+    narrowed to the class, counting only the days they spent in it.
+
+    A reader of the reports may ask about any class in their branches. The
+    class's own teacher may ask about it with the register key alone, because
+    knowing which of their own pupils are slipping is part of teaching them;
+    any other class is refused. A class of another school answers 404.
+
+    docstring-name: Chronic absence in one class
+    """
+
+    rbac_permission = PERM_REGISTER_VIEW
+
+    def get(self, request, class_id):
+        school_class = (
+            SchoolClass.objects.filter(tenant=self.tenant, pk=class_id, is_active=True)
+            .select_related("class_teacher").first()
+        )
+        if school_class is None:
+            raise NotFound("No such class at this school.")
+        leads = (
+            school_class.class_teacher is not None
+            and school_class.class_teacher.user_id == request.user.pk
+        )
+        if not (leads or has_permission(request.user, PERM_REPORT_VIEW, tenant=self.tenant)):
+            raise NotYourClass(
+                f"You can see who is slipping only in the class you lead. "
+                f"Ask an administrator about {school_class.name}.",
+            )
+        body = build_report(
+            self.tenant, request.user, term_id=_term_id(request), class_ids={school_class.pk},
+        )
+        body["school_class"] = {"id": school_class.pk, "name": school_class.name}
+        return success_response(
+            data=ClassChronicSerializer(body, context={"request": request}).data,
+        )

@@ -49,6 +49,7 @@ from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
 from ..constants import CorrectionStatus, Mark
 from ..models import ClassRegister, RegisterReminder, StudentMark
 from . import corrections, lessons, missed
+from .next_lesson import next_lesson
 from .rates import rate_percent
 from .registers import RegisterContext, register_status
 from .roster import rosters_as_at
@@ -245,6 +246,10 @@ def teacher_hub(tenant, user, *, on_date: dt.date | None = None) -> dict:
     with where its register stands. The list is empty, never absent, and
     ``lesson_marking_on`` says whether any level marks lessons at all, so a
     screen can tell a teacher with no lessons from a school that marks none.
+
+    ``next_lesson`` is the caller's next lesson from now (:mod:`.next_lesson`),
+    whether or not the school marks lessons; it is answered only for today,
+    since "next" means nothing on a day being looked back at.
     """
     branches = school_branches(tenant)
     visible = visible_branch_ids(user, tenant)
@@ -304,6 +309,7 @@ def teacher_hub(tenant, user, *, on_date: dt.date | None = None) -> dict:
         "closed": whole_day_closed(led, days),
         "classes": cards,
         "lesson_marking_on": bool(levels),
+        "next_lesson": next_lesson(tenant, user) if on_date == tenant_today(tenant) else None,
         "lessons": [
             {
                 "slot_id": lesson.slot.pk,

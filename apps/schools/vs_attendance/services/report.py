@@ -271,12 +271,14 @@ def _counted_in_segments(stretches, class_id, index) -> bool:
     )
 
 
-def build_report(tenant, user, *, term_id=None, branch=None) -> dict:
+def build_report(tenant, user, *, term_id=None, branch=None, class_ids=None) -> dict:
     """The report for the term named by *term_id* (the default term when none is named).
 
     Raises 404 for a term that is not this school's. A caller sees only the
     classes of the branches they can see; *branch* narrows further and is
-    resolved and checked by the view.
+    resolved and checked by the view. *class_ids* narrows to those classes, so
+    one class's figures are this report's arithmetic and never a second copy of
+    it; whether the caller may ask about them is the view's to decide.
     """
     from schools.vs_calendar.constants import CFG_WEEK_STARTS_ON
     from schools.vs_calendar.services.calendar_rules import read_calendar_rules
@@ -296,6 +298,8 @@ def build_report(tenant, user, *, term_id=None, branch=None) -> dict:
         .select_related("session", "level", "branch", "class_teacher", "class_teacher__user"),
     )
     placed, _ = placed_classes(classes, branches, visible_branch_ids(user, tenant), branch)
+    if class_ids is not None:
+        placed = [(c, home) for c, home in placed if c.pk in class_ids]
     start = term.start_date
     latest_today = max(
         (branch_today(tenant, home) for _, home in placed), default=today,

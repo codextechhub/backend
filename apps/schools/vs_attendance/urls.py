@@ -19,7 +19,7 @@ from .views.registers import (
     RemindView,
     SubmitView,
 )
-from .views.reports import ReportExportView, ReportView
+from .views.reports import ClassChronicView, ReportExportView, ReportView
 from .views.settings import (
     ReasonCodeDetailView,
     ReasonCodeListCreateView,
@@ -109,6 +109,10 @@ urlpatterns = [
         StudentAttendanceView.as_view(), name="attendance-student",
     ),
     path("reports/", ReportView.as_view(), name="attendance-reports"),
+    path(
+        "classes/<int:class_id>/chronic/",
+        ClassChronicView.as_view(), name="attendance-class-chronic",
+    ),
     path(
         "reports/export/",
         ReportExportView.as_view(), name="attendance-report-export",

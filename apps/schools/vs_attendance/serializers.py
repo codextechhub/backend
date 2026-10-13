@@ -615,6 +615,25 @@ class TeacherCardSerializer(FieldAccessMixin, serializers.Serializer):
     submitted_by_name = serializers.CharField(read_only=True, allow_null=True)
 
 
+class NextLessonSerializer(serializers.Serializer):
+    """A teacher's next lesson from now, as the timetable gives it.
+
+    Timetable facts (when, which class, which subject, which room), not a mark
+    or a figure, so no attendance switch governs it.
+    """
+
+    date = serializers.DateField(read_only=True)
+    date_label = serializers.CharField(read_only=True)
+    is_today = serializers.BooleanField(read_only=True)
+    period_label = serializers.CharField(read_only=True)
+    start_time = serializers.TimeField(read_only=True, format="%H:%M")
+    end_time = serializers.TimeField(read_only=True, format="%H:%M")
+    subject = serializers.CharField(read_only=True)
+    class_name = serializers.CharField(read_only=True)
+    room_name = serializers.CharField(read_only=True, allow_null=True)
+    branch_name = serializers.CharField(read_only=True, allow_null=True)
+
+
 class TeacherHubSerializer(FieldAccessMixin, serializers.Serializer):
     """A teacher's own registers for one day."""
 
@@ -625,6 +644,7 @@ class TeacherHubSerializer(FieldAccessMixin, serializers.Serializer):
     closed = serializers.DictField(read_only=True, allow_null=True)
     classes = TeacherCardSerializer(many=True, read_only=True)
     lesson_marking_on = serializers.BooleanField(read_only=True)
+    next_lesson = NextLessonSerializer(read_only=True, allow_null=True)
     lessons = LessonCardSerializer(many=True, read_only=True)
 
 
@@ -828,6 +848,23 @@ class ReportSerializer(_LessonBlocks, FieldAccessMixin, serializers.Serializer):
     not_taken = ReportNotTakenRowSerializer(many=True, read_only=True)
     branch_dimension = serializers.BooleanField(read_only=True)
     lessons_missed = ReportLessonsMissedRowSerializer(many=True, read_only=True)
+
+
+class ClassChronicSerializer(FieldAccessMixin, serializers.Serializer):
+    """One class's chronic-absence list for a term.
+
+    The list is made of figures, so it follows the switch on the register's
+    counts, as the report's own chronic list does: a reader who may not read
+    the counts gets the class and the term and no list.
+    """
+
+    field_resource = FIELD_RESOURCE
+
+    school_class = serializers.DictField(read_only=True)
+    term = serializers.DictField(read_only=True, allow_null=True)
+    terms = serializers.ListField(child=serializers.DictField(), read_only=True)
+    threshold = serializers.IntegerField(read_only=True)
+    chronic = ReportChronicRowSerializer(many=True, read_only=True)
 
 
 # ── Settings and reasons ───────────────────────────────────────────────────

@@ -554,3 +554,44 @@ class QueryCountTests(_Report):
         # so the 10th (L-or-P-or-A of that pupil) is not counted.
         self.assertEqual(row["roster_size"], 2)
         self.assertEqual(row["absent"] + row["present"] + row["excused"], 8)
+
+
+class ClassChronicTests(_Report):
+    """One class's chronic list: the report's, narrowed to the class."""
+
+    def class_chronic(self, user, school_class, **params):
+        return TenantAPIClient(user).get(
+            reverse("attendance-class-chronic", kwargs={"class_id": school_class.pk}), params,
+        )
+
+    def test_the_class_teacher_sees_their_own_pupils_below_the_line(self):
+        response = self.class_chronic(self.eze, self.jss1a)
+        self.assertEqual(response.status_code, 200, response.data)
+        body = self.data(response)
+        self.assertEqual(body["school_class"]["name"], "JSS1 A")
+        self.assertEqual(body["threshold"], 90)
+        self.assertEqual(
+            [(r["student"]["name"], r["rate"]) for r in body["chronic"]],
+            [("Chiamaka Nwosu", 33.3), ("Kelechi Eze", 66.7), ("Tunde Bello", 66.7)],
+        )
+
+    def test_a_teacher_cannot_ask_about_a_class_they_do_not_lead(self):
+        response = self.class_chronic(self.bello, self.jss1a)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "NOT_YOUR_CLASS")
+
+    def test_a_report_reader_may_ask_about_any_class_in_their_branches(self):
+        body = self.data(self.class_chronic(self.reporter, self.jss1c))
+        self.assertEqual([r["student"]["name"] for r in body["chronic"]], ["Ngozi Ibe"])
+        lekki_only = self.data(self.class_chronic(self.lekki_reporter, self.jss1c))
+        self.assertEqual(lekki_only["chronic"], [])
+
+    def test_another_schools_class_is_not_found(self):
+        self.assertEqual(self.class_chronic(self.solo_reporter, self.jss1a).status_code, 404)
+
+    def test_hidden_counts_leave_out_the_list(self):
+        install_declared_fields("attendance.register")
+        set_field_access(self.teacher_role, "attendance.register.counts", read=False, write=False)
+        body = self.data(self.class_chronic(self.eze, self.jss1a))
+        self.assertNotIn("chronic", body)
+        self.assertEqual(body["school_class"]["name"], "JSS1 A")
