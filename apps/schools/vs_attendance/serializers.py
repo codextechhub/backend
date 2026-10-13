@@ -363,8 +363,10 @@ class StaffRowSerializer(FieldAccessMixin, serializers.Serializer):
 
     def get_role(self, obj):
         parts = []
-        if obj.get("job_title") and _readable(self, _STAFF_JOB_TITLE):
-            parts.append(obj["job_title"])
+        title = obj.get("job_title") if _readable(self, _STAFF_JOB_TITLE) else None
+        # A job title of "Class teacher" says what the classes part says already.
+        if title and not (obj.get("leads") and title.strip().lower() == "class teacher"):
+            parts.append(title)
         if obj.get("leads"):
             parts.append("Class teacher \u00b7 " + ", ".join(obj["leads"]))
         return " \u00b7 ".join(parts) if parts else None

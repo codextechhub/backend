@@ -66,6 +66,11 @@ class WhoIsOnTheRegisterTests(StaffFixture):
         self.assertEqual(ikeja[self.emeka_n.pk]["role"], "Teacher · Class teacher · SSS2 Science")
         self.assertEqual(ikeja[self.tunde_b.pk]["role"], "Economics Teacher")
 
+    def test_a_job_title_of_class_teacher_is_not_said_twice(self):
+        StaffProfile.objects.filter(pk=self.emeka_n.pk).update(job_title="Class Teacher")
+        ikeja = self.staff_rows(self.staff_day(self.registrar), self.ikeja)
+        self.assertEqual(ikeja[self.emeka_n.pk]["role"], "Class teacher · SSS2 Science")
+
     def test_a_fresh_register_has_nothing_marked_and_nobody_submitted_it(self):
         group = self.group(self.staff_day(self.registrar), self.lekki)
 
