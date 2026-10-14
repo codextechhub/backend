@@ -43,3 +43,22 @@ def provision_adjustment_approvals(entity):
         return
     ensure_tenant_approval_templates(entity.tenant, with_default_stages=False)
     ensure_tenant_expense_claim_template(entity.tenant, with_default_stages=False)
+
+
+def provision_payroll_approval(entity):
+    """Give this tenant its payroll approval route. Idempotent.
+
+    Unlike the adjustment routes, which arrive empty because who approves a
+    refund is the tenant's answer, payroll arrives with its one approval stage:
+    a payroll run is never posted or paid unreviewed, so there is no
+    "approval-undecided" state to leave it in. The stage's group starts with the
+    roles that hold ``finance.payrollrun.post``
+    (:func:`vs_finance.approvals.ensure_tenant_payroll_approval`); at provisioning
+    a new tenant usually has none yet, and the route is completed from its roles
+    when its first run is submitted.
+    """
+    from .approvals import ensure_tenant_payroll_approval
+
+    if entity.tenant_id is None:  # Platform-level books have no tenant to seed for.
+        return
+    ensure_tenant_payroll_approval(entity.tenant)

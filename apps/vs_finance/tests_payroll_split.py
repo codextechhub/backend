@@ -12,6 +12,8 @@ one journal exactly as before.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 import datetime
 
 from core.test_utils import TenantAPIClient, exited_people
@@ -100,6 +102,7 @@ class _SplitFixture(_FinanceBranchFixture):
         response = self.generate()
         self.assertEqual(response.status_code, 201, response.data)
         run = PayrollRun.objects.get(pk=response.data["data"]["id"])
+        approve_for_posting(run)
         posted = self.act(run, "post")
         self.assertEqual(posted.status_code, 200, posted.data)
         run.refresh_from_db()
@@ -167,6 +170,7 @@ class OneJournalPerBranchTests(_SplitFixture):
         self.salary(self.books, "Okon Udo", None, gross=30_000)
         run = PayrollRun.objects.get(pk=self.generate().data["data"]["id"])
 
+        approve_for_posting(run)
         response = self.act(run, "post")
 
         self.assertEqual(response.status_code, 400, response.data)
@@ -186,8 +190,8 @@ class OneJournalPerBranchTests(_SplitFixture):
         PayrollLine.objects.create(run=run, line_no=2, employee_name="Ada Obi", branch=self.ikeja,
                                    gross_amount=20_000)
 
+        approve_for_posting(run)
         post_payroll(run)
-
         self.assertEqual(
             {s.branch_id: s.gross_total for s in run.branch_shares.all()},
             {self.lekki.pk: 10_000, self.ikeja.pk: 20_000},
@@ -205,6 +209,7 @@ class OneJournalPerBranchTests(_SplitFixture):
         harbour = self.client_for(self.solo_tenant, "split-solo@harbour.test", branch=self.solo_main)
 
         run = PayrollRun.objects.get(pk=self.generate(harbour, self.solo_books).data["data"]["id"])
+        approve_for_posting(run)
         response = self.act(run, "post", client=harbour, books=self.solo_books)
 
         self.assertEqual(response.status_code, 200, response.data)
@@ -365,5 +370,6 @@ class WhoRaisesACentralRunTests(_SplitFixture):
         PayrollLine.objects.create(run=run, line_no=1, employee_name="Nobody", gross_amount=1_000)
 
         with self.assertRaises(PayrollBranchUnassignedError):
+            approve_for_posting(run)
             post_payroll(run)
         self.assertFalse(PayrollRunBranch.objects.filter(run=run).exists())

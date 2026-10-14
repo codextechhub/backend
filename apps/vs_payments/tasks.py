@@ -115,6 +115,32 @@ def dispatch_undispatched_payout_batches():
     return summary
 
 
+@shared_task(name="vs_payments.dispatch_payroll_batch")
+# Send one branch's payroll batch to the provider.
+def dispatch_payroll_batch_task(batch_id: int, actor_user_id=None):
+    """Send a payroll batch off the back of paying its run, outside that request's transaction.
+
+    See :func:`vs_payments.payroll_payouts.dispatch_payroll_batch`. Idempotent:
+    each instruction claims itself before its own send, so a retry cannot pay a
+    member of staff twice.
+    """
+    from .payroll_payouts import dispatch_payroll_batch
+
+    dispatch_payroll_batch(batch_id, actor_user_id)
+
+
+@shared_task(name="vs_payments.sweep_payroll_payouts")
+# Send payroll batches that are waiting for funds or whose hand-off was lost.
+def sweep_payroll_payouts():
+    """See :func:`vs_payments.payroll_payouts.sweep_payroll_batches`. Safe to re-run."""
+    from .payroll_payouts import sweep_payroll_batches
+
+    summary = sweep_payroll_batches()
+    if summary["abandoned"] or summary["failures"]:
+        logger.warning("sweep_payroll_payouts: %s", summary)
+    return summary
+
+
 @shared_task(
     name="vs_payments.recover_unconfirmed_payments",
     acks_late=True, reject_on_worker_lost=True,

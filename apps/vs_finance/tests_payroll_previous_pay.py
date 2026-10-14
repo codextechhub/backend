@@ -20,6 +20,8 @@ are proved: Tunde Bello is paid by Ikeja to March and by Lekki from April.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 from django.test import SimpleTestCase
 
 from core.test_utils import TenantAPIClient
@@ -202,6 +204,7 @@ class _StartersFixture(_StatutoryFixture):
     def raise_run(cls, month, *, post=True):
         run = generate_run_from_roster(cls.solo_books, pay_date=_date(month, 25))
         if post:
+            approve_for_posting(run)
             post_payroll(run)
         return run
 
@@ -653,8 +656,8 @@ class BrightStarMovesHereTests(_StatutoryFixture):
         cls.runs = {}
         for month in range(6, 13):
             cls.runs[month] = generate_run_from_roster(cls.bright, pay_date=_date(month, 25))
+            approve_for_posting(cls.runs[month])
             post_payroll(cls.runs[month])
-
     def line(self, month, salary):
         return PayrollLine.objects.get(run=self.runs[month], salary=salary)
 

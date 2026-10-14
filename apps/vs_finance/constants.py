@@ -479,6 +479,62 @@ class PayrollRunStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+class PayrollPaymentRoute(models.TextChoices):
+    """How a tenant's posted payroll runs are paid.
+
+    ``OWN_BANK``: the bursar pays staff from the branch's bank and records the
+    payment against the run (the default). ``PAYSTACK``: paying the run sends
+    each member of staff's net pay through the payment provider, from the money
+    the platform holds for the branch. Allowed only while the tenant's online
+    money is held by the platform (``vs_payments`` custody mode ``HELD``).
+    """
+    OWN_BANK = "OWN_BANK", "Paid from the branch's own bank"
+    PAYSTACK = "PAYSTACK", "Paid through the payment provider"
+
+
+class StaffBankState(models.TextChoices):
+    """Whether a member of staff's bank account may be paid through the provider.
+
+    ``UNVERIFIED``: saved and not yet checked. ``VERIFIED``: the provider named
+    the account's holder and the name matches the staff member's. ``NEEDS_CONFIRMATION``:
+    the provider named a holder who does not match, so a second person must
+    confirm the account before it is paid. ``CONFIRMED``: that second person did.
+    ``FAILED``: the provider could not resolve the account. Only ``VERIFIED``
+    and ``CONFIRMED`` accounts are paid.
+    """
+    UNVERIFIED = "UNVERIFIED", "Not yet checked"
+    VERIFIED = "VERIFIED", "Verified"
+    NEEDS_CONFIRMATION = "NEEDS_CONFIRMATION", "Needs a second person to confirm"
+    CONFIRMED = "CONFIRMED", "Confirmed by a second person"
+    FAILED = "FAILED", "Could not be verified"
+
+
+#: Bank states a payroll payout may be sent to.
+PAYABLE_BANK_STATES = frozenset({StaffBankState.VERIFIED, StaffBankState.CONFIRMED})
+
+
+class PayrollLinePayState(models.TextChoices):
+    """Where one payroll line's payment through the provider stands.
+
+    Blank on a line paid the ordinary way (a bursar recording a payment from the
+    bank) or not yet paid. ``NEEDS_BANK_DETAILS``: the staff member has no
+    verified or confirmed bank account, so nothing was sent. ``WAITING_FOR_FUNDS``:
+    the branch holds less than its batch needs. ``SENT``: with the provider.
+    ``PAID`` and ``FAILED`` are the provider's final answers; a failed line can be retried.
+    """
+    NEEDS_BANK_DETAILS = "NEEDS_BANK_DETAILS", "Needs bank details"
+    WAITING_FOR_FUNDS = "WAITING_FOR_FUNDS", "Waiting for funds"
+    SENT = "SENT", "Sent"
+    PAID = "PAID", "Paid"
+    FAILED = "FAILED", "Failed"
+
+
+class PayrollLinePaidVia(models.TextChoices):
+    """How a paid line was paid: through the provider, or from the branch's own bank."""
+    PAYSTACK = "PAYSTACK", "Through the payment provider"
+    OWN_BANK = "OWN_BANK", "From the branch's own bank"
+
+
 # Define Salary Component Kind values.
 class SalaryComponentKind(models.TextChoices):
     """Whether a salary-structure component adds to pay or is withheld from it."""
@@ -791,6 +847,11 @@ class FinanceAuditAction(models.TextChoices):
     SALARY_STRUCTURE_CHANGED = "SALARY_STRUCTURE_CHANGED", "Salary structure changed"
     PAYROLL_DEDUCTION_CHANGED = "PAYROLL_DEDUCTION_CHANGED", "Payroll deduction changed"
     PAYSLIPS_ISSUED = "PAYSLIPS_ISSUED", "Payslips issued"
+    STAFF_BANK_CHANGED = "STAFF_BANK_CHANGED", "Staff bank account changed"
+    STAFF_BANK_CONFIRMED = "STAFF_BANK_CONFIRMED", "Staff bank account confirmed"
+    PAYROLL_PAYOUTS_SENT = "PAYROLL_PAYOUTS_SENT", "Payroll sent through the provider"
+    PAYROLL_LINES_PAID_OWN_BANK = (
+        "PAYROLL_LINES_PAID_OWN_BANK", "Payroll lines paid from the branch's bank")
     INTER_BRANCH_REQUESTED = "INTER_BRANCH_REQUESTED", "Inter-branch transfer requested"
     INTER_BRANCH_SENT = "INTER_BRANCH_SENT", "Inter-branch transfer sent"
     INTER_BRANCH_DECLINED = "INTER_BRANCH_DECLINED", "Inter-branch transfer request declined"
@@ -1092,6 +1153,15 @@ WF_DEFAULT_TEMPLATE_CODE = "standard"
 WF_ADJUSTMENT_APPROVER_GROUP = "finance-adjustment-approver"
 WF_SENIOR_ADJUSTMENT_APPROVER_GROUP = "finance-senior-adjustment-approver"
 WF_EXPENSE_CLAIM_APPROVER_GROUP = "finance-expense-claim-approver"
+
+#: The approver group a tenant's payroll route names. Unlike the groups above it is
+#: not created empty: it starts with the roles that hold ``finance.payrollrun.post``
+#: (:func:`vs_finance.approvals.ensure_tenant_payroll_approval`), so a tenant's
+#: payroll is never left with a route nobody can walk.
+WF_PAYROLL_APPROVER_GROUP = "finance-payroll-approver"
+
+#: The workflow document type of a payroll run.
+WF_PAYROLL_DOCUMENT_TYPE = "finance.payroll_run"
 
 #: Kobo at or above which a concession or credit note needs a second person.
 #:

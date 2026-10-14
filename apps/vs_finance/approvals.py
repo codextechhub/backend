@@ -646,6 +646,112 @@ def ensure_tenant_expense_claim_template(
 
 
 # --------------------------------------------------------------------------- #
+# Payroll runs: every tenant has a route, and a missing one is made, not skipped #
+# --------------------------------------------------------------------------- #
+
+def payroll_approval_route(tenant):
+    """The tenant's own route for payroll runs, or ``None`` when it has none."""
+    from vs_workflow.models import WorkflowTemplate
+
+    from .constants import WF_DEFAULT_TEMPLATE_CODE, WF_PAYROLL_DOCUMENT_TYPE
+
+    return WorkflowTemplate.all_objects.filter(
+        tenant=tenant, branch=None, document_type=WF_PAYROLL_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE,
+    ).first()
+
+
+def ensure_tenant_payroll_approval(tenant, *, created_by=None):
+    """Give one tenant its payroll route. Returns ``(template, created)``.
+
+    A payroll run is never posted or paid on its preparer's word, and a tenant
+    that has configured nothing is not thereby exempt: no route means this one is
+    made, never that the run goes ahead unreviewed. The route has one approval
+    stage, resolved through the tenant's payroll approver group, with
+    ``skip_if_no_approvers`` off so a stage nobody can staff parks the run and
+    names the group to fill rather than approving it.
+
+    The group starts with the tenant's roles that hold
+    ``finance.payrollrun.post`` (the key that has always meant "accrues payroll"),
+    so a tenant that could post payroll yesterday has people who can approve it
+    today. That list is the tenant's to edit from then on; it is written only when
+    the group is created, so an edit is never overwritten. The preparer is left
+    off every decision by the engine whatever the group holds
+    (:meth:`vs_finance.workflow_handlers.PayrollRunHandler.approval_conflict_ids`).
+
+    Non-destructive and idempotent, as the other finance routes are: a route with
+    a live stage is somebody's decision and is left as configured (``created`` is
+    False); a route with none is the placeholder and is filled in. Called when a
+    tenant's books are provisioned, by ``seed_payroll_approvals`` for tenants that
+    already exist, and by the payroll submit route itself, which is the guarantee:
+    whichever of them ran first, submitting a run finds a route.
+    """
+    from vs_rbac.models import TenantRolePermission
+    from vs_workflow.constants import GroupMemberKind
+    from vs_workflow.models import WorkflowApproverGroupMember
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    from .constants import (
+        WF_DEFAULT_TEMPLATE_CODE,
+        WF_PAYROLL_APPROVER_GROUP,
+        WF_PAYROLL_DOCUMENT_TYPE,
+    )
+
+    if tenant is None:
+        raise ValueError("A tenant is required to give it a payroll approval route.")
+    existing = payroll_approval_route(tenant)
+    if existing is not None and existing.stages.filter(retired_at__isnull=True).exists():
+        return existing, False
+
+    group, made = ensure_approver_group(
+        tenant, WF_PAYROLL_APPROVER_GROUP,
+        description="Approves payroll runs before they are posted and paid. Starts "
+                    "with the roles that can post payroll; the person who prepared "
+                    "a run can never approve it.",
+    )
+    if made:
+        roles = (
+            TenantRolePermission.objects.filter(
+                role__tenant=tenant, granted=True, role__status="ACTIVE",
+                permission__key="finance.payrollrun.post")
+            .values_list("role_id", flat=True).distinct())
+        for role_id in roles:
+            WorkflowApproverGroupMember.objects.create(
+                group=group, kind=GroupMemberKind.ROLE, role_id=role_id)
+    template = publish_template(
+        tenant=tenant, branch=None, document_type=WF_PAYROLL_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE, name="Payroll run approval",
+        description="A second person approves each payroll run before it is posted "
+                    "and paid. The person who prepared it cannot.",
+        created_by=created_by,
+        stages_payload=[{
+            "code": "payroll-approval",
+            "label": "Payroll approval",
+            "kind": "APPROVAL",
+            "order": 10,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": WF_PAYROLL_APPROVER_GROUP,
+            "approver_scope": "SCHOOL",
+            "advance_rule": "ANY",
+            "on_rejection": "RETURN_TO_REQUESTER",
+            "skip_if_no_approvers": False,
+        }],
+    )
+    return template, True
+
+
+def payroll_run_approved(run) -> bool:
+    """Whether ``run`` has an approved request: the evidence payment through the provider needs.
+
+    A run posted before payroll approvals existed has no request at all and is
+    not approved, whatever its status; it can still be paid from the branch's
+    bank, but never through the provider.
+    """
+    return approval_states([run])[run.pk] == APPROVAL_APPROVED
+
+
+# --------------------------------------------------------------------------- #
 # Petty cash returns: a ready-made route a tenant may adopt                    #
 # --------------------------------------------------------------------------- #
 

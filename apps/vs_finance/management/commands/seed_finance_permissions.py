@@ -125,8 +125,19 @@ FINANCE_RESOURCES = [
     # Reaching the payroll screens at all is what these keys decide. Whether a
     # holder sees the figures on a line, or on a salary row, is a Field Access
     # switch on the role.
+    # ``submit`` hands a draft run to the approval route. No approver key: who
+    # approves a run is decided by the route's group, never by a permission, and the
+    # person who prepared it never can.
     ("payrollrun",   "payroll runs",           [("view", "SENSITIVE"), ("create", "SENSITIVE"),
+                                                ("submit", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("pay", "CRITICAL")]),
+    # A member of staff's bank account for payroll paid through the payment
+    # provider. ``update`` saves it (the provider then names its holder);
+    # ``confirm`` is the second person's check of an account whose holder's name
+    # did not match, held apart so it can be given to someone who does not
+    # maintain the accounts. The service refuses the person who made the change.
+    ("staff_bank",   "staff bank accounts",    [("view", "SENSITIVE"), ("update", "SENSITIVE"),
+                                                ("confirm", "CRITICAL")]),
     # The salary roster / structures (master data behind a run) get their own resource so
     # editing them is not conflated with running payroll. Every verb is SENSITIVE - even
     # listing exposes who earns what.

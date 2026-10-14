@@ -1415,3 +1415,169 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
                 ],
             ),
         )
+
+
+@register_handler("finance.payroll_run")
+class PayrollRunHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.PayrollRun`.
+
+    A payroll run is approved, then posted, then paid, each as its own act, so
+    approval here releases nothing: it moves the run to APPROVED and stops.
+    Posting (:func:`vs_finance.payroll.post_payroll`) and paying refuse a run that
+    has not been approved, and a run posted before approvals existed is told apart
+    by having no approved request at all.
+
+    The person who prepared the run (``created_by``) is never an approver, at any
+    stage, whichever group the route names and whoever they are proxied by:
+    :meth:`approval_conflict_ids` adds them to the people who put it forward. A
+    submission is refused outright when that leaves nobody able to approve
+    (:meth:`validate_document`), instead of parking a run nobody can move.
+    """
+    noun = "Payroll run"
+
+    @property
+    def document_model(self):
+        from .models import PayrollRun
+
+        return PayrollRun
+
+    def approval_conflict_ids(self, instance):
+        """Whoever put the run forward, and whoever prepared it."""
+        from vs_workflow.services.approvers import requester_ids
+
+        ids = set(requester_ids(instance))
+        prepared_by = (
+            self.document_model.objects.filter(pk=instance.document_object_id)
+            .values_list("created_by_id", flat=True).first()
+        )
+        if prepared_by:
+            ids.add(prepared_by)
+        return ids
+
+    def ensure_month_open(self, document) -> None:
+        """Approval books nothing; the month is checked when the run is posted, per branch."""
+
+    def validate_document(self, document, requested_by) -> None:
+        """A draft with people on it, that could post, and that somebody other than its preparer can approve."""
+        from .constants import PayrollRunStatus
+        from .exceptions import PayrollError
+
+        if (getattr(document, "status", None) != DocumentStatus.DRAFT
+                or document.run_status != PayrollRunStatus.DRAFT):
+            raise InvalidInstanceStateError("Only a draft payroll run can be submitted for approval.")
+        self._refuse_second_request(document)
+        self._ready_to_post(document)
+        self._ensure_an_approver_exists(document, requested_by, PayrollError)
+
+    def preflight(self, document) -> None:
+        """The posting guards that can be known without posting: pay, and a branch for everyone."""
+        from .exceptions import PayrollError
+        from .payroll import _line_branch_ids, _require_every_line_placed
+
+        lines = list(document.lines.all())
+        if not lines:
+            raise PayrollError("A payroll run must have at least one line to be approved.")
+        if sum(int(line.gross_amount) for line in lines) <= 0:
+            raise PayrollError("A payroll run must have a positive gross total to be approved.")
+        for line in lines:
+            if int(line.net_amount) < 0:
+                raise PayrollError(
+                    f"Net pay is negative for {line.employee_name or line.employee_id}: "
+                    f"deductions exceed gross.")
+        _require_every_line_placed(document, _line_branch_ids(document))
+
+    def _ensure_an_approver_exists(self, document, requested_by, error) -> None:
+        """Refuse a submission nobody but the preparer could approve.
+
+        Resolved as the engine will resolve the first stage the run meets, with
+        the run's own conflict rule applied. A route whose only eligible approver
+        is the person preparing the run is not skipped and not left parked: the
+        sender is told, and what to do.
+        """
+        from django.contrib.contenttypes.models import ContentType
+        from vs_workflow.constants import StageKind, WorkflowInstanceStatus
+        from vs_workflow.models import WorkflowInstance
+        from vs_workflow.services.reassignment import preview_approvers
+        from vs_workflow.services.resolution import document_scope, resolve_template
+
+        tenant, branch = document_scope(document, default_tenant=requested_by.tenant)
+        template = resolve_template(
+            self.document_type, tenant=tenant, branch=branch,
+            code=self.resolve_default_template_code(document))
+        if template is None:
+            return
+        stage = (template.stages.filter(retired_at__isnull=True, kind=StageKind.APPROVAL)
+                 .order_by("order").first())
+        if stage is None:
+            return
+        stand_in = WorkflowInstance(
+            tenant=tenant, branch=branch, template=template,
+            document_content_type=ContentType.objects.get_for_model(type(document)),
+            document_object_id=str(document.pk), document_type=self.document_type,
+            status=WorkflowInstanceStatus.SUBMITTED, requested_by=requested_by)
+        if not preview_approvers(stage, stand_in):
+            raise error(
+                f"Nobody except the person who prepared payroll run "
+                f"{document.document_number or document.pk} can approve it, and the person "
+                f"who prepares a run can never approve it. Add someone else to the payroll "
+                f"approver group first, then send it again.")
+
+    def post(self, document, *, actor_user) -> None:  # pragma: no cover - never reached
+        raise NotImplementedError("Approving a payroll run posts nothing.")
+
+    def on_approved(self, instance, context) -> None:
+        """Mark the run approved. Posting and paying are separate acts it unlocks."""
+        doc = self._load(instance)
+        doc.status = DocumentStatus.APPROVED
+        doc.save(update_fields=["status", "updated_at"])
+
+    #: Approval can be undone until the run is posted: nothing has happened yet.
+    REVERSIBLE_STATUSES = frozenset({
+        DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED,
+    })
+
+    def on_action_reversed(self, instance, context) -> None:
+        """Put a run whose decision was undone back in front of its approvers."""
+        with transaction.atomic():
+            doc = self._load(instance)
+            if context.get("was_returned") and doc.status == DocumentStatus.DRAFT:
+                self._ready_to_post(doc)
+            if doc.status in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
+                doc.status = DocumentStatus.PENDING_APPROVAL
+                doc.save(update_fields=["status", "updated_at"])
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Payroll run",
+            "fields": summary_fields([
+                ("Pay date", document.pay_date.isoformat()),
+                ("Period", document.period_label),
+                ("Staff", str(document.lines.count())),
+                ("Net pay", format_naira(document.net_total), _key("payrollrun", "net_amount")),
+            ]),
+            "link": _console_document_id_link("/finance/payroll", document),
+        }
+
+    def details(self, document) -> dict:
+        branches = {}
+        for line in document.lines.select_related("branch"):
+            row = branches.setdefault(
+                line.branch.name if line.branch_id else "Not yet given a branch",
+                {"staff": 0, "net": 0})
+            row["staff"] += 1
+            row["net"] += int(line.net_amount)
+        return document_details(
+            fields_section("Payroll run", [
+                ("Pay date", document.pay_date.isoformat()),
+                ("Period", document.period_label),
+                ("Narration", document.narration),
+            ]),
+            table_section(
+                "By branch",
+                [("branch", "Branch"), ("staff", "Staff"),
+                 ("net", "Net pay", _key("payrollrun", "net_amount"))],
+                [{"branch": name, "staff": str(row["staff"]), "net": format_naira(row["net"])}
+                 for name, row in sorted(branches.items())],
+            ),
+        )

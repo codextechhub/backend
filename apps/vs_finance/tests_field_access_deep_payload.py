@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from vs_finance.models import (
@@ -52,6 +53,7 @@ from vs_finance.models import (
     PettyCashReturn,
     SharedCostRule,
     SharedCostRuleShare,
+    StaffBankAccount,
 )
 from vs_finance.constants import (
     ChargeKind,
@@ -74,10 +76,15 @@ _SURFACE = "vs_finance.serializers."
 
 
 class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
-    resources = frozenset({"finance.bankaccount", "finance.payrollrun", "finance.salary"})
+    resources = frozenset({
+        "finance.bankaccount", "finance.payrollrun", "finance.salary", "finance.staff_bank",
+    })
     covers = frozenset({
         _SURFACE + "BankAccountSerializer",
+        _SURFACE + "PayrollRunSerializer",
         _SURFACE + "PayrollLineSerializer",
+        _SURFACE + "PayrollLinePaymentSerializer",
+        _SURFACE + "StaffBankAccountSerializer",
         _SURFACE + "EmployeeSalarySerializer",
         _SURFACE + "EmployeeSalaryNextTermsSerializer",
         _SURFACE + "EmployeeSalaryVersionSerializer",
@@ -154,19 +161,33 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
                 liability_account=Account.objects.get(entity=entity, code="2400"),
             ),
         )
+        person = get_user_model().objects.create_user(
+            email=f"ngozi-{code.lower()}@deep.test", password="pw", tenant=tenant, branch=None,
+            status="ACTIVE", first_name="Ngozi", last_name="Okafor",
+        )
+        account = StaffBankAccount.objects.create(
+            entity=entity, employee=person, bank_code="058", bank_name="GTBank",
+            account_number="0123456789", resolved_account_name="OKAFOR NGOZI",
+            verification_state="CONFIRMED", changed_by=person, confirmed_by=person,
+        )
+        line.pay_state, line.pay_note, line.payout_reference = "FAILED", "Bank said no.", "CXP-1"
+        line.save(update_fields=["pay_state", "pay_note", "payout_reference"])
         previous = PayBroughtForward.objects.create(
             salary=salary, tax_year=2026, employer_name="Greenfield Academy",
             gross_amount=900_000_00, taxable_pay=900_000_00, paye_amount=45_000_00,
             pension_amount=72_000_00, nhf_amount=5_000_00,
         )
-        return bank, line, salary, version, deduction, previous
+        return bank, line, salary, version, deduction, previous, account, run
 
     def samples(self):
         samples = []
-        for tenant, (bank, line, salary, version, deduction, previous) in self.records:
+        for tenant, (bank, line, salary, version, deduction, previous, account, run) in self.records:
             samples += [
                 Sample(_SURFACE + "BankAccountSerializer", bank, tenant=tenant),
+                Sample(_SURFACE + "PayrollRunSerializer", run, tenant=tenant),
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
+                Sample(_SURFACE + "PayrollLinePaymentSerializer", line, tenant=tenant),
+                Sample(_SURFACE + "StaffBankAccountSerializer", account, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalaryNextTermsSerializer", {
                     "effective_from": datetime.date(2099, 1, 1), "branch_id": None,

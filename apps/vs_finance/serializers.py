@@ -59,6 +59,7 @@ from .models import (
     PayrollLine,
     PayrollRun,
     PayrollRunBranch,
+    StaffBankAccount,
     SalaryComponent,
     PayrollLineItem,
     EmployeeDeduction,
@@ -2116,9 +2117,13 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "paye_source", "paye_source_label", "tax_table_id", "tax_basis", "items",
             "tax_state", "tax_state_name", "pfa_id", "pfa_name", "tax_id", "pension_pin",
             "components", "cost_center", "branch_id", "branch_name",
+            "pay_state", "pay_state_label", "paid_via", "paid_via_label", "pay_note",
+            "payout_reference",
         ]
 
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    pay_state_label = serializers.CharField(source="get_pay_state_display", read_only=True)
+    paid_via_label = serializers.CharField(source="get_paid_via_display", read_only=True)
 
     def get_employee_is_exited(self, obj):
         from core.person_exit import person_is_exited
@@ -2130,6 +2135,75 @@ class PayrollLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
         if obj.employee_id is None:
             data.pop("employee_is_exited", None)
         return data
+
+
+class PayrollLinePaymentSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One payroll line as the payment progress screen shows it.
+
+    The staff member's name and net pay sit behind the same switches as on the
+    run's lines (``finance.payrollrun``), and the payment state, its note and
+    the payout reference behind their own: a role that may follow a payroll's
+    payment but not read anybody's pay sees how many lines wait for bank
+    details and not whose they are or what they earn.
+    """
+
+    field_resource = "finance.payrollrun"
+
+    pay_state_label = serializers.CharField(source="get_pay_state_display", read_only=True)
+    paid_via_label = serializers.CharField(source="get_paid_via_display", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+    class Meta:
+        model = PayrollLine
+        fields = [
+            "id", "line_no", "employee_id", "employee_name", "net_amount",
+            "branch_id", "branch_name", "pay_state", "pay_state_label", "paid_via",
+            "paid_via_label", "pay_note", "payout_reference",
+        ]
+
+
+class StaffBankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """A staff member's bank account for payroll through the provider, behind Field Access.
+
+    The account number and the holder's name the bank gave are sensitive
+    switches of ``finance.staff_bank``; the bank, the verification state and
+    who changed and confirmed the account have their own, so a role that follows
+    which accounts still need a second person's confirmation need not read
+    anybody's account number.
+    """
+
+    field_resource = "finance.staff_bank"
+    field_access_detail = True
+
+    employee_name = serializers.SerializerMethodField()
+    verification_state_label = serializers.CharField(
+        source="get_verification_state_display", read_only=True)
+    is_payable = serializers.BooleanField(read_only=True)
+    changed_by_name = serializers.SerializerMethodField()
+    confirmed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffBankAccount
+        fields = [
+            "id", "employee_id", "employee_name", "bank_code", "bank_name",
+            "account_number", "resolved_account_name", "verification_state",
+            "verification_state_label", "verification_note", "verified_at", "is_payable",
+            "changed_by_name", "confirmed_by_name", "confirmed_at", "updated_at",
+        ]
+
+    @staticmethod
+    def _name(user):
+        return (" ".join(p for p in (user.first_name, user.last_name) if p).strip()
+                or user.email) if user is not None else None
+
+    def get_employee_name(self, obj):
+        return self._name(obj.employee)
+
+    def get_changed_by_name(self, obj):
+        return self._name(obj.changed_by)
+
+    def get_confirmed_by_name(self, obj):
+        return self._name(obj.confirmed_by)
 
 
 class PayrollRunPeopleListSerializer(serializers.ListSerializer):
@@ -2160,7 +2234,7 @@ class PayrollRunBranchSerializer(serializers.ModelSerializer):
         ]
 
 
-class PayrollRunSerializer(serializers.ModelSerializer):
+class PayrollRunSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.ModelSerializer):
     """A payroll run, whole or as the reader's branches' part of it.
 
     ``branch_shares`` is empty unless the run posted one journal per branch,
@@ -2177,6 +2251,8 @@ class PayrollRunSerializer(serializers.ModelSerializer):
     ``context["request"]``'s caller, so a response built without either key
     is narrowed rather than whole.
     """
+
+    field_resource = "finance.payrollrun"
 
     lines = PayrollLineSerializer(many=True, read_only=True)
     branch_shares = PayrollRunBranchSerializer(many=True, read_only=True)
@@ -2201,7 +2277,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "branch_shares", "lines",
-            "partial_view",
+            "partial_view", "approval_state", "approval_returned",
         ]
 
     def get_net_total_naira(self, obj) -> str:

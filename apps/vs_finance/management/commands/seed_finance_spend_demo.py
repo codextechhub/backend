@@ -21,6 +21,8 @@ Usage::
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 import datetime
 import random
 
@@ -127,6 +129,7 @@ class Seeder:
             )
         compute_payroll(run)
         run.refresh_from_db()
+        approve_for_posting(run)
         post_payroll(run, actor_user=self.actor)
         pay_payroll(run, bank_account=self.bank("payroll"), pay_date=self.day(1), actor_user=self.actor)
 

@@ -60,6 +60,7 @@ APPROVAL_TYPES = {
     "finance.bank_transfer": ("transfer between own accounts", "transfers between own accounts"),
     "finance.inter_branch_transfer": ("inter-branch transfer", "inter-branch transfers"),
     "finance.petty_cash_return": ("petty cash return", "petty cash returns"),
+    "finance.payroll_run": ("payroll run", "payroll runs"),
     "payments.payout_batch": ("payout", "payouts"),
 }
 

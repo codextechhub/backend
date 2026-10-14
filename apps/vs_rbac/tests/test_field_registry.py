@@ -84,6 +84,7 @@ EXPECTED_RESOURCES = {
     ("gradebook", "result"),
     ("gradebook", "setup"),
     ("gradebook", "sheet"),
+    ("finance", "staff_bank"),
     ("import", "batches"),
     ("import", "jobs"),
     ("import", "templates"),
@@ -311,6 +312,20 @@ SENSITIVE_BEYOND_THE_CONVERSION = {
         "beside a fee hold. It is the school's money position for a named family, "
         "so a role reads it only when given Read; the roles whose daily work is "
         "holds (school admin and finance admin) read it by default."
+    ),
+    "finance.staff_bank.bank": (
+        "A member of staff's bank, where their pay is sent. A new resource with no key that "
+        "ever read it, closed by default like the bank account number beside it: a school "
+        "opens it per role."
+    ),
+    "finance.staff_bank.account_number": (
+        "The account a member of staff is paid into. A new resource with no key that ever "
+        "read it; closed by default, as a bank account's number is."
+    ),
+    "finance.staff_bank.resolved_account_name": (
+        "The holder's name the bank gave for a staff member's account, which is personal "
+        "data of whoever holds it. A new resource with no key that ever read it; closed by "
+        "default and opened per role."
     ),
     "school.students.status_reason": (
         "Free text a member of staff writes about a child: why this pupil was "

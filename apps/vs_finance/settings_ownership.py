@@ -252,6 +252,11 @@ PAYROLL_SETTING_CONSUMERS = {
         "PAYE tax table",
         "Picks which country's national tax tables price PAYE.",
     ),
+    "payment_route": _consumer(
+        "Paying a posted payroll run",
+        "Pays staff from the branch's own bank and records it, or sends each member of "
+        "staff's net pay through the payment provider from the money held for the branch.",
+    ),
     "employee_pension_enabled": _consumer(
         "Employee pension",
         "Withholds the employee's pension contribution from pensionable pay.",

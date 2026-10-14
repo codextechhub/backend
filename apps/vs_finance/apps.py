@@ -50,9 +50,10 @@ class VsFinanceConfig(AppConfig):
 
         register_close_check(inter_branch_close_check)
         from .provisioning import register_entity_provisioner
-        from .provisioning_hooks import provision_adjustment_approvals
+        from .provisioning_hooks import provision_adjustment_approvals, provision_payroll_approval
 
         register_entity_provisioner(provision_adjustment_approvals)
+        register_entity_provisioner(provision_payroll_approval)
         # Settle customer document deliveries when vs_notifications reports the
         # outcome of an email it sent on our behalf.
         from . import receivers  # noqa: F401

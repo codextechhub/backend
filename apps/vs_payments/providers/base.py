@@ -146,6 +146,15 @@ class SplitResult:
 
 
 @dataclass
+class AccountResolution:
+    """Who the provider says holds a bank account (account-name enquiry)."""
+
+    account_number: str  # The account asked about.
+    account_name: str  # The holder's name as the bank registered it.
+    raw: dict = field(default_factory=dict)  # Raw provider response for traceability.
+
+
+@dataclass
 class SettlementRecord:
     """One automatic settlement: the provider moving the merchant's money to its own bank.
 
@@ -392,6 +401,24 @@ class PayoutProvider(WebhookCapable):
         merchant's balance on its own raises :class:`NotImplementedError`.
         """
         raise NotImplementedError(f"{self.name or 'This provider'} reports no settlements.")
+
+    def resolve_account(self, *, account_number: str, bank_code: str) -> AccountResolution:
+        """Ask the provider who holds ``account_number`` at ``bank_code``.
+
+        Raises :class:`~vs_payments.exceptions.ProviderError` when the provider
+        cannot resolve the account (it does not exist, or the enquiry failed).
+        A provider without an account-name enquiry refuses.
+        """
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} cannot resolve account names.",
+                            provider=self.name)
+
+    def list_banks(self) -> list[dict]:
+        """The banks the provider can pay into, as ``[{"name", "code"}]`` ordered by name."""
+        from ..exceptions import ProviderError
+
+        raise ProviderError(f"{self.name or 'This provider'} lists no banks.", provider=self.name)
 
     def transfer_fee(self, amount: int) -> int:
         """Kobo the provider charges, on top of ``amount``, to transfer it to a bank account.

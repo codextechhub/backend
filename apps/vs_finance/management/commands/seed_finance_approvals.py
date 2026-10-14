@@ -19,6 +19,12 @@ Two guarantees, matching the procurement and payout seeds:
   refund, write-off, or above-threshold concession parks and names the group to fill
   rather than posting itself.
 
+Every tenant also gets its payroll route: one approval stage through a payroll
+approver group that starts with the roles holding ``finance.payrollrun.post`` (the
+person who prepared a run can never approve it). Unlike the ladders above it is not
+seeded blocked, and it is not optional: submitting a run makes the route if it is
+missing, so this command only brings the route forward.
+
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
 from django.core.management.base import BaseCommand, CommandError
@@ -27,6 +33,7 @@ from django.db import transaction
 from vs_finance.approvals import (
     ensure_tenant_approval_templates,
     ensure_tenant_expense_claim_template,
+    ensure_tenant_payroll_approval,
 )
 from vs_finance.constants import (
     WF_ADJUSTMENT_APPROVER_GROUP,
@@ -97,6 +104,7 @@ class Command(BaseCommand):
                 results = ensure_tenant_approval_templates(tenant, **ladder_kwargs)
                 expense_template, expense_created = ensure_tenant_expense_claim_template(tenant)
                 results.append((expense_template, expense_created))
+                results.append(ensure_tenant_payroll_approval(tenant))
                 created = sum(1 for _t, was_created in results if was_created)
                 kept = len(results) - created
                 self.stdout.write(
@@ -111,6 +119,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             "Done. Refunds and write-offs now need approval, and concessions and "
             "credit notes need it at or above the threshold. Expense claims now route "
-            "to their approving group. Nobody can approve until somebody is put in "
-            "the relevant group, so the first one will park until they are.",
+            "to their approving group, and payroll runs to the payroll approver group. "
+            "Nobody can approve a refund, write-off, concession, credit note or expense "
+            "claim until somebody is put in its group, so the first one will park until "
+            "they are.",
         ))

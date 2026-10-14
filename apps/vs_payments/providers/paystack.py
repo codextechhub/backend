@@ -63,9 +63,11 @@ import datetime
 import hashlib
 import hmac
 import json
+import urllib.parse
 
 from ..exceptions import ProviderError
 from .base import (
+    AccountResolution,
     CheckoutResult,
     CollectionStatusResult,
     Provider,
@@ -371,6 +373,53 @@ class PaystackProvider(Provider):
             recipient_code=recipient_code,  # Save the recipient token for later verification.
             raw=data,  # Preserve the raw response.
         )
+
+    def resolve_account(self, *, account_number, bank_code):
+        """Who holds ``account_number`` at ``bank_code`` (``GET /bank/resolve``).
+
+        Paystack answers ``data.account_name`` for an account it can resolve,
+        and an HTTP 4xx (surfaced as :class:`ProviderError`) for one it cannot.
+        Confirmed against Paystack's Verification API reference on 2026-10-13:
+        the ``account_number`` and ``bank_code`` query parameters and the
+        ``data.account_name`` field. The reference documents no error codes or
+        rate limits for this endpoint.
+        """
+        query = urllib.parse.urlencode({"account_number": account_number, "bank_code": bank_code})
+        data = self._require_ok(self._get(f"/bank/resolve?{query}"))
+        name = str((data or {}).get("account_name") or "").strip()
+        if not name:
+            raise ProviderError("Paystack did not name the holder of this account.",
+                                provider=self.name)
+        return AccountResolution(account_number=account_number, account_name=name, raw=data)
+
+    #: Pages of ``GET /bank`` read before the listing is refused as unbounded.
+    BANK_MAX_PAGES = 10
+
+    def list_banks(self):
+        """Nigeria's active banks in naira (``GET /bank``), every page, by name.
+
+        Reads with cursor pagination (``use_cursor=true``, ``perPage=100``, the
+        next page named by ``meta.next``). Paystack's Miscellaneous reference
+        documents ``country``, ``currency``, ``perPage``, ``use_cursor`` and the
+        ``meta.next`` cursor; that the cursor is sent back as ``next`` is the
+        reference's convention and has not been exercised against the live API.
+        """
+        banks, cursor = {}, ""
+        for _page in range(self.BANK_MAX_PAGES):
+            query = {"country": "nigeria", "currency": "NGN", "perPage": 100, "use_cursor": "true"}
+            if cursor:
+                query["next"] = cursor
+            response = self._get(f"/bank?{urllib.parse.urlencode(query)}")
+            data = self._require_ok(response)
+            for row in data if isinstance(data, list) else []:
+                if isinstance(row, dict) and row.get("code") and row.get("active", True):
+                    banks[str(row["code"])] = str(row.get("name") or row["code"])
+            meta = response.get("meta") if isinstance(response.get("meta"), dict) else {}
+            cursor = str(meta.get("next") or "")
+            if not cursor:
+                break
+        return sorted(({"name": name, "code": code} for code, name in banks.items()),
+                      key=lambda row: row["name"].lower())
 
     #: Paystack's transfer fee by amount sent, in kobo, as on paystack.com/pricing:
     #: N10 for N5,000 and below, N25 from N5,001 to N50,000, N50 above.

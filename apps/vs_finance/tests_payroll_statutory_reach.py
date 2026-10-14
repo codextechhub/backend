@@ -16,6 +16,8 @@ colleague's, whatever role they hold. Rival Group's bursar reads none of it.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 from unittest import mock
 
 from core.test_utils import TenantAPIClient
@@ -66,6 +68,7 @@ class _ReachFixture(_StatutoryFixture):
             salary=cls.ada, deduction_type=cls.coop, amount=7_777 * N)
 
         cls.payroll_run = generate_run_from_roster(cls.books, pay_date=_date(1, 25))
+        approve_for_posting(cls.payroll_run)
         post_payroll(cls.payroll_run)
         pay_payroll(cls.payroll_run, bank_accounts=[
             cls.bank(cls.books, cls.ikeja, "1191"), cls.bank(cls.books, cls.lekki, "1192"),

@@ -123,6 +123,28 @@ def is_direct(entity, *, on=None) -> bool:
     return custody_mode(tenant, on=on) == CustodyMode.DIRECT
 
 
+def payroll_uses_provider(tenant) -> bool:
+    """Whether any of ``tenant``'s books pays payroll through the payment provider.
+
+    Paying staff through the provider spends the money the platform holds for
+    each branch, so it needs the tenant's online money held
+    (``vs_finance`` payroll settings, ``payment_route``).
+    """
+    from vs_finance.constants import PayrollPaymentRoute
+    from vs_finance.models import FinancePayrollSettings
+
+    return FinancePayrollSettings.objects.filter(
+        entity__tenant=tenant, payment_route=PayrollPaymentRoute.PAYSTACK).exists()
+
+
+#: What a move to direct is refused with while staff are paid through the provider.
+PAYROLL_NEEDS_HELD = (
+    "Staff are paid through the payment provider, which needs the platform to hold your "
+    "online money. Set the payroll payment route (in the payroll settings) back to paying "
+    "from the branch's own bank before moving to direct settlement."
+)
+
+
 def assert_online_payouts_allowed(entity) -> None:
     """Refuse an online payout for a tenant whose payments settle directly (409)."""
     if is_direct(entity):
@@ -300,6 +322,8 @@ def update_custody_settings(*, entity, data, actor_user=None):
             pass
         else:
             if mode == CustodyMode.DIRECT:
+                if payroll_uses_provider(tenant):
+                    raise ValidationError({"mode": PAYROLL_NEEDS_HELD})
                 missing = branches_without_subaccount(entity)
                 if missing:
                     raise ValidationError({"mode": (

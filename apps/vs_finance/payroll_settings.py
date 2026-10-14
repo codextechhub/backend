@@ -17,7 +17,7 @@ from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
 from .audit import record
-from .constants import FinanceAuditAction, PayeMethod
+from .constants import FinanceAuditAction, PayeMethod, PayrollPaymentRoute
 from .models import FinancePayrollSettings
 from .payroll_statutory import payroll_settings
 
@@ -37,7 +37,36 @@ RATE_FIELDS = (
 #: Dates, by name, written and read as ``YYYY-MM-DD`` or null.
 DATE_FIELDS = ("payroll_moved_here_on",)
 
-SETTING_FIELDS = ("paye_method", "tax_country") + BOOLEAN_FIELDS + RATE_FIELDS + DATE_FIELDS
+SETTING_FIELDS = (
+    ("paye_method", "tax_country", "payment_route") + BOOLEAN_FIELDS + RATE_FIELDS + DATE_FIELDS
+)
+
+
+def paystack_route_blocker(entity) -> str:
+    """Why staff cannot be paid through the payment provider at these books, or "" when they can.
+
+    The route spends the money the platform holds for each branch, so it is
+    open only while the tenant's online money is held (custody mode ``HELD``)
+    and no move to direct settlement is waiting. The platform's own books are
+    exempt: they have no custody mode and pay from their own share of the
+    provider balance. Imported where used:
+    ``vs_payments`` owns custody.
+    """
+    from vs_payments import custody, held
+    from vs_payments.constants import CustodyMode
+
+    if held.is_platform_entity(entity):
+        return ""  # The platform's own books pay from their own share; custody is not theirs.
+    if not held.holds_for(entity):
+        return "The platform keeps no online money for these books, so there is nothing to pay staff from."
+    tenant = entity.tenant
+    if custody.custody_mode(tenant) != CustodyMode.HELD:
+        return ("Your online payments settle directly to each branch's bank, so there is no "
+                "balance held for you to pay staff from. Staff are paid from the branch's own bank.")
+    if custody.custody_row(tenant).pending_mode == CustodyMode.DIRECT:
+        return ("A move to direct settlement is waiting for the start of next month. Cancel it "
+                "before paying staff through the payment provider.")
+    return ""
 
 
 def resolve_finance_payroll_settings(entity):
@@ -51,12 +80,17 @@ def serialize_finance_payroll_settings(settings):
         data[field] = data[field].isoformat() if data[field] else None
     data["paye_method_label"] = PayeMethod(settings.paye_method).label
     data["paye_method_options"] = choice_options(PayeMethod)
+    data["payment_route_label"] = PayrollPaymentRoute(settings.payment_route).label
+    data["payment_route_options"] = choice_options(PayrollPaymentRoute)
+    blocker = paystack_route_blocker(settings.entity) if settings.entity_id else ""
+    data["paystack_route_available"] = not blocker
+    data["paystack_route_unavailable_reason"] = blocker or None
     data["updated_at"] = settings.updated_at.isoformat() if settings.pk else None
     data["updated_by"] = settings.updated_by.email if settings.pk and settings.updated_by else None
     return data
 
 
-def _validated_values(data):
+def _validated_values(data, entity=None):
     if not isinstance(data, dict) or not data:
         raise ValidationError({"settings": "Provide at least one payroll setting."})
     unknown = sorted(set(data) - set(SETTING_FIELDS))
@@ -76,6 +110,15 @@ def _validated_values(data):
         if not PayeTaxTable.objects.filter(country=value).exists():
             raise ValidationError({"tax_country": "There are no tax tables for that country."})
         values["tax_country"] = value
+    if "payment_route" in data:
+        value = str(data["payment_route"] or "").upper()
+        if value not in PayrollPaymentRoute.values:
+            raise ValidationError({"payment_route": choose_one_of(PayrollPaymentRoute)})
+        if value == PayrollPaymentRoute.PAYSTACK and entity is not None:
+            blocker = paystack_route_blocker(entity)
+            if blocker:
+                raise ValidationError({"payment_route": blocker})
+        values["payment_route"] = value
     for field in BOOLEAN_FIELDS:
         if field in data:
             if not isinstance(data[field], bool):
@@ -111,9 +154,13 @@ def update_finance_payroll_settings(*, entity, data, actor_user):
     """Apply a partial payroll-policy update and audit effective changes.
 
     A change takes effect on the next run generated; runs already raised keep
-    the figures they were worked out with.
+    the figures they were worked out with. The payment route applies to the next
+    payment of any posted run. Choosing ``PAYSTACK`` is refused while the
+    tenant's online money is not held by the platform
+    (:func:`paystack_route_blocker`), and the custody setting refuses a move to
+    direct settlement while the route is ``PAYSTACK``.
     """
-    values = _validated_values(data)
+    values = _validated_values(data, entity)
     current = FinancePayrollSettings.objects.select_for_update().filter(entity=entity).first()
     settings = current or FinancePayrollSettings(entity=entity)
     before_all = serialize_finance_payroll_settings(settings)

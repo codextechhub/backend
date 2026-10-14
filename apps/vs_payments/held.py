@@ -41,6 +41,20 @@ approved through the platform tenant's own settlement route
 for its operators across every tenant (:func:`settlements_due`). The tenant sees
 its settlements and the money arriving, and acts on neither.
 
+Every payout carries the provider's transfer fee, which the branch bears: it is
+reserved from the branch's held balance with the amount, given back with it when
+the transfer fails, and booked as the branch's bank charge, out of gateway
+clearing, once the transfer is paid (:func:`reserve_for_transfer`,
+:func:`book_transfer_fee`). The provider's balance falls by the amount and the
+fee, so the sub-ledger and the provider agree after every payout.
+
+The platform's own payouts (its staff and suppliers) spend no tenant's money.
+They are checked instead against the platform's own share of the provider
+balance: what the provider reports, less everything held for tenants, less
+every reservation in flight (:func:`own_share_available`), under one lock so two
+of them cannot both spend the same money. Neither a tenant's settlement nor its
+payout is ever checked against that share.
+
 A chargeback on held money lowers the branch's held balance at once and is booked
 in both books (:func:`record_dispute`). Where the branch holds less than the
 chargeback took, its balance goes below zero: that is what it owes the platform
@@ -70,6 +84,7 @@ from .constants import (
     HeldSettlementStatus,
     PaymentAuditAction,
     PayoutBatchStatus,
+    ProviderRefundStatus,
     PayoutPurpose,
     PayoutStatus,
     VirtualAccountStatus,
@@ -117,6 +132,20 @@ def holds_for(entity) -> bool:
     if entity is None or not entity.tenant_id:
         return False
     return entity.tenant.kind != Tenant.Kind.PLATFORM
+
+
+def is_platform_entity(entity) -> bool:
+    """Whether ``entity`` is the platform's own books (the tenant of kind ``PLATFORM``).
+
+    The platform keeps its money in the same provider balance as the money it
+    holds for tenants, so what it may spend is its own share of that balance
+    (:func:`own_share_available`). It has no custody mode: custody is an
+    arrangement between the platform and a tenant.
+    """
+    from vs_tenants.models import Tenant
+
+    return bool(entity is not None and entity.tenant_id
+                and entity.tenant.kind == Tenant.Kind.PLATFORM)
 
 
 def collection_is_held(intent) -> bool:
@@ -402,19 +431,111 @@ def record_collection(intent, *, actor_user=None):
     )
 
 
-def reserve_for_transfer(payout, amount, *, actor_user=None):
-    """Check and take ``amount`` from the held balance of the branch ``payout`` pays for.
+class OwnShareUnknownError(InsufficientHeldFundsError):
+    """The provider would not say what it holds, so the platform's own share cannot be known (409)."""
+
+    error_code = "PLATFORM_OWN_SHARE_UNKNOWN"
+    default_message = ("The platform's own share of the provider balance could not be "
+                       "confirmed, so nothing was sent.")
+
+
+#: The database-wide lock that serialises the platform's own payouts.
+OWN_SHARE_LOCK_KEY = 7_201_001
+
+
+def own_share_available(client, currency="NGN") -> int:
+    """Kobo of the provider balance that is the platform's own, free to spend now.
+
+    The platform's money and the money it holds for tenants sit in one provider
+    balance. What is the platform's own is what the provider reports
+    (``available_balance``, asked now) less every positive held balance of every
+    tenant branch, less every reservation in flight: a transfer whose money has
+    been reserved and that the provider has not yet reported paid or failed,
+    whatever it pays and whichever tenant it is for, because the provider's
+    balance may not have fallen for it yet. The figure errs on the side of
+    holding back: a transfer the provider has already deducted is subtracted
+    once more until it is confirmed.
+
+    A balance of N3,000,000 with N2,600,000 held for schools leaves N400,000.
+    A provider that cannot be asked raises, and the caller refuses:
+    funds are never assumed.
+    """
+    from .models import HeldBalance, HeldMovement, PayoutInstruction
+
+    balance = int(client.available_balance(currency))
+    held_total = int(HeldBalance.objects.filter(balance__gt=0).aggregate(
+        total=Sum("balance"))["total"] or 0)
+    school_in_flight = -int(HeldMovement.objects.filter(
+        kind__in=(HeldMovementKind.PAYOUT, HeldMovementKind.SETTLEMENT),
+        payout__status=PayoutStatus.PROCESSING).aggregate(total=Sum("amount"))["total"] or 0)
+    refunds_in_flight = -int(HeldMovement.objects.filter(
+        kind=HeldMovementKind.REFUND,
+        provider_refund__status=ProviderRefundStatus.PROCESSING,
+    ).aggregate(total=Sum("amount"))["total"] or 0)
+    school_in_flight += refunds_in_flight
+    own_in_flight = sum(
+        int((metadata or {}).get("own_share_reserved", 0) or 0)
+        for metadata in PayoutInstruction.objects.filter(
+            status=PayoutStatus.PROCESSING, metadata__has_key="own_share_reserved",
+        ).values_list("metadata", flat=True))
+    return balance - held_total - school_in_flight - own_in_flight
+
+
+def _reserve_own_share(payout, amount, fee, client, actor_user=None):
+    """Check and mark ``amount`` plus ``fee`` as spent from the platform's own share.
+
+    Taken under one lock for the whole platform (:data:`OWN_SHARE_LOCK_KEY`,
+    held until the dispatch's claim commits), so two of the platform's payouts
+    can never both pass the check against the same money: the second reads the
+    first's reservation, which its claim saved as ``own_share_reserved`` on the
+    payout's metadata. It touches no tenant's held balance, so a tenant's
+    settlement or payout is never held up by it. Refused (409) when the
+    platform's own share is smaller, or cannot be read (:class:`OwnShareUnknownError`).
+    """
+    from django.db import connection
+
+    from .providers.registry import get_provider
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [OWN_SHARE_LOCK_KEY])
+    need = int(amount) + max(int(fee or 0), 0)
+    currency = getattr(payout.currency, "code", None) or "NGN"
+    try:
+        available = own_share_available(client or get_provider(payout.provider), currency)
+    except Exception as exc:  # noqa: BLE001 - never assume funds the provider did not report.
+        raise OwnShareUnknownError(
+            "The provider's balance could not be read, so the platform's own share is "
+            f"unknown: {str(getattr(exc, 'message', exc))[:120]}") from exc
+    if need > available:
+        raise InsufficientHeldFundsError(
+            f"The platform's own share of the provider balance is {_naira(max(available, 0))} "
+            f"and this transfer needs {_naira(need)}. The rest is held for schools. Wait for "
+            f"more of the platform's own money to arrive, or pay from the bank and record it.",
+            own_share=available, needed=need,
+        )
+    payout.metadata = {**(payout.metadata or {}), "transfer_fee": max(int(fee or 0), 0),
+                       "own_share_reserved": need}
+
+
+def reserve_for_transfer(payout, amount, *, fee=0, client=None, actor_user=None):
+    """Check and take ``amount`` plus the provider's transfer ``fee`` from the held balance of the branch ``payout`` pays for.
 
     Runs inside the dispatch's claim, under a lock on the branch's balance, so two
     transfers for one branch cannot both spend the same money. Refused (409)
     when the branch holds less; nothing is taken then.
 
-    A settlement payout sits in the platform's books but spends the held money of
+    Every payout purpose pays the provider's transfer fee out of the same
+    provider balance the amount leaves, and the branch bears it, so it is
+    reserved with the amount and given back with it when the transfer fails. A
+    settlement payout sits in the platform's books but spends the held money of
     the branch it pays (its :class:`HeldSettlement`'s), and takes what is sent
-    plus the transfer fee the branch bears, which is what leaves the provider
-    balance; it is taken as ``SETTLEMENT``. Any other payout is taken as
-    ``PAYOUT`` from the branch whose bank it names. The platform's own vendor
-    payouts spend no client's money and are not checked.
+    plus the transfer fee the settlement carries; it is taken as ``SETTLEMENT``.
+    Any other payout (a supplier, a payroll line) is taken as ``PAYOUT`` from the
+    branch whose bank it names, and the ``fee`` is recorded on the payout's
+    metadata as ``transfer_fee`` for the booking that follows confirmation
+    (:func:`book_transfer_fee`). The platform's own vendor payouts spend no
+    client's money, so they are checked against the platform's own share instead
+    of any branch's balance (:func:`_reserve_own_share`).
     """
     settlement = settlement_for(payout)
     if settlement is not None:
@@ -428,6 +549,8 @@ def reserve_for_transfer(payout, amount, *, actor_user=None):
             payout=payout, actor_user=actor_user, balance=balance,
         )
     entity = payout.entity
+    if is_platform_entity(entity):
+        return _reserve_own_share(payout, amount, fee, client, actor_user)
     if not holds_for(entity):
         return None
     tenant = entity.tenant
@@ -436,11 +559,13 @@ def reserve_for_transfer(payout, amount, *, actor_user=None):
         raise InsufficientHeldFundsError(
             "This payout's source account has not been given a branch, so there is no "
             "branch's held money to pay it from. Give the account its branch first.")
+    fee = max(int(fee or 0), 0)
     balance = _locked_balance(tenant.pk, branch_id)
-    _refuse_above(balance, branch_id, amount)
+    _refuse_above(balance, branch_id, int(amount) + fee)
+    payout.metadata = {**(payout.metadata or {}), "transfer_fee": fee}
     return _move(
         tenant=tenant, branch_id=branch_id, kind=HeldMovementKind.PAYOUT,
-        amount=-int(amount), on=_today(tenant), reference=payout.reference,
+        amount=-(int(amount) + fee), on=_today(tenant), reference=payout.reference,
         payout=payout, actor_user=actor_user, balance=balance,
     )
 
@@ -501,6 +626,58 @@ def release_refund(link, *, reason="", actor_user=None):
     )
 
 
+def transfer_fee_of(payout) -> int:
+    """Kobo of provider transfer fee the branch bears for ``payout`` (0 when none was reserved)."""
+    settlement = settlement_for(payout)
+    if settlement is not None:
+        return int(settlement.transfer_fee)
+    return int((payout.metadata or {}).get("transfer_fee", 0) or 0)
+
+
+def book_transfer_fee(payout, *, paid_at=None, actor_user=None):
+    """Book the provider's transfer fee a paid payout cost its branch, once.
+
+    ``Dr bank charges, Cr gateway clearing`` in the payout's branch: the fee left
+    the provider balance, which is the branch's gateway clearing in its books,
+    and is the branch's bank charge. Only a payout that left the provider
+    balance (held money, or the platform's own share) carries one, and a settlement books its own fee with the money arriving
+    (:func:`_book_tenant_settlement`), so neither is booked here. Idempotent: the
+    journal's id is kept on the payout's metadata.
+    """
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey, JournalSource
+    from vs_finance.models import JournalEntry, JournalLine
+    from vs_finance.posting import post_journal, resolve_period
+
+    from .services import _booking_date
+
+    fee = transfer_fee_of(payout)
+    metadata = payout.metadata or {}
+    if (not fee or is_settlement_payout(payout) or not paid_from_provider_balance(payout)
+            or metadata.get("transfer_fee_journal_id")):
+        return None
+    entity = payout.entity
+    branch_id = held_branch_id(entity, payout.branch_id)
+    day, _dating = _booking_date(entity, paid_at, branch=branch_id)
+    entry = JournalEntry.objects.create(
+        entity=entity, branch_id=branch_id, date=day, period=resolve_period(entity, day),
+        source=JournalSource.BANK, reference=payout.reference,
+        narration=f"Payment provider transfer fee for {payout.reference}"[:255],
+        created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, debit=fee, credit=0, line_no=1, description="Transfer fee",
+        account=resolve_mapped_account(entity, AccountMappingKey.BANK_CHARGES,
+                                       label="bank charges"))
+    JournalLine.objects.create(
+        entry=entry, debit=0, credit=fee, line_no=2, description="Gateway clearing",
+        account=resolve_mapped_account(entity, AccountMappingKey.GATEWAY_CLEARING,
+                                       label="gateway clearing"))
+    post_journal(entry, actor_user=actor_user)
+    payout.metadata = {**metadata, "transfer_fee_journal_id": entry.pk}
+    return entry
+
+
 def _refuse_above(balance, branch_id, amount):
     """Refuse a transfer of ``amount`` the locked ``balance`` does not cover (409)."""
     if int(amount) > balance.balance:
@@ -535,6 +712,17 @@ def drew_on_held(payout) -> bool:
     return _reservation(payout) is not None
 
 
+def paid_from_provider_balance(payout) -> bool:
+    """Whether ``payout``'s money leaves the provider balance rather than a bank account.
+
+    True for a payout out of a branch's held money, and for one of the
+    platform's own, which spends the platform's own share of the same balance
+    (``own_share_reserved`` on its metadata, :func:`_reserve_own_share`).
+    Either way the books credit gateway clearing, not a bank.
+    """
+    return drew_on_held(payout) or bool((payout.metadata or {}).get("own_share_reserved"))
+
+
 def release_transfer(payout, *, reason="", actor_user=None):
     """Give back what a failed transfer took from its branch's held balance, once.
 
@@ -559,8 +747,8 @@ def release_transfer(payout, *, reason="", actor_user=None):
 def true_up_transfer(payout, sent, *, actor_user=None):
     """Correct a branch's held balance when the provider sent other than was reserved.
 
-    ``sent`` is what the provider reports sending; for a settlement the transfer
-    fee the branch bears also left the balance. The difference is recorded once,
+    ``sent`` is what the provider reports sending; the transfer fee the branch
+    bears also left the balance. The difference is recorded once,
     as a release (negative when more left than was reserved).
     """
     from .models import HeldMovement
@@ -568,8 +756,7 @@ def true_up_transfer(payout, sent, *, actor_user=None):
     reserved = _reservation(payout)
     if reserved is None:
         return None
-    settlement = settlement_for(payout)
-    left = int(sent) + (int(settlement.transfer_fee) if settlement is not None else 0)
+    left = int(sent) + transfer_fee_of(payout)
     gap = -int(reserved.amount) - left
     if not gap or HeldMovement.objects.filter(payout=payout, kind=HeldMovementKind.RELEASE).exists():
         return None
@@ -1067,7 +1254,7 @@ def apply_custody_switch(row, *, today=None) -> dict:
     """
     from vs_finance.models import LedgerEntity
 
-    from .custody import branches_without_subaccount, serialize_custody
+    from .custody import branches_without_subaccount, payroll_uses_provider, serialize_custody
     from .models import PaymentCustodySettings
 
     tenant = row.tenant
@@ -1079,6 +1266,8 @@ def apply_custody_switch(row, *, today=None) -> dict:
     if row.pending_mode == CustodyMode.DIRECT:
         run_settlements(final_for_tenant=tenant)
         reasons = outstanding_reasons(tenant)
+        if payroll_uses_provider(tenant):
+            reasons.append("staff are still paid through the payment provider")
         for entity in entities:
             missing = branches_without_subaccount(entity)
             if missing:

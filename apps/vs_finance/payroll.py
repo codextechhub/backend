@@ -34,6 +34,9 @@ from .constants import (
     PAYE_PAYABLE_CODE,
     PENSION_PAYABLE_CODE,
     PayeMethod,
+    PayrollLinePaidVia,
+    PayrollLinePayState,
+    PayrollPaymentRoute,
     PayrollItemCode,
     PayrollItemKind,
     PayrollRunStatus,
@@ -596,6 +599,25 @@ def _accounts_for(run):
     return salary, paye, pension, net  # Return expense and liability accounts.
 
 
+def submit_payroll_run(run, *, requested_by):
+    """Send a draft payroll run for approval; returns its workflow instance.
+
+    Every tenant has a payroll route: if its books have none yet, the default one
+    is made first (:func:`vs_finance.approvals.ensure_tenant_payroll_approval`), so
+    a missing route can never mean a run goes ahead unreviewed, and the sender
+    cannot ask for it to (``confirm_without_approval`` is never passed). The engine
+    then checks the run can post, and that somebody other than the person who
+    prepared it can approve it, before anything is sent
+    (:class:`vs_finance.workflow_handlers.PayrollRunHandler`).
+    """
+    from vs_workflow.services.submission import submit_for_approval
+
+    from .approvals import ensure_tenant_payroll_approval
+
+    ensure_tenant_payroll_approval(run.entity.tenant, created_by=requested_by)
+    return submit_for_approval(run, requested_by=requested_by)
+
+
 # --------------------------------------------------------------------------- #
 # One run, one journal per branch                                             #
 # --------------------------------------------------------------------------- #
@@ -792,6 +814,11 @@ def _post_payroll_atomic(run, *, actor_user=None):
             f"Payroll run {run.document_number or run.pk} is {state_word(run, 'run_status')}, "
             f"only a draft can be posted.",
         )
+    if run.status != DocumentStatus.APPROVED:
+        raise PayrollError(
+            f"Payroll run {run.document_number or run.pk} is {state_word(run)}; it must be "
+            f"approved before it is posted. Send it for approval first.",
+        )
 
     if not run.lines.exists():
         raise PayrollError("A payroll run must have at least one line to post.")
@@ -896,7 +923,21 @@ def pay_payroll(run, *, bank_account=None, bank_accounts=None, pay_date=None, ac
     of ``bank_accounts`` (or ``bank_account`` alone) pays the share of the branch
     it belongs to, so Ikeja's share leaves Ikeja's bank and nothing else's. The
     run reads PAID once every share is paid.
+
+    At a tenant whose payroll payment route is ``PAYSTACK``
+    (:class:`~vs_finance.constants.PayrollPaymentRoute`) the run is not paid
+    from a bank here at all: each line's net pay is sent through the payment
+    provider from the money held for its branch
+    (:func:`vs_payments.payroll_payouts.pay_run`), and ``bank_account`` and
+    ``bank_accounts`` are not used. A line that cannot be sent is recorded as
+    paid from the bank one line at a time (:func:`record_lines_paid_from_bank`).
     """
+    if payment_route(run.entity) == PayrollPaymentRoute.PAYSTACK:
+        from vs_payments.payroll_payouts import pay_run
+
+        pay_run(run, actor_user=actor_user)
+        run.refresh_from_db()
+        return run
     try:  # Atomic worker performs disbursement posting.
         return _pay_payroll_atomic(  # Pay net wages.
             run, bank_account=bank_account, bank_accounts=bank_accounts,
@@ -908,6 +949,98 @@ def pay_payroll(run, *, bank_account=None, bank_accounts=None, pay_date=None, ac
             exc=exc, actor_user=actor_user, target=run,  # Error, actor, and target context.
         )
         raise
+
+
+def payment_route(entity) -> str:
+    """How ``entity``'s posted runs are paid: ``OWN_BANK`` unless the tenant chose ``PAYSTACK``."""
+    from .payroll_statutory import payroll_settings
+
+    return payroll_settings(entity).payment_route
+
+
+def record_lines_paid_from_bank(run, line_ids, *, bank_account, pay_date=None, actor_user=None):
+    """Record named lines of a run paid through the provider as paid from the branch's own bank.
+
+    For a tenant that pays through the provider and has staff the provider
+    cannot pay (no verified bank account, or a transfer that kept failing): the
+    bursar pays them from the branch's bank and records it here, one branch at a
+    time, ``Dr net wages payable, Cr bank`` for the lines' net, in the lines'
+    branch. Only a line that was never sent, needs bank details or failed can be
+    recorded; a line with a transfer in flight, waiting for funds or paid cannot,
+    so nobody is paid twice. The bank account must be the lines' own branch's.
+    Each line is marked paid from the bank, its payslip issued, and the run reads
+    paid once every line is.
+    """
+    try:
+        return _record_lines_atomic(
+            run, line_ids, bank_account=bank_account, pay_date=pay_date, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=run.entity, action=FinanceAuditAction.PAYROLL_PAID,
+            exc=exc, actor_user=actor_user, target=run,
+        )
+        raise
+
+
+@transaction.atomic
+def _record_lines_atomic(run, line_ids, *, bank_account, pay_date, actor_user):
+    from .chronology import ensure_on_or_after
+    from .models import PayrollRun
+    from .payslips import issue_payslips
+
+    run = PayrollRun.objects.select_for_update().get(pk=run.pk)
+    if run.run_status != PayrollRunStatus.POSTED:
+        raise PayrollError(
+            f"Payroll run {run.document_number or run.pk} is {state_word(run, 'run_status')}, "
+            f"only a posted run's lines can be recorded as paid.")
+    if bank_account is None:
+        raise PayrollError("Name the bank account the lines were paid from.")
+    wanted = {int(i) for i in (line_ids or [])}
+    if not wanted:
+        raise PayrollError("Name the lines to record as paid.")
+    lines = list(run.lines.select_for_update().filter(pk__in=wanted).order_by("line_no", "id"))
+    sendable = {"", PayrollLinePayState.NEEDS_BANK_DETAILS, PayrollLinePayState.FAILED}
+    if len(lines) != len(wanted) or any(line.pay_state not in sendable for line in lines):
+        raise PayrollError(
+            "Only lines that were never sent, need bank details or failed can be recorded "
+            "as paid from the bank.")
+    branches = {line.branch_id for line in lines}
+    if len(branches) != 1 or None in branches:
+        raise PayrollError("Record one branch's lines at a time, from that branch's bank account.")
+    (branch_id,) = branches
+    _require_branch_bank(bank_account, branch_id, run, "The pay")
+    pay_date = pay_date or run.pay_date
+    ensure_on_or_after(
+        subject=f"Payroll payment for {run.document_number or run.pk}",
+        subject_date=pay_date,
+        source=f"payroll run {run.document_number or run.pk}",
+        source_date=run.pay_date,
+        remedy=f"Date the payroll payment {format_date(run.pay_date, run.entity.tenant)} or later.",
+        tenant=run.entity.tenant,
+    )
+    net = sum(int(line.net_amount) for line in lines)
+    if net <= 0:
+        raise PayrollError("Nothing to disburse: net pay of these lines is zero.")
+    entry = _post_disbursement(
+        run, net_total=net, bank_account=bank_account, branch_id=branch_id,
+        pay_date=pay_date, actor_user=actor_user)
+    for line in lines:
+        line.pay_state = PayrollLinePayState.PAID
+        line.paid_via = PayrollLinePaidVia.OWN_BANK
+        line.pay_note = ""
+        line.save(update_fields=["pay_state", "paid_via", "pay_note", "updated_at"])
+    record(
+        entity=run.entity, action=FinanceAuditAction.PAYROLL_LINES_PAID_OWN_BANK,
+        actor_user=actor_user, target=run, branch=branch_id,
+        message=(f"Recorded {counted(len(lines), 'payroll line')} of payroll run "
+                 f"{run.document_number or run.pk} as paid from the branch's own bank."),
+        journal_id=entry.pk, branch_id=branch_id, line_ids=sorted(wanted),
+    )
+    issue_payslips(run, lines, actor_user=actor_user)
+    from vs_payments.payroll_payouts import refresh_run_paid
+
+    refresh_run_paid(run)
+    return run
 
 
 def _require_branch_bank(bank_account, branch_id, run, whose) -> None:
@@ -959,6 +1092,13 @@ def _pay_payroll_atomic(run, *, bank_account=None, bank_accounts=None, pay_date=
         )
     if run.net_total <= 0:  # Nothing leaves bank when net total is zero.
         raise PayrollError("Nothing to disburse: net total is zero.")
+    if run.lines.exclude(pay_state="").exists():
+        # Some staff were sent through the provider or recorded line by line; paying the
+        # whole share from the bank as well would pay them twice.
+        raise PayrollError(
+            "Some staff on this run have already been paid, or are being paid, line by line "
+            "through the payment provider. Record the rest of them one line at a time.",
+        )
 
     pay_date = pay_date or run.pay_date  # Default disbursement date to payroll date.
     # Net wages cannot be disbursed before the payroll accrual that raised the
@@ -1086,14 +1226,24 @@ def cancel_payroll_run(run, *, actor_user=None):
     Voiding a run posted per branch is audited once per share, under its branch.
     Idempotent on an already-cancelled run.
     """
+    from .approvals import refuse_while_request_open
     from .posting import reverse_journal
 
     if run.run_status == PayrollRunStatus.CANCELLED:  # Cancellation is idempotent.
         return run
+    if run.run_status == PayrollRunStatus.DRAFT:
+        refuse_while_request_open(run, noun="payroll run")
     if run.run_status == PayrollRunStatus.PAID:  # Paid payroll cannot be voided without cash reversal.
         raise PayrollError(
             "This run has been paid - the net wages already left the bank. Reverse the "
             "disbursement before voiding the run.",
+        )
+    if run.lines.filter(pay_state__in=(
+            PayrollLinePayState.SENT, PayrollLinePayState.WAITING_FOR_FUNDS,
+            PayrollLinePayState.PAID)).exists():
+        raise PayrollError(
+            "Some staff on this run are being paid, or have been paid, through the payment "
+            "provider. Wait for the payments to finish and reverse them before voiding the run.",
         )
     shares = list(run.branch_shares.select_for_update().select_related("branch"))
     paid = [share.branch.name for share in shares if share.status == PayrollRunStatus.PAID]

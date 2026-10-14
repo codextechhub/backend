@@ -170,6 +170,7 @@ RESOURCE_BANDS = {
     ("finance", "pettycashvoucher"): PLUS,
     ("finance", "payrollrun"): ADVANCED,
     ("finance", "salary"): ADVANCED,
+    ("finance", "staff_bank"): ADVANCED,
     ("finance", "tax"): ADVANCED,
     ("finance", "fixedasset"): ADVANCED,
     ("finance", "audit"): ADVANCED,

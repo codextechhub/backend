@@ -30,6 +30,7 @@ from .constants import (
     AccountMappingKey,
     FinanceAuditAction,
     PayeMethod,
+    PayrollPaymentRoute,
     PayerPaymentSplit,
     PayerPaymentSurplus,
     RevenueRecognitionMethod,
@@ -329,6 +330,7 @@ RECEIVABLES_SETTING_FIELDS = {
 PAYROLL_SETTING_FIELDS = {
     "paye_method": SettingField("Where PAYE comes from", "choice", choices=PayeMethod),
     "tax_country": SettingField("Tax table country", "country"),
+    "payment_route": SettingField("How staff are paid", "choice", choices=PayrollPaymentRoute),
     "employee_pension_enabled": SettingField("Withhold employee pension", "bool"),
     "employee_pension_rate_bps": SettingField("Employee pension rate", "bps"),
     "employer_pension_enabled": SettingField("Accrue employer pension", "bool"),

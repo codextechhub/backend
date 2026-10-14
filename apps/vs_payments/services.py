@@ -1227,6 +1227,26 @@ def _validate_approved_instance(batch, approved_instance):
     return instance
 
 
+def _authorise_dispatch(batch, approved_instance):
+    """Authorise sending ``batch``'s money: the approved instance, or a payroll run's own approval.
+
+    Every purpose but one needs the terminal approved workflow instance of this
+    exact batch (:func:`_validate_approved_instance`), so a call with none is
+    refused. A ``PAYROLL`` batch alone is authorised by the payroll run it pays,
+    which has been through its own approval and posting
+    (:func:`vs_payments.payroll_payouts.assert_run_authorises`); it needs no
+    payout approval on top. The exemption is decided by the batch's purpose and
+    nothing the caller passes, and a vendor or settlement batch can never take
+    it.
+    """
+    if batch.purpose == PayoutPurpose.PAYROLL:
+        from . import payroll_payouts
+
+        payroll_payouts.assert_run_authorises(batch)
+        return None
+    return _validate_approved_instance(batch, approved_instance)
+
+
 # Support the dispatch transfer workflow.
 def _dispatch_transfer(
     payout, *, batch=None, approved_instance=None, vendor=None,
@@ -1256,8 +1276,17 @@ def _dispatch_transfer(
     and :class:`~vs_payments.held.InsufficientHeldFundsError` is raised. A clean
     provider rejection gives the reservation back.
 
+    The provider's transfer fee is taken from the branch's held balance with the
+    amount, whatever the batch pays, and booked when the transfer is paid
+    (:func:`vs_payments.held.book_transfer_fee`).
+
     A settlement line pays no vendor; its destination is checked against the
     branch's collection account instead (:func:`vs_payments.held.validate_settlement_destination`).
+    A payroll line pays a member of staff; its destination is checked against the
+    staff member's verified bank account
+    (:func:`vs_payments.payroll_payouts.validate_line_destination`), and a branch
+    holding too little for it leaves the line waiting for funds rather than
+    failing it.
     """
     from vs_procurement.models import Vendor
 
@@ -1266,10 +1295,15 @@ def _dispatch_transfer(
         raise PayoutApprovalRequiredError(
             "A payout instruction can be dispatched only through its approved batch.",
         )
-    _validate_approved_instance(batch, approved_instance)
+    _authorise_dispatch(batch, approved_instance)
     settling = batch.purpose == PayoutPurpose.SETTLEMENT
+    payrolling = batch.purpose == PayoutPurpose.PAYROLL
     if settling:
         held.validate_settlement_destination(payout)
+    elif payrolling:
+        from . import payroll_payouts
+
+        payroll_payouts.validate_line_destination(payout)
     else:
         if vendor is None:
             if not payout.vendor_source_id:
@@ -1277,6 +1311,7 @@ def _dispatch_transfer(
             vendor = Vendor.objects.filter(pk=int(payout.vendor_source_id)).first()
         _validate_instruction_snapshot(payout, vendor)
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
+    transfer_fee = 0 if settling else int(client.transfer_fee(payout_transfer_amount(payout)) or 0)
 
     # Claim the row, re-check the approval, and re-check the destination in one
     # committed transaction. The re-reads are not belt-and-braces: the caller
@@ -1291,22 +1326,28 @@ def _dispatch_transfer(
             if payout.status != PayoutStatus.PENDING:
                 # Another dispatch already claimed it. Never send twice.
                 return payout
-            _validate_approved_instance(batch, approved_instance)
+            _authorise_dispatch(batch, approved_instance)
             if settling:
                 held.validate_settlement_destination(payout, lock=True)
+            elif payrolling:
+                payroll_payouts.validate_line_destination(payout, lock=True)
             else:
                 _validate_instruction_snapshot(
                     payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
                 )
             payout.status = PayoutStatus.PROCESSING  # In flight from here on, whatever happens.
             transfer_amount = payout_transfer_amount(payout)  # The supplier receives the line less WHT.
-            held.reserve_for_transfer(payout, transfer_amount, actor_user=actor_user)
+            held.reserve_for_transfer(
+                payout, transfer_amount, fee=transfer_fee, client=client, actor_user=actor_user)
             # Recorded before the send, so confirmation knows what was asked for even
             # when the provider's answer is lost.
             payout.metadata = {**(payout.metadata or {}), "transfer_amount": transfer_amount}
             payout.save(update_fields=["status", "metadata", "updated_at"])
     except held.InsufficientHeldFundsError as exc:
-        _refuse_unfunded(payout, exc, actor_user=actor_user)
+        if payrolling:  # Pay day is not lost for want of funds: the line waits.
+            payroll_payouts.mark_waiting(payout, exc)
+        else:
+            _refuse_unfunded(payout, exc, actor_user=actor_user)
         raise
 
     currency = payout.currency  # Store the payout currency once for the request.
@@ -1631,6 +1672,11 @@ def submit_payout_batch_for_approval(batch, *, requested_by,
     from vs_workflow.services.submission import submit_for_approval
 
     locked = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+    if locked.purpose == PayoutPurpose.PAYROLL:
+        raise PaymentStateError(
+            "A payroll payout batch is authorised by its payroll run, not by a payout "
+            "approval. Pay the run from the payroll screen.",
+        )
     existing = (
         WorkflowInstance.all_objects.for_document(locked)
         .order_by("-created_at", "-id")
@@ -1675,6 +1721,11 @@ def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
     from vs_procurement.models import Vendor
 
     batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+    if batch.purpose == PayoutPurpose.PAYROLL:
+        raise PaymentStateError(
+            "A payroll payout batch is sent by paying its payroll run, never through "
+            "the approved-batch dispatch.",
+        )
     settling = batch.purpose == PayoutPurpose.SETTLEMENT
     if not settling:  # The tenant may have moved to direct since approval.
         custody.assert_online_payouts_allowed(batch.entity)
@@ -1886,7 +1937,8 @@ def _recompute_batch_status(batch):
     if total == 0:  # Empty batches stay in draft.
         status = PayoutBatchStatus.DRAFT
     elif pending == total:  # A batch with only pending instructions has not started yet.
-        status = PayoutBatchStatus.DRAFT
+        waiting = batch.purpose == PayoutPurpose.PAYROLL and (batch.metadata or {}).get("waiting_for_funds")
+        status = PayoutBatchStatus.WAITING_FOR_FUNDS if waiting else PayoutBatchStatus.DRAFT
     elif paid == total:  # All children paid means the batch is complete.
         status = PayoutBatchStatus.COMPLETED
     elif failed == total:  # All children failed means the batch failed overall.
@@ -1973,6 +2025,10 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
         payout.status = status  # Mirror the final failure state.
         payout.save(update_fields=["status", "raw_response", "updated_at"])
         held.release_transfer(payout, reason=f"The transfer ended {status}.", actor_user=actor_user)
+        if payout.batch_id and payout.batch.purpose == PayoutPurpose.PAYROLL:
+            from . import payroll_payouts
+
+            payroll_payouts.line_failed(payout, reason=f"The transfer ended {status}.")
         audit.record(  # Record the failed payout confirmation for auditability.
             action=PaymentAuditAction.PAYOUT_FAILED, entity=payout.entity,
             provider=payout.provider, reference=payout.reference, succeeded=False,
@@ -1993,8 +2049,13 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
     held.true_up_transfer(payout, sent if sent > 0 else expected, actor_user=actor_user)
     if payout.batch_id and payout.batch.purpose == PayoutPurpose.SETTLEMENT:
         held.book_settlement_paid(payout, sent=payout.amount, paid_at=paid_at, actor_user=actor_user)
+    elif payout.batch_id and payout.batch.purpose == PayoutPurpose.PAYROLL:
+        from . import payroll_payouts
+
+        payroll_payouts.book_line_paid(payout, paid_at=paid_at, actor_user=actor_user)
     else:
         _book_vendor_payment(payout, actor_user=actor_user, paid_at=paid_at)  # Post the vendor payment into the ledger.
+    held.book_transfer_fee(payout, paid_at=paid_at, actor_user=actor_user)  # The branch bears the provider's fee.
     payout.status = PayoutStatus.PAID  # Mark the payout as successfully settled.
     payout.confirmed_at = timezone.now()
     payout.save(update_fields=[
@@ -2009,7 +2070,11 @@ def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user,
     audit.record(  # Emit the successful confirmation audit event.
         action=PaymentAuditAction.PAYOUT_CONFIRMED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
-        message=f"Booked vendor payment for {format_naira(int(payout.amount))}.",
+        message=(
+            f"Booked staff pay for {format_naira(int(payout.amount))}."
+            if payout.batch_id and payout.batch.purpose == PayoutPurpose.PAYROLL
+            else f"Booked vendor payment for {format_naira(int(payout.amount))}."
+        ),
         metadata=audit_metadata,
     )
     _refresh_batch(payout)  # Refresh the parent batch after the child status changes.
@@ -2112,7 +2177,7 @@ def _book_vendor_payment(payout, *, actor_user=None, paid_at=None):
         TaxCode.objects.filter(entity=payout.entity, pk=metadata["wht_tax_code_id"]).first()
         if metadata.get("wht_tax_code_id") else None
     )
-    if held.drew_on_held(payout):  # The money left the provider balance, not a bank.
+    if held.paid_from_provider_balance(payout):  # The money left the provider balance, not a bank.
         from vs_finance.account_mappings import resolve_mapped_account
         from vs_finance.constants import AccountMappingKey
 

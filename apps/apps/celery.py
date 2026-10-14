@@ -101,6 +101,13 @@ app.conf.beat_schedule = {
         "task": "vs_payments.dispatch_undispatched_payout_batches",
         "schedule": crontab(minute="*/10"),
     },
+    # Payroll paid through the provider: a branch holding too little waits, and a
+    # lost hand-off leaves a batch unsent. Each line claims itself, so a re-run
+    # cannot pay anybody twice.
+    "payments-sweep-payroll-payouts": {
+        "task": "vs_payments.sweep_payroll_payouts",
+        "schedule": crontab(minute="*/10"),
+    },
     # A webhook that never arrives, or whose task is lost, leaves settled money
     # unbooked with no alarm. This asks the provider and books what it confirms;
     # each row backs off from half-hourly to daily as it ages.

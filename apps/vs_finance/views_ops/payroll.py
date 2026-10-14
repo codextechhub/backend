@@ -464,13 +464,88 @@ class _PayrollActionBase(_FinanceBase):
 
 # Group endpoint behavior for Payroll Run Detail View.
 class PayrollRunDetailView(_PayrollActionBase):
-    """docstring-name: Payroll runs"""
-    rbac_permission = "finance.payrollrun.view"
+    """GET one payroll run; PATCH to correct a draft's period label and narration.
+
+    GET carries ``workflow_instance_id``, the run's latest approval request (null
+    before it is first sent), which a run an approver returned is resumed with
+    (``POST /v1/workflow/instances/<id>/resubmit/``), and ``approval_state`` and
+    ``approval_returned``.
+
+    PATCH follows the fix-and-resend rule every approval-gated finance draft
+    does (:func:`vs_finance.approvals.correcting_returned`): a draft never sent,
+    or whose request ended, is corrected by whoever holds the create key; a draft
+    an approver returned is corrected by the person who sent it, and nobody else,
+    even holding the key. A run with its approvers, approved, posted or
+    cancelled is not corrected (422).
+
+    docstring-name: Payroll runs
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.payrollrun.create" if self.request.method == "PATCH" \
+            else "finance.payrollrun.view"
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
+        from ..approvals import with_approval_request
+
         _, run = self._run(request, pk)
-        return success_response("Payroll run retrieved.", data=_run_data(request, run))
+        return success_response(
+            "Payroll run retrieved.", data=with_approval_request(_run_data(request, run), run))
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        from ..approvals import correcting_returned, with_approval_request
+
+        _, run = self._run(request, pk)
+        run = PayrollRun.objects.select_for_update().get(pk=run.pk)
+        body = request.data or {}
+        unknown = sorted(set(body) - {"period_label", "narration"})
+        if unknown:
+            raise ValidationError({"detail": f"Unknown fields: {', '.join(unknown)}."})
+        correcting_returned(run, request.user, noun="payroll run")
+        for field, limit in (("period_label", 40), ("narration", 255)):
+            if field in body:
+                value = str(body[field] or "").strip()
+                if len(value) > limit:
+                    raise ValidationError({field: f"Use at most {limit} characters."})
+                setattr(run, field, value)
+        run.save(update_fields=[f for f in ("period_label", "narration") if f in body] + ["updated_at"])
+        run.refresh_from_db()
+        return success_response(
+            f"Payroll run {run.document_number} updated.",
+            data=with_approval_request(_run_data(request, run), run))
+
+
+class PayrollRunSubmitView(_PayrollActionBase):
+    """POST - send a draft payroll run for approval.
+
+    Every tenant has a payroll route (one made for it if its books have none), and
+    the person who prepared the run can never approve it. Refused (422) when the
+    run could not be posted, or when nobody except its preparer could approve it.
+    A returned run is resumed by its sender from the approvals screen, not here.
+
+    docstring-name: Submit a payroll run for approval
+    """
+    rbac_permission = "finance.payrollrun.submit"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+
+        from ..approvals import with_approval_request
+        from ..payroll import submit_payroll_run
+
+        _, run = self._run(request, pk)
+        run = PayrollRun.objects.select_for_update().get(pk=run.pk)
+        instance = submit_payroll_run(run, requested_by=request.user)
+        run.refresh_from_db()
+        return success_response(
+            f"Payroll run {run.document_number} submitted for approval.",
+            data=with_approval_request(_run_data(request, run), run)
+            | {"approval": release_svc.approval_block(instance)},
+        )
 
 
 # Group endpoint behavior for Payroll Run Post View.
@@ -500,16 +575,32 @@ class PayrollRunPayView(_PayrollActionBase):
     ``bank_account``): each account pays its own branch's share, and the rest
     stay unpaid until their accounts are named.
 
+    A tenant whose payroll payment route is ``PAYSTACK`` names no bank account:
+    the run's approval and posting are the authority, and each branch's staff are
+    sent their net pay through the payment provider from the money held for that
+    branch. The response carries the run and its payment progress
+    (:func:`vs_finance.payroll_payments.payment_progress`); lines that could not
+    be sent read ``NEEDS_BANK_DETAILS`` and can be paid later or recorded as paid
+    from the bank (:class:`PayrollRunRecordPaidFromBankView`).
+
     docstring-name: Pay a payroll run
     """
     rbac_permission = "finance.payrollrun.pay"
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from ..payroll import pay_payroll
+        from ..constants import PayrollPaymentRoute
+        from ..payroll import pay_payroll, payment_route
 
         entity, run = self._run(request, pk)
         body = request.data or {}
+        if payment_route(entity) == PayrollPaymentRoute.PAYSTACK:
+            pay_payroll(run, actor_user=request.user)
+            run.refresh_from_db()
+            return success_response(
+                f"Payroll run {run.document_number} sent for payment.",
+                data=_run_data(request, run) | {"payments": _payment_data(request, run)},
+            )
         bank, banks = None, None
         if run.branch_shares.exists():
             refs = body.get("bank_accounts")
@@ -533,6 +624,87 @@ class PayrollRunPayView(_PayrollActionBase):
         return success_response(
             f"Payroll run {run.document_number} disbursed.",
             data=_run_data(request, run),
+        )
+
+
+def _payment_data(request, run):
+    """The run's payment progress for the caller, narrowed to their branches."""
+    from ..payroll_payments import payment_progress
+
+    return payment_progress(run, request, reach=caller_branch_ids(request))
+
+
+class PayrollRunPaymentsView(_PayrollActionBase):
+    """GET - how paying a run through the payment provider is going, per branch and per line.
+
+    Counts of lines not sent, needing bank details, waiting for funds, sent,
+    paid and failed, with each branch's batch. A branch-bound reader sees their
+    own branches' lines and totals only, and the figures behind each switch of
+    ``finance.payrollrun`` only if their roles may read them.
+
+    docstring-name: Payroll run payments
+    """
+    rbac_permission = "finance.payrollrun.view"
+
+    def get(self, request, pk):
+        _, run = self._run(request, pk)
+        return success_response("Payroll payments retrieved.", data=_payment_data(request, run))
+
+
+class PayrollRunPaymentsRetryView(_PayrollActionBase):
+    """POST - send again the lines of a run whose transfer failed (and any now holding bank details).
+
+    Optional ``line_ids`` limits it to those lines. Needs the same reach and key
+    as paying the run.
+
+    docstring-name: Retry payroll payments
+    """
+    rbac_permission = "finance.payrollrun.pay"
+
+    def post(self, request, pk):
+        from vs_payments.payroll_payouts import retry_run
+
+        _, run = self._run(request, pk)
+        line_ids = (request.data or {}).get("line_ids")
+        if line_ids is not None and (
+                not isinstance(line_ids, list)
+                or not all(isinstance(i, int) and not isinstance(i, bool) for i in line_ids)):
+            raise ValidationError({"line_ids": "Expected a list of line ids."})
+        retry_run(run, actor_user=request.user, line_ids=line_ids or None)
+        run.refresh_from_db()
+        return success_response(
+            f"Payroll run {run.document_number} sent again.",
+            data=_run_data(request, run) | {"payments": _payment_data(request, run)},
+        )
+
+
+class PayrollRunRecordPaidFromBankView(_PayrollActionBase):
+    """POST - record named lines of a provider-paid run as paid from the branch's own bank.
+
+    For staff the provider cannot pay. Body: ``line_ids`` (one branch's lines),
+    ``bank_account`` (that branch's own account) and an optional ``pay_date``.
+
+    docstring-name: Record payroll lines paid from the bank
+    """
+    rbac_permission = "finance.payrollrun.pay"
+
+    def post(self, request, pk):
+        from ..payroll import record_lines_paid_from_bank
+
+        entity, run = self._run(request, pk)
+        body = request.data or {}
+        line_ids = body.get("line_ids")
+        if not isinstance(line_ids, list) or not line_ids or not all(
+                isinstance(i, int) and not isinstance(i, bool) for i in line_ids):
+            raise ValidationError({"line_ids": "Expected a list of line ids."})
+        bank = _bank_account_in_reach(request, entity, body.get("bank_account"), "bank_account")
+        record_lines_paid_from_bank(
+            run, line_ids, bank_account=bank, pay_date=_date(body.get("pay_date"), "pay_date"),
+            actor_user=request.user)
+        run.refresh_from_db()
+        return success_response(
+            f"Payroll run {run.document_number} lines recorded as paid.",
+            data=_run_data(request, run) | {"payments": _payment_data(request, run)},
         )
 
 

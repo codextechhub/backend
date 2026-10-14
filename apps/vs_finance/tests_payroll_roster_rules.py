@@ -23,6 +23,8 @@ account.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 from contextlib import contextmanager
 from unittest import mock
 
@@ -264,6 +266,7 @@ class DatedMoveTests(_StatutoryFixture):
     @classmethod
     def raise_run(cls, month, branch):
         run = generate_run_from_roster(cls.books, pay_date=_date(month, 25), branch=branch)
+        approve_for_posting(run)
         post_payroll(run)
         return run
 

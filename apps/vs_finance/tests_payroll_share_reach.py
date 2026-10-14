@@ -190,7 +190,10 @@ class WritingACentralRunTests(_ShareReachFixture):
     def test_lekkis_own_branch_run_is_still_theirs_to_post_and_pay(self):
         from vs_finance.payroll import generate_run_from_roster
 
+        from vs_finance.payroll_test_support import approve_for_posting
+
         run = generate_run_from_roster(self.books, pay_date=datetime.date(2026, 1, 25), branch=self.lekki)
+        approve_for_posting(run)
 
         self.assertEqual(self.act(run, "post", client=self.ngozi).status_code, 200)
         paid = self.act(run, "pay", {"bank_account": self.lekki_bank.pk}, client=self.ngozi)

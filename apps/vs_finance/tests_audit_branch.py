@@ -16,6 +16,8 @@ rival school reads none of it.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 import datetime
 import io
 
@@ -304,6 +306,7 @@ class EachEntryNamesItsDocumentsBranchTests(_AuditFixture):
         run = PayrollRun.objects.get(pk=self.generate().data["data"]["id"])
         run.lines.all().delete()
 
+        approve_for_posting(run)
         self.act(run, "post")
 
         (refused,) = FinanceAuditLog.objects.filter(

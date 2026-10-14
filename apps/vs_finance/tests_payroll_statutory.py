@@ -14,6 +14,8 @@ month with 8% pension and 2.5% NHF is N3,425 of PAYE in January.
 """
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 import datetime
 from fractions import Fraction
 from unittest import mock
@@ -236,8 +238,8 @@ class TwoStateRunTests(_StatutoryFixture):
         cls.bola = cls.person(cls.books, "Bola Lawal", cls.yaba, 300_000, pfa=cls.stanbic)
         cls.chidi = cls.person(cls.books, "Chidi Eze", cls.ikeja, 100_000, residence_state=cls.ogun)
         cls.payroll_run = generate_run_from_roster(cls.books, pay_date=_date(1, 25))
+        approve_for_posting(cls.payroll_run)
         post_payroll(cls.payroll_run)
-
     def line(self, salary):
         return PayrollLine.objects.get(run=self.payroll_run, salary=salary)
 
@@ -327,8 +329,8 @@ class SingleBranchRunTests(_StatutoryFixture):
         super().setUpTestData()
         cls.eze = cls.person(cls.solo_books, "Grace Eze", cls.solo_main, 100_000)
         cls.payroll_run = generate_run_from_roster(cls.solo_books, pay_date=_date(1, 25))
+        approve_for_posting(cls.payroll_run)
         post_payroll(cls.payroll_run)
-
     def test_one_journal_and_paye_to_lagos(self):
         self.payroll_run.refresh_from_db()
         self.assertIsNotNone(self.payroll_run.journal_id)
@@ -579,6 +581,7 @@ class SuppliedAndVoluntaryTests(_StatutoryFixture):
             self.assertEqual((line.paye_amount, line.paye_source), (4_000 * N, PayeSource.SUPPLIED))
             amounts.append(line.other_deductions_amount)
             if month == 1:
+                approve_for_posting(run)
                 post_payroll(run)
         self.assertEqual(amounts, [10_000 * N, 10_000 * N, 5_000 * N, 0])
         self.assertEqual(self.credits_to(self.solo_books, "2450"), 10_000 * N)
@@ -600,6 +603,7 @@ class PayslipTests(_StatutoryFixture):
         cls.tunde = cls.person(cls.solo_books, "Tunde Bello", cls.solo_main, 80_000, employee=cls.other_user)
         cls.bank_account = cls.bank(cls.solo_books, cls.solo_main, "1191")
         cls.payroll_run = generate_run_from_roster(cls.solo_books, pay_date=_date(1, 25))
+        approve_for_posting(cls.payroll_run)
         post_payroll(cls.payroll_run)
         pay_payroll(cls.payroll_run, bank_account=cls.bank_account)
         cls.payslip = Payslip.objects.get(salary=cls.eze)

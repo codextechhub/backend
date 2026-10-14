@@ -82,6 +82,8 @@ import logging
 from django.db.models import Min, Sum
 from django.utils import timezone
 
+from .constants import PayoutStatus
+
 logger = logging.getLogger("vs_payments.held_reconciliation")
 
 #: The one open incident a disagreement is filed under.
@@ -161,13 +163,29 @@ def provider_account_balance(platform) -> int:
 
 
 def own_in_transit(platform) -> int:
-    """The platform's own confirmed online payments not yet settled to its bank, less their fees."""
+    """The platform's own confirmed online payments not yet settled to its bank, less their fees.
+
+    Less what the platform has since paid out of that balance itself (its staff
+    and suppliers, from its own share, with their transfer fees): that money
+    left the provider's balance without going to the bank.
+    """
     from .models import CollectionIntent
     from .settlement import awaiting_settlement_q
 
     rows = (CollectionIntent.objects.filter(entity=platform, held_by_platform=False)
             .filter(awaiting_settlement_q()).values_list("amount", "fee"))
-    return sum(int(amount) - int(fee or 0) for amount, fee in rows)
+    return sum(int(amount) - int(fee or 0) for amount, fee in rows) - own_paid_out(platform)
+
+
+def own_paid_out(platform) -> int:
+    """Kobo the platform has paid out of its own share of the provider balance, fees included."""
+    from .models import PayoutInstruction
+    from .services import payout_sent_amount
+
+    return sum(
+        payout_sent_amount(payout) + int((payout.metadata or {}).get("transfer_fee", 0) or 0)
+        for payout in PayoutInstruction.objects.filter(
+            entity=platform, status=PayoutStatus.PAID, metadata__has_key="own_share_reserved"))
 
 
 def swept_total(provider_name: str, currency: str) -> int:

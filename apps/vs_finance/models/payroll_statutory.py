@@ -24,7 +24,9 @@ from django.db import models
 
 from ..constants import (
     PayeMethod,
+    PayrollPaymentRoute,
     PayeReliefBasis,
+    StaffBankState,
     PayeReliefKind,
     PayrollItemCode,
     PayrollItemKind,
@@ -48,6 +50,7 @@ __all__ = [
     "PayeTaxRelief",
     "PensionFundAdministrator",
     "FinancePayrollSettings",
+    "StaffBankAccount",
     "EmployeeSalaryVersion",
     "PayrollDeductionType",
     "EmployeeDeduction",
@@ -299,6 +302,12 @@ class FinancePayrollSettings(TimeStampedModel):
                   "the first payroll month run on these books. Staff first paid in that "
                   "month are its own staff carried over, not mid-year joiners.",
     )
+    payment_route = models.CharField(
+        max_length=10, choices=PayrollPaymentRoute.choices,
+        default=PayrollPaymentRoute.OWN_BANK,
+        help_text="How a posted run is paid: by the bursar from the branch's bank, or "
+                  "through the payment provider from the money held for each branch.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_payroll_settings_updates", null=True, blank=True,
@@ -306,6 +315,93 @@ class FinancePayrollSettings(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"Finance payroll settings for {self.entity_id}"
+
+
+class StaffBankAccount(TimeStampedModel):
+    """The bank account a member of staff is paid into through the payment provider.
+
+    One per person (``employee``), kept for the books (``entity``) that pay them.
+    Payroll is ``vs_finance``'s, so the account lives here and not on a profile
+    of any one product: it serves every tenant's staff the same way.
+
+    A person's account is never trusted because somebody typed it. Saving a
+    changed bank or account number resets it to ``UNVERIFIED``, clears the name
+    the provider resolved and any confirmation, and
+    :func:`vs_finance.staff_banking.set_staff_bank_account` then asks the provider
+    who holds the account (``resolved_account_name``) and sets the state:
+    ``VERIFIED`` when that name matches the person's, ``NEEDS_CONFIRMATION`` when
+    it does not, ``FAILED`` when the provider cannot say. A ``NEEDS_CONFIRMATION``
+    account is paid only after a second person, who is neither the one who made
+    the change nor the staff member, confirms it (``confirmed_by``, ``confirmed_at``).
+
+    The reset is in :meth:`save`, so it holds for every write that saves the
+    row (an admin edit, an import, a service). A queryset ``update`` or a
+    ``bulk_update`` bypasses ``save`` and must reset the state itself.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="staff_bank_accounts",
+    )
+    employee = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_bank_account",
+    )
+    bank_code = models.CharField(max_length=20, blank=True, default="")
+    bank_name = models.CharField(max_length=120, blank=True, default="")
+    account_number = models.CharField(max_length=20, blank=True, default="")
+    resolved_account_name = models.CharField(max_length=200, blank=True, default="")
+    verification_state = models.CharField(
+        max_length=20, choices=StaffBankState.choices, default=StaffBankState.UNVERIFIED,
+    )
+    verification_note = models.CharField(max_length=255, blank=True, default="")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+        help_text="The real person who last changed the bank or account number.",
+    )
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    #: Set by the service that has already settled the state for the values it saves.
+    _state_managed = False
+
+    class Meta:
+        indexes = [models.Index(fields=["entity", "verification_state"])]
+
+    def __str__(self) -> str:
+        return f"Bank account of {self.employee_id}: {self.verification_state}"
+
+    @property
+    def is_payable(self) -> bool:
+        """Whether staff pay may be sent to this account."""
+        from ..constants import PAYABLE_BANK_STATES
+
+        return (self.verification_state in PAYABLE_BANK_STATES
+                and bool(self.bank_code and self.account_number))
+
+    def save(self, *args, **kwargs):
+        """Reset the verification when the bank or account number changed since it was stored."""
+        if self.pk and not self._state_managed:
+            stored = type(self).objects.filter(pk=self.pk).values(
+                "bank_code", "account_number").first()
+            if stored and (stored["bank_code"] != self.bank_code
+                           or stored["account_number"] != self.account_number):
+                self.verification_state = StaffBankState.UNVERIFIED
+                self.resolved_account_name = ""
+                self.verification_note = ""
+                self.verified_at = None
+                self.confirmed_by = None
+                self.confirmed_at = None
+                update_fields = kwargs.get("update_fields")
+                if update_fields is not None:
+                    kwargs["update_fields"] = list(set(update_fields) | {
+                        "verification_state", "resolved_account_name", "verification_note",
+                        "verified_at", "confirmed_by", "confirmed_at"})
+        super().save(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #

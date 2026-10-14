@@ -42,7 +42,14 @@ class PayoutWithholdingTests(_PaymentsFixtureMixin, TestCase):
         )
 
     def _dispatch(self, batch):
-        """Send an approved batch to the Fake provider and return its only instruction."""
+        """Send an approved batch to the Fake provider and return its only instruction.
+
+        These books are the platform's own, which pays from its own share of the
+        provider balance; the provider is given more than these payouts need.
+        """
+        from .providers.registry import get_provider
+
+        get_provider("PAYSTACK").balances["NGN"] = 100_000_000
         with patch.object(services, "_validate_approved_instance", side_effect=_approval_passes):
             services.submit_payout_batch(batch, approved_instance=object())
         return batch.instructions.get()

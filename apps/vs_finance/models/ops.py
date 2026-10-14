@@ -21,6 +21,8 @@ from ..constants import (
     DocType,
     InvoicePaymentStatus,
     PayeSource,
+    PayrollLinePaidVia,
+    PayrollLinePayState,
     PayrollRunStatus,
     PettyCashReturnKind,
     SalaryCalcMethod,
@@ -1347,6 +1349,12 @@ class PayrollRun(FinanceDocument):
       ``Dr net wages payable, Cr bank`` - clears the net-pay liability when employees
       are actually paid.
 
+    A run goes through the tenant's approval route before it can be posted:
+    draft, submitted (``PENDING_APPROVAL``), approved (``APPROVED``), then posted
+    and paid. Approval releases nothing by itself; posting and paying are the
+    separate acts it unlocks. The person who prepared the run (``created_by``)
+    can never approve it.
+
     ``branch`` is the branch a branch run covers. A central run names none: it
     covers every branch's staff, so its accrual is one journal per branch
     (:class:`PayrollRunBranch`), each paid from its branch's bank account. Where
@@ -1355,6 +1363,8 @@ class PayrollRun(FinanceDocument):
     """
 
     DOC_TYPE = DocType.PAYROLL_RUN
+    workflow_document_type = "finance.payroll_run"
+    workflow_amount_field = "net_total"
 
     pay_date = models.DateField(help_text="Date the run is accounted/posted on.")
     period_label = models.CharField(max_length=40, blank=True, default="", help_text="e.g. 'January 2026'.")
@@ -1522,6 +1532,23 @@ class PayrollLine(TimeStampedModel):
         null=True, blank=True,
     )
     line_no = models.PositiveSmallIntegerField(default=0)
+    pay_state = models.CharField(
+        max_length=20, choices=PayrollLinePayState.choices, blank=True, default="",
+        help_text="Where this line's payment through the payment provider stands. Blank "
+                  "for a line not paid that way.",
+    )
+    paid_via = models.CharField(
+        max_length=10, choices=PayrollLinePaidVia.choices, blank=True, default="",
+        help_text="How the line was paid, once paid, when the run is paid line by line.",
+    )
+    payout_reference = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="The reference of the latest payout sent for this line.",
+    )
+    pay_note = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Why the line is waiting, failed or was not sent.",
+    )
 
     class Meta:
         ordering = ["run", "line_no", "id"]

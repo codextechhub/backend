@@ -2,6 +2,8 @@
 the double-entry ledger (chart of accounts, posting, reversal, trial balance)."""
 from __future__ import annotations
 
+from vs_finance.payroll_test_support import approve_for_posting
+
 import datetime
 import io
 from decimal import Decimal
@@ -3440,6 +3442,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
             ("Ada", 300000, 30000, 15000),   # net 255,000
             ("Bola", 200000, 20000, 10000),  # net 170,000
         ])
+        approve_for_posting(run)
         post_payroll(run)
         run.refresh_from_db()
         self.assertEqual(run.run_status, PayrollRunStatus.POSTED)
@@ -3467,6 +3470,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
                                    paye_amount=30000, pension_amount=15000, cost_center=pri, line_no=1)
         PayrollLine.objects.create(run=run, employee_name="Bola", gross_amount=200000,
                                    paye_amount=20000, pension_amount=10000, cost_center=sec, line_no=2)
+        approve_for_posting(run)
         post_payroll(run)
         run.refresh_from_db()
         # Gross salary expense (5200) splits by cost centre; liabilities stay aggregated.
@@ -3482,6 +3486,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.books
         bank = self.make_bank(entity)
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        approve_for_posting(run)
         post_payroll(run)
         pay_payroll(run, bank_account=bank)
         run.refresh_from_db()
@@ -3496,6 +3501,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.books
         run = self._make_run(entity, lines=[("Greedy", 100000, 80000, 30000)])  # net -10,000
         with self.assertRaises(PayrollError):
+            approve_for_posting(run)
             post_payroll(run)
         run.refresh_from_db()
         self.assertEqual(run.run_status, PayrollRunStatus.DRAFT)
@@ -3521,6 +3527,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
     def test_void_posted_run_reverses_accrual(self):
         entity, _, _ = self.books
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        approve_for_posting(run)
         post_payroll(run)
         run.refresh_from_db()
         journal = run.journal
@@ -3536,6 +3543,7 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.books
         bank = self.make_bank(entity)
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        approve_for_posting(run)
         post_payroll(run)
         pay_payroll(run, bank_account=bank)
         with self.assertRaises(PayrollError):
@@ -10291,8 +10299,8 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
             run=run, employee_name="Ada", gross_amount=300000,
             paye_amount=30000, pension_amount=15000, line_no=1,
         )
+        approve_for_posting(run)
         post_payroll(run)
-
         with self.assertRaises(BackdatedPostingError):
             pay_payroll(
                 run, bank_account=bank, pay_date=datetime.date(2026, 2, 1))
@@ -10312,8 +10320,8 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
             run=run, employee_name="Ada", gross_amount=300000,
             paye_amount=30000, pension_amount=15000, line_no=1,
         )
+        approve_for_posting(run)
         post_payroll(run)
-
         pay_payroll(
             run, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
 

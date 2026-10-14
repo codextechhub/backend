@@ -18,6 +18,7 @@ import hmac
 import json
 
 from .base import (
+    AccountResolution,
     CheckoutResult,
     RefundResult,
     CollectionStatusResult,
@@ -75,6 +76,8 @@ class FakeProvider(Provider):
         self.splits: dict[str, str] = {}
         # A message a test sets to make the next terminal call fail as a rejection.
         self.terminal_error: str = ""
+        # Holder names ``resolve_account`` answers, by (bank code, account number).
+        self.account_names: dict[tuple[str, str], str] = {}
 
     def healthcheck(self) -> bool:
         return True
@@ -239,6 +242,19 @@ class FakeProvider(Provider):
 
     def transfer_fee(self, amount):
         return self.transfer_fee_kobo
+
+    def list_banks(self):
+        return [{"name": "Fake MFB", "code": "999"}]
+
+    def resolve_account(self, *, account_number, bank_code):
+        name = self.account_names.get((bank_code, account_number))
+        if not name:
+            from ..exceptions import ProviderError
+
+            raise ProviderError("Could not resolve account name.", provider=self.name,
+                                provider_code="422")
+        return AccountResolution(account_number=account_number, account_name=name,
+                                 raw={"account_number": account_number, "account_name": name})
 
     def available_balance(self, currency="NGN"):
         return int(self.balances.get(currency.upper(), 0))

@@ -119,7 +119,9 @@ class PayoutBatchStatus(models.TextChoices):
     ``PROCESSING`` → submitted, at least one child accepted by the provider and none
     finished failing; ``COMPLETED`` → every child reached ``PAID``;
     ``PARTIALLY_COMPLETED`` → batch finished but a mix of paid/failed children;
-    ``FAILED`` → every child failed to submit/settle.
+    ``FAILED`` → every child failed to submit/settle; ``WAITING_FOR_FUNDS`` → a
+    payroll batch whose branch holds less than the batch needs, so nothing has
+    been sent and the sweep tries again.
     """
 
     DRAFT = "DRAFT", "Draft"  # Created locally, not yet submitted.
@@ -127,6 +129,7 @@ class PayoutBatchStatus(models.TextChoices):
     COMPLETED = "COMPLETED", "Completed"  # Every child reached PAID.
     PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED", "Partially completed"  # Mixed success/failure.
     FAILED = "FAILED", "Failed"  # Every child failed.
+    WAITING_FOR_FUNDS = "WAITING_FOR_FUNDS", "Waiting for funds"  # A payroll batch the branch cannot yet cover.
 
 
 #: Batch states past which no further automatic transition happens.  # Terminal batch states.
@@ -144,7 +147,8 @@ PAYOUT_BATCH_TERMINAL = frozenset(
 #: batch that was sent halfway through and still holds PENDING instructions sits here
 #: rather than in DRAFT. Anything looking for undispatched work must accept both.
 PAYOUT_BATCH_DISPATCHABLE = frozenset(
-    {PayoutBatchStatus.DRAFT, PayoutBatchStatus.PROCESSING}
+    {PayoutBatchStatus.DRAFT, PayoutBatchStatus.PROCESSING,
+     PayoutBatchStatus.WAITING_FOR_FUNDS}
 )
 
 
@@ -285,11 +289,16 @@ class PayoutPurpose(models.TextChoices):
 
     ``VENDOR``: suppliers, each line naming a verified vendor. ``SETTLEMENT``: the
     platform paying a held-mode branch what it holds for it, one line into the
-    branch's collection bank account (:mod:`vs_payments.held`).
+    branch's collection bank account (:mod:`vs_payments.held`). ``PAYROLL``: one
+    branch's staff net pay for a posted payroll run, one line per member of staff
+    (:mod:`vs_payments.payroll_payouts`). A payroll batch is authorised by the
+    payroll run it pays and by nothing else, which is why the purpose, never a
+    caller's say-so, decides whether a payout approval is asked for.
     """
 
     VENDOR = "VENDOR", "Supplier payments"
     SETTLEMENT = "SETTLEMENT", "Settlement to a branch's bank"
+    PAYROLL = "PAYROLL", "Staff pay for a payroll run"
 
 
 class HeldMovementKind(models.TextChoices):
