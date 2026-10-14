@@ -12,7 +12,12 @@ are a view of the payment status (``finance.payrollrun.pay_state``), the money
 totals of net pay (``finance.payrollrun.net_amount``), and the lines themselves
 are rendered by :class:`~vs_finance.serializers.PayrollLinePaymentSerializer`
 behind the same switches. The run's route is not a person's field and is always
-shown.
+shown. ``approved`` says whether the run has an approved request, the evidence
+paying through the provider needs (:func:`vs_finance.approvals.payroll_run_approved`):
+it belongs to the payment status (``finance.payrollrun.pay_state``) and not to
+the approval route's state (``finance.payrollrun.approval``), so a reader who
+follows how a run is being paid is told whether it may be paid this way even
+when they may not read where it stands with its approvers.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ def payment_progress(run, request, *, reach=None) -> dict:
     """
     from vs_rbac.field_enforcement import can_read
 
+    from .approvals import payroll_run_approved
     from .models import PayrollLine
     from .payroll import payment_route
     from .serializers import PayrollLinePaymentSerializer
@@ -89,6 +95,7 @@ def payment_progress(run, request, *, reach=None) -> dict:
     }
     if sees_state:
         data["counts"] = totals
+        data["approved"] = payroll_run_approved(run)
     return data
 
 

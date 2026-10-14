@@ -644,7 +644,10 @@ def register():
     register_fields(
         "finance",
         "staff_bank",
-        surfaces=("vs_finance.serializers.StaffBankAccountSerializer",),
+        surfaces=(
+            "vs_finance.serializers.StaffBankAccountSerializer",
+            "vs_finance.serializers.StaffWithoutBankAccountSerializer",
+        ),
         fields=(
             FieldSpec("employee", "Staff member", group="Identity", writable=False,
                       scope=_TENANT, sort_order=10, api_names=("employee_id", "employee_name")),
@@ -658,7 +661,8 @@ def register():
             FieldSpec("verification_state", "Verification status", group="Verification",
                       writable=False, scope=_TENANT, sort_order=50,
                       api_names=("verification_state", "verification_state_label",
-                                 "verification_note", "verified_at", "is_payable")),
+                                 "verification_note", "verified_at", "is_payable",
+                                 "can_confirm")),
             FieldSpec("changed_by", "Last changed by", group="Verification", writable=False,
                       scope=_TENANT, sort_order=60, api_names=("changed_by_name", "updated_at")),
             FieldSpec("confirmation", "Confirmed by and when", group="Verification",

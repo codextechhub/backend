@@ -85,6 +85,7 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "PayrollLineSerializer",
         _SURFACE + "PayrollLinePaymentSerializer",
         _SURFACE + "StaffBankAccountSerializer",
+        _SURFACE + "StaffWithoutBankAccountSerializer",
         _SURFACE + "EmployeeSalarySerializer",
         _SURFACE + "EmployeeSalaryNextTermsSerializer",
         _SURFACE + "EmployeeSalaryVersionSerializer",
@@ -188,6 +189,9 @@ class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):
                 Sample(_SURFACE + "PayrollLineSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "PayrollLinePaymentSerializer", line, tenant=tenant),
                 Sample(_SURFACE + "StaffBankAccountSerializer", account, tenant=tenant),
+                Sample(_SURFACE + "StaffWithoutBankAccountSerializer",
+                       EmployeeSalary.objects.filter(pk=salary.pk)
+                       .with_branch_on(datetime.date(2026, 1, 1)).get(), tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalarySerializer", salary, tenant=tenant),
                 Sample(_SURFACE + "EmployeeSalaryNextTermsSerializer", {
                     "effective_from": datetime.date(2099, 1, 1), "branch_id": None,

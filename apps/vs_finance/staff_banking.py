@@ -176,7 +176,7 @@ def _validated(bank_code, account_number):
 
 
 def set_staff_bank_account(*, entity, employee, bank_code, account_number, bank_name="",
-                           actor_user=None):
+                           actor_user=None, must_be_new=False):
     """Save a staff member's bank account and have the provider name its holder.
 
     Creates the account or changes the existing one. A changed bank or account
@@ -184,7 +184,12 @@ def set_staff_bank_account(*, entity, employee, bank_code, account_number, bank_
     changes nothing but the bank's display name. ``employee`` must belong to
     ``entity``'s tenant (a crafted id for another tenant's user is a 400).
     The provider is asked first and nothing is held open across the call.
+    ``must_be_new`` makes the save an add only: an account already on file is
+    never replaced and raises
+    :class:`~vs_finance.exceptions.StaffBankAccountExistsError`, judged under
+    the row lock so two simultaneous adds cannot both succeed.
     """
+    from .exceptions import StaffBankAccountExistsError
     from .models import StaffBankAccount
 
     if employee is None or employee.tenant_id != entity.tenant_id:
@@ -197,6 +202,8 @@ def set_staff_bank_account(*, entity, employee, bank_code, account_number, bank_
         row = (StaffBankAccount.objects.select_for_update().filter(employee=employee).first())
         if row is not None and row.entity_id != entity.pk:
             raise ValidationError({"employee": "No such person at this customer."})
+        if row is not None and must_be_new:
+            raise StaffBankAccountExistsError()
         if row is not None and (row.bank_code, row.account_number) == (bank_code, account_number):
             if bank_name and bank_name != row.bank_name:
                 row.bank_name = bank_name
@@ -246,6 +253,42 @@ def reverify_staff_bank_account(*, account, actor_user=None):
     return row
 
 
+def confirmer_refusal(account, actor_user):
+    """Why ``actor_user`` may not confirm ``account``, or ``None`` when the person is eligible.
+
+    The two rules of a second person, judged by user id with an impersonation
+    session counted as the real person behind it: not whoever made the last
+    change, and not the staff member. Whether the account is awaiting
+    confirmation, and whether the caller holds the confirm key, are separate
+    questions (:func:`confirm_staff_bank_account`, :func:`reader_may_confirm`).
+    """
+    person = real_person(actor_user)
+    if person.pk == account.changed_by_id:
+        return "A second person must confirm this account: you made the change."
+    if person.pk == account.employee_id or actor_user.pk == account.employee_id:
+        return "Staff cannot confirm their own bank account."
+    return None
+
+
+def reader_may_confirm(account, user, tenant) -> bool:
+    """Whether ``user`` could confirm ``account`` now: the answer a screen shows as a button.
+
+    True only for an account awaiting confirmation, a reader holding
+    ``finance.staff_bank.confirm`` in ``tenant`` (as the confirm route's gate
+    reads it), and a reader the second-person rules allow
+    (:func:`confirmer_refusal`).
+    """
+    from vs_rbac.evaluator import has_permission
+    from vs_rbac.permissions import is_vision_super_admin
+
+    if account.verification_state != StaffBankState.NEEDS_CONFIRMATION:
+        return False
+    if not (is_vision_super_admin(user)
+            or has_permission(user, "finance.staff_bank.confirm", tenant=tenant)):
+        return False
+    return confirmer_refusal(account, user) is None
+
+
 def confirm_staff_bank_account(*, account, actor_user):
     """A second person confirms an account whose holder's name did not match.
 
@@ -265,11 +308,8 @@ def confirm_staff_bank_account(*, account, actor_user):
             raise ValidationError({"detail": (
                 "Only an account whose holder's name did not match needs confirming.")})
         person = real_person(actor_user)
-        if person.pk == row.changed_by_id:
-            raise PermissionDenied(
-                "A second person must confirm this account: you made the change.")
-        if person.pk == row.employee_id or actor_user.pk == row.employee_id:
-            raise PermissionDenied("Staff cannot confirm their own bank account.")
+        if (refusal := confirmer_refusal(row, actor_user)) is not None:
+            raise PermissionDenied(refusal)
         row.verification_state = StaffBankState.CONFIRMED
         row.confirmed_by = person
         row.confirmed_at = timezone.now()

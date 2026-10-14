@@ -640,7 +640,9 @@ class PayrollRunPaymentsView(_PayrollActionBase):
     Counts of lines not sent, needing bank details, waiting for funds, sent,
     paid and failed, with each branch's batch. A branch-bound reader sees their
     own branches' lines and totals only, and the figures behind each switch of
-    ``finance.payrollrun`` only if their roles may read them.
+    ``finance.payrollrun`` only if their roles may read them. ``approved`` is true
+    when the run has an approved request, so it may be paid through the provider;
+    a run posted before payroll approvals existed has none and reads false.
 
     docstring-name: Payroll run payments
     """

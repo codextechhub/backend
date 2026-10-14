@@ -798,6 +798,43 @@ class ApprovalGateTests(_PayrollFixture):
         run.refresh_from_db()
         self.assertEqual(run.run_status, PayrollRunStatus.PAID)
 
+    def payments(self, run, client=None, books=None):
+        books = books or self.books
+        response = (client or self.bursar).get(
+            f"/v1/finance/payroll-runs/{run.pk}/payments/?entity={books.code}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_the_payments_say_whether_the_run_is_approved_for_the_provider(self):
+        self.assertIs(self.payments(self.posted_run())["approved"], True)
+
+    def test_the_payments_of_a_legacy_run_say_it_is_not_approved(self):
+        self.assertIs(self.payments(self.legacy_run())["approved"], False)
+
+    def test_the_payments_of_a_run_in_a_single_branch_school_say_it_too(self):
+        run = self.posted_run(client=TenantAPIClient(user=self.solo_bursar_user), books=self.solo_books)
+        data = self.payments(
+            run, client=TenantAPIClient(user=self.solo_bursar_user), books=self.solo_books)
+        self.assertIs(data["approved"], True)
+
+    def test_a_reader_who_may_not_read_the_approval_state_is_still_told_approved(self):
+        """``approved`` follows the payment status switch, not the approval route's."""
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        keys = install_declared_fields("finance.payrollrun")
+        run = self.posted_run()
+        role = TenantRoleTemplate.objects.get(tenant=self.tenant, key="payroll-bursar")
+        set_field_access(role, *keys, read=True, write=False)
+        set_field_access(role, "finance.payrollrun.approval", read=False, write=False)
+        data = self.payments(run)
+        self.assertIs(data["approved"], True)
+        detail = self.bursar.get(f"/v1/finance/payroll-runs/{run.pk}/?entity={self.books.code}")
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertNotIn("approval_state", detail.data["data"])
+        set_field_access(role, "finance.payrollrun.pay_state", read=False, write=False)
+        self.assertNotIn("approved", self.payments(run))
+
     def test_an_approved_run_is_paid_through_the_provider_and_an_unapproved_batch_is_not_sent(self):
         run = self.posted_run()
         self.pay(run)

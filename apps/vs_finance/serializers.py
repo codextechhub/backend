@@ -2170,6 +2170,12 @@ class StaffBankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     who changed and confirmed the account have their own, so a role that follows
     which accounts still need a second person's confirmation need not read
     anybody's account number.
+
+    ``can_confirm`` is the reader's own answer for a screen's Confirm button:
+    true only while the account awaits confirmation and the reader holds the
+    confirm key and is neither whoever made the last change nor the staff member
+    (:func:`vs_finance.staff_banking.reader_may_confirm`). It is derived from the
+    verification state, so it travels under that switch and disappears with it.
     """
 
     field_resource = "finance.staff_bank"
@@ -2181,6 +2187,7 @@ class StaffBankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     is_payable = serializers.BooleanField(read_only=True)
     changed_by_name = serializers.SerializerMethodField()
     confirmed_by_name = serializers.SerializerMethodField()
+    can_confirm = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffBankAccount
@@ -2188,7 +2195,7 @@ class StaffBankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "id", "employee_id", "employee_name", "bank_code", "bank_name",
             "account_number", "resolved_account_name", "verification_state",
             "verification_state_label", "verification_note", "verified_at", "is_payable",
-            "changed_by_name", "confirmed_by_name", "confirmed_at", "updated_at",
+            "can_confirm", "changed_by_name", "confirmed_by_name", "confirmed_at", "updated_at",
         ]
 
     @staticmethod
@@ -2204,6 +2211,38 @@ class StaffBankAccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     def get_confirmed_by_name(self, obj):
         return self._name(obj.confirmed_by)
+
+    def get_can_confirm(self, obj) -> bool:
+        from .staff_banking import reader_may_confirm
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None:
+            return False
+        tenant = (getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
+                  or getattr(user, "tenant", None))
+        return reader_may_confirm(obj, user, tenant)
+
+
+class StaffWithoutBankAccountSerializer(FieldAccessMixin, serializers.Serializer):
+    """A payroll roster person who has no staff bank account yet, for choosing whose to add.
+
+    Renders an annotated roster row (:func:`vs_finance.views_ops.payroll._salary_rows`).
+    ``employee_id`` is the person's user id, the key the account is added under
+    (``POST /v1/finance/staff-bank-accounts/<employee_id>/``). The name is the
+    roster's, and the branch is the one the row belongs to on the reader's today
+    (:meth:`~vs_finance.models.EmployeeSalaryQuerySet.with_branch_on`). The person
+    follows the ``finance.staff_bank`` staff member switch. It is not a
+    ``ModelSerializer``, so the roster's own serializers are not read as surfaces
+    of the staff bank resource.
+    """
+
+    field_resource = "finance.staff_bank"
+
+    employee_id = serializers.IntegerField(read_only=True)
+    employee_name = serializers.CharField(source="name", read_only=True)
+    branch_id = serializers.IntegerField(source="branch_on_id", read_only=True, allow_null=True)
+    branch_name = serializers.CharField(source="branch_on_name", read_only=True, allow_null=True)
 
 
 class PayrollRunPeopleListSerializer(serializers.ListSerializer):

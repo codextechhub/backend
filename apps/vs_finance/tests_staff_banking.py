@@ -231,9 +231,14 @@ class StaffBankApiTests(_BankFixture):
             f"/v1/finance/staff-bank-accounts/{user.pk}/?entity={(books or self.books).code}",
             body, format="json")
 
+    def post(self, client, user, body, books=None):
+        return client.post(
+            f"/v1/finance/staff-bank-accounts/{user.pk}/?entity={(books or self.books).code}",
+            body, format="json")
+
     def test_saving_through_the_api_verifies_and_hides_nothing_from_a_holder_of_the_key(self):
         client = TenantAPIClient(user=self.maker)
-        response = self.put(client, self.ada_user, {
+        response = self.post(client, self.ada_user, {
             "bank_code": "058", "account_number": "0123456789", "bank_name": "GTBank"})
         self.assertEqual(response.status_code, 201, response.data)
         data = response.data["data"]
@@ -245,8 +250,9 @@ class StaffBankApiTests(_BankFixture):
     def test_a_caller_without_the_key_is_refused(self):
         nobody = self.user_for(self.tenant, "nobody@corona.test")
         client = TenantAPIClient(user=nobody)
-        self.assertEqual(self.put(client, self.ada_user, {
-            "bank_code": "058", "account_number": "0123456789"}).status_code, 403)
+        body = {"bank_code": "058", "account_number": "0123456789"}
+        self.assertEqual(self.put(client, self.ada_user, body).status_code, 403)
+        self.assertEqual(self.post(client, self.ada_user, body).status_code, 403)
         self.assertEqual(client.get(
             f"/v1/finance/staff-bank-accounts/?entity={self.books.code}").status_code, 403)
 
@@ -272,17 +278,18 @@ class StaffBankApiTests(_BankFixture):
 
     def test_another_tenants_staff_are_not_found(self):
         client = TenantAPIClient(user=self.maker)
-        self.assertEqual(self.put(client, self.rival_user, {
-            "bank_code": "058", "account_number": "0123456789"}).status_code, 404)
+        body = {"bank_code": "058", "account_number": "0123456789"}
+        self.assertEqual(self.post(client, self.rival_user, body).status_code, 404)
+        self.assertEqual(self.put(client, self.rival_user, body).status_code, 404)
 
     def test_a_branch_bound_caller_reaches_only_their_branchs_staff(self):
         lekki_officer = self.grant(
             self.user_for(self.tenant, "lekki@corona.test"), *self.KEYS,
             tenant=self.tenant, role_key="lekki-bank", branch=self.lekki)
         client = TenantAPIClient(user=lekki_officer)
-        own = self.put(client, self.bola_user, {"bank_code": "058", "account_number": "0123456789"})
+        own = self.post(client, self.bola_user, {"bank_code": "058", "account_number": "0123456789"})
         self.assertEqual(own.status_code, 201, own.data)
-        other = self.put(client, self.ada_user, {"bank_code": "058", "account_number": "0123456789"})
+        other = self.post(client, self.ada_user, {"bank_code": "058", "account_number": "0123456789"})
         self.assertEqual(other.status_code, 404)
         self.save()  # Ada's, saved by the whole-school bursar.
         listed = client.get(f"/v1/finance/staff-bank-accounts/?entity={self.books.code}")
@@ -290,7 +297,7 @@ class StaffBankApiTests(_BankFixture):
 
     def test_an_unknown_key_is_refused(self):
         client = TenantAPIClient(user=self.maker)
-        response = self.put(client, self.ada_user, {
+        response = self.post(client, self.ada_user, {
             "bank_code": "058", "account_number": "0123456789", "verification_state": "VERIFIED"})
         self.assertEqual(response.status_code, 400)
         self.assertFalse(StaffBankAccount.objects.exists())
@@ -306,7 +313,7 @@ class StaffBankApiTests(_BankFixture):
         set_field_access(
             TenantRoleTemplate.objects.get(tenant=self.tenant, key="bank-reader"),
             *keys, read=True, write=False)
-        response = self.put(TenantAPIClient(user=reader), self.ada_user, {
+        response = self.post(TenantAPIClient(user=reader), self.ada_user, {
             "bank_code": "058", "account_number": "0123456789"})
         self.assertEqual(response.status_code, 403, response.data)
         self.assertFalse(StaffBankAccount.objects.exists())

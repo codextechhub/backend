@@ -10,12 +10,13 @@ may confirm it) are in :mod:`vs_finance.staff_banking`.
 from __future__ import annotations
 
 from django.core.cache import cache
+from django.db.models import Exists, OuterRef
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 
-from ..models import StaffBankAccount
-from ..serializers import StaffBankAccountSerializer
+from ..models import EmployeeSalary, StaffBankAccount
+from ..serializers import StaffBankAccountSerializer, StaffWithoutBankAccountSerializer
 from ..staff_banking import (
     confirm_staff_bank_account,
     list_banks,
@@ -76,6 +77,33 @@ class StaffBankAccountListView(_StaffBankBase):
                              StaffBankAccountSerializer)
 
 
+class StaffBankAccountMissingView(_StaffBankBase):
+    """GET - active payroll staff the caller reaches who have no bank account yet, for the Add picker.
+
+    Paginated, ordered by name; ``?search=`` narrows by name. Each row is the
+    person's ``employee_id`` (the key the account is added under), ``employee_name``
+    and the ``branch_id`` / ``branch_name`` their roster row belongs to. Reach is
+    the roster's own (:func:`vs_finance.views_ops.payroll._salary_rows`), so
+    Lekki's bursar is offered Lekki's teachers and never an Ikeja teacher's. It
+    needs the key to add an account, not the key to read salaries, so a bursar who
+    may not open anybody's pay can still choose whose account to add.
+
+    docstring-name: Staff without a bank account
+    """
+    rbac_permission = "finance.staff_bank.update"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        has_account = StaffBankAccount.objects.filter(employee_id=OuterRef("employee_id"))
+        qs = (_salary_rows(request, entity)
+              .filter(is_active=True, employee__isnull=False)
+              .filter(~Exists(has_account)))
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(name__icontains=search)
+        return self.paginate(request, qs.order_by("name", "employee_id"),
+                             StaffWithoutBankAccountSerializer)
+
+
 class StaffBankAccountBanksView(_StaffBankBase):
     """GET - the banks the payment provider can pay into, for choosing a staff member's bank.
 
@@ -93,9 +121,16 @@ class StaffBankAccountBanksView(_StaffBankBase):
 
 
 class StaffBankAccountDetailView(_StaffBankBase):
-    """GET / PUT one staff member's bank account, by the staff member's user id.
+    """GET / POST / PUT one staff member's bank account, by the staff member's user id.
 
-    PUT takes ``bank_code``, ``account_number`` and optionally ``bank_name``.
+    POST adds the account and PUT edits it, so a save never replaces an account
+    the caller has not seen. POST answers 201, and 409
+    ``STAFF_BANK_ACCOUNT_EXISTS`` when the person already has an account (also
+    when two bursars add at once: the second is refused under the row lock). PUT
+    answers 200, and 404 when there is no account to edit. Both take
+    ``bank_code``, ``account_number`` and optionally ``bank_name``, and both
+    need ``finance.staff_bank.update``.
+
     Saving a changed bank or account number has the payment provider name the
     account's holder and sets the verification state
     (:func:`vs_finance.staff_banking.set_staff_bank_account`). Each key is judged
@@ -107,7 +142,7 @@ class StaffBankAccountDetailView(_StaffBankBase):
 
     @property
     def rbac_permission(self):
-        return "finance.staff_bank.update" if self.request.method == "PUT" \
+        return "finance.staff_bank.update" if self.request.method in ("POST", "PUT") \
             else "finance.staff_bank.view"
 
     def get(self, request, employee_id):
@@ -117,8 +152,16 @@ class StaffBankAccountDetailView(_StaffBankBase):
             "Staff bank account retrieved.",
             data=_account_data(request, self._account(request, entity, employee_id)))
 
+    def post(self, request, employee_id):
+        return self._save(request, employee_id, adding=True)
+
     def put(self, request, employee_id):
+        return self._save(request, employee_id, adding=False)
+
+    def _save(self, request, employee_id, *, adding):
         from vs_rbac.field_enforcement import assert_writable
+
+        from ..exceptions import StaffBankAccountExistsError
 
         entity = resolve_entity(request)
         employee = self._employee(request, entity, employee_id)
@@ -127,6 +170,10 @@ class StaffBankAccountDetailView(_StaffBankBase):
         if unknown:
             raise ValidationError({"detail": f"Unknown fields: {', '.join(unknown)}."})
         existing = StaffBankAccount.objects.filter(entity=entity, employee=employee).first()
+        if adding and existing is not None:
+            raise StaffBankAccountExistsError()
+        if not adding and existing is None:
+            raise NotFound("No bank account is saved for this staff member. Add it first.")
         submitted = {key: str(body[key] or "").strip() for key in WRITABLE_KEYS if key in body}
         current = {
             "bank_code": getattr(existing, "bank_code", ""),
@@ -134,17 +181,17 @@ class StaffBankAccountDetailView(_StaffBankBase):
             "account_number": getattr(existing, "account_number", ""),
         }
         assert_writable(request, "finance.staff_bank", submitted,
-                        creating=existing is None, current=current)
-        account = set_staff_bank_account(
+                        creating=adding, current=current)
+        set_staff_bank_account(
             entity=entity, employee=employee,
             bank_code=submitted.get("bank_code", current["bank_code"]),
             account_number=submitted.get("account_number", current["account_number"]),
             bank_name=submitted.get("bank_name", current["bank_name"]),
-            actor_user=request.user)
+            actor_user=request.user, must_be_new=adding)
         account = self._account(request, entity, employee_id)
         return success_response(
             "Staff bank account saved.", data=_account_data(request, account),
-            status=200 if existing else 201)
+            status=201 if adding else 200)
 
 
 class StaffBankAccountVerifyView(_StaffBankBase):

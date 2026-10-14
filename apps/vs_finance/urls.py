@@ -147,6 +147,7 @@ from .views_ops.staff_bank import (
     StaffBankAccountConfirmView,
     StaffBankAccountDetailView,
     StaffBankAccountListView,
+    StaffBankAccountMissingView,
     StaffBankAccountVerifyView,
 )
 from .views_ops.payroll_statutory import (
@@ -669,6 +670,8 @@ urlpatterns = [
          name="finance-staff-bank-list"),
     path("staff-bank-accounts/banks/", StaffBankAccountBanksView.as_view(),
          name="finance-staff-bank-banks"),
+    path("staff-bank-accounts/missing/", StaffBankAccountMissingView.as_view(),
+         name="finance-staff-bank-missing"),
     path("staff-bank-accounts/<int:employee_id>/", StaffBankAccountDetailView.as_view(),
          name="finance-staff-bank-detail"),
     path("staff-bank-accounts/<int:employee_id>/verify/", StaffBankAccountVerifyView.as_view(),

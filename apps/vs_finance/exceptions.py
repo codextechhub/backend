@@ -334,6 +334,19 @@ class PayrollError(PostingError):
     default_message = "The payroll run could not be processed."  # Default payroll message.
 
 
+class StaffBankAccountExistsError(FinanceError):
+    """A staff member already has a bank account, so adding another would overwrite it.
+
+    A 409: the request is well formed but conflicts with the account on file.
+    Two bursars adding Ada Obi's account at the same time must not have the
+    second quietly replace the first (and put it back to unchecked); the second
+    is told one exists and edits it instead.
+    """
+    error_code = "STAFF_BANK_ACCOUNT_EXISTS"
+    default_message = "This staff member already has a bank account saved."
+    http_status = 409
+
+
 class PayrollBranchUnassignedError(PayrollError):
     """A run cannot post while a line's branch is unknown at a school with several.
 
