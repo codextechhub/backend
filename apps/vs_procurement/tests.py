@@ -11997,12 +11997,12 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
 
 
 class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
-    """A request is routed to its own site's approvers, and to nobody else's.
+    """A request is routed to its own branch's approvers, and to nobody else's.
 
     ``approver_scope`` decides which arguments the engine forwards to RBAC:
     ``PLATFORM`` (and ``SCHOOL``) forward no branch at all, so only a tenant-wide role
-    assignment is ever eligible and an approver appointed at one site is never resolved
-    for that site's own requests. ``BRANCH`` forwards the *document's* branch, making
+    assignment is ever eligible and an approver appointed at one branch is never resolved
+    for that branch's own requests. ``BRANCH`` forwards the *document's* branch, making
     eligibility "assigned at this branch, or assigned tenant-wide".
     """
 
@@ -12247,6 +12247,14 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         for hidden in ("amount", "currency", "requester", "title", "submitted_at", "status"):
             self.assertNotIn(hidden, receipt)
 
+        title_probe = client.get("/v1/procurement/approvals/", {
+            "entity": self.multi.entity.code,
+            "view": "history",
+            "search": req.title,
+        })
+        self.assertEqual(title_probe.status_code, 200, title_probe.data)
+        self.assertEqual(title_probe.json()["data"], [])
+
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_decision_history_filters_and_keeps_full_rows_in_current_reach(self, _permission):
         """The queue's search and type filter also narrow completed decisions."""
@@ -12269,14 +12277,29 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(found.status_code, 200, found.data)
         self.assertEqual([row["id"] for row in found.json()["data"]], [str(instance.id)])
         self.assertFalse(found.json()["data"][0]["receipt_only"])
-        self.assertIn("amount", found.json()["data"][0])
+        self.assertEqual(found.json()["data"][0]["title"], req.title)
+        for unused in ("amount", "currency", "requester", "submitted_at", "status"):
+            self.assertNotIn(unused, found.json()["data"][0])
+
+        other_actor = TenantAPIClient(user=self.ikeja_approver).get(base)
+        self.assertEqual(other_actor.status_code, 200, other_actor.data)
+        self.assertEqual(other_actor.json()["data"], [])
 
         absent = client.get(f"{base}&outcome=REJECTED")
         self.assertEqual(absent.status_code, 200, absent.data)
         self.assertEqual(absent.json()["data"], [])
 
+        before = client.get(f"{base}&decided_to=2000-01-01")
+        self.assertEqual(before.status_code, 200, before.data)
+        self.assertEqual(before.json()["data"], [])
+        after = client.get(f"{base}&decided_from=2999-01-01")
+        self.assertEqual(after.status_code, 200, after.data)
+        self.assertEqual(after.json()["data"], [])
+
         refused = client.get(f"{base}&outcome=NOT_A_DECISION")
         self.assertEqual(refused.status_code, 400, refused.data)
+        bad_date = client.get(f"{base}&decided_from=tomorrow")
+        self.assertEqual(bad_date.status_code, 400, bad_date.data)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_decision_receipt_omits_a_field_closed_by_field_access(self, _permission):
@@ -12301,6 +12324,9 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         set_field_access(
             role, "procurement.approval.stage", read=False, write=False,
         )
+        set_field_access(
+            role, "procurement.approval.title", read=False, write=False,
+        )
 
         history = client.get(
             f"/v1/procurement/approvals/?entity={self.multi.entity.code}&view=history",
@@ -12308,6 +12334,7 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(history.status_code, 200, history.data)
         receipt = history.json()["data"][0]
         self.assertNotIn("stage", receipt)
+        self.assertNotIn("title", receipt)
         self.assertIn("reference", receipt)
         self.assertEqual(receipt["decision"], "APPROVED")
 

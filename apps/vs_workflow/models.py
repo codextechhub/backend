@@ -943,7 +943,11 @@ class WorkflowStageAction(models.Model):
                 name="uniq_live_action_per_actor_per_attempt",
             ),
         ]
-        indexes = [models.Index(fields=["stage_instance", "attempt"])]
+        indexes = [
+            models.Index(fields=["stage_instance", "attempt"]),
+            models.Index(fields=["actor", "-acted_at"], name="wf_action_actor_time"),
+            models.Index(fields=["proxied_by", "-acted_at"], name="wf_action_proxy_time"),
+        ]
 
     def save(self, *args, **kwargs):
         if self._state.adding and self.proxied_by_id is None and self.actor_id:

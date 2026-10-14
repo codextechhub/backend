@@ -67,6 +67,7 @@ class ProcurementApprovalHistoryReceiptSerializer(FieldAccessMixin, serializers.
     field_resource = "procurement.approval"
 
     reference = serializers.CharField(read_only=True)
+    title = serializers.CharField(read_only=True)
     decision = serializers.CharField(read_only=True)
     stage = serializers.CharField(read_only=True)
     decided_at = serializers.DateTimeField(read_only=True)
@@ -165,7 +166,7 @@ def _entity_history_actions(entity, user):
         )
         .select_related(
             "actor", "on_behalf_of", "proxied_by", "stage_instance__stage",
-            "stage_instance__instance__requested_by",
+            "stage_instance__instance",
         )
         .order_by("-acted_at", "-pk")
     )
@@ -192,18 +193,23 @@ def _history_documents(entity, actions, branch_filter):
     return documents, reachable
 
 
-def _history_row(request, entity, action, document, *, receipt_only):
+def _history_row(request, action, document, *, receipt_only):
     """Project one immutable decision, with business detail only in current reach."""
     instance = action.stage_instance.instance
-    receipt = ProcurementApprovalHistoryReceiptSerializer({
+    payload = {
         "reference": document.document_number or str(document.pk),
         "decision": action.action,
         "stage": action.stage_instance.stage.label,
         "decided_at": action.acted_at,
         "on_behalf_of": _user_name(action.on_behalf_of) if action.on_behalf_of_id else None,
         "reversed_at": action.reversed_at,
-    }, context={"request": request}).data
-    common = {
+    }
+    if not receipt_only:
+        payload["title"] = _document_title(document, instance.document_type)
+    receipt = ProcurementApprovalHistoryReceiptSerializer(
+        payload, context={"request": request},
+    ).data
+    return {
         "id": str(instance.id),
         "action_id": str(action.id),
         "document_type": instance.document_type,
@@ -211,20 +217,6 @@ def _history_row(request, entity, action, document, *, receipt_only):
         "receipt_only": receipt_only,
         **receipt,
     }
-    if receipt_only:
-        return common
-
-    amount_field = getattr(document, "workflow_amount_field", "")
-    common.update({
-        "document_id": document.pk,
-        "title": _document_title(document, instance.document_type),
-        "requester": _user_name(instance.requested_by),
-        "amount": int(getattr(document, amount_field, 0) or 0),
-        "currency": entity.base_currency_id,
-        "submitted_at": instance.submitted_at,
-        "status": instance.status,
-    })
-    return common
 
 
 def _filter_history(actions, request, entity):
@@ -261,21 +253,10 @@ def _filter_history(actions, request, entity):
     if not search:
         return actions
 
-    matches = Q(
-        stage_instance__instance__requested_by__first_name__icontains=search,
-    ) | Q(stage_instance__instance__requested_by__last_name__icontains=search)
+    matches = Q()
     for document_type, model in DOCUMENT_MODELS.items():
-        title = Q(document_number__icontains=search)
-        if document_type == WF_DOCTYPE_REQUISITION:
-            title |= Q(title__icontains=search) | Q(justification__icontains=search)
-        elif document_type in (WF_DOCTYPE_PURCHASE_ORDER, WF_DOCTYPE_VENDOR_PAYMENT):
-            title |= Q(reference__icontains=search) | Q(narration__icontains=search)
-        elif document_type == WF_DOCTYPE_VENDOR_INVOICE:
-            title |= Q(vendor_reference__icontains=search) | Q(narration__icontains=search)
-        else:
-            title |= Q(vendor_reference__icontains=search) | Q(reason__icontains=search)
         ids = (
-            model.objects.filter(entity=entity).filter(title)
+            model.objects.filter(entity=entity, document_number__icontains=search)
             .annotate(workflow_object_id=Cast("pk", output_field=CharField()))
             .values("workflow_object_id")
         )
@@ -615,7 +596,7 @@ class ProcurementApprovalListView(APIView):
                 if document is None:
                     continue
                 rows.append(_history_row(
-                    request, entity, action, document,
+                    request, action, document,
                     receipt_only=object_id not in reachable[instance.document_type],
                 ))
             return paginator.get_paginated_response(rows)

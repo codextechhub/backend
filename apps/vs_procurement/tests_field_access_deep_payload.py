@@ -100,6 +100,7 @@ class VendorDeepPayloadTests(DeepPayloadChecks, TestCase):
             _APPROVAL_RECEIPT,
             {
                 "reference": "REQ-1042",
+                "title": "Science supplies",
                 "decision": "APPROVED",
                 "stage": "Manager approval",
                 "decided_at": "2026-10-10T09:00:00Z",
