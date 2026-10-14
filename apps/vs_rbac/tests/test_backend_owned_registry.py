@@ -247,7 +247,14 @@ class AdministratorPermissionGroupTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn(self.view_permission.key, str(response.data))
+        message = str(response.data)
+        self.assertIn(
+            'Include every required permission in the group: '
+            '"Update invoice" also needs "View invoice".',
+            message,
+        )
+        self.assertNotIn(self.view_permission.key, message)
+        self.assertNotIn(self.update_permission.key, message)
 
     def test_catalogue_reader_cannot_create_update_or_delete_a_group(self):
         group = PermissionGroup.objects.create(

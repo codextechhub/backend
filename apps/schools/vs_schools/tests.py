@@ -397,13 +397,13 @@ class _BranchTenantCases:
                 .values_list("tenant_id", flat=True)),
             {tenants["alpha"].pk},
         )
-        self.assertEqual(
-            Branch.all_objects.get(name="B1").tenant_id, tenants["beta"].pk,
-        )
-        # Read back through the historical model: the current ``Branch`` has
-        # no ``school`` any more, and the whole point of the backfill was that
-        # the two agreed at the moment the column still existed.
+        # Whole rows are read through the historical model: the current
+        # ``Branch`` declares columns this schema does not have yet, and no
+        # longer has ``school``, which the backfill was written to agree with.
         MigratedBranch = self.historical_apps(self.AFTER).get_model(self.APP, "Branch")
+        self.assertEqual(
+            MigratedBranch.objects.get(name="B1").tenant_id, tenants["beta"].pk,
+        )
         for branch in MigratedBranch.objects.select_related("school"):
             self.assertEqual(branch.tenant_id, branch.school.tenant_id)
 

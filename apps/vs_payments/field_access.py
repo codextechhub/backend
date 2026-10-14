@@ -176,7 +176,7 @@ def register():
         surfaces=("vs_payments.serializers.ProviderBalanceTopUpSerializer",),
         fields=(
             FieldSpec("amount", "Amount", group="Top-up",
-                      description="Kobo paid from the platform's bank into the provider balance.",
+                      description="Amount paid from the platform's bank into the provider balance.",
                       writable=True, open_on_create=True, scope=_PLATFORM, sort_order=10,
                       api_names=("amount", "amount_naira")),
             FieldSpec("topped_up_on", "Date of the top-up", group="Top-up",

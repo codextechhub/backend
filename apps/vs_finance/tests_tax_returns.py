@@ -58,7 +58,9 @@ from .models import (
 )
 from .posting import post_journal, resolve_period, reverse_journal
 from .receivables import post_invoice
-from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
+from .seed import (
+    DEFAULT_CURRENCIES, seed_chart_of_accounts, seed_currencies, seed_fiscal_year,
+)
 from .tax_filing import (
     ANY_SHARE,
     file_filing,
@@ -733,8 +735,12 @@ class BlankFeeItemMigrationTests(RewoundSchemaTestCase):
     AFTER = "0035_tax_returns_declare_source_lines"
 
     def test_a_blank_fee_item_takes_the_exempt_code_and_a_coded_one_keeps_its_own(self):
-        seed_currencies()
         old = self.historical_apps(self.BEFORE)
+        # Currencies are seeded through the historical model: the schema stands
+        # at 0034, which the live ``Currency`` is not guaranteed to fit.
+        Currency = old.get_model("vs_finance", "Currency")
+        for spec in DEFAULT_CURRENCIES:
+            Currency.objects.update_or_create(code=spec["code"], defaults=spec)
         tenant = old.get_model("vs_tenants", "Tenant").objects.create(
             name="Migration Fees", slug="migration-fee-vat", kind="ORGANIZATION", status="ACTIVE",
         )
