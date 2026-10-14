@@ -2381,6 +2381,30 @@ def _build_write_off_request(request, entity, body):
     )
 
 
+def _may_make_write_offs(request, entity) -> bool:
+    """Whether the caller holds the write-off create key in ``entity``'s tenant."""
+    return is_vision_super_admin(request.user) or user_has_rbac_permission(
+        request.user, "finance.writeoff.create", tenant=entity.tenant)
+
+
+def _default_write_off_account(entity):
+    """The bad-debt expense account a write-off lands in by default, or None.
+
+    It is the entity's resolved ``BAD_DEBT_EXPENSE`` mapping. The account is a
+    label in the entity's own chart that the form already lets the maker pick, so
+    it is not a Field Access field.
+    """
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey
+    from .exceptions import MissingAccountError
+
+    try:
+        account = resolve_mapped_account(entity, AccountMappingKey.BAD_DEBT_EXPENSE)
+    except MissingAccountError:
+        return None
+    return {"id": account.pk, "code": account.code, "name": account.name}
+
+
 # Group endpoint behavior for Write Off Request List Create View.
 class WriteOffRequestListCreateView(_FinanceBase):
     """GET (list) / POST (create draft) bad-debt write-off requests for an entity.
@@ -2389,6 +2413,11 @@ class WriteOffRequestListCreateView(_FinanceBase):
     invoice's outstanding balance), write_off_account? (code|id), write_off_date?
     (ISO), narration?, reason?}``. Creates a DRAFT request; the actual GL write-off
     runs later, on approval (when gated) or a direct ``/post/`` (when not).
+
+    The list also carries ``default_write_off_account`` (``{id, code, name}``, or
+    null when the entity has no usable bad-debt account) to a caller who may
+    create write-offs, so the form can name the account a write-off lands in when
+    none is chosen, without the settings screen's key.
 
     docstring-name: Write-off requests
     """
@@ -2413,8 +2442,11 @@ class WriteOffRequestListCreateView(_FinanceBase):
         if (invoice := request.query_params.get("invoice")):
             qs = qs.filter(invoice=_resolve_invoice(request, entity, invoice))
         qs = filter_by_approval_param(qs, request.query_params)
-        return _paginate(
+        response = _paginate(
             request, qs.order_by("-id"), WriteOffRequestSerializer, self)
+        if _may_make_write_offs(request, entity):
+            response.data["default_write_off_account"] = _default_write_off_account(entity)
+        return response
 
     # Handle POST requests for this endpoint.
     def post(self, request):

@@ -220,6 +220,10 @@ class PaymentAuditAction(models.TextChoices):
     TERMINAL_PAYMENT_RECEIVED = "TERMINAL_PAYMENT_RECEIVED", "Terminal payment received"  # Booked to unidentified receipts.
     TERMINAL_PAYMENT_MATCHED = "TERMINAL_PAYMENT_MATCHED", "Terminal payment matched"  # Applied to a customer.
     TERMINAL_PAYMENT_UNMATCHED = "TERMINAL_PAYMENT_UNMATCHED", "Terminal payment unmatched"  # Put back on the list.
+    PROVIDER_TOPUP_CREATED = "PROVIDER_TOPUP_CREATED", "Provider balance top-up recorded"  # A draft top-up written down.
+    PROVIDER_TOPUP_SUBMITTED = "PROVIDER_TOPUP_SUBMITTED", "Provider balance top-up submitted"  # Put forward for two approvals.
+    PROVIDER_TOPUP_POSTED = "PROVIDER_TOPUP_POSTED", "Provider balance top-up booked"  # Approved and booked.
+    PROVIDER_TOPUP_REJECTED = "PROVIDER_TOPUP_REJECTED", "Provider balance top-up rejected"  # An approver refused it.
 
 
 class CustodyMode(models.TextChoices):
@@ -339,6 +343,20 @@ PROVIDER_REFUND_COUNTS = frozenset({
 })
 
 
+class ProviderTopUpStatus(models.TextChoices):
+    """Where a top-up of the platform's provider balance stands.
+
+    ``APPROVED`` is the instant between the second approval and the booking, so
+    a stored top-up reads ``POSTED`` or one of the others.
+    """
+
+    DRAFT = "DRAFT", "Draft"
+    PENDING_APPROVAL = "PENDING_APPROVAL", "Awaiting approval"
+    APPROVED = "APPROVED", "Approved"
+    POSTED = "POSTED", "Booked"
+    REJECTED = "REJECTED", "Rejected"
+
+
 class HeldSettlementStatus(models.TextChoices):
     """Where one branch's settlement payout stands."""
 
@@ -382,6 +400,14 @@ WF_DEFAULT_HIGH_VALUE_THRESHOLD = 50_000_000
 #: platform finance staff any two distinct members of which approve one.
 WF_SETTLEMENT_TEMPLATE_CODE = "held-settlement"
 WF_SETTLEMENT_APPROVER_GROUP = "held-settlement-approver"
+
+#: The approval of a top-up of the platform's provider balance: the document type,
+#: its route on the platform tenant and the number of distinct people who must
+#: approve it. It is staffed by the same platform group as a held settlement,
+#: since both are the platform finance team moving the platform's provider money.
+WF_TOPUP_DOCUMENT_TYPE = "payments.provider_topup"
+WF_TOPUP_TEMPLATE_CODE = "provider-topup"
+TOPUP_REQUIRED_APPROVERS = 2
 
 
 # The console's list screens filter by GROUP, not by raw status: one pill

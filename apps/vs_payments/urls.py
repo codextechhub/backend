@@ -1,7 +1,7 @@
 """URL routes for vs_payments (mounted at /v1/payments/)."""
 from django.urls import path
 
-from . import views, views_custody, views_public, views_refunds, views_terminals
+from . import views, views_custody, views_public, views_refunds, views_terminals, views_topups
 
 urlpatterns = [
     path("public/collections/<str:reference>/status/",
@@ -39,6 +39,16 @@ urlpatterns = [
          name="payments-platform-provider-settings"),
     path("platform/provider-sweeps/", views_custody.PlatformProviderSweepListView.as_view(),
          name="payments-platform-provider-sweeps"),
+    path("platform/provider-topups/", views_topups.PlatformProviderTopUpListCreateView.as_view(),
+         name="payments-platform-provider-topups"),
+    path("platform/provider-topups/bank-accounts/",
+         views_topups.PlatformProviderTopUpBankAccountsView.as_view(),
+         name="payments-platform-provider-topup-bank-accounts"),
+    path("platform/provider-topups/<int:pk>/", views_topups.PlatformProviderTopUpDetailView.as_view(),
+         name="payments-platform-provider-topup-detail"),
+    path("platform/provider-topups/<int:pk>/submit/",
+         views_topups.PlatformProviderTopUpSubmitView.as_view(),
+         name="payments-platform-provider-topup-submit"),
     path("settings/custody/", views_custody.CustodySettingsView.as_view(),
          name="payments-custody-settings"),
     path("subaccounts/", views_custody.CollectionSubaccountView.as_view(),

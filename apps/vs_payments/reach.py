@@ -41,6 +41,8 @@ reads:
   is the tenant's books, which record the money arriving, so a tenant reads its
   own settlements by entity as it reads its gateway records, and never another
   tenant's;
+* a **provider balance top-up** is the branch of the platform bank account the
+  money left, read by the platform's own entity;
 * a **held balance** is the branch whose money the platform holds. It carries a
   tenant rather than an entity, so it is read by the entity's tenant.
 
@@ -70,6 +72,7 @@ from .models import (
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
+    ProviderBalanceTopUp,
     ProviderRefund,
     TerminalPayment,
     VirtualAccount,
@@ -157,6 +160,15 @@ class PaymentsReach:
         branch-bound caller reaches their own branches' settlements and no other.
         """
         return self.scope.filter(HeldSettlement.objects.filter(entity=self.entity))
+
+    def topups(self):
+        """The top-ups of the platform's provider balance in the caller's branches.
+
+        A top-up is the platform's own transaction and names the branch of the
+        bank account the money left, so it is read by entity and, for a
+        branch-bound caller, only in their own branches.
+        """
+        return self.scope.filter(ProviderBalanceTopUp.objects.filter(entity=self.entity))
 
     def held_balances(self):
         """What the platform holds for each of this tenant's branches in reach.

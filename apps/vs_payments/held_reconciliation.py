@@ -11,6 +11,13 @@ and the provider says what it actually holds (``available_balance``, Paystack's
 ``GET /balance``). :func:`reconcile_held_ledger` compares the two every day and
 records the check (:class:`~vs_payments.models.HeldReconciliation`).
 
+**Top-ups.** The platform can pay its own money from its bank into the provider
+balance (:mod:`vs_payments.topups`). A booked top-up raises the provider balance
+account and the provider's own balance together, and is owed to no client, so
+the check sets it aside (``topped_up``) when it asks whether the account still
+equals the sub-ledger it mirrors. A top-up Paystack has received but the platform
+has not yet booked is a disagreement, and the check resolves it once it is booked.
+
 When they differ by more than the platform's tolerance (the configuration value
 ``payments.held_reconciliation_tolerance``, in naira, default 0), or the account
 disagrees with the sub-ledger it mirrors, the check opens one system-health
@@ -324,6 +331,7 @@ def reconcile_held_ledger(*, provider=None, currency="NGN", today=None):
     from .models import HeldBalance, HeldReconciliation
     from .providers.registry import get_provider
     from .services import resolve_provider_name
+    from .topups import topped_up_total
 
     platform = platform_books()
     provider_name = resolve_provider_name(provider)
@@ -354,12 +362,14 @@ def reconcile_held_ledger(*, provider=None, currency="NGN", today=None):
     held_total = int(HeldBalance.objects.aggregate(total=Sum("balance"))["total"] or 0)
     transit = own_in_transit(platform) if platform is not None else 0
     swept_out = swept_total(provider_name, currency)
+    topped_up = topped_up_total(provider_name, currency)
     own_back = own_swept_settled(platform, first_sweep_day(provider_name, currency, zone))
     books = account + transit - swept_out + own_back
     limit = tolerance()
     difference = None if reported is None else reported - books
-    agrees = difference is not None and abs(difference) <= limit and account == held_total
-    if (difference is not None and not agrees and in_flight and account == held_total
+    mirrors = account - topped_up == held_total
+    agrees = difference is not None and abs(difference) <= limit and mirrors
+    if (difference is not None and not agrees and in_flight and mirrors
             and abs(difference + in_flight) <= limit):
         from vs_finance.money import format_naira
 
@@ -371,8 +381,8 @@ def reconcile_held_ledger(*, provider=None, currency="NGN", today=None):
         defaults={
             "provider_balance": reported, "provider_account": account, "held_total": held_total,
             "own_in_transit": transit, "balance_swept": swept, "swept_total": swept_out,
-            "own_swept_settled": own_back, "books_balance": books, "difference": difference,
-            "tolerance": limit, "agrees": agrees, "error": error,
+            "own_swept_settled": own_back, "topped_up": topped_up, "books_balance": books,
+            "difference": difference, "tolerance": limit, "agrees": agrees, "error": error,
         },
     )
     if difference is None:
@@ -415,8 +425,9 @@ def _raise(row) -> str:
                 f" from those sweeps" if row.swept_total or row.own_swept_settled else "")
              + f"), a difference of "
              f"{format_naira(row.difference)} against a tolerance of {format_naira(row.tolerance)}."]
-    if row.provider_account != row.held_total:
-        parts.append(f"The provider balance account also differs from the total held "
+    if row.provider_account - row.topped_up != row.held_total:
+        parts.append(f"The provider balance account, less the platform's own top-ups "
+                     f"({format_naira(row.topped_up)}), also differs from the total held "
                      f"for clients ({format_naira(row.held_total)}): a held movement is not "
                      f"yet posted to the platform's books.")
     incident = report_configuration_fault(

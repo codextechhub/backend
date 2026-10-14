@@ -77,3 +77,5 @@ for _target in _TARGETS:
 register_journal_owner(JournalOwner("vs_payments.HeldSettlement", "settlement_journal"))
 register_journal_owner(JournalOwner("vs_payments.HeldMovement", "tenant_journal"))
 register_journal_owner(JournalOwner("vs_payments.TerminalPayment", "suspense_journal"))
+# A top-up carries its bank account's branch itself, so its journal takes that branch.
+register_journal_owner(JournalOwner("vs_payments.ProviderBalanceTopUp", "journal"))

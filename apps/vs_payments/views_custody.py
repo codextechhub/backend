@@ -26,6 +26,9 @@
   (``IsVisionStaff``), with ``payments.platform_settlement.view`` / ``.submit``.
 * ``platform/held-reconciliations/``: the daily checks of the platform's books
   against its provider balance, for the same platform staff.
+* ``platform/provider-topups/``: the platform's own top-ups of its provider
+  balance from its bank, recorded and put forward for two approvals
+  (:mod:`vs_payments.views_topups`).
 * ``platform/provider-settings/``: whether the provider sweeps the platform's
   balance to its bank, read with ``payments.platform_provider.view`` and changed
   with ``.update``, platform staff only.
@@ -427,7 +430,7 @@ class PlatformHeldReconciliationListView(APIView):
             "books_balance": row.books_balance, "provider_account": row.provider_account,
             "held_total": row.held_total, "own_in_transit": row.own_in_transit,
             "balance_swept": row.balance_swept, "swept_total": row.swept_total,
-            "own_swept_settled": row.own_swept_settled,
+            "own_swept_settled": row.own_swept_settled, "topped_up": row.topped_up,
             "difference": row.difference, "tolerance": row.tolerance, "agrees": row.agrees,
             "error": row.error or None, "incident_code": row.incident_code or None,
         } for row in rows[:_limit(request)]])

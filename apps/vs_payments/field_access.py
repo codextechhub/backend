@@ -29,10 +29,19 @@ own, apart from the matched customer, because a suggestion is a candidate for a
 person to choose between and not a statement about who paid. Finance Admin
 reads the sensitive fields by default, since matching a payment cannot be done
 without them.
+
+A top-up of the platform's provider balance (``payments.platform_topup``) is the
+platform's own record, so its fields are ``PLATFORM`` scope and held only by
+platform roles. The amount, day, bank account, provider, reference and note are
+typed by the person recording it: open on create, with Write switches governing
+later corrections of a draft. The status, the journal that booked it and the
+person who recorded it are the server's, so they carry Read switches only. All
+are open by default, since the key that opens the screen is itself platform-only.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 
 _TENANT = "TENANT"
+_PLATFORM = "PLATFORM"
 
 
 def register():
@@ -159,5 +168,42 @@ def register():
             FieldSpec("suggestions", "Suggested customers", group="Match", sensitive=True,
                       writable=False, scope=_TENANT, sort_order=100,
                       read_by=("finance_admin",)),
+        ),
+    )
+    register_fields(
+        "payments",
+        "platform_topup",
+        surfaces=("vs_payments.serializers.ProviderBalanceTopUpSerializer",),
+        fields=(
+            FieldSpec("amount", "Amount", group="Top-up",
+                      description="Kobo paid from the platform's bank into the provider balance.",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=10,
+                      api_names=("amount", "amount_naira")),
+            FieldSpec("topped_up_on", "Date of the top-up", group="Top-up",
+                      description="The day the money left the bank, which the top-up books on.",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=20),
+            FieldSpec("bank_account", "Bank account paid from", group="Top-up",
+                      description="The platform's bank account the money left.",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=30,
+                      api_names=("bank_account", "bank_account_name")),
+            FieldSpec("provider", "Payment provider", group="Top-up",
+                      description="The provider whose balance was topped up.",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=40),
+            FieldSpec("reference", "Reference", group="Top-up",
+                      description="The provider's or the bank's reference for the transfer.",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=50),
+            FieldSpec("note", "Note", group="Top-up",
+                      writable=True, open_on_create=True, scope=_PLATFORM, sort_order=60),
+            FieldSpec("status", "Status and approval", group="Approval",
+                      description="Where the top-up stands and where its approval stands.",
+                      writable=False, scope=_PLATFORM, sort_order=70,
+                      api_names=("status", "approval_state", "approval_returned")),
+            FieldSpec("journal", "Booking", group="Approval",
+                      description="The journal that booked the top-up, and when.",
+                      writable=False, scope=_PLATFORM, sort_order=80,
+                      api_names=("journal_id", "journal_number", "posted_at")),
+            FieldSpec("created_by", "Recorded by", group="Approval", writable=False,
+                      scope=_PLATFORM, sort_order=90,
+                      api_names=("created_by", "created_by_name")),
         ),
     )

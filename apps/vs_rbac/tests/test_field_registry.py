@@ -90,6 +90,7 @@ EXPECTED_RESOURCES = {
     ("import", "templates"),
     ("payments", "collection"),
     ("payments", "payout"),
+    ("payments", "platform_topup"),
     ("payments", "refund"),
     ("payments", "terminal"),
     ("payments", "terminal_destination"),

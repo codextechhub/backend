@@ -29,6 +29,8 @@ from .constants import (
     WF_DEFAULT_TEMPLATE_CODE,
     WF_SETTLEMENT_APPROVER_GROUP,
     WF_SETTLEMENT_TEMPLATE_CODE,
+    WF_TOPUP_DOCUMENT_TYPE,
+    WF_TOPUP_TEMPLATE_CODE,
 )
 
 #: The single approvable document type in this app, and its human labels.
@@ -302,6 +304,41 @@ def ensure_tenant_approval_templates(
     ), True
 
 
+def _ensure_two_person_route(tenant, *, document_type, code, name, description,
+                             group_description, stage_labels, created_by=None):
+    """Publish a platform route of two always-run approval steps; returns ``(template, created)``.
+
+    Both steps are staffed by the platform's ``held-settlement-approver`` group,
+    created empty so a document parks until somebody is appointed rather than
+    approving itself. Non-destructive: a route with a live step is left as an
+    administrator set it.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    existing = WorkflowTemplate.all_objects.filter(
+        tenant=tenant, branch=None, document_type=document_type, code=code,
+    ).first()
+    if existing is not None and existing.stages.filter(retired_at__isnull=True).exists():
+        return existing, False
+    ensure_approver_group(tenant, WF_SETTLEMENT_APPROVER_GROUP, description=group_description)
+    stage = {
+        "kind": "APPROVAL", "approver_source": "WORKFLOW_GROUP",
+        "approver_group_code": WF_SETTLEMENT_APPROVER_GROUP, "approver_scope": "SCHOOL",
+        "advance_rule": "ANY", "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
+    }
+    first_label, second_label = stage_labels
+    return publish_template(
+        tenant=tenant, branch=None, document_type=document_type, code=code, name=name,
+        description=description, created_by=created_by,
+        stages_payload=[
+            {**stage, "code": "first", "label": first_label, "order": 10},
+            {**stage, "code": "second", "label": second_label, "order": 20},
+        ],
+    ), True
+
+
 def ensure_settlement_approval_template(tenant, *, created_by=None):
     """Give the platform tenant its route for held-mode settlements. Returns ``(template, created)``.
 
@@ -316,38 +353,45 @@ def ensure_settlement_approval_template(tenant, *, created_by=None):
 
     Non-destructive: a route with a live step is left as an administrator set it.
     """
-    from vs_workflow.models import WorkflowTemplate
-    from vs_workflow.services.groups import ensure_approver_group
-    from vs_workflow.services.templates import publish_template
-
     if tenant is None:
         raise ValueError("The platform tenant is required to seed its settlement route.")
-    existing = WorkflowTemplate.all_objects.filter(
-        tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
-        code=WF_SETTLEMENT_TEMPLATE_CODE,
-    ).first()
-    if existing is not None and existing.stages.filter(retired_at__isnull=True).exists():
-        return existing, False
-    ensure_approver_group(
-        tenant, WF_SETTLEMENT_APPROVER_GROUP,
-        description="Platform finance staff who approve settlements of money held for "
-                    "client branches. Two of them approve each one.",
-    )
-    stage = {
-        "kind": "APPROVAL", "approver_source": "WORKFLOW_GROUP",
-        "approver_group_code": WF_SETTLEMENT_APPROVER_GROUP, "approver_scope": "SCHOOL",
-        "advance_rule": "ANY", "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
-    }
-    return publish_template(
-        tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
-        code=WF_SETTLEMENT_TEMPLATE_CODE, name="Held settlement approval",
+    return _ensure_two_person_route(
+        tenant, document_type=DOCUMENT_TYPE, code=WF_SETTLEMENT_TEMPLATE_CODE,
+        name="Held settlement approval",
         description="Two platform approvals for paying a client branch the money held for it.",
+        group_description="Platform finance staff who approve settlements of money held for "
+                          "client branches. Two of them approve each one.",
+        stage_labels=("Settlement approval", "Second settlement approval"),
         created_by=created_by,
-        stages_payload=[
-            {**stage, "code": "first", "label": "Settlement approval", "order": 10},
-            {**stage, "code": "second", "label": "Second settlement approval", "order": 20},
-        ],
-    ), True
+    )
+
+
+def ensure_topup_approval_template(tenant, *, created_by=None):
+    """Give the platform tenant its route for topping up its provider balance. Returns ``(template, created)``.
+
+    A top-up books the platform's own money moving from its bank into the
+    provider, so the platform's finance team approves it: two steps, both always
+    run, each staffed by the same ``held-settlement-approver`` group as a held
+    settlement (created empty, so a top-up parks until somebody is appointed).
+    :func:`vs_payments.topups.distinct_approvers` independently requires two
+    distinct real people besides whoever put it forward, so one person voting on
+    both steps does not book it.
+
+    Non-destructive: a route with a live step is left as an administrator set it.
+    """
+    if tenant is None:
+        raise ValueError("The platform tenant is required to seed its top-up route.")
+    return _ensure_two_person_route(
+        tenant, document_type=WF_TOPUP_DOCUMENT_TYPE, code=WF_TOPUP_TEMPLATE_CODE,
+        name="Provider balance top-up approval",
+        description="Two platform approvals for booking money paid from the platform's bank "
+                    "into its provider balance.",
+        group_description="Platform finance staff who approve settlements of money held for "
+                          "client branches and top-ups of the provider balance. Two of them "
+                          "approve each one.",
+        stage_labels=("Top-up approval", "Second top-up approval"),
+        created_by=created_by,
+    )
 
 
 def payout_batch_status_rules() -> dict:

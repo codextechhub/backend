@@ -37,6 +37,7 @@ from .constants import (
     PayoutPurpose,
     PayoutStatus,
     ProviderRefundStatus,
+    ProviderTopUpStatus,
     TerminalMatchMethod,
     TerminalPaymentStatus,
     TerminalStatus,
@@ -858,7 +859,10 @@ class HeldReconciliation(TimeStampedModel):
     began (``own_swept_settled``), which ``swept_total`` already took off once.
     ``balance_swept`` is the platform setting in force when the check ran.
     ``held_total`` is the held-funds sub-ledger's sum, which the
-    provider balance account mirrors. ``difference`` is the provider's figure
+    provider balance account mirrors once the platform's own top-ups
+    (``topped_up``, every :class:`ProviderBalanceTopUp` booked) are set aside:
+    they raise the account and the provider's balance together and belong to no
+    client. ``difference`` is the provider's figure
     less the books'. The check agrees when the difference is within
     ``tolerance`` and the account equals the sub-ledger; otherwise it opens a
     system-health incident (``incident_code``) that the next agreeing check
@@ -878,6 +882,7 @@ class HeldReconciliation(TimeStampedModel):
     balance_swept = models.BooleanField(default=False)
     swept_total = models.BigIntegerField(default=0)
     own_swept_settled = models.BigIntegerField(default=0)
+    topped_up = models.BigIntegerField(default=0)
     books_balance = models.BigIntegerField(default=0)
     difference = models.BigIntegerField(null=True, blank=True)
     tolerance = models.BigIntegerField(default=0)
@@ -941,6 +946,79 @@ class ProviderSweep(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.provider} sweep {self.settlement_id}: {format_naira(int(self.amount))}"
+
+
+class ProviderBalanceTopUp(TimeStampedModel):
+    """The platform paying money from its own bank into its provider balance.
+
+    Paystack's "top up balance" raises the platform's single provider balance,
+    for example to fund the platform's own payouts, and nothing else records it.
+    A top-up is therefore written down here, put forward by a platform finance
+    operator and approved by two other platform people, exactly as a held
+    settlement is (:mod:`vs_payments.topups`). Once approved it books, in the
+    platform's own books, Dr provider balance and Cr the platform bank account
+    the money left, dated ``topped_up_on``, and the daily held-ledger check
+    counts it (:mod:`vs_payments.held_reconciliation`) so the books and the
+    provider agree after one.
+
+    It is the platform's document and nobody else's: ``entity`` is always the
+    platform's books. ``branch`` is the branch of the bank account the money
+    left, as every transaction names one. ``reference`` is the provider's or the
+    bank's own reference for the transfer; an unrejected top-up of a provider
+    keeps it unique, so the same transfer cannot be recorded twice.
+    """
+
+    workflow_document_type = "payments.provider_topup"
+    workflow_amount_field = "amount"
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="provider_topups",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT, related_name="provider_topups",
+        null=True, blank=True,
+        help_text="The branch of the bank account the money left.",
+    )
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    currency = models.CharField(max_length=3, default="NGN")
+    amount = MoneyField(help_text="Kobo added to the provider balance; always positive.")
+    topped_up_on = models.DateField(help_text="The day the money left the bank; the day it books on.")
+    bank_account = models.ForeignKey(
+        "vs_finance.BankAccount", on_delete=models.PROTECT, related_name="provider_topups",
+        help_text="The platform's bank account the money was paid from.",
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    note = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=ProviderTopUpStatus.choices, default=ProviderTopUpStatus.DRAFT,
+    )
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="provider_topups",
+        null=True, blank=True,
+    )
+    posted_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="+",
+        null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0), name="payments_provider_topup_amount_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["provider", "reference"],
+                condition=~models.Q(reference="") & ~models.Q(status="REJECTED"),
+                name="uniq_payments_provider_topup_reference",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "status"])]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return (f"{self.provider} top-up {self.topped_up_on}: "
+                f"{format_naira(int(self.amount))} ({self.status})")
 
 
 class VirtualTerminal(TimeStampedModel):

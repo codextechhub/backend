@@ -14,6 +14,7 @@ from .models import (
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
+    ProviderBalanceTopUp,
     ProviderRefund,
     TerminalPayment,
     VirtualAccount,
@@ -347,6 +348,53 @@ class PayoutBatchSerializer(ApprovalStateMixin, serializers.ModelSerializer):
 
         state, returned = self._approval(obj)
         return payout_batch_display_status(obj.status, state, returned)
+
+
+class ProviderBalanceTopUpSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.ModelSerializer):
+    """One top-up of the platform's provider balance, read and written.
+
+    Every business field is a registered field of ``payments.platform_topup``:
+    the amount, day, bank account, provider, reference and note are written by
+    the person recording it (a draft only), and the status with its approval
+    state, the journal that booked it and who recorded it are the server's.
+    ``branch`` and ``branch_name`` name the branch of the bank account the money
+    left. ``amount_naira`` is the amount in words for a screen.
+    """
+
+    field_resource = "payments.platform_topup"
+    field_access_detail = True
+
+    amount_naira = serializers.SerializerMethodField()
+    bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
+    journal_id = serializers.IntegerField(read_only=True)
+    journal_number = serializers.CharField(source="journal.document_number", read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+    branch = serializers.IntegerField(source="branch_id", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+
+    class Meta:
+        model = ProviderBalanceTopUp
+        fields = [
+            "id", "provider", "currency", "amount", "amount_naira", "topped_up_on",
+            "bank_account", "bank_account_name", "reference", "note", "status",
+            "approval_state", "approval_returned", "journal_id", "journal_number", "posted_at",
+            "created_by", "created_by_name", "branch", "branch_name", "created_at",
+        ]
+        read_only_fields = ["currency", "status", "posted_at", "created_by", "created_at"]
+        extra_kwargs = {
+            "amount": {"min_value": 1},
+            "provider": {"required": False},
+            "reference": {"required": False, "allow_blank": True},
+            "note": {"required": False, "allow_blank": True},
+        }
+        validators = []
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+    def get_created_by_name(self, obj) -> str | None:
+        person = obj.created_by
+        return (person.full_name or person.email) if person is not None else None
 
 
 #: The ``metadata`` keys of a gateway action a reader of the log is shown.

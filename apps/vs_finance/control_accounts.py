@@ -56,7 +56,8 @@ _MAPPED_ROLES = {
     AccountMappingKey.CLIENT_FUNDS_HELD: (
         "the held-funds ledger", "a client's online payment, settlement or payout"),
     AccountMappingKey.PROVIDER_BALANCE: (
-        "the held-funds ledger", "a client's online payment, settlement or payout"),
+        "the held-funds ledger",
+        "a client's online payment, settlement or payout, or a provider balance top-up"),
     AccountMappingKey.CLIENT_FUNDS_OWED: (
         "the held-funds ledger", "a client's chargeback, online payment or settlement"),
     AccountMappingKey.INTER_BRANCH: (

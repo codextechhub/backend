@@ -232,6 +232,24 @@ settlement report *(confirm the field)*; the settlement match books it.
   difference explained exactly by a settlement Paystack is still paying is
   recorded as not measured rather than raised. Codex staff see what was counted at
   `GET /v1/payments/platform/provider-sweeps/`.
+- **Topping up Codex's balance from Codex's bank** (`vs_payments/topups.py`).
+  Codex can pay its own money from its own bank account into Paystack ("top up
+  balance"), for example to fund its own payouts. It is a platform-only record
+  (`ProviderBalanceTopUp`): a Codex finance operator with
+  `payments.platform_topup.create` writes it down as a draft and, with
+  `.submit`, puts it forward; two other people in the `held-settlement-approver`
+  group approve it through the workflow engine (document type
+  `payments.provider_topup`, route `provider-topup`, the same group and the same
+  distinct-people rule as a held settlement, proxies and the requester excluded).
+  Only the second approval books it, in Codex's books: Dr provider balance (1127),
+  Cr the Codex bank account the money left, dated the day it left, in that
+  account's branch. The daily check sets booked top-ups aside (`topped_up`) when it
+  asks whether the provider balance account still equals the held-funds
+  sub-ledger, so books and Paystack agree after one and disagree by its amount
+  from the day Paystack has the money until it is booked. Codex's own share of
+  the balance (`own_share_available`) is read from Paystack's real balance and
+  rises by itself. Endpoints: `/v1/payments/platform/provider-topups/` (list,
+  create), `.../<id>/` (read, correct a draft) and `.../<id>/submit/`.
 - **Money already held** before the sub-ledger started is entered once per branch
   by a Codex operator from Paystack's records: `manage.py
   record_held_opening_balance --by <operator email>`; it is audited under that

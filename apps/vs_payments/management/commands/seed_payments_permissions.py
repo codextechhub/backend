@@ -88,6 +88,12 @@ PAYMENTS_RESOURCES = [
     # only, like the platform settlements.
     ("platform_provider", "platform payment provider settings",
      [("view", "SENSITIVE"), ("update", "CRITICAL")]),
+    # Topping up the platform's own provider balance from its bank. Recording one
+    # books nothing until two platform people approve it, so creating is
+    # SENSITIVE; putting it forward starts the approval of money moving, so it is
+    # CRITICAL. Platform staff only, like the platform settlements.
+    ("platform_topup", "provider balance top-ups",
+     [("view", "SENSITIVE"), ("create", "SENSITIVE"), ("submit", "CRITICAL")]),
 ]
 
 
@@ -95,7 +101,9 @@ PAYMENTS_RESOURCES = [
 #: unmatched webhook, money held for every client, CodeX's own merchant account),
 #: so a tenant role holding one would be offered a reach no tenant has. Registered
 #: ``PLATFORM``: no tenant role, permission group or prebuilt role may carry them.
-PLATFORM_RESOURCES = frozenset({"unattributed_webhook", "platform_settlement", "platform_provider"})
+PLATFORM_RESOURCES = frozenset({
+    "unattributed_webhook", "platform_settlement", "platform_provider", "platform_topup",
+})
 
 
 class Command(BaseCommand):

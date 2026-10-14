@@ -62,6 +62,7 @@ APPROVAL_TYPES = {
     "finance.petty_cash_return": ("petty cash return", "petty cash returns"),
     "finance.payroll_run": ("payroll run", "payroll runs"),
     "payments.payout_batch": ("payout", "payouts"),
+    "payments.provider_topup": ("provider balance top-up", "provider balance top-ups"),
 }
 
 METHOD_LABELS = {
