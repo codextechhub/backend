@@ -1,5 +1,5 @@
 /*
- * Generator for XVS_Paystack_Live_Test_Book_v1.0.docx
+ * Generator for XVS_Paystack_Live_Test_Book_v<VERSION>.docx (VERSION below)
  *
  * Run: NODE_PATH="$(npm root -g)" node gen_test_book.js
  *
@@ -15,7 +15,8 @@ const {
   PageNumber, PageBreak, VerticalAlign, TabStopType,
 } = require("docx");
 
-const OUT = path.join(__dirname, "XVS_Paystack_Live_Test_Book_v1.0.docx");
+const VERSION = "1.1";
+const OUT = path.join(__dirname, `XVS_Paystack_Live_Test_Book_v${VERSION}.docx`);
 const FONT = "Aptos";
 const PAGE_W = 11906, PAGE_H = 16838, MARGIN = 1000;
 const CONTENT_W = PAGE_W - 2 * MARGIN; // 9906
@@ -243,28 +244,28 @@ add(para("Test school: Codex Test School (live)", { size: 24, bold: true, after:
 add(para("Branches: Ikeja (main) and Lekki", { size: 22, after: 60 }));
 add(para("Online money held by Codex (the default). Direct-to-bank tests start on 1 November 2026.", { size: 22, after: 60 }));
 add(para("Amounts used: between ₦100 and ₦1,000, so a mistake costs little.", { size: 22, after: 600 }));
-add(para("Version 1.0   |   14 October 2026   |   Owner's copy", { size: 22, color: C.mid, after: 0 }));
+add(para(`Version ${VERSION}   |   14 October 2026   |   Owner's copy`, { size: 22, color: C.mid, after: 0 }));
 
 add(h1("Document control"));
 add(simpleTable([2300, 7606], ["Item", "Detail"], [
   ["Document", "XVS Paystack Live Test Book"],
-  ["Version", "1.0"],
+  ["Version", VERSION],
   ["Date", "14 October 2026"],
   ["Written for", "The owner first (not an accountant). After that, the bursar-style roles who repeat the tests."],
   ["What it covers", "Every way money moves through Paystack in XVS finance, tested once with real money, plus the finance entries that never touch Paystack, so one book covers all of finance."],
-  ["Built from", "Backend main 850e5b45 and later, and FinPro v0.7.68. Screen names and buttons were read from that code on 14 October 2026."],
+  ["Built from", "Backend main d8e24f7a or later, and the builds carrying FinPro v0.7.69 or later. Screen names and buttons were read from that code on 14 October 2026."],
   ["Where a label is unsure", "The book describes the screen plainly (for example, the Branch Terminals tab) instead of guessing a button name. Part 9 lists what could not be confirmed."],
-  ["Change log", "1.0: first issue."],
+  ["Change log", "1.0: first issue (14 October 2026). 1.1 (14 October 2026): Codex top-ups are recorded and counted by the daily check (Block A, C1, new C7); payout and batch messages now say they are saved until approved; the write-off form shows the school's real bad-debts account; Block B asks for PAYSTACK_KEY_MODE and FinPro v0.7.69; new section 2.7, Rehearse on staging first."],
 ], { boldFirst: true }));
 
 add(h2("Contents"));
 add(simpleTable([900, 5400, 3606], ["Part", "What is in it", "Scenario IDs"], [
   ["1", "How to use this book: badges, how to read a scenario table, plain words, who you need", "-"],
-  ["2", "Before you start: the run sheet, the money you need, and one checklist for Paystack, the servers, the test school and the test data", "-"],
+  ["2", "Before you start: the run sheet, the money you need, one checklist for Paystack, the servers, the test school and the test data, and a staging rehearsal", "-"],
   ["3", "Money in (LIVE PAYSTACK): pay links, desk QR, pupil accounts, branch terminals, part payments, credit, failed payments, the return page", "M1 to M12"],
   ["4", "Money back: refunds through Paystack, refunds from the bank, disputes", "R1 to R5"],
   ["5", "Money out: vendor payouts, payroll through Paystack, daily settlement, Codex's own payouts", "O1 to O14"],
-  ["6", "Checks and controls: daily balance check, who may approve, branch walls, limits", "C1 to C6"],
+  ["6", "Checks and controls: daily balance check, who may approve, branch walls, limits", "C1 to C7"],
   ["7", "RECORD ONLY finance transactions: nothing goes to Paystack", "B1 to B14"],
   ["8", "From 1 November 2026: direct custody (money straight to each branch's bank)", "D1 to D6"],
   ["9", "Known limits, things Paystack has not confirmed, and the results summary", "All"],
@@ -327,20 +328,20 @@ add(box("Four rules for a tired tester", [
  * PART 2
  * ===================================================================== */
 add(h1("Part 2. Before you start"));
-add(body("Do this part once. It has five blocks: the order of the tests, the money you need, the Paystack account, the servers, and the test school with its test data. Tick every box. Several tests will fail in confusing ways if one box is missed."));
+add(body("Do this part once. It covers the order of the tests, the money you need, the Paystack account, the servers, the test school with its test data, and a rehearsal on staging. Tick every box. Several tests will fail in confusing ways if one box is missed."));
 
 add(h2("2.1 The order of the tests (run sheet)"));
 add(body("Some tests need the money or the credit left by an earlier one, and a few must wait for the next morning. Follow this order."));
 add(simpleTable([1300, 2400, 6206], ["When", "Scenarios", "Why this order"], [
-  ["Day 0", "Part 2 (all of it)", "Set-up. Nothing is paid yet."],
+  ["Day 0", "Part 2 (all of it), then C7 steps 1 to 6", "Set-up. Nothing is paid by parents yet. The top-up is added and recorded now so the daily check can agree from the first day."],
   ["Day 1, first", "M1, M2, M3, M4, M5, M6, M7, M8, M10, M11, M12", "These put money into Ikeja's and Lekki's held balances. M10 is the only Lekki payment so far, on purpose: Lekki stays short for O7."],
   ["Day 1, then", "R1, R3, R4", "Refunds need the credit left by M6 (Emeka) and M5 (Dayo) and need held money to draw on."],
   ["Day 1, then", "B11, then O1, O2", "B11 records the vendor bills the payouts settle. Vendor payouts then draw on Ikeja's held money."],
   ["Day 1, then", "O3, O4, O5, O6, O7", "Payroll. In O7 Lekki's line waits for funds because Lekki holds too little."],
   ["Day 1, then", "M9, then O8, then R2", "M9 is a larger Lekki payment. It releases the waiting payroll line (O8). R2 refunds part of M9 afterwards."],
   ["Day 1, then", "O9, O10, C3, C6", "Staff with no bank details, and the control checks that need no overnight wait."],
-  ["Day 2, morning", "O12, then C1", "The settlement is built at about 06:30 and claims everything paid before today. The balance check runs at about 07:15."],
-  ["Day 2", "O13, O14, C5", "Codex's own payouts and the over-limit payout, once the top-up is in Paystack."],
+  ["Day 2, morning", "O12, then C1 (and C7 step 7)", "The settlement is built at about 06:30 and claims everything paid before today. The balance check runs at about 07:15."],
+  ["Day 2", "O13, O14, C5", "Codex's own payouts and the over-limit payout, once the top-up is booked."],
   ["Any day", "B1 to B13", "RECORD ONLY. B14 (closing a month) goes last, because it blocks that month."],
   ["Next month", "O11 with C2", "Payroll from the school's bank needs a pay date in a month not yet paid. C2 uses the same draft run."],
   ["1 Nov 2026 on", "D1 to D6, then C4", "Direct custody. The switch can only take effect on the 1st of a month."],
@@ -356,7 +357,7 @@ add(simpleTable([3600, 1700, 4606], ["Item", "Amount", "Where it goes"], [
   ["Refunds back to you", "₦800", "R1 ₦500, R2 ₦200, R4 ₦100"],
   ["Vendor payouts", "₦1,450 sent + ₦20 fees", "O1 ₦500, O2 ₦950 (₦1,000 less ₦50 tax)"],
   ["Payroll through Paystack", "Under ₦1,100 + ₦20 fees", "Staff A (gross ₦500) and Staff B (gross ₦600), about ₦10 fee each"],
-  ["Paystack balance top-up (you add it)", "₦3,500", "See 2.3. Also what Codex's own payouts O13 and O14 draw on"],
+  ["Paystack balance top-up (you add it)", "₦3,500", "See 2.3 and C7. Record it so the daily check counts it. It is also what Codex's own payouts O13 and O14 draw on"],
   ["From 1 November (D2 to D4)", "₦1,000", "₦400 card, ₦300 dedicated account, ₦300 terminal"],
   ["Fees for the whole book", "about ₦150 plus unknowns", "Card payments about 1.5% each. Add Paystack's charges for bank-transfer checkout, dedicated accounts and terminals: check your Paystack pricing page."],
 ]));
@@ -370,19 +371,20 @@ add(box("Paystack fees, as best the book knows (confirm on paystack.com/pricing)
 add(h2("2.3 Block A. The Paystack account"));
 add(checklist([
   ["Your Paystack business is in live mode and allowed to send transfers. Check the Transfers page opens.", "You can see Transfers, Refunds and Balance in the dashboard."],
-  ["The live secret key and live public key are in the production settings (PAYSTACK_SECRET_KEY and PAYSTACK_PUBLIC_KEY), and the web service and worker were restarted. No test key anywhere.", "The developer confirms. Keys start sk_live_ and pk_live_."],
+  ["The live secret key and live public key are in the production settings (PAYSTACK_SECRET_KEY and PAYSTACK_PUBLIC_KEY), PAYSTACK_KEY_MODE is live, and the web service and worker were restarted. No test key anywhere.", "The developer confirms. Keys start sk_live_ and pk_live_. A server refuses to start if the mode is missing or a key is the other kind."],
   ["Live webhook URL set in the Paystack dashboard: https://api.codexng.com/v1/payments/webhooks/paystack/", "The dashboard shows it under live settings. Paystack signs each call with the secret key, so the key above must be the one in use."],
   ["Callback URL in the dashboard set to https://pay.xvs.codexng.com/payments/return (see the note below).", "The dashboard shows it. Each school checkout carries its own return address anyway."],
   ["Transfer OTP (the one-time code Paystack asks for on a transfer) is turned off in the dashboard.", "With it on, every payout sits as Processing forever, because nobody is there to type the code."],
   ["Paystack is not set to pay your balance out to your bank on its own, and the Codex platform setting \"Paystack balance swept automatically\" is Off (Payments, Platform Controls, Held Reconciliations).", "The setting shows Off, \"Default (off)\" or \"Platform setting\" with Off."],
   ["Dedicated virtual accounts are switched on for your Paystack business.", "Paystack confirms. Without this, M5 cannot start."],
   ["The old hand-made Virtual Terminal in the Paystack dashboard is deactivated.", "Its payments would arrive at the app as a terminal the app does not own, so they could not be placed with a branch."],
-  ["Balance funded: add ₦3,500 to your Paystack balance (see 2.2).", "The dashboard balance shows it. Write the figure in the box below."],
+  ["Balance funded: add ₦3,500 to your Paystack balance from a Codex bank account (see 2.2). Codex needs that bank account entered in its own books.", "The dashboard balance shows it."],
+  ["Record the top-up in the Codex console: Payments, Platform Controls, Paystack Top-ups, New top-up. Enter Amount, Paid from (one of Codex's own bank accounts), Date the money left the bank (not in the future), a Reference and a Note, then Save top-up and Submit for approval. Two Codex approvers from the held settlement approver group approve it, never the person who recorded it. This is scenario C7.", "The top-up reads as booked. The next daily check counts it and agrees with Paystack."],
   ["If Paystack already holds money that belongs to a branch from earlier payments, a Codex operator records it once per branch before you start (the command record_held_opening_balance).", "For a brand-new school there is nothing to record. The daily check (C1) will show any other money in Paystack that is not in the books as a difference."],
 ]));
 add(box("Two notes on Block A", [
   "**Callback URL.** In the code, a school's checkout returns the parent to the school's own address, for example https://<school>.xvs.codexng.com/payments/return. The pay.xvs.codexng.com address is used only for invoices Codex itself raises, and as a fallback. Setting it in the dashboard does no harm. Expect the school address in M1.",
-  "**Top-up and the daily check.** Money you add to Paystack by hand is not in Codex's books, so the daily check (C1) will show a difference about equal to the top-up. This is a known gap. Write the expected difference here: ₦____________ so you can tell it from a real problem.",
+  "**Top-up and the daily check.** Until a top-up is recorded and approved, Paystack holds more than Codex's books explain, so the daily check (C1) disagrees by about the top-up. Once it is booked the check counts it and agrees. Any other money already in Paystack that is not in the books still shows as a difference. Write it here: ₦____________.",
 ]));
 
 add(h2("2.4 Block B. The servers (the developer does this, you tick it)"));
@@ -391,7 +393,8 @@ add(checklist([
   ["Deploy commands have run, in this order: seed_payments_permissions, seed_finance_permissions, sync_field_registry, seed_finance_approvals --all-tenants, backfill_virtual_terminals.", "Each reports Done. seed_finance_approvals gives every school its payroll approval route and its refund and write-off approval routes."],
   ["Terminals are on: PAYMENTS_TERMINALS_AUTO_CREATE is true in production (the code's setting name; it is true unless someone turned it off).", "Creating a branch opens its terminal at Paystack by itself."],
   ["The worker and the scheduler are running (they send payouts, settle, re-check payments every 15 minutes and run the daily check).", "The developer confirms the worker log shows scheduled tasks."],
-  ["The school app and the Codex console builds deployed include FinPro v0.7.68 (school app main 5066f3f or later, console main 639f754 or later). That also brings the return page that shows live payment status.", "The Payments menu shows Branch Terminals and Terminal Payments, and Payroll shows a Bank accounts tab."],
+  ["The school app and the Codex console builds deployed carry FinPro v0.7.69 or later, and the backend is main d8e24f7a or later. That brings the Paystack Top-ups screen, the saved-until-approved payout messages and the return page that shows live payment status.", "The Payments menu shows Branch Terminals and Terminal Payments, and Payroll shows a Bank accounts tab."],
+  ["Every deployed service states PAYSTACK_KEY_MODE (live on production, test on staging) and holds Paystack keys of that kind. Staging uses test keys and the test-mode webhook https://api-staging.codexng.com/v1/payments/webhooks/paystack/ in the Paystack Test tab.", "A service with the wrong kind of key will not start. This protects staging from charging real cards."],
   ["If creating a payout ever says no approval route was found (TEMPLATE_NOT_FOUND), the developer runs seed_payout_approvals for that school.", "A new school gets its payout route when it is created, so this is only for older ones such as Codex's own books."],
 ]));
 
@@ -428,6 +431,16 @@ add(simpleTable([1500, 1500, 1300, 5606], ["Staff", "Branch", "Gross", "Notes"],
   ["Vendor", "Ikeja", "-", "\"Test Vendor Ltd\", with your account X or Y as its bank details (O1, O2, B11)."],
 ], { boldFirst: true }));
 add(body("Each staff member needs a school sign-in so a bank account can be saved for them. Add them in the school's staff area, then in Payroll, Employee salaries, Add employee: choose the Staff member, the Branch and the Gross, with Salary structure \"Flat\".", { size: 18 }));
+
+add(h2("2.7 Rehearse on staging first"));
+add(body("Before spending real money, run the whole book once on staging with Paystack's test cards. Nothing real moves, so mistakes cost nothing and you learn the screens."));
+add(bullets([
+  "Staging uses Paystack test keys (PAYSTACK_KEY_MODE test) and the test-mode webhook https://api-staging.codexng.com/v1/payments/webhooks/paystack/ set in the Paystack Test tab. A staging server will not start with a live key.",
+  "Create a staging test school the same way (Block C) and use Paystack's published test cards (see Paystack's test-payments page) for every card payment.",
+  "Run the same scenarios in the same order. Mark the rehearsal in the Notes boxes, or print a second copy of the results table.",
+  "A rehearsal cannot show real bank transfers, real WhatsApp alerts, real fees or real settlements. Test mode may also behave differently for dedicated accounts, terminals and transfers; the book has not confirmed which. Dedicated accounts use the test bank on a test key.",
+  "Do not move on to live until the rehearsal results are all Pass, or each Fail is explained.",
+], { size: 19 }));
 
 /* =====================================================================
  * PART 3. MONEY IN
@@ -703,7 +716,7 @@ add(scenario({
 add(scenario({
   id: "M12", title: "The return page shows the live status", badge: "LIVE", branch: "Ikeja",
   who: "You", money: "None", fees: "None",
-  note: ["This needs a school app build that includes FinPro v0.7.68 (school app main 5066f3f or later). An older school app build only says \"Thank you\" and promises a receipt. If you see only that for M1 or M11, note it."],
+  note: ["This needs a school app build that carries FinPro v0.7.68 or later. An older school app build only says \"Thank you\" and promises a receipt. If you see only that for M1 or M11, note it."],
   steps: [
     "In Collections open M1's row and copy its reference.",
     "In a private window open https://<school>.xvs.codexng.com/payments/return?reference=<that reference>.",
@@ -858,7 +871,7 @@ add(scenario({
   who: "You as bursar (prepare); your second person approves", money: "None (₦500 goes to your own account)", fees: "About ₦10 Paystack transfer fee, borne by Ikeja",
   note: [
     "At a school with two branches, the branch is taken from the From bank account you pick. Pick Ikeja's account. Leaving it empty can leave the payout with no branch, and it is refused.",
-    "The app says \"Payout sent to the provider\" when you save. It has only been queued for approval. Nothing is sent until the second person approves.",
+    "When you save, the app says \"Payout saved. It is sent once it is approved.\" Nothing is sent until the second person approves.",
     "The vendor must be Active, not on hold, KYC status Verified, and have bank name, account number, account name and a bank chosen from the list.",
   ],
   steps: [
@@ -1153,7 +1166,7 @@ add(scenario({
   ],
   app: [
     "The payout reads Settled. No school's held amount changes.",
-    "The daily check (C1) shows a smaller difference than before: the top-up less this payout.",
+    "The daily check (C1) still agrees: it counts Codex's own payouts as well as the booked top-up.",
   ],
   paystack: ["Transfers: a successful ₦200 transfer."],
   plain: ["Codex paid a supplier out of its own money, not a school's."],
@@ -1187,7 +1200,7 @@ add(scenario({
   id: "C1", title: "The daily held-ledger check against the Paystack balance", badge: "LIVE", branch: "Codex's books",
   who: "Codex finance operator", money: "None", fees: "None",
   note: [
-    "Codex's books say what the Paystack balance should be. Paystack says what it is. Any money you added by hand (the ₦3,500 top-up) is not in the books, so a difference about equal to it is expected, until Codex can record a top-up. Compare the difference with the figure you wrote in 2.3.",
+    "Codex's books say what the Paystack balance should be. Paystack says what it is. A booked top-up is counted, so with C7 done the check should agree. Before the top-up is booked, a difference about equal to it is expected. Money in Paystack that is in no book still shows as a difference: compare with the figure you wrote in 2.3.",
     "A difference above the tolerance (default ₦0) opens one health incident and tells Codex's health and settlement operators once. The next day that agrees resolves it.",
   ],
   steps: [
@@ -1199,7 +1212,7 @@ add(scenario({
   app: [
     "Provider says equals the dashboard balance (allow for anything that moved since 07:15).",
     "Books say is the provider balance account (which mirrors the held money for all schools) plus Codex's own online takings still in transit. \"Held for schools' branches\" shows the total held.",
-    "Difference is about the top-up, less Codex's own payouts (O13). Result reads as disagreeing for that reason, or as agreeing when the top-up has gone.",
+    "The Top-ups column shows the booked top-ups. Difference is nil (within the tolerance) and the Result agrees. Codex's own payouts (O13) are counted, so they do not cause a difference. A day before C7 was booked reads as disagreeing by about the top-up.",
     "A day Paystack could not be asked is recorded with its error and changes nothing.",
   ],
   paystack: ["Balance: the figure Provider says should match."],
@@ -1292,6 +1305,40 @@ add(scenario({
   journal: ["None."],
 }));
 
+
+add(scenario({
+  id: "C7", title: "Record a Codex top-up and see the daily check agree", badge: "LIVE", branch: "Codex's books (the branch of the bank account used)",
+  who: "Codex finance operator records it; two other Codex approvers approve", money: "₦3,500 from a Codex bank account into Paystack", fees: "Check Paystack for any charge on adding money. The app books none",
+  note: [
+    "The recorder cannot approve. Two other real Codex people from the held settlement approver group must, one vote each. The same person approving twice, or the recorder approving, books nothing.",
+    "The top-up is dated the day the money left the bank (not in the future) and books into that bank account's branch, in a month that branch has open. A reference already used on another top-up is refused.",
+    "Codex needs a bank account entered in its own books, and the operator needs the top-up keys (payments.platform_topup view, create and submit). A school user never sees this screen.",
+  ],
+  steps: [
+    "Add ₦3,500 to your Paystack balance from a Codex bank account, using the Paystack dashboard's way of adding money. Note the bank reference.",
+    "In the Codex console open Payments, Platform Controls, Paystack Top-ups, then New top-up.",
+    "Fill in Amount ₦3,500, Date the money left the bank, Paid from (Codex's own bank account), Provider Paystack, the Reference and a Note. Select Save top-up.",
+    "Open the top-up, select Submit for approval, then Submit. If it warns that nobody can approve it yet, put two people in the approver group first.",
+    "Two other Codex approvers open Workflow, Approvals, Review and approve.",
+    "Open the top-up again and read its status and journal.",
+    "Next morning open Payments, Platform Controls, Held Reconciliations and read the new row.",
+  ],
+  app: [
+    "The top-up reads Draft, then Waiting for approval, then **Booked**, with its journal and booking time. Before the second approval nothing is booked.",
+    "Held Reconciliations: the row's Top-ups column shows ₦3,500, Difference is nil, and Result agrees. A disagreement the day before booking has resolved itself.",
+    "Held for schools' branches does not change: a top-up is owed to no school.",
+  ],
+  paystack: ["Balance: it includes the ₦3,500 (the dashboard may call the page Balance or Balance history)."],
+  plain: [
+    "Codex put its own money into Paystack. It is owed to no school, so no branch's held amount rises. Codex's own share, which O13 and O14 spend from, rises by ₦3,500.",
+    "Booking it lets the daily check expect that money, so the check agrees with Paystack again.",
+  ],
+  journal: [
+    "Codex's books, in the bank account's branch: Dr 1127 Payment Provider Balance ₦3,500 / Cr the Codex bank account's ledger account ₦3,500.",
+    "Nothing is booked in any school's books.",
+  ],
+}));
+
 /* =====================================================================
  * PART 7. RECORD ONLY
  * ===================================================================== */
@@ -1359,7 +1406,7 @@ add(scenario({
 add(scenario({
   id: "B5", title: "Write-off", badge: "RECORD", branch: "Ikeja",
   who: "Ikeja bursar; your second person approves", money: "None", fees: "None",
-  note: ["A write-off clears a debt the school has given up on. It cannot be voided, so use a small amount. A write-off always needs a second person's approval.", "The form's hint says the default expense account is bad debt (5300). The starter chart's Bad Debts account is 5350. Write down which account the write-off actually posts to."],
+  note: ["A write-off clears a debt the school has given up on. It cannot be voided, so use a small amount. A write-off always needs a second person's approval.", "The form shows the school's own bad-debts account as the default (5350 in the starter chart)."],
   steps: [
     "Receivables, Adjustments, Refunds & Write-offs, New action. Action: Write off to expense.",
     "Customer Ada, Against invoice: B1's invoice. Amount ₦100 (the form may start at the whole balance, so change it). Reason \"Test write-off\". Leave the expense account on its default.",
@@ -1682,7 +1729,6 @@ add(simpleTable([2300, 5300, 2306], ["Question", "What the app assumes", "Settle
 add(h2("9.2 Limits of the app, as built"));
 add(simpleTable([3000, 6906], ["Limit", "What it means for you"], [
   ["Held payouts above the balance are refused, not queued", "Only payroll lines wait for funds. A vendor payout, or Codex's own payout above its share (O14), is marked Failed with a reason."],
-  ["A manual top-up is not in the books", "The daily check (C1) shows a difference about equal to the top-up until Codex can record it."],
   ["No notification for a failed payroll payout", "Watch the run's payment panel (O7, O10)."],
   ["No notification for a new unmatched terminal payment", "Open Terminal Payments yourself. The WhatsApp alert is Paystack's, not the app's."],
   ["A terminal payment cannot be matched to another branch's customer", "By design. The picker leaves them out and the server refuses."],
@@ -1691,8 +1737,6 @@ add(simpleTable([3000, 6906], ["Limit", "What it means for you"], [
   ["The transfer-fee table is the app's own", "It is not read back from Paystack. If Paystack changes its fees, the app's reservation can be a few naira out."],
   ["A payroll run posted before approvals existed cannot be paid through Paystack", "Record it as paid from the bank (O9)."],
   ["The second payroll run for the same staff in the same month is not allowed", "A staff member already paid for the month is left off a new run. Use a pay date in another month (O11)."],
-  ["The app says \"Payout sent to the provider\" when you save a payout", "It has only been queued for approval. Nothing is sent until it is approved."],
-  ["The write-off form hints at account 5300 while the starter chart's Bad Debts is 5350", "Check which one posts (B5)."],
   ["An early look at a payment that is still on Paystack's checkout can read Abandoned", "A later confirmation overturns it and books the payment (M11)."],
   ["Refunded is never shown for a part refund", "The payment keeps reading Paid. The refund list shows what has been returned."],
   ["Staff bank details reset only when saved through the app", "There is no other way in, so a changed account is always re-checked."],
@@ -1701,7 +1745,7 @@ add(simpleTable([3000, 6906], ["Limit", "What it means for you"], [
 add(h2("9.3 What this book could not confirm"));
 add(bullets([
   "The exact wording of some buttons and tabs in the Paystack dashboard. Use the names that appear on your dashboard.",
-  "Which versions of the school app and the Codex console are live on the day. Block B asks for FinPro v0.7.68 (school app main 5066f3f or later, console main 639f754 or later).",
+  "Which versions of the school app and the Codex console are live on the day. Block B asks for builds carrying FinPro v0.7.69 or later and backend main d8e24f7a or later.",
   "Whether Codex's own books show the Payouts screen when its entity is chosen (O13). If they do not, the developer raises the payout.",
   "Paystack's own limits on transfers to third-party accounts for your business type, and whether a list of allowed server addresses is required for transfers. If your dashboard asks for one, add the production server's.",
   "The real fee for bank-transfer checkout, dedicated accounts, terminals and disputes. Read your Paystack pricing page and write the figures in the Notes boxes.",
@@ -1720,7 +1764,7 @@ add(body("Sign-off. Overall result: [   ] Ready for real use   [   ] Fix first. 
  * ===================================================================== */
 const doc = new Document({
   creator: "Codex Techhub",
-  title: "XVS Paystack Live Test Book v1.0",
+  title: `XVS Paystack Live Test Book v${VERSION}`,
   description: "Owner's live Paystack test book for XVS finance",
   styles: {
     default: { document: { run: { font: FONT, size: 20 } } },
@@ -1757,7 +1801,7 @@ const doc = new Document({
         style: "FooterSmall",
         tabStops: [{ type: TabStopType.RIGHT, position: CONTENT_W }],
         children: [
-          new TextRun({ text: "Version 1.0   |   14 October 2026   |   Owner's copy", font: FONT, size: 16, color: C.mid }),
+          new TextRun({ text: `Version ${VERSION}   |   14 October 2026   |   Owner's copy`, font: FONT, size: 16, color: C.mid }),
           new TextRun({ text: "\tPage ", font: FONT, size: 16, color: C.mid }),
           new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 16, color: C.mid }),
           new TextRun({ text: " of ", font: FONT, size: 16, color: C.mid }),
