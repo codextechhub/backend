@@ -308,6 +308,13 @@ class CollectionListCreateView(APIView):
             qs = qs.filter(origin=origin.upper())
         if (va := request.query_params.get("virtual_account")):
             qs = qs.filter(virtual_account_id=va)
+        if (customer := str(request.query_params.get("customer") or "").strip()):
+            # By id or customer code, within the collections already in reach, so a
+            # customer of another entity or tenant matches nothing.
+            match = Q(customer__code__iexact=customer)
+            if customer.isdigit():
+                match |= Q(customer_id=int(customer))
+            qs = qs.filter(match)
         return _paginate(request, qs.order_by("-created_at", "-id"), CollectionIntentSerializer, self)
 
     # Handle POST requests for this endpoint.

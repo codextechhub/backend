@@ -94,6 +94,8 @@ from .serializers import (
     RefundSerializer,
     WriteOffRequestSerializer,
 )
+from vs_tenants.references import BRANCH_NOT_FOUND
+
 from .views import resolve_entity
 from .views_ops.base import _bank_account_in_reach, require_own_branch_bank
 from .views_ops import (
@@ -460,8 +462,12 @@ class CustomerListCreateView(_FinanceBase):
         ).select_related("receivable_account", "branch")
         if request.query_params.get("own") == "true":
             qs = qs.filter(transaction_branch_q(request))
+        if (branch_ref := request.query_params.get("branch")):
+            branch = resolve_branch(entity.tenant, branch_ref)
+            if branch is None or not caller_may_use_branch(request, branch):
+                raise ValidationError({"branch": BRANCH_NOT_FOUND})
+            qs = qs.filter(Q(branch_id=branch.pk) | Q(branch__isnull=True))
         if (search := request.query_params.get("search")):
-            from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -3038,7 +3044,8 @@ class ARAdjustmentListView(_FinanceBase):
     ``kinds`` lists the row kinds they receive. Every figure is narrowed to the
     reader's branches, refundable credit included. ``?approval=returned`` keeps
     the refunds and write-off requests an approver sent back (the KPIs stay
-    whole-list figures). Each row carries
+    whole-list figures). A refund row carries the ``method`` it is paid by
+    (``BANK_TRANSFER``, ``CASH`` and so on). Each row carries
     ``approval_state`` and ``approval_returned``, read for the page in one query
     per kind (:func:`_with_approval_overview`).
 
@@ -3090,7 +3097,7 @@ class ARAdjustmentListView(_FinanceBase):
                 "customer_code": r.customer.code, "customer_name": r.customer.name,
                 "reason": r.narration or "Customer refund", "amount": r.amount,
                 "amount_naira": format_naira(r.amount), "status": r.status, "refund_id": r.id,
-                "approval_required": gate.required(r),
+                "method": r.method, "approval_required": gate.required(r),
             })
         writeoff_rows = (
             _writeoff_rows(entity, gate=gate, scope=scope, approval=approval)

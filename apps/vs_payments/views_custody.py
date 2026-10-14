@@ -4,7 +4,8 @@
   settlement interval, with each branch's collection account, whether it is set
   up with the provider and what the platform holds for it, for the branches the
   caller reaches. Read with ``payments.settings.view``; a caller holding only
-  ``payments.payout.view`` reads the mode in force and nothing else. Changed with
+  ``payments.payout.view``, ``payments.refund.view`` or
+  ``payments.collection.create`` reads the mode in force and nothing else. Changed with
   ``payments.settings.update`` by a whole-tenant caller only, since the mode binds
   every branch (:class:`vs_rbac.scoping.WholeTenantWriteMixin`).
 * ``subaccounts/``: create or refresh the provider subaccount behind one branch's
@@ -96,19 +97,27 @@ def _branch_rows(reach):
 #: The key that reads the whole custody setting, rather than its mode alone.
 SETTINGS_VIEW = "payments.settings.view"
 
-#: The key whose holders read the custody mode alone.
-PAYOUT_VIEW = "payments.payout.view"
+#: The keys whose holders read the custody mode alone: the payout screens, the
+#: refund screen and the desk collection screen each behave differently
+#: according to who holds the school's online money.
+MODE_ONLY_KEYS = [
+    "payments.payout.view",
+    "payments.refund.view",
+    "payments.collection.create",
+]
 
 
 class CustodySettingsView(WholeTenantWriteMixin, APIView):
     """GET / PATCH the tenant's payment custody setting.
 
-    GET opens to ``payments.settings.view`` or ``payments.payout.view``. A
-    settings reader gets the whole setting with the branches in their reach. A
-    caller holding only the payout key gets ``{"settings": {"mode": ...}}``,
-    the mode in force today and nothing more, because the menu that offers
-    Payouts and Batches only where the platform holds the tenant's online money
-    has to ask on behalf of the person who uses them. At Lagoon View, which is
+    GET opens to ``payments.settings.view`` or any of :data:`MODE_ONLY_KEYS`
+    (``payments.payout.view``, ``payments.refund.view``,
+    ``payments.collection.create``). A settings reader gets the whole setting
+    with the branches in their reach. A caller holding only a mode-only key gets
+    ``{"settings": {"mode": ...}}``, the mode in force today and nothing more,
+    because the menu that offers Payouts and Batches only where the platform
+    holds the tenant's online money, and the refund and desk collection screens,
+    have to ask on behalf of the person who uses them. At Lagoon View, which is
     held, Mrs Bello reads payouts and holds no settings key: she learns
     ``HELD`` and sees no collection account, held balance, pending change or
     interval. The mode is tenant-wide, so a branch-bound payout reader gets the
@@ -128,7 +137,7 @@ class CustodySettingsView(WholeTenantWriteMixin, APIView):
     @property
     def rbac_permission(self):
         if self.request.method in SAFE_METHODS:
-            return [SETTINGS_VIEW, PAYOUT_VIEW]
+            return [SETTINGS_VIEW, *MODE_ONLY_KEYS]
         return "payments.settings.update"
 
     def _reads_settings(self, request):

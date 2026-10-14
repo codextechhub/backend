@@ -597,8 +597,26 @@ class CustodyModeForPayoutReadersTests(_CustodyFixture):
             self.assertEqual(response.status_code, 200, response.data)
             self.assertEqual(response.data["data"], {"settings": {"mode": "DIRECT"}})
 
+    def test_a_refund_or_desk_collection_holder_gets_the_mode_only(self):
+        for key in ("payments.refund.view", "payments.collection.create"):
+            for branch in (None, self.lekki):
+                with self.subTest(key=key, branch=branch):
+                    response = self.read(self.client_for(key, branch=branch))
+                    self.assertEqual(response.status_code, 200, response.data)
+                    self.assertEqual(response.data["data"], {"settings": {"mode": "HELD"}})
+                    for hidden in ("Ikeja", "Lekki", "Zenith", "12,400", "DIRECT"):
+                        self.assertNotIn(hidden, str(response.data))
+
+    def test_a_refund_view_holder_cannot_change_the_setting(self):
+        client = self.client_for("payments.refund.view", "payments.collection.create")
+        response = client.patch(
+            f"/v1/payments/settings/custody/?entity={self.books.code}",
+            {"mode": "HELD"}, format="json")
+        self.assertEqual(response.status_code, 403, response.data)
+
     def test_a_caller_with_neither_key_is_refused(self):
-        for keys in ((), ("payments.report.view", "payments.payout_batch.submit")):
+        for keys in ((), ("payments.report.view", "payments.payout_batch.submit",
+                         "payments.refund.create", "payments.collection.view")):
             response = self.read(self.client_for(*keys))
             self.assertEqual(response.status_code, 403, response.data)
 

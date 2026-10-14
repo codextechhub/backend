@@ -567,6 +567,31 @@ class PaymentsShowOnlyWhatTheClerkReachesTests(_FinanceBranchFixture):
                 self.assertEqual(self.refs(clerk, path, key), clerk_sees)
                 self.assertEqual(self.refs(bursar, path, key), bursar_sees)
 
+    def test_the_collections_list_filters_by_customer_id_or_code_within_reach(self):
+        clerk, bursar = self.reader(branch=self.ikeja), self.reader(branch=None)
+        lekki_customer = self.collections["COL-LEK"].customer
+        shared = self.collections["COL-ALL"].customer
+        cases = (
+            (bursar, lekki_customer.pk, {"COL-LEK"}),
+            (bursar, "clek", {"COL-LEK"}),
+            (bursar, shared.pk, {"COL-ALL", "COL-LEKINV"}),
+            (clerk, self.ikeja_customer.code, {"COL-IKJ"}),
+            (clerk, lekki_customer.pk, set()),
+            (clerk, shared.pk, set()),
+        )
+        for client, ref, expected in cases:
+            with self.subTest(ref=ref):
+                self.assertEqual(self.refs(client, f"collections/?customer={ref}"), expected)
+
+    def test_another_tenants_customer_matches_no_collection(self):
+        rival_customer = self.customer(self.rival_books, "CIKJ", self.rival_branch)
+        bursar = self.reader(branch=None)
+        for ref in (rival_customer.pk, "RIVAL-NONE", 999_999):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.refs(bursar, f"collections/?customer={ref}"), set())
+        # A code shared with another tenant's customer finds only this tenant's rows.
+        self.assertEqual(self.refs(bursar, "collections/?customer=CIKJ"), {"COL-IKJ"})
+
     def test_settlement_reconciliation_holds_only_rows_in_reach(self):
         def seen(client):
             data = self.get(client, "reports/settlement-reconciliation/")["data"]

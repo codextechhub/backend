@@ -230,3 +230,60 @@ class InvoiceAndPlanRowsCarryTheirOwnBranchTests(_PickerFixture):
             self.assertEqual(len(self.rows(self.hq, "invoices/")), 3)
         with self.assertNumQueries(len(plans_once)):
             self.assertEqual(len(self.rows(self.hq, "payment-plans/")), 3)
+
+
+class CustomerBranchFilterTests(_PickerFixture):
+    """``?branch=`` lists a branch's own customers and the shared ones, nothing of another branch's.
+
+    Corona files the Okafors under Ikeja and the Bellos under Lekki, and the
+    Adeyemis are shared. Single Site has one branch.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.bello = cls.customer(cls.books, "CBELL", cls.lekki)
+        cls.solo_shared = cls.customer(cls.solo_books, "SSHARE", None)
+        cls.solo_filed = cls.customer(cls.solo_books, "SMAIN", cls.solo_main)
+
+    def codes(self, client, books, query):
+        response = client.get(f"/v1/finance/customers/?entity={books.code}&{query}")
+        self.assertEqual(response.status_code, 200, getattr(response, "data", None))
+        return {row["code"] for row in response.json()["data"]}
+
+    def test_a_branch_keeps_its_own_customers_and_the_shared_ones(self):
+        hq = self.client_for("branch-filter-hq@corona.test", "finance.customer.view")
+
+        self.assertEqual(self.codes(hq, self.books, f"branch={self.ikeja.pk}"), {"COKAF", "CADEY"})
+        self.assertEqual(self.codes(hq, self.books, f"branch={self.lekki.pk}"), {"CBELL", "CADEY"})
+        self.assertEqual(self.codes(hq, self.books, f"branch={self.yaba.pk}"), {"CADEY"})
+        self.assertEqual(self.codes(hq, self.books, ""), {"COKAF", "CBELL", "CADEY"})
+
+    def test_a_branch_reader_may_ask_for_their_own_branch_only(self):
+        clerk = self.client_for("branch-filter-lekki@corona.test", "finance.customer.view",
+                                branches=[self.lekki])
+
+        self.assertEqual(self.codes(clerk, self.books, f"branch={self.lekki.pk}"), {"CBELL", "CADEY"})
+        refused = clerk.get(
+            f"/v1/finance/customers/?entity={self.books.code}&branch={self.ikeja.pk}")
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("branch", str(refused.data))
+
+    def test_an_unknown_or_another_tenants_branch_is_refused_alike(self):
+        hq = self.client_for("branch-filter-bad@corona.test", "finance.customer.view")
+        answers = [
+            hq.get(f"/v1/finance/customers/?entity={self.books.code}&branch={ref}")
+            for ref in (999_999, self.rival_branch.pk, self.solo_main.pk)
+        ]
+
+        self.assertEqual({r.status_code for r in answers}, {400})
+        self.assertEqual(len({str(r.data) for r in answers}), 1)
+
+    def test_a_one_branch_school_filters_by_its_branch(self):
+        bursar = TenantAPIClient(user=self.grant(
+            self.user_for(self.solo_tenant, "branch-filter-solo@single.test"),
+            "finance.customer.view", tenant=self.solo_tenant, role_key="branch-filter-solo"))
+
+        self.assertEqual(self.codes(bursar, self.solo_books, f"branch={self.solo_main.pk}"),
+                         {"SSHARE", "SMAIN"})
+        self.assertEqual(self.codes(bursar, self.solo_books, ""), {"SSHARE", "SMAIN"})

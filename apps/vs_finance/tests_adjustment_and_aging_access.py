@@ -95,6 +95,10 @@ class AdjustmentListAccessTests(_AccessFixture):
         cls.ikeja_refund = Refund.objects.create(
             entity=e, customer=cls.ikeja_customer, branch=cls.ikeja, refund_date=today, amount=5_000,
         )
+        cls.lekki_cash_refund = Refund.objects.create(
+            entity=e, customer=cls.lekki_customer, branch=cls.lekki, refund_date=today,
+            amount=7_000, method="CASH",
+        )
         cls.ikeja_writeoff = WriteOffRequest.objects.create(
             entity=e, invoice=cls.ikeja_invoice, branch=cls.ikeja, amount=10_000,
         )
@@ -127,6 +131,13 @@ class AdjustmentListAccessTests(_AccessFixture):
         self.assertEqual({row["kind"] for row in body["data"]}, {"REFUND"})
         self.assertEqual(body["kinds"], ["REFUND"])
         self.assertIsNone(body["kpis"]["written_off_ytd"])
+
+    def test_each_refund_row_carries_the_method_it_is_paid_by(self):
+        client = self.client_holding("cashier-methods@corona.test", "finance.refund.view")
+        rows = {row["refund_id"]: row for row in self.adjustments(client).json()["data"]}
+
+        self.assertEqual(rows[self.ikeja_refund.id]["method"], "BANK_TRANSFER")
+        self.assertEqual(rows[self.lekki_cash_refund.id]["method"], "CASH")
 
     def test_a_branch_write_off_holder_never_sees_another_branchs_write_offs(self):
         client = self.client_holding(
