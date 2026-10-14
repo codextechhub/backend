@@ -80,6 +80,7 @@ EXPECTED_RESOURCES = {
     ("finance", "salary"),
     ("finance", "seal"),
     ("finance", "settings"),
+    ("gradebook", "amendment"),
     ("gradebook", "hold"),
     ("gradebook", "result"),
     ("gradebook", "setup"),

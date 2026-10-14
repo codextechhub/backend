@@ -9,8 +9,9 @@ afterwards:
    the class figures, the overall average, the position where the school ranks,
    the term's attendance, the ratings where the school records them, both
    comments with their authors' names, the grading key and the day the next term
-   begins. A later change to a scale, a sheet or a setting changes nothing that
-   was published;
+   begins. The last term of a school year with more than one term also carries
+   the year's ``cumulative`` block (:mod:`.cumulative`). A later change to a
+   scale, a sheet or a setting changes nothing that was published;
 2. the class's stage becomes PUBLISHED, with who and when;
 3. every student without an open fee hold is **released**; a held student is
    marked HELD and is not released, printed or emailed.
@@ -20,13 +21,13 @@ guardian of each released child, one per child, so a family with two children
 at the school gets two. A guardian who has an account is written to through it
 and so reads it in the app as well; one with only an address is an unregistered
 recipient. It says only that the report card is ready to collect: the child's
-first name, the term and year, the school and branch and the school's phone. A
-child whose primary guardian has no email is recorded ``NO_EMAIL`` at once, and
-the rest are written to once the transaction has committed, so a publication
-that rolled back never emails anybody; each is then recorded ``SENT`` with the
-time. A failure to send is logged and leaves the child released, without a
-state: publishing is the act the school performed and the email is its
-consequence.
+first name, the term and year, the school and branch and the phone to call (the
+class's branch phone, or the school's when the branch has none). A child whose
+primary guardian has no email is recorded ``NO_EMAIL`` at once, and the rest are
+written to once the transaction has committed, so a publication that rolled back
+never emails anybody; each is then recorded ``SENT`` with the time. A failure to
+send is logged and leaves the child released, without a state: publishing is the
+act the school performed and the email is its consequence.
 
 **Several classes** are published one at a time, each in its own transaction. A
 class that is not awaiting approval, or whose sheets are not all in any more, is
@@ -34,6 +35,17 @@ refused with its reason and the others go ahead.
 
 **Lifting a hold after publication** releases the student the same way
 (:func:`release_after_lift`).
+
+**Every snapshot is kept.** Publication writes each student's snapshot to
+:class:`~..models.ResultVersion` as version 1 beside the copy on the result row,
+and an approved amendment writes the next (:mod:`.amendments`). The pieces that
+make one subject's row and a student's totals are functions of their own
+(:func:`subject_row`, :func:`snapshot_totals`) so an amendment rebuilds a card
+with the same arithmetic publication used.
+
+**The updated-card email** (``gradebook.report_card_updated``) is written to the
+same person, with the same context, as the ready email
+(:func:`send_updated_notice`).
 """
 from __future__ import annotations
 
@@ -49,10 +61,15 @@ from vs_audit.models import AuditActionType
 from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_rbac.scoping import only_branch_id_or_several
 
-from ..constants import EVENT_REPORT_CARD_READY, EmailState, StoredStage
+from ..constants import (
+    EVENT_REPORT_CARD_READY,
+    EVENT_REPORT_CARD_UPDATED,
+    EmailState,
+    StoredStage,
+)
 from ..exceptions import GradebookError, NotAwaiting, SubjectsMissing
-from ..models import ClassTerm, PrincipalComment, StudentTermResult
-from . import approvals, audit, classbook, compute, resolve, setup
+from ..models import ClassTerm, PrincipalComment, ResultVersion, StudentTermResult
+from . import approvals, audit, classbook, compute, cumulative, resolve, setup
 from .classbook import ClassBook, ClassContext, percentage_of
 
 logger = logging.getLogger(__name__)
@@ -62,15 +79,15 @@ SNAPSHOT_VERSION = 1
 
 # ── What a family is told ──────────────────────────────────────────────────
 
-def _school_phone(tenant) -> str:
-    return getattr(getattr(tenant, "school_profile", None), "phone", "") or ""
-
-
 def ready_context(tenant, branch, term, student) -> dict:
     """What ``gradebook.report_card_ready`` reads: nothing from the result.
 
     The branch is named only at a school with several, where it tells a parent
     which site the card waits at; at a school with one it repeats the school.
+    ``tenant_phone`` is the class's branch phone, or the school's when the branch
+    has none, and ``""`` when neither does (the template then leaves the line
+    off). The email goes to an outside party, so the number is deliberately not
+    narrowed by the school's Field Access switches on branch contact details.
     """
     several = only_branch_id_or_several(tenant) is None
     return {
@@ -79,7 +96,7 @@ def ready_context(tenant, branch, term, student) -> dict:
         "session_name": term.session.name,
         "tenant_name": tenant.name,
         "branch_name": branch.name if several else "",
-        "tenant_phone": _school_phone(tenant),
+        "tenant_phone": resolve.contact_phone(tenant, branch),
     }
 
 
@@ -94,14 +111,14 @@ def decide_release(result, reach, now) -> None:
     result.email_state = None if reach is not None and reach.has_email else EmailState.NO_EMAIL
 
 
-def _send_one(tenant, class_term, student, reach) -> bool:
+def _send_one(tenant, class_term, student, reach, event_key=EVENT_REPORT_CARD_READY) -> bool:
     if reach.user is not None:
         recipients, unregistered = [reach.user], None
     else:
         recipients = []
         unregistered = [UnregisteredRecipient(email=reach.email, name=reach.guardian.full_name)]
     sent = send_notification(
-        event_key=EVENT_REPORT_CARD_READY,
+        event_key=event_key,
         context=ready_context(tenant, class_term.branch, class_term.term, student),
         recipients=recipients,
         unregistered_recipients=unregistered,
@@ -155,6 +172,38 @@ def send_after_commit(tenant, class_term_id, student_ids) -> None:
         )
 
 
+def send_updated_notice(tenant, class_term_id, student_id) -> bool:
+    """Tell *student_id*'s primary guardian an updated report card is ready; True when it went.
+
+    Called once the transaction that approved the correction has committed.
+    Nothing is written to the result: its email state records the ready notice,
+    and a guardian with no address is simply not written to. A failure to send
+    is logged and leaves the correction approved.
+    """
+    class_term = ClassTerm.objects.select_related(
+        "branch", "term", "term__session",
+    ).get(pk=class_term_id)
+    student = StudentTermResult.objects.select_related("student").get(
+        tenant=tenant, class_term=class_term, student_id=student_id,
+    ).student
+    reach = primary_guardians(tenant, [student_id]).get(student_id)
+    if reach is None or not reach.has_email:
+        return False
+    try:
+        return _send_one(tenant, class_term, student, reach, EVENT_REPORT_CARD_UPDATED)
+    except Exception:
+        logger.exception(
+            "Updated report card notice for student %s could not be sent. The correction stands.",
+            student_id,
+        )
+        return False
+
+
+def send_updated_after_commit(tenant, class_term_id, student_id) -> None:
+    """Queue the updated-card email for when the surrounding transaction commits."""
+    transaction.on_commit(partial(send_updated_notice, tenant, class_term_id, student_id))
+
+
 # ── The snapshot ───────────────────────────────────────────────────────────
 
 def _grading_key(bands) -> list:
@@ -192,6 +241,39 @@ def _class_stats(column) -> compute.ClassStats:
     )
 
 
+def subject_row(subject, components, cells, result, stats) -> dict:
+    """One subject's row of a snapshot: the cells, the worked-out line and the class figures.
+
+    *subject* is ``{"id", "name"}``, *components* the structure's columns (each
+    with ``pk``), *cells* the student's ``(mark, marker)`` pairs in that order,
+    *result* their :class:`~.compute.RowResult` and *stats* the subject's
+    :class:`~.compute.ClassStats`. Publication and an amendment both build a row
+    here, so a corrected card is worked out exactly as the original was.
+    """
+    return {
+        "subject": subject,
+        "cells": [
+            {"component": component.pk, "mark": mark, "marker": marker}
+            for component, (mark, marker) in zip(components, cells)
+        ],
+        "total": result.total, "obtainable": result.obtainable,
+        "percentage": percentage_of(result.percentage),
+        "grade": result.grade, "remark": result.remark, "is_fail": result.is_fail,
+        "class_average": str(stats.average) if stats.average is not None else None,
+        "highest": stats.highest, "lowest": stats.lowest,
+    }
+
+
+def snapshot_totals(rows) -> tuple[int, int]:
+    """``(total obtained, total obtainable)`` over the subject rows that have a total."""
+    obtained = obtainable = 0
+    for row in rows:
+        if row["total"] is not None:
+            obtained += row["total"]
+            obtainable += row["obtainable"]
+    return obtained, obtainable
+
+
 def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
     """``{student_id: snapshot}`` for every student on the roll, as plain JSON values."""
     tenant, school_class, term = bk.tenant, bk.school_class, bk.term
@@ -218,29 +300,16 @@ def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
     rules = bk.rules
     out = {}
     for student in bk.students:
-        subjects, obtained, obtainable = [], 0, 0
+        subjects = []
         for column in bk.columns:
             line = column.lines.get(student.pk)
             if line is None:
                 continue
-            result, figures_ = line.result, stats[column.subject.pk]
-            subjects.append({
-                "subject": {"id": column.subject.pk, "name": column.subject.name},
-                "cells": [
-                    {"component": component.pk, "mark": mark, "marker": marker}
-                    for component, (mark, marker) in zip(bk.components, line.cells)
-                ],
-                "total": result.total, "obtainable": result.obtainable,
-                "percentage": percentage_of(result.percentage),
-                "grade": result.grade, "remark": result.remark, "is_fail": result.is_fail,
-                "class_average": (
-                    str(figures_.average) if figures_.average is not None else None
-                ),
-                "highest": figures_.highest, "lowest": figures_.lowest,
-            })
-            if result.total is not None:
-                obtained += result.total
-                obtainable += result.obtainable
+            subjects.append(subject_row(
+                {"id": column.subject.pk, "name": column.subject.name}, bk.components,
+                line.cells, line.result, stats[column.subject.pk],
+            ))
+        obtained, obtainable = snapshot_totals(subjects)
         average = bk.averages.get(student.pk)
         mine = counts.get(student.pk)
         result_row = bk.results.get(student.pk)
@@ -287,6 +356,11 @@ def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
             snapshot["ratings"] = dict(result_row.ratings) if result_row else {}
             snapshot["traits"] = list(rules.rating_traits)
         out[student.pk] = snapshot
+    terms = cumulative.session_terms(tenant, term)
+    if cumulative.is_cumulative(terms, term):
+        cumulative.attach(
+            tenant, terms, term, out, ranks=rules.rank_in_class, roll_size=len(bk.roll),
+        )
     return out
 
 
@@ -367,6 +441,13 @@ def publish_class(ctx: ClassContext) -> dict:
                 changed,
                 ["snapshot", "version", "released_at", "emailed_at", "email_state"],
             )
+        ResultVersion.objects.bulk_create([
+            ResultVersion(
+                tenant=ctx.tenant, result=result, version=SNAPSHOT_VERSION,
+                snapshot=result.snapshot,
+            )
+            for result in created + changed
+        ])
         class_term.stage = StoredStage.PUBLISHED
         class_term.published_by, class_term.published_at = ctx.user, now
         class_term.save(update_fields=["stage", "published_by", "published_at", "updated_at"])

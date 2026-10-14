@@ -79,7 +79,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
                 f"Expected permission key {key} to be created.",
             )
 
-    def test_the_gradebook_module_registers_its_fourteen_keys(self):
+    def test_the_gradebook_module_registers_its_nineteen_keys(self):
         keys = set(
             Permission.objects.filter(module_id="gradebook").values_list("key", flat=True)
         )
@@ -89,7 +89,9 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "gradebook.moderation.approve", "gradebook.class.submit",
             "gradebook.class.publish", "gradebook.hold.view", "gradebook.hold.update",
             "gradebook.release.view", "gradebook.result.view", "gradebook.setup.view",
-            "gradebook.setup.update",
+            "gradebook.setup.update", "gradebook.amendment.create",
+            "gradebook.amendment.approve", "gradebook.sheet.import",
+            "gradebook.analytics.view", "gradebook.analytics.export",
         })
 
     def test_total_key_count(self):
@@ -242,18 +244,21 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         """A school admin holds every school and academics key (97), every
         attendance key but ``attendance.register.mark`` (10), which is the class
         teacher's own-class key and is superseded for an administrator by
-        ``attendance.register.mark_any``, and nine gradebook keys: everything
+        ``attendance.register.mark_any``, and fourteen gradebook keys: everything
         but entering scores (the main teacher's), moderating, submitting a class
         and the fee-hold update key (the finance admin's), and
         ``gradebook.sheet.enter_any``, which no role holds by default.
         """
         keys = self._defaults("school_admin")
-        self.assertEqual(len(keys), 116)
+        self.assertEqual(len(keys), 121)
         self.assertEqual(
             {k for k in keys if k.startswith("gradebook.")},
             {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
              "gradebook.class.publish", "gradebook.hold.view", "gradebook.release.view",
-             "gradebook.result.view", "gradebook.setup.view", "gradebook.setup.update"},
+             "gradebook.result.view", "gradebook.setup.view", "gradebook.setup.update",
+             "gradebook.amendment.create", "gradebook.amendment.approve",
+             "gradebook.sheet.import", "gradebook.analytics.view",
+             "gradebook.analytics.export"},
         )
         self.assertNotIn("attendance.register.mark", keys)
         self.assertIn("attendance.register.mark_any", keys)
@@ -330,14 +335,19 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         branch_admin = self._defaults("branch_admin")
         # 55 school and academics keys, plus the nine attendance keys a branch
         # administrator holds (everything but settings and the own-class mark),
-        # plus six gradebook keys: the hub, reading and reminding on sheets,
-        # the release list, a student's results and reading assessment setup.
-        self.assertEqual(len(branch_admin), 70)
+        # plus nine gradebook keys: the hub, reading and reminding on sheets,
+        # the release list, a student's results, reading assessment setup,
+        # asking for a correction to a published result, and the analytics and
+        # their export.
+        self.assertEqual(len(branch_admin), 73)
         self.assertEqual(
             {k for k in branch_admin if k.startswith("gradebook.")},
             {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
-             "gradebook.release.view", "gradebook.result.view", "gradebook.setup.view"},
+             "gradebook.release.view", "gradebook.result.view", "gradebook.setup.view",
+             "gradebook.amendment.create", "gradebook.analytics.view",
+             "gradebook.analytics.export"},
         )
+        self.assertNotIn("gradebook.amendment.approve", branch_admin)
         self.assertIn("attendance.register.mark_any", branch_admin)
         self.assertIn("attendance.correction.approve", branch_admin)
         self.assertNotIn("attendance.settings.update", branch_admin)
@@ -395,14 +405,15 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         # 14 school and academics keys, plus the three attendance keys a teacher
         # holds: reading a register, taking their own class's, and asking for
         # a correction. Taking any class, reminding and deciding are the
-        # administrators'. Plus four gradebook keys: reading sheets, entering
-        # the scores of the subjects they lead, moderating as a head of
-        # department and submitting the class they lead; which sheet, subject or
-        # class is the service's rule, not the key's.
-        self.assertEqual(len(keys), 21)
+        # administrators'. Plus five gradebook keys: reading sheets, entering
+        # the scores of the subjects they lead, uploading them from a
+        # spreadsheet, moderating as a head of department and submitting the
+        # class they lead; which sheet, subject or class is the service's rule,
+        # not the key's.
+        self.assertEqual(len(keys), 22)
         self.assertEqual(
             {k for k in keys if k.startswith("gradebook.")},
-            {"gradebook.sheet.view", "gradebook.sheet.enter",
+            {"gradebook.sheet.view", "gradebook.sheet.enter", "gradebook.sheet.import",
              "gradebook.moderation.approve", "gradebook.class.submit"},
         )
         self.assertEqual(
@@ -470,9 +481,9 @@ class SeedSchoolBackfillTests(TestCase):
             .values_list("permission_id", flat=True)
         )
         # school_admin defaults are every school and academics key, every
-        # attendance key but the class teacher's own-class mark, and nine
+        # attendance key but the class teacher's own-class mark, and fourteen
         # gradebook keys.
-        self.assertEqual(len(keys), 116)
+        self.assertEqual(len(keys), 121)
         self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
@@ -525,7 +536,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 21)
+        self.assertEqual(len(keys), 22)
         self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)

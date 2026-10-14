@@ -118,8 +118,8 @@ RESOURCE_BANDS = {
     ("academics", "exam"): ADVANCED,
 
     # ---- gradebook and assessments -----------------------------------------
-    # Every resource sits at Core for now. Moderation, holds, analytics and bulk
-    # upload each have a resource of their own, so selling one of them deeper is
+    # Every resource sits at Core for now. Moderation, holds, amendments and
+    # analytics each have a resource of their own, so selling one of them deeper is
     # a change to this table and not to any key.
     ("gradebook", "hub"): CORE,
     ("gradebook", "sheet"): CORE,
@@ -129,6 +129,8 @@ RESOURCE_BANDS = {
     ("gradebook", "release"): CORE,
     ("gradebook", "result"): CORE,
     ("gradebook", "setup"): CORE,
+    ("gradebook", "amendment"): CORE,
+    ("gradebook", "analytics"): CORE,
 
     # ---- finance ----------------------------------------------------------
     ("finance", "entity"): CORE,

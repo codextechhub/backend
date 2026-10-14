@@ -281,7 +281,10 @@ class HoldSwitchTests(_Switches):
         names = {
             f.key: f.api_names for f in FieldDefinition.objects.filter(key__startswith="gradebook.")
         }
-        self.assertEqual(names[AVERAGE], ["overall_average", "average"])
+        self.assertEqual(
+            names[AVERAGE],
+            ["overall_average", "average", "annual_average", "from", "to", "change"],
+        )
         self.assertEqual(names[RATINGS], ["ratings", "traits"])
         self.assertEqual(names[TEACHER_COMMENT], ["teacher_comment", "comment_done", "teacher_name"])
         self.assertEqual(

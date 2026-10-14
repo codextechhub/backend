@@ -356,6 +356,105 @@ class HoldNotOpen(GradebookError):
     http_status = 409
 
 
+# ── Amendments ─────────────────────────────────────────────────────────────
+
+class AmendmentReasonRequired(GradebookError):
+    """Shares the code of a hold's missing reason, because a screen reads the code and names the field."""
+
+    error_code = "REASON_REQUIRED"
+    default_message = "Say why this result is being corrected."
+
+
+class SubjectNotTaken(GradebookError):
+    error_code = "SUBJECT_NOT_TAKEN"
+    default_message = (
+        "This student's report card has no row for that subject. Choose one of "
+        "the subjects on the card."
+    )
+
+
+class NothingChanged(GradebookError):
+    error_code = "NOTHING_CHANGED"
+    default_message = (
+        "Those marks are the ones already published. Change at least one mark "
+        "before asking for a correction."
+    )
+
+
+class AmendmentPending(GradebookError):
+    error_code = "AMENDMENT_PENDING"
+    default_message = (
+        "A correction to this subject is already waiting for the principal. "
+        "Wait for it to be decided before asking for another."
+    )
+    http_status = 409
+
+
+class SelfDecision(GradebookError):
+    error_code = "SELF_DECISION"
+    default_message = (
+        "You cannot decide a correction you asked for. Ask another "
+        "administrator to decide it."
+    )
+    http_status = 403
+
+
+class NotPending(GradebookError):
+    error_code = "NOT_PENDING"
+    default_message = (
+        "This correction has already been decided. Open the amendments list "
+        "to see how it was decided."
+    )
+    http_status = 409
+
+
+# ── Bulk upload of a sheet ─────────────────────────────────────────────────
+
+class UnsupportedUpload(GradebookError):
+    error_code = "UNSUPPORTED_FILE_TYPE"
+    default_message = "Upload the Excel file (.xlsx) downloaded from this sheet, or a .csv file."
+
+
+class UploadTooLarge(GradebookError):
+    error_code = "FILE_TOO_LARGE"
+    default_message = "That file is too large to be a score sheet. Upload the file downloaded from this sheet."
+    http_status = 413
+
+
+class UnreadableUpload(GradebookError):
+    error_code = "UNREADABLE_FILE"
+    default_message = "That file could not be read as a score sheet. Download the template again and fill it in."
+
+
+class UnknownUploadRow(GradebookError):
+    error_code = "UNKNOWN_UPLOAD_ROW"
+    default_message = "A row you chose is not in this upload. Check the upload again and choose from its rows."
+
+
+class NoRowsChosen(GradebookError):
+    error_code = "NO_ROWS_CHOSEN"
+    default_message = "Choose at least one row to save."
+
+
+class RowHasIssues(GradebookError):
+    """A chosen row that the preview found a problem in, so nothing was saved."""
+
+    error_code = "ROW_HAS_ISSUES"
+    default_message = (
+        "A row you chose has a problem, so nothing was saved. Fix it in the file "
+        "and upload again, or leave that row out."
+    )
+
+
+class SheetChangedSincePreview(GradebookError):
+    error_code = "SHEET_CHANGED_SINCE_PREVIEW"
+    default_message = (
+        "Scores on this sheet changed after you uploaded the file, so nothing was "
+        "saved. Upload the file again to see what it would change now."
+    )
+    http_status = 409
+
+
 # ── Reminders ──────────────────────────────────────────────────────────────
 
 class AlreadyReminded(GradebookError):

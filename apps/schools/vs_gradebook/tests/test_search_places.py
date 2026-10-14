@@ -79,3 +79,27 @@ class ReleaseScreenPlaceTests(TestCase):
     def test_a_students_results_tab_is_not_a_place_because_a_student_tab_has_no_search_entry(self):
         keys = {p.key for p in places() if p.key.startswith("gradebook.")}
         self.assertNotIn("gradebook.student_results", keys)
+
+
+class AmendmentScreenPlaceTests(TestCase):
+    def test_amendments_is_a_place_any_amendment_key_opens(self):
+        from ..search_places import AMENDMENTS_SCREEN
+
+        [place] = [p for p in places() if p.key == AMENDMENTS_SCREEN]
+        self.assertEqual((place.kind, place.label), (ACTION, "Amendments"))
+        self.assertEqual(
+            place.permission_keys, ("gradebook.amendment.create", "gradebook.amendment.approve"),
+        )
+        self.assertEqual(place.capability, "gradebook")
+        self.assertEqual(place.screen, AMENDMENTS_SCREEN)
+
+
+class AnalyticsScreenPlaceTests(TestCase):
+    def test_performance_analytics_is_a_place_guarded_by_the_analytics_view_key(self):
+        from ..search_places import ANALYTICS_SCREEN
+
+        [place] = [p for p in places() if p.key == ANALYTICS_SCREEN]
+        self.assertEqual((place.kind, place.label), (ACTION, "Performance analytics"))
+        self.assertEqual(place.permission, "gradebook.analytics.view")
+        self.assertEqual(place.capability, "gradebook")
+        self.assertEqual(place.screen, ANALYTICS_SCREEN)

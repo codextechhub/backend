@@ -356,6 +356,20 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("gradebook", "result", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("gradebook", "setup", "view",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("gradebook", "setup", "update",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # Correcting a result after it was published. Raising one asks the principal
+    # to change what a family was given, so it is open to both administrator
+    # roles; deciding one changes it, so it is SENSITIVE and the school
+    # administrator's alone (the raiser may never decide their own).
+    ("gradebook", "amendment", "create",      _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "amendment", "approve",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # Uploading a spreadsheet of marks. Which sheet is still the main teacher's
+    # by rule, or an ``enter_any`` holder's.
+    ("gradebook", "sheet", "import",          _NORMAL,    (ROLE_TEACHER, ROLE_SCHOOL_ADMIN)),
+    # Averages, pass rates and movement for the whole class list. Exporting
+    # carries a table of named children's results out of the platform, so it is
+    # SENSITIVE exactly as the attendance and student exports are.
+    ("gradebook", "analytics", "view",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("gradebook", "analytics", "export",      _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 ]
 
 #: Resources that carry Field Access fields and no permission keys.
@@ -400,7 +414,7 @@ MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
     "academics": "Academic operations - sessions, calendar, timetables, classes, structure, subjects.",
     "attendance": "Attendance - daily class registers, corrections, reminders, staff registers, reports and settings.",
-    "gradebook": "Gradebook and assessments - assessment setup, score sheets, moderation, results, fee holds and report cards.",
+    "gradebook": "Gradebook and assessments - assessment setup, score sheets, moderation, results, fee holds, report cards, amendments and analytics.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -445,13 +459,15 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("attendance", "report"):     "Attendance summaries, the chronic-absence list and their exports",
     ("attendance", "settings"):   "Attendance settings and the school's reasons for excusing an absence",
     ("gradebook", "hub"):         "The results hub: which sheets are in and which are late",
-    ("gradebook", "sheet"):       "Score sheets: reading them, entering scores and reminding a main teacher",
+    ("gradebook", "sheet"):       "Score sheets: reading them, entering scores, uploading them from a spreadsheet and reminding a main teacher",
     ("gradebook", "moderation"):  "Moderating a score sheet as the head of the subject's department",
     ("gradebook", "class"):       "Compiling a class's results, submitting them and publishing them",
     ("gradebook", "hold"):        "Fee holds on a student's result",
     ("gradebook", "release"):     "The release list and the report cards of a class",
     ("gradebook", "result"):      "A student's results across terms",
     ("gradebook", "setup"):       "Assessment setup: structures, grading scales, report card options and remark templates",
+    ("gradebook", "amendment"):   "Corrections to a published result: raising one and deciding it",
+    ("gradebook", "analytics"):   "Performance analytics over published results, and their exports",
 }
 
 

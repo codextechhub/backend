@@ -7,6 +7,10 @@ database was first seeded, then runs the gradebook seeder on a Monday six weeks
 later. Both shapes of school are covered: Sunrise has one branch and Lagoon View
 has two.
 
+A second class runs the seeder late in the school year, on a day in the last
+term, because that is the only day on which the earlier terms, the movers and the
+cumulative card can be reached honestly: the first term has nothing before it.
+
 Tagged ``slow`` because the sibling seeders and the permission seed cost
 several seconds between them.
 """
@@ -14,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import redirect_stdout
+from decimal import Decimal
 from io import StringIO
 from urllib.parse import urlencode
 
@@ -27,6 +32,7 @@ from django.urls import reverse
 from core.test_utils import TenantAPIClient
 from schools.vs_academics.models import Department, SchoolClass, Subject
 from schools.vs_gradebook.constants import (
+    AmendmentStatus,
     ClassStage,
     EmailState,
     ResultState,
@@ -35,12 +41,14 @@ from schools.vs_gradebook.constants import (
     StoredStage,
 )
 from schools.vs_gradebook.models import (
+    Amendment,
     AssessmentStructure,
     ClassTerm,
     GradingScale,
     ResultHold,
-    ScoreSheet,
     Score,
+    ScoreImport,
+    ScoreSheet,
     StudentTermResult,
 )
 from schools.vs_gradebook.services.rules import read_gradebook_rules
@@ -56,6 +64,7 @@ from .base import school_clock
 
 SEEDED_ON = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 MONDAY = dt.datetime(2026, 10, 12, 12, 0, tzinfo=dt.timezone.utc)
+LAST_TERM_MONDAY = dt.datetime(2027, 4, 19, 12, 0, tzinfo=dt.timezone.utc)
 SCHOOLS = {
     "sunrise-academy": ("Sunrise Academy", False),
     "lagoon-view": ("Lagoon View Academy", True),
@@ -89,31 +98,43 @@ def _counts(tenant) -> dict:
     return out
 
 
-@tag("slow")
-class SeedGradebookScenariosTests(TestCase):
+class SeededSchools:
+    """The two prerequisite schools with the seeder run once, on the day ``AT``.
+
+    ``SLUGS`` names the schools built, and the first run's output, outgoing mail
+    and row counts are kept so a test can compare a second run against them.
+    """
+
+    AT = MONDAY
+    SLUGS = SLUGS
+    ONLY = None
+
     @classmethod
     def setUpTestData(cls):
         with school_clock(SEEDED_ON):
             _build("seed_all_permissions")
             _build("seed_notification_event_types")
             _build("seed_notification_templates")
-            for slug, (name, branched) in SCHOOLS.items():
+            for slug in cls.SLUGS:
+                name, branched = SCHOOLS[slug]
                 build_school(
                     slug=slug, name=name, live=True, extra_branch=branched,
                     with_onboarding=False,
                 )
                 _build("seed_academic_scenarios", only=slug)
                 _build("seed_student_scenarios", only=slug)
-        cls.tenants = {slug: School.objects.get(slug=slug).tenant for slug in SLUGS}
+        cls.tenants = {slug: School.objects.get(slug=slug).tenant for slug in cls.SLUGS}
         cls.first_run = cls.run_seed()
         cls.emails = list(mail.outbox)
         cls.after_first_run = {slug: _counts(t) for slug, t in cls.tenants.items()}
 
     @classmethod
-    def run_seed(cls, at=MONDAY, **options) -> str:
-        """Run the seeder on *at*, with the emails it triggers sent as if committed."""
+    def run_seed(cls, at=None, **options) -> str:
+        """Run the seeder on *at* (the class's day by default), with the emails it triggers sent as if committed."""
         out = StringIO()
-        with school_clock(at), cls.captureOnCommitCallbacks(execute=True):
+        if cls.ONLY:
+            options.setdefault("only", cls.ONLY)
+        with school_clock(at or cls.AT), cls.captureOnCommitCallbacks(execute=True):
             call_command("seed_gradebook_scenarios", stdout=out, **options)
         return out.getvalue()
 
@@ -128,7 +149,7 @@ class SeedGradebookScenariosTests(TestCase):
         )
 
     def term(self, slug):
-        with school_clock(MONDAY):
+        with school_clock(self.AT):
             from schools.vs_gradebook.services import resolve
             from vs_config.clock import tenant_today
 
@@ -136,7 +157,10 @@ class SeedGradebookScenariosTests(TestCase):
             return resolve.current_term(tenant, tenant_today(tenant))
 
     def klass(self, slug, name):
-        return SchoolClass.objects.get(tenant=self.tenants[slug], name=name, is_active=True)
+        return SchoolClass.objects.get(
+            tenant=self.tenants[slug], name=name, is_active=True,
+            session=self.term(slug).session,
+        )
 
     def subject(self, slug, name):
         return Subject.all_objects.get(tenant=self.tenants[slug], name=name)
@@ -145,7 +169,7 @@ class SeedGradebookScenariosTests(TestCase):
         url = reverse(route, kwargs=kwargs)
         if query:
             url += "?" + urlencode(query)
-        with school_clock(MONDAY):
+        with school_clock(self.AT):
             response = TenantAPIClient(user).get(url)
         self.assertEqual(response.status_code, 200, getattr(response, "data", response))
         return response.data["data"]
@@ -162,6 +186,9 @@ class SeedGradebookScenariosTests(TestCase):
         hub = self.get(self.admin(slug), "gradebook-hub", {"term": self.term(slug).pk})
         return next(c["stage"] for c in hub["classes"] if c["name"] == class_name)
 
+
+@tag("slow")
+class SeedGradebookScenariosTests(SeededSchools, TestCase):
     # ── running it ────────────────────────────────────────────────────────
 
     def test_it_refuses_a_school_outside_the_cast(self):
@@ -598,3 +625,281 @@ class SeedGradebookScenariosTests(TestCase):
             body = message.body.lower()
             for forbidden in ("position", "average", "grade", "%"):
                 self.assertNotIn(forbidden, body, message.subject)
+
+    # ── corrections to a published card ───────────────────────────────────
+
+    def amendment_rows(self, user=None, slug="lagoon-view"):
+        return self.get(
+            user or self.admin(slug), "gradebook-amendments",
+            {"term": self.term(slug).pk, "page_size": 100},
+        )
+
+    def test_the_amendments_list_has_one_waiting_one_approved_and_one_rejected(self):
+        slug = "lagoon-view"
+        rows = self.amendment_rows()
+
+        self.assertEqual(
+            sorted(row["status"] for row in rows),
+            [AmendmentStatus.APPROVED, AmendmentStatus.PENDING, AmendmentStatus.REJECTED],
+        )
+        self.assertEqual(rows[0]["status"], AmendmentStatus.PENDING)
+        by_status = {row["status"]: row for row in rows}
+        self.assertEqual({row["raised_by"] for row in rows}, {"Chukwuemeka Eze"})
+        principal = self.admin(slug).full_name
+        self.assertNotEqual(principal, "Chukwuemeka Eze")
+
+        waiting = by_status[AmendmentStatus.PENDING]
+        self.assertIsNone(waiting["decided_by"])
+        self.assertIsNone(waiting["version"])
+        self.assertTrue(waiting["amendment_reason"])
+
+        approved = by_status[AmendmentStatus.APPROVED]
+        self.assertEqual((approved["decided_by"], approved["version"]), (principal, 2))
+        self.assertNotEqual(approved["before"]["total"], approved["after"]["total"])
+
+        rejected = by_status[AmendmentStatus.REJECTED]
+        self.assertEqual(rejected["decided_by"], principal)
+        self.assertTrue(rejected["decision_note"])
+        self.assertIsNone(rejected["version"])
+        self.assertNotEqual(rejected["before"]["total"], rejected["after"]["total"])
+
+        branch_admin = User.objects.get(
+            tenant=self.tenants[slug], email=f"branch.admin@{slug}.example.com",
+        )
+        self.assertEqual(len(self.amendment_rows(branch_admin)), 3)
+
+    def test_the_corrections_are_for_released_pupils_of_the_published_class_in_one_branch(self):
+        slug = "lagoon-view"
+        tenant, term = self.tenants[slug], self.term(slug)
+        published = ClassTerm.objects.get(tenant=tenant, term=term, stage=StoredStage.PUBLISHED)
+        found = Amendment.objects.filter(tenant=tenant)
+
+        self.assertEqual(found.count(), 3)
+        self.assertEqual({a.class_term_id for a in found}, {published.pk})
+        self.assertEqual(len({a.student_id for a in found}), 3)
+        for amendment in found:
+            result = StudentTermResult.objects.get(
+                class_term=published, student=amendment.student,
+            )
+            self.assertIsNotNone(result.released_at, amendment.student)
+            self.assertNotEqual(amendment.raised_by_id, amendment.decided_by_id)
+
+    def test_an_approved_correction_reissued_one_card_and_left_the_others_alone(self):
+        slug = "lagoon-view"
+        tenant, term = self.tenants[slug], self.term(slug)
+        approved = Amendment.objects.get(tenant=tenant, status=AmendmentStatus.APPROVED)
+        card = self.get(
+            self.admin(slug), "gradebook-report-card", {"term": term.pk},
+            class_id=approved.class_term.school_class_id, student_id=approved.student_id,
+        )
+        self.assertEqual(card["version"], 2)
+        untouched = StudentTermResult.objects.filter(
+            class_term=approved.class_term, snapshot__isnull=False,
+        ).exclude(student=approved.student)
+        self.assertEqual({result.version for result in untouched}, {1})
+
+        amended = Score.objects.filter(
+            tenant=tenant, sheet__class_term=approved.class_term, amended_by__isnull=False,
+        )
+        self.assertEqual({score.student_id for score in amended}, {approved.student_id})
+        self.assertEqual({score.amended_by.email for score in amended},
+                         {f"branch.admin@{slug}.example.com"})
+
+    def test_a_correction_that_waits_or_was_rejected_changed_no_card_and_wrote_to_nobody(self):
+        tenant = self.tenants["lagoon-view"]
+        for amendment in Amendment.objects.filter(tenant=tenant).exclude(
+            status=AmendmentStatus.APPROVED,
+        ):
+            result = StudentTermResult.objects.get(
+                class_term=amendment.class_term, student=amendment.student,
+            )
+            self.assertEqual(result.version, 1, amendment.status)
+        updated = [m for m in self.emails if "updated report card is ready" in m.subject]
+        approved = Amendment.objects.get(tenant=tenant, status=AmendmentStatus.APPROVED)
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0].subject, f"{approved.student.first_name}'s updated report card is ready")
+        self.assertIn("household@example.ng", ",".join(updated[0].to))
+        self.assertTrue(
+            Notification.objects.filter(
+                tenant=tenant, event_type__key="gradebook.report_card_updated",
+            ).exists(),
+        )
+
+    def test_the_students_history_tells_of_all_three_corrections(self):
+        slug = "lagoon-view"
+        tenant = self.tenants[slug]
+        approved = Amendment.objects.get(tenant=tenant, status=AmendmentStatus.APPROVED)
+        results = self.get(
+            self.admin(slug), "gradebook-student-results", student_id=approved.student_id,
+        )
+        entries = [e for e in results["history"] if e["kind"] == "AMENDMENT"]
+        self.assertEqual([e["amendment"]["status"] for e in entries], [AmendmentStatus.APPROVED])
+
+    def test_sunrise_has_no_corrections(self):
+        self.assertFalse(Amendment.objects.filter(tenant=self.tenants["sunrise-academy"]).exists())
+
+    # ── a sheet part filled from a spreadsheet ────────────────────────────
+
+    def test_part_of_a_sheet_was_entered_from_a_checked_and_confirmed_upload(self):
+        slug = "lagoon-view"
+        tenant, term = self.tenants[slug], self.term(slug)
+        english = self.subject(slug, "English Language")
+        sheet = ScoreSheet.objects.get(
+            tenant=tenant, class_term__school_class=self.klass(slug, "SSS1 B"),
+            class_term__term=term, subject=english,
+        )
+        upload = ScoreImport.objects.get(
+            tenant=tenant, school_class=sheet.class_term.school_class, subject=english, term=term,
+        )
+
+        self.assertIsNotNone(upload.confirmed_at)
+        self.assertEqual(upload.user, self.person(slug, "hauwa", "sanni"))
+        outcomes = {
+            cell["outcome"] for row in upload.rows for cell in row["cells"]
+        }
+        self.assertTrue({"NEW", "SAME", "REPLACES"} <= outcomes, outcomes)
+        self.assertTrue(all(not row["issues"] for row in upload.rows))
+        self.assertEqual(sheet.status, SheetStatus.IN_PROGRESS)
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                tenant=tenant, summary__contains="from a spreadsheet",
+            ).exists(),
+        )
+
+        body = self.get(
+            self.admin(slug), "gradebook-sheet", {"term": term.pk},
+            class_id=sheet.class_term.school_class_id, subject_id=english.pk,
+        )
+        complete = [
+            row for row in body["rows"]
+            if all(cell["mark"] is not None for cell in row["cells"])
+        ]
+        empty = [
+            row for row in body["rows"]
+            if all(cell["mark"] is None for cell in row["cells"])
+        ]
+        self.assertGreater(len(complete), 0)
+        self.assertEqual(len(empty), 1)
+        self.assertEqual(len(complete) + len(empty), len(body["rows"]))
+
+    # ── what the first term of the year cannot have ───────────────────────
+
+    def test_the_first_term_says_why_it_has_no_earlier_term_and_no_cumulative_card(self):
+        self.assertIn("no earlier term: First Term is the first term of 2026/2027", self.first_run)
+        self.assertIn("2025/2026 (archived)", self.first_run)
+        self.assertIn("0 pupils on its roll", self.first_run)
+        self.assertIn("no cumulative card: First Term is not the last term", self.first_run)
+        slug = "lagoon-view"
+        report = self.get(
+            self.admin(slug), "gradebook-analytics", {"term": self.term(slug).pk},
+        )
+        self.assertEqual(report["movers"], [])
+        self.assertTrue(report["subjects"])
+
+    def test_nothing_is_published_for_a_term_other_than_the_current_one(self):
+        slug = "lagoon-view"
+        tenant = self.tenants[slug]
+        self.assertEqual(
+            set(ClassTerm.objects.filter(tenant=tenant, stage=StoredStage.PUBLISHED)
+                .values_list("term_id", flat=True)),
+            {self.term(slug).pk},
+        )
+
+
+@tag("slow")
+class SeedGradebookScenariosLateInTheYearTests(SeededSchools, TestCase):
+    """Run in the last term of the year, where the earlier terms and the year block can be reached."""
+
+    AT = LAST_TERM_MONDAY
+    SLUGS = ("lagoon-view",)
+    ONLY = "lagoon-view"
+    SLUG = "lagoon-view"
+
+    def published_class(self):
+        return self.klass(self.SLUG, "JSS1 A")
+
+    def test_the_day_is_in_the_third_term(self):
+        self.assertEqual(self.term(self.SLUG).order_index, 3)
+        self.assertNotIn("no earlier term", self.first_run)
+        self.assertNotIn("no cumulative card", self.first_run)
+
+    def test_every_term_of_the_year_is_published_for_the_class_in_order(self):
+        tenant, term = self.tenants[self.SLUG], self.term(self.SLUG)
+        terms = list(term.session.terms.order_by("order_index"))
+        self.assertEqual(len(terms), 3)
+        published = {
+            each.term_id: each
+            for each in ClassTerm.objects.filter(
+                tenant=tenant, school_class=self.published_class(), stage=StoredStage.PUBLISHED,
+            )
+        }
+        self.assertEqual(set(published), {each.pk for each in terms})
+        order = [published[each.pk].published_at for each in terms]
+        self.assertEqual(order, sorted(order))
+        for each in terms[:-1]:
+            self.assertEqual(
+                {result.version for result in StudentTermResult.objects.filter(
+                    class_term=published[each.pk], snapshot__isnull=False,
+                )} - {1}, set(),
+            )
+
+    def test_the_movers_include_pupils_who_rose_and_pupils_who_fell(self):
+        term = self.term(self.SLUG)
+        report = self.get(self.admin(self.SLUG), "gradebook-analytics", {"term": term.pk})
+
+        movers = report["movers"]
+        self.assertGreater(len(movers), 2)
+        signs = {row["change"][0] for row in movers}
+        self.assertEqual(signs, {"+", "-"})
+        second = term.session.terms.get(order_index=2)
+        self.assertEqual({row["from_term"]["id"] for row in movers}, {second.pk})
+        self.assertEqual({row["class"]["name"] for row in movers}, {"JSS1 A"})
+        falls = [Decimal(row["change"]) for row in movers]
+        self.assertEqual(falls, sorted(falls))
+
+    def test_a_cumulative_card_renders_with_all_three_terms_and_an_annual_position(self):
+        tenant, term = self.tenants[self.SLUG], self.term(self.SLUG)
+        published = ClassTerm.objects.get(
+            tenant=tenant, term=term, school_class=self.published_class(),
+            stage=StoredStage.PUBLISHED,
+        )
+        result = StudentTermResult.objects.filter(
+            class_term=published, released_at__isnull=False,
+        ).exclude(student__in=Amendment.objects.values("student")).first()
+        card = self.get(
+            self.admin(self.SLUG), "gradebook-report-card", {"term": term.pk},
+            class_id=published.school_class_id, student_id=result.student_id,
+        )
+
+        block = card["cumulative"]
+        self.assertEqual(len(block["terms"]), 3)
+        self.assertTrue(block["annual_average"])
+        self.assertTrue(block["annual_position"])
+        self.assertEqual(
+            block["terms"], [each.name for each in term.session.terms.order_by("order_index")],
+        )
+        for subject in block["subjects"]:
+            self.assertEqual(len(subject["totals"]), 3)
+            self.assertTrue(all(total for total in subject["totals"]), subject)
+        results = self.get(self.admin(self.SLUG), "gradebook-student-results", student_id=result.student_id)
+        self.assertEqual(len(results["terms"]), 3)
+
+    def test_a_correction_to_the_third_term_keeps_the_year_block_on_the_new_version(self):
+        tenant = self.tenants[self.SLUG]
+        approved = Amendment.objects.get(tenant=tenant, status=AmendmentStatus.APPROVED)
+        result = StudentTermResult.objects.get(
+            class_term=approved.class_term, student=approved.student,
+        )
+        self.assertEqual(result.version, 2)
+        self.assertIn("cumulative", result.snapshot)
+        self.assertEqual(len(result.snapshot["cumulative"]["terms"]), 3)
+
+    def test_a_second_run_in_the_last_term_creates_nothing(self):
+        second = self.run_seed()
+
+        self.assertIn("Created this run: 0", second)
+        self.assertNotIn("  + ", second)
+        self.assertEqual(
+            _counts(self.tenants[self.SLUG]), self.after_first_run[self.SLUG],
+        )
+        self.assertEqual(mail.outbox, [])

@@ -14,20 +14,25 @@ KEYS = (
     constants.PERM_MODERATION_APPROVE, constants.PERM_CLASS_SUBMIT,
     constants.PERM_CLASS_PUBLISH, constants.PERM_HOLD_VIEW, constants.PERM_HOLD_UPDATE,
     constants.PERM_RELEASE_VIEW, constants.PERM_RESULT_VIEW, constants.PERM_SETUP_VIEW,
-    constants.PERM_SETUP_UPDATE,
+    constants.PERM_SETUP_UPDATE, constants.PERM_AMENDMENT_CREATE,
+    constants.PERM_AMENDMENT_APPROVE, constants.PERM_SHEET_IMPORT,
+    constants.PERM_ANALYTICS_VIEW, constants.PERM_ANALYTICS_EXPORT,
 )
 
 
 class RbacWiringTests(SimpleTestCase):
     def test_every_key_is_in_the_gradebook_module(self):
-        self.assertEqual(len(set(KEYS)), 14)
+        self.assertEqual(len(set(KEYS)), 19)
         for key in KEYS:
             with self.subTest(key=key):
                 self.assertEqual(key.count("."), 2)
                 self.assertTrue(key.startswith("gradebook."))
 
     def test_the_module_answers_to_the_gradebook_capability(self):
-        for resource in ("hub", "sheet", "moderation", "class", "hold", "release", "result", "setup"):
+        for resource in (
+            "hub", "sheet", "moderation", "class", "hold", "release", "result", "setup",
+            "amendment", "analytics",
+        ):
             self.assertEqual(capability_for("gradebook", resource), "gradebook")
 
     def test_every_key_sits_in_the_gradebook_core_band(self):

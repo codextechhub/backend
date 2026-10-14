@@ -1,6 +1,6 @@
 """The gradebook fields an administrator may restrict per role.
 
-Four resources, because a role is given a sheet and not a hold, a family's
+Five resources, because a role is given a sheet and not a hold, a family's
 result and not a programme's grading scale:
 
 * ``gradebook.sheet`` is the score sheet and what is worked out on it.
@@ -9,6 +9,8 @@ result and not a programme's grading scale:
 * ``gradebook.hold`` is a fee hold and the balance beside it.
 * ``gradebook.setup`` is assessment setup: structures, scales and remark
   templates.
+* ``gradebook.amendment`` is a correction to a result that was already
+  published: the reason it was asked for and the note it was decided with.
 
 A resource permission answers whether somebody may open the screen; these
 switches answer which of its fields they read and change. **Every field is
@@ -33,6 +35,17 @@ save carries ``cells`` (and ``mark`` and ``marker`` inside each), and the body o
 a return carries ``note``; a role that may not write them is refused the whole
 request and nothing is saved. A null mark is a write too (it blanks a cell), so
 the views judge the submitted names by presence before the serializers run.
+
+**Bulk upload of a sheet.** The template download fills in marks only for a
+caller who may read them, and an upload (preview and confirm alike) is a write of
+``cells``, so a role that may not write marks is refused it entirely. A preview
+prints the value in the file, the value on the sheet and the verdict on each cell
+as ``value``, ``existing`` and ``outcome``, and the count of scores it would
+replace as ``replaces``; each states a mark, or states whether a mark is there,
+so they follow the mark switch with the ``cells`` that carry them. The row
+number, the student, the issues found and the file's own problems carry no mark
+and have no switch. A confirm answers with the sheet itself, filtered as any read
+of it is.
 
 **The result.** The overall average and the position in class are derived and
 each has its own switch, so a school can hide the position from a role that
@@ -90,10 +103,51 @@ the guardian-contact switch and, as its parts, by the Student Management name an
 email switches: the stricter of the two wins, and a part those switches hide is
 left out alone.
 
-**Not registered here.** The reason an amendment is raised and the note it is
-decided with belong to the amendment record and are registered with it. The
-class's returned-with note on the broadsheet uses the sheet's return note
-switch where it is rendered.
+**The year block of the last term's card.** A school year's last term (when the
+year has more than one) carries a ``cumulative`` block on its report card and
+Results-tab entry, and every figure in it follows a switch that already exists.
+The total of each term in a subject row travels as ``totals`` and follows the
+sheet's figures switch (``row_result``); the annual averages of a subject and of
+the whole year travel as ``annual_average`` and follow the overall average
+switch; the annual position ("7th of 32") travels as ``annual_position`` and
+follows the position switch, and a line is dropped when its switch is closed.
+The promotion line ("Promoted to JSS2", "To repeat JSS1", "Graduated") is read
+live from Student Management, which declares no switch for a placement's outcome
+or for the class history, so the line has a switch of its own, ``promotion_line``,
+open by default and read-only.
+
+**Amendments.** The reason a correction is asked for and the note it is decided
+with are read and written under the registered names ``amendment_reason`` and
+``decision_note``. A request sends them as ``reason`` and ``note`` and the body
+reads them under the registered names, as a hold's lift note is read. The cells
+a correction replaces and the ones it asks for are marks, so they are governed by
+the **sheet's** switches and not by one of their own: they travel as ``cells``
+inside the ``before`` and ``after`` lines, which are sheet surfaces, so a role
+that may not read marks is sent the totals its figures switch allows and no
+cells, and a role that may not write marks cannot raise a correction at all
+(its cells are a write of ``cells``). The drawer's published marks are the same.
+An amendment on the Results tab's history carries its reason and note in an
+``amendment`` block that follows the amendment switches and none of a hold's.
+The audit trail records ids and the decision, never the reason, the note or a
+mark, because it has no switch to withhold them.
+
+**Analytics.** The performance analytics screen reads published results only and
+adds no field of its own: every figure is an alias on a switch that exists. A
+subject's ``average``, grade ``spread`` and ``pass_rate``, and the ``gap`` between
+the classes that offer it, follow the sheet's class-figures switch
+(``class_stats``). A student's ``from``, ``to`` and ``change`` between terms
+follow the overall average switch, and a role that may not read it is sent the
+movers by name, in name order, because their order would state the averages. The
+``tops`` of each class are a statement about position and average at once, so
+they follow ``position`` and ``overall_average`` and the stricter wins: a role
+that may not read either is sent no ``tops`` at all. The count of students marked
+in a subject, the classes in scope and the term compared with state no figure the
+switches withhold and have none. The two exports are cut from the same payload
+and leave out the column a closed switch governs; a table whose figures are all
+closed is the names alone.
+
+**Not registered here.** The class's returned-with note on the broadsheet uses
+the sheet's return note switch where it is rendered.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 
@@ -115,6 +169,18 @@ SHEET_SURFACES = (
     "schools.vs_gradebook.serializers.ClassReturnBodySerializer",
     "schools.vs_gradebook.serializers.CardSubjectSerializer",
     "schools.vs_gradebook.serializers.ResultSubjectSerializer",
+    "schools.vs_gradebook.serializers.AmendmentFormSerializer",
+    "schools.vs_gradebook.serializers.AmendmentLineSerializer",
+    "schools.vs_gradebook.serializers.AmendmentCellWriteSerializer",
+    "schools.vs_gradebook.serializers.AmendmentCellsBodySerializer",
+    "schools.vs_gradebook.serializers.CumulativeSubjectSerializer",
+    "schools.vs_gradebook.serializers.SheetImportPreviewSerializer",
+    "schools.vs_gradebook.serializers.SheetImportSummarySerializer",
+    "schools.vs_gradebook.serializers.SheetImportRowSerializer",
+    "schools.vs_gradebook.serializers.SheetImportCellSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsSubjectSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsArmSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsCompareSerializer",
 )
 
 RESULT_SURFACES = (
@@ -126,8 +192,12 @@ RESULT_SURFACES = (
     "schools.vs_gradebook.serializers.PrincipalBandSerializer",
     "schools.vs_gradebook.serializers.PrincipalCommentsWriteSerializer",
     "schools.vs_gradebook.serializers.ReportCardSerializer",
+    "schools.vs_gradebook.serializers.CumulativeSerializer",
     "schools.vs_gradebook.serializers.ResultTermSerializer",
     "schools.vs_gradebook.serializers.StudentResultsSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsMoverSerializer",
+    "schools.vs_gradebook.serializers.AnalyticsTopSerializer",
 )
 
 HOLD_SURFACES = (
@@ -137,6 +207,13 @@ HOLD_SURFACES = (
     "schools.vs_gradebook.serializers.HoldPlaceBodySerializer",
     "schools.vs_gradebook.serializers.HoldLiftBodySerializer",
     "schools.vs_gradebook.serializers.ResultHistorySerializer",
+)
+
+AMENDMENT_SURFACES = (
+    "schools.vs_gradebook.serializers.AmendmentRowSerializer",
+    "schools.vs_gradebook.serializers.AmendmentHistorySerializer",
+    "schools.vs_gradebook.serializers.AmendmentRaiseBodySerializer",
+    "schools.vs_gradebook.serializers.AmendmentDecisionBodySerializer",
 )
 
 SETUP_SURFACES = (
@@ -161,21 +238,28 @@ def register():
         surfaces=SHEET_SURFACES,
         fields=(
             FieldSpec("mark", "Component mark", group="Marks", scope=_TENANT,
-                      sort_order=10, api_names=("mark", "marker", "cells"),
+                      sort_order=10,
+                      api_names=("mark", "marker", "cells", "value", "existing",
+                                 "outcome", "replaces"),
                       description="A student's mark in each component, with ABS "
-                                  "(absent) and Excused where they apply."),
+                                  "(absent) and Excused where they apply, "
+                                  "including the marks an uploaded spreadsheet "
+                                  "would enter or replace."),
             FieldSpec("row_result", "Total, percentage, grade and remark",
                       group="Figures", scope=_TENANT, sort_order=10, writable=False,
                       api_names=("total", "obtainable", "percentage", "grade",
-                                 "remark", "is_fail", "complete", "excused_note"),
+                                 "remark", "is_fail", "complete", "excused_note",
+                                 "totals"),
                       description="What a student's marks add up to in the subject, "
                                   "the percentage, the grade and remark it earns."),
             FieldSpec("class_stats", "Class average, highest and lowest",
                       group="Figures", scope=_TENANT, sort_order=20, writable=False,
-                      api_names=("class_average", "highest", "lowest", "pass_rate"),
+                      api_names=("class_average", "highest", "lowest", "pass_rate",
+                                 "average", "spread", "gap"),
                       description="The subject's average, highest and lowest across "
-                                  "the class, and the share who passed, on the sheet, "
-                                  "the moderation queue and analytics."),
+                                  "the class, the share who passed, the grade spread "
+                                  "and the gap between classes' averages, on the "
+                                  "sheet, the moderation queue and analytics."),
             FieldSpec("return_note", "Return note", group="Review", scope=_TENANT,
                       sort_order=10, api_names=("note",),
                       description="Why a sheet or a class was sent back for correction."),
@@ -188,13 +272,21 @@ def register():
         fields=(
             FieldSpec("overall_average", "Overall average", group="Figures",
                       scope=_TENANT, sort_order=10, writable=False,
-                      api_names=("overall_average", "average"),
+                      api_names=("overall_average", "average", "annual_average",
+                                 "from", "to", "change"),
                       description="The mean of a student's percentages across the "
-                                  "subjects they take."),
+                                  "subjects they take, on the last term's report "
+                                  "card the annual averages across the school year, "
+                                  "and on analytics a student's average this term, "
+                                  "last term and the change between them."),
             FieldSpec("position", "Position in class", group="Figures",
                       scope=_TENANT, sort_order=20, writable=False,
+                      api_names=("position", "annual_position", "tops"),
                       description="Where a student ranks in the class by overall "
-                                  "average. A school that does not rank shows none."),
+                                  "average, and by annual average on the last "
+                                  "term's report card, and who is top of each class "
+                                  "on analytics. A school that does not rank shows "
+                                  "none."),
             FieldSpec("ratings", "Conduct and skills ratings", group="Comments",
                       scope=_TENANT, sort_order=10,
                       api_names=("ratings", "traits"),
@@ -221,6 +313,12 @@ def register():
                                   "to. Follows the guardian switches of Student "
                                   "Management: where those hide a name or an email, "
                                   "it is hidden here too."),
+            FieldSpec("promotion_line", "Promotion outcome line", group="Release",
+                      scope=_TENANT, sort_order=15, writable=False,
+                      description="The line on the last term's report card and "
+                                  "Results tab saying whether the student was "
+                                  "promoted, is to repeat the year or graduated, "
+                                  "as Student Management recorded it."),
             FieldSpec("email_state", "Release email state", group="Release",
                       scope=_TENANT, sort_order=20, writable=False,
                       api_names=("email_state", "emailed_at"),
@@ -244,6 +342,21 @@ def register():
                       api_names=("balance", "oldest_unpaid_on", "days_owed"),
                       description="What a student's family owes and since when, "
                                   "read from Finance at the time shown."),
+        ),
+    )
+    register_fields(
+        "gradebook",
+        "amendment",
+        surfaces=AMENDMENT_SURFACES,
+        fields=(
+            FieldSpec("amendment_reason", "Amendment reason", group="Review",
+                      scope=_TENANT, sort_order=10,
+                      description="Why a correction to a published result was asked "
+                                  "for."),
+            FieldSpec("decision_note", "Amendment decision note", group="Review",
+                      scope=_TENANT, sort_order=20,
+                      description="The note a correction was approved or rejected "
+                                  "with."),
         ),
     )
     register_fields(

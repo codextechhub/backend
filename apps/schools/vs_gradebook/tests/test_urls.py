@@ -4,6 +4,13 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 from django.urls import get_resolver, resolve, reverse
 
+from ..views.amendments import (
+    AmendmentApproveView,
+    AmendmentFormView,
+    AmendmentRejectView,
+    AmendmentsView,
+)
+from ..views.analytics import AnalyticsExportView, AnalyticsView
 from ..views.classes import (
     ApprovalsView,
     BroadsheetView,
@@ -28,7 +35,15 @@ from ..views.results import (
     StudentResultsView,
 )
 from ..views.settings import SettingsView
-from ..views.sheets import SheetRemindView, SheetScoresView, SheetSubmitView, SheetView
+from ..views.sheets import (
+    SheetImportConfirmView,
+    SheetImportView,
+    SheetRemindView,
+    SheetScoresView,
+    SheetSubmitView,
+    SheetTemplateView,
+    SheetView,
+)
 from ..views.setup import (
     RemarkTemplatesView,
     ScaleActivateView,
@@ -73,6 +88,16 @@ ROUTES = {
     "gradebook-sheet-remind": (
         SheetRemindView, "/v1/gradebook/sheets/3/7/remind/", {"class_id": 3, "subject_id": 7},
     ),
+    "gradebook-sheet-template": (
+        SheetTemplateView, "/v1/gradebook/sheets/3/7/template/", {"class_id": 3, "subject_id": 7},
+    ),
+    "gradebook-sheet-import": (
+        SheetImportView, "/v1/gradebook/sheets/3/7/import/", {"class_id": 3, "subject_id": 7},
+    ),
+    "gradebook-sheet-import-confirm": (
+        SheetImportConfirmView, "/v1/gradebook/sheets/3/7/import/abc_DEF-123/confirm/",
+        {"class_id": 3, "subject_id": 7, "token": "abc_DEF-123"},
+    ),
     "gradebook-broadsheet": (
         BroadsheetView, "/v1/gradebook/classes/3/broadsheet/", {"class_id": 3},
     ),
@@ -103,6 +128,18 @@ ROUTES = {
     ),
     "gradebook-student-results": (
         StudentResultsView, "/v1/gradebook/students/9/results/", {"student_id": 9},
+    ),
+    "gradebook-amendments": (AmendmentsView, "/v1/gradebook/amendments/", {}),
+    "gradebook-amendment-form": (AmendmentFormView, "/v1/gradebook/amendments/form/", {}),
+    "gradebook-amendment-approve": (
+        AmendmentApproveView, "/v1/gradebook/amendments/4/approve/", {"pk": 4},
+    ),
+    "gradebook-amendment-reject": (
+        AmendmentRejectView, "/v1/gradebook/amendments/4/reject/", {"pk": 4},
+    ),
+    "gradebook-analytics": (AnalyticsView, "/v1/gradebook/analytics/", {}),
+    "gradebook-analytics-export": (
+        AnalyticsExportView, "/v1/gradebook/analytics/export/", {},
     ),
 }
 VIEWS = {view for view, _, _ in ROUTES.values()}

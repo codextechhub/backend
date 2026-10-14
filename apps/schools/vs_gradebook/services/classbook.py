@@ -18,6 +18,11 @@ position and the next is skipped (:func:`.compute.positions`).
 **Position is a school's choice.** When ``gradebook.rank_in_class`` is off no
 position is computed and none is sent anywhere.
 
+**A published class reads its snapshots.** Once the principal publishes, the
+broadsheet shows each student's issued figures and not a fresh working-out of
+the sheets, so it matches the report cards even after an approved amendment
+(:func:`_published_rows`).
+
 **The roll** is the class roll as at the earlier of the class's branch's today
 and the term's last day, in name order, and it includes a suspended student
 (:func:`.book.rolls_for`).
@@ -39,6 +44,7 @@ from ..constants import (
     CFG_RATING_TRAITS,
     CFG_SHOW_CLASS_STATS,
     CellState,
+    StoredStage,
 )
 from ..exceptions import NoScale
 from ..models import AssessmentStructure, StudentTermResult
@@ -214,7 +220,7 @@ def load_book(tenant, school_class, branch, term, *, rules=None) -> ClassBook:
             row.student_id: row
             for row in StudentTermResult.objects.filter(
                 tenant=tenant, class_term=entry.class_term,
-            )
+            ).select_related("student")
         }
         if entry.class_term is not None else {}
     )
@@ -258,9 +264,8 @@ def cell_for(column: Column, student_id) -> dict:
     return {"subject": subject_id, "state": CellState.TOTAL, "total": line.result.total}
 
 
-def broadsheet_payload(bk: ClassBook, user) -> dict:
-    """The broadsheet for the class, before Field Access is applied."""
-    school_class = bk.school_class
+def _live_rows(bk: ClassBook) -> tuple[list, bool]:
+    """``(rows, ranks)`` worked out from the sheets, for a class that is not yet published."""
     ranks = bk.rules.rank_in_class
     rows = []
     for student in bk.students:
@@ -277,12 +282,84 @@ def broadsheet_payload(bk: ClassBook, user) -> dict:
             row["position"] = bk.positions.get(student.pk)
             row["position_of"] = len(bk.roll)
         rows.append(row)
+    return rows, ranks
 
-    missing = bk.missing
-    comments_missing = bk.comments_missing
+
+def _name_key(student):
+    return (student.last_name.lower(), student.first_name.lower(), student.pk)
+
+
+def _published_cell(column: Column, rows_by_subject: dict) -> dict:
+    """The broadsheet cell for a subject as the student's issued snapshot has it."""
+    subject_id = column.subject.pk
+    row = rows_by_subject.get(subject_id)
+    if row is None:
+        return {"subject": subject_id, "state": CellState.NOT_TAKEN, "total": None}
+    if row["total"] is None:
+        return {"subject": subject_id, "state": CellState.NOT_IN, "total": None}
+    return {"subject": subject_id, "state": CellState.TOTAL, "total": row["total"]}
+
+
+def _published_rows(bk: ClassBook) -> tuple[list, bool]:
+    """``(rows, ranks)`` read from each student's latest snapshot, for a published class.
+
+    The sheets are locked once a class is published but an approved amendment
+    changes a student's snapshot and not the live figures, so a broadsheet worked
+    out from the sheets would disagree with the cards the families hold. Every
+    figure here is the snapshot's: the subject totals, the overall average, the
+    position (and the roll it is out of) and whether a comment was written. The
+    students are those the class published a result for, in name order.
+    """
+    published = sorted(
+        (row for row in bk.results.values() if row.snapshot is not None),
+        key=lambda row: _name_key(row.student),
+    )
+    rows = []
+    for result in published:
+        snapshot = result.snapshot
+        by_subject = {line["subject"]["id"]: line for line in snapshot["subjects"]}
+        average = snapshot.get("overall_average")
+        row = {
+            "student": {
+                "id": result.student_id, "name": snapshot["student"]["name"],
+                "admission_number": snapshot["student"]["admission_number"],
+            },
+            "cells": [_published_cell(column, by_subject) for column in bk.columns],
+            "average": Decimal(average) if average is not None else None,
+            "comment_done": bool((snapshot.get("teacher_comment") or "").strip()),
+        }
+        if "position" in snapshot:
+            row["position"] = snapshot["position"]
+            row["position_of"] = snapshot.get("roll_size")
+        rows.append(row)
+    ranks = any("position" in result.snapshot for result in published)
+    return rows, ranks
+
+
+def broadsheet_payload(bk: ClassBook, user) -> dict:
+    """The broadsheet for the class, before Field Access is applied.
+
+    A class that is not yet published is worked out from its sheets. A
+    published class is read from the students' snapshots (:func:`_published_rows`)
+    so that it always agrees with the report cards. Nothing can be submitted once
+    a class is published, so its gaps and submit blockers are empty and
+    ``can_submit`` is false: they are never worked out from the live roll, on
+    which a pupil who joined after publication has no sheet entry and no comment.
+    The warning about school days with no register is live-only too: once the
+    results are issued no register can change them, so a published class has
+    nothing left to warn about and the warning is null.
+    """
+    school_class = bk.school_class
+    rows, ranks = (
+        _published_rows(bk) if bk.stage == StoredStage.PUBLISHED else _live_rows(bk)
+    )
+
     stage = bk.stage
     is_open = stage not in LOCKED_STAGES
-    warning = days_not_taken(bk)
+    published = stage == StoredStage.PUBLISHED
+    missing = [] if published else bk.missing
+    comments_missing = 0 if published else bk.comments_missing
+    warning = 0 if published else days_not_taken(bk)
     return {
         "class": {"id": school_class.pk, "name": school_class.name},
         "term": {"id": bk.term.pk, "name": bk.term.name},

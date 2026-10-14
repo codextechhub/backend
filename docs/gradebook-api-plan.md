@@ -807,3 +807,191 @@ FRD is written from this section where it disagrees with earlier ones.
    is then the admin who decides them).
 3. The student seeder leaves two senior classes empty, so demo data for them
    is thin.
+
+---
+
+## 11. Build 2 engineering spec
+
+Build 2 delivers R44 (amendments), R45 (analytics and exports, with B8),
+B7 (bulk upload), B1 (the cumulative third-term card) and B5 (its promotion
+line). Section 9's conventions apply unchanged.
+
+### 11.1 Keys
+
+| Key | Default |
+|---|---|
+| `gradebook.amendment.create` | school_admin, branch_admin |
+| `gradebook.amendment.approve` | school_admin |
+| `gradebook.sheet.import` | teacher, school_admin |
+| `gradebook.analytics.view` | school_admin, branch_admin |
+| `gradebook.analytics.export` | school_admin, branch_admin |
+
+Seeded as section 9.2's are, with the phase-2 backfill. Import also needs the
+caller to be able to enter the sheet (the main teacher, or `enter_any`).
+
+### 11.2 Amendments (R44, approval decision 3)
+
+- `Amendment`: class-term, student, subject, reason, `before` (the
+  published cells), `after` (the corrected cells), status PENDING, APPROVED
+  or REJECTED, raised by/at, decided by/at, decision note.
+  `ResultVersion`: result, version, snapshot, amendment (null for the first
+  publication), created at. Every snapshot ever issued is kept; nothing is
+  overwritten.
+- Raise `POST amendments/` `{term, class, student, subject, reason, cells}`,
+  only on a PUBLISHED class-term, for a subject the student takes, with
+  cells validated exactly as a sheet write (`NOT_A_WHOLE_MARK`, `OVER_MAX`,
+  ...); a change identical to what was published is refused
+  (`NOTHING_CHANGED`); one PENDING amendment per student, subject and term
+  (`AMENDMENT_PENDING`). `GET amendments/form/?term=&class=&student=&subject=`
+  returns the components and the published cells for the drawer.
+- List `GET amendments/?term=&branch=&status=` (holders of either key, in
+  their branches): subject, student, class, reason, raised by, status,
+  decided by, before and after.
+- Approve `POST amendments/<id>/approve/` and reject `…/reject/` `{note}`
+  (note required to reject), by `amendment.approve`; the raiser may not
+  decide their own (`SELF_DECISION`). Approval, in one transaction: the
+  sheet's `Score` rows take the corrected cells (the sheet stays locked;
+  the marks record who amended them); the student's snapshot is rebuilt
+  as version N+1 and the old one kept in `ResultVersion`. In the rebuilt
+  snapshot the amended subject's row, the student's totals and overall
+  average are recomputed; the student's position is recomputed against
+  every classmate's average **as published** (so it can share a place with a
+  classmate); the amended subject's class average, highest and lowest are
+  recomputed for this card from the classmates' published totals and the
+  new total, so the card never shows a total above its own "highest". No
+  classmate's snapshot changes. A cumulative block (11.4) is rebuilt too.
+- If the student was released, `gradebook.report_card_updated` goes to the
+  primary guardian with the same content rules as "ready". A held or not
+  yet released result gets no email.
+- The Results tab history gains AMENDMENT entries (subject, reason, raised
+  by, approved or rejected by, when); the report card carries its version.
+
+### 11.3 Bulk upload (B7)
+
+- `GET sheets/<class>/<subject>/template/?term=` returns an `.xlsx`: one row
+  per student on the sheet's roll (admission number, name), one column per
+  component headed with its name and maximum, current marks filled in, ABS
+  and EXC written as such.
+- `POST sheets/<class>/<subject>/import/?term=` (multipart `file`) checks
+  every row and saves nothing. The preview lists each row with its
+  student and per-cell outcome: NEW, SAME, REPLACES (with the existing
+  value), or an issue: unknown admission number, a student not on this
+  sheet (not in the class, or not taking the subject), over the maximum,
+  not a whole mark, an unreadable value. It returns a token.
+- `POST sheets/<class>/<subject>/import/<token>/confirm/` `{rows: [...]}`
+  saves the chosen rows that have no issue through the same write service
+  as the grid (so every lock and rule still applies), all or nothing.
+- Built on the platform import engine (`vs_import_data`) the student and
+  staff imports use, if its preview and confirm shape fits; otherwise a
+  short-lived batch record, and the report says which and why.
+
+### 11.4 The cumulative third-term card (B1) and promotion line (B5)
+
+- A term is cumulative when it is the last term of its session by order
+  and the session has more than one term.
+- Publishing a cumulative term adds a `cumulative` block to each snapshot:
+  the session's terms in order, and per subject each term's total and
+  percentage from the student's own published snapshots of the earlier
+  terms (any class they were in that session; null where nothing was
+  published) beside this term's, and the subject's annual average (mean of
+  the term percentages present). Then the overall annual average (mean of
+  the term overall averages present) and, where the school ranks, the
+  annual position within the class (ties as R23).
+- The report card and the Results tab render the block when present.
+- The promotion line is read live when a cumulative card is rendered, from
+  Student Management's recorded promotion outcome for that student and
+  session ("Promoted to JSS2", "To repeat JSS1", "Graduated"), and is
+  absent when nothing is recorded. The gradebook never decides promotion.
+
+### 11.5 Analytics (R45, B8)
+
+- `GET analytics/?term=&branch=` (`analytics.view`), published class-terms
+  only, latest versions, in the caller's branches: `subjects [{subject,
+  class, average, spread {grade: count}, pass_rate, marked}]`;
+  `compare [{subject, arms [{class, average}], gap}]` for a subject with more
+  than one published class; `movers [{student, class, from_term, from,
+  to, change}]` against the student's most recent earlier published term,
+  biggest fall first, a student without one left out; `tops [{class,
+  students, average}]` only where the school ranks; `scope` naming the
+  published classes; empty shapes when nothing is published.
+- `GET analytics/export/?term=&branch=&table=subjects|movers&export=csv|xlsx`
+  (`analytics.export`) downloads at once through
+  `vs_finance.exports.render`, as attendance's exports do, and is audited.
+- Field Access: averages and pass rates follow `class_stats`, a student's
+  averages and change follow `overall_average`, tops follow `position` and
+  `overall_average`; an export leaves out a hidden column.
+
+### 11.6 Agent order
+
+One agent at a time, because they share models, constants, serializers,
+`field_access.py` and the URL table: amendments (with every build 2 key and
+model, one migration), cumulative card, bulk upload, analytics, then the
+seeder extended with an approved amendment, an earlier published term (so
+movers have data) and a cumulative third term where the seed data allows.
+
+---
+
+## 12. As built (build 2)
+
+Build 2 shipped as section 11 specifies, with the differences below. The FRD
+is written from this section where it disagrees with section 11.
+
+**Routes added** (under `/v1/gradebook/`): `amendments/`, `amendments/form/`,
+`amendments/<id>/approve/`, `amendments/<id>/reject/`;
+`sheets/<class>/<subject>/template/`, `…/import/`,
+`…/import/<token>/confirm/`; `analytics/`, `analytics/export/`.
+Migrations `0002` (amendments, result versions, who amended a mark, with a
+backfill of version 1 for every published result) and `0003` (score
+uploads).
+
+**Amendments**
+1. A correction names only the columns it changes; `before` and `after` keep
+   the whole row. A blank cell is refused (`BLANK_CELL`): a published result
+   has a value in every column.
+2. If a correction moves the overall average into another remark band, the
+   card takes that band's principal comment (the class's own for the band,
+   else the template).
+3. A correction to an earlier term also re-issues the same student's later
+   cumulative card of that session as a new version (no classmate's card
+   changes), with an "updated" email for each re-issued card that was
+   released. A later card whose annual figures come out identical is not
+   re-issued, so no family is told of a change that did not happen.
+4. `ResultVersion` keeps every version, one per result per amendment; the
+   live snapshot also stays on the result. The audit trail records ids and
+   the decision only, never the reason, note or marks.
+
+**The cumulative card**
+1. The promotion line reads `ClassEnrolment.outcome` (PROMOTED, REPEATED,
+   GRADUATED) on the student's placement in the card's session, live on
+   every render; the class named is their first placement in a later
+   session. `StudentPromotionBatch` holds only counts. The line has its own
+   read switch, `gradebook.result.promotion_line`.
+2. Earlier terms' figures include held students: a held result is still
+   published.
+3. A published class's broadsheet reads every row from the cards, so it
+   always agrees with them, and it shows no blockers and no attendance
+   warning (nothing is left to submit or warn about).
+
+**Bulk upload**
+1. The platform import engine is not used: it creates records in a
+   background job, while a score upload updates cells that may already hold
+   a value and must say NEW, SAME or REPLACES for each. A `ScoreImport`
+   record holds the checked file for 24 hours, tied to the user, sheet,
+   term and structure, and confirms once.
+2. Limits: 2 MB and 1000 rows; xlsx or csv. A file with a heading problem
+   answers 200 with `file_issues` and no token.
+3. A confirm is refused if any cell of the sheet changed since the preview
+   (a digest of every stored cell), not only the chosen rows.
+4. Admission numbers are matched only among students the uploader's branches
+   can see, so an upload cannot reveal who attends another branch.
+
+**Analytics**
+1. Figures are two-decimal strings; `change` carries a sign. `spread` lists
+   every grade of the scale, including those nobody earned.
+2. Where a role cannot read overall averages, movers are listed by name
+   rather than biggest fall first (the order would state the changes), and
+   tops are left out. Arms in `compare` are listed in class order, so the
+   order does not say who leads.
+3. Tops are worked out from the cards' overall averages, so every student
+   tied at the top is named even after an amendment.
+4. Exports are built from the same payload as the screen; csv and xlsx only.

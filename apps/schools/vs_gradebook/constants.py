@@ -31,6 +31,11 @@ PERM_RELEASE_VIEW = "gradebook.release.view"
 PERM_RESULT_VIEW = "gradebook.result.view"
 PERM_SETUP_VIEW = "gradebook.setup.view"
 PERM_SETUP_UPDATE = "gradebook.setup.update"
+PERM_AMENDMENT_CREATE = "gradebook.amendment.create"
+PERM_AMENDMENT_APPROVE = "gradebook.amendment.approve"
+PERM_SHEET_IMPORT = "gradebook.sheet.import"
+PERM_ANALYTICS_VIEW = "gradebook.analytics.view"
+PERM_ANALYTICS_EXPORT = "gradebook.analytics.export"
 
 #: The key that unlocks a staff account. Holding it is what lets a late-sheet
 #: row say that its teacher cannot sign in.
@@ -41,6 +46,10 @@ SHEET_FIELD_RESOURCE = "gradebook.sheet"
 RESULT_FIELD_RESOURCE = "gradebook.result"
 HOLD_FIELD_RESOURCE = "gradebook.hold"
 SETUP_FIELD_RESOURCE = "gradebook.setup"
+AMENDMENT_FIELD_RESOURCE = "gradebook.amendment"
+
+#: The switch a cell's mark is read and written through, wherever a mark is printed.
+MARK_FIELD = "gradebook.sheet.mark"
 
 # ── The school's gradebook settings ────────────────────────────────────────
 # Six school-scoped ``vs_config`` definitions, declared by migration
@@ -125,8 +134,38 @@ CELL_MARK_AND_MARKER = "MARK_AND_MARKER"
 CELL_BAD_MARKER = "INVALID_MARKER"
 CELL_DUPLICATE = "DUPLICATE_CELL"
 
+#: The refusal code of a cell an amendment leaves blank: a published result has
+#: a mark, ABS or Excused in every column.
+CELL_BLANK = "BLANK_CELL"
+
 #: A batch write carries at most this many cells (sixty students, twelve components).
 CELLS_MAX = 1000
+
+# ── Bulk upload of a sheet ─────────────────────────────────────────────────
+
+#: The largest file an upload may be, in bytes. A sheet of two hundred students
+#: and a dozen components is under 30 KB, so the limit is generous and still
+#: refuses a file that is not a score sheet before it is opened.
+IMPORT_MAX_BYTES = 2 * 1024 * 1024
+
+#: The most data rows an upload may hold.
+IMPORT_MAX_ROWS = 1000
+
+#: How long a checked upload waits to be confirmed.
+IMPORT_VALID_HOURS = 24
+
+#: The file formats an upload may be in, by extension.
+IMPORT_FORMATS = ("xlsx", "csv")
+
+#: The sheet of the workbook the template puts the scores on, and the one it
+#: explains them on. An upload is read from the first of these it finds, else
+#: from the workbook's first sheet.
+IMPORT_SCORES_SHEET = "Scores"
+IMPORT_NOTES_SHEET = "Notes"
+
+#: The headings of the two fixed columns.
+IMPORT_ADMISSION_HEADING = "Admission number"
+IMPORT_STUDENT_HEADING = "Student"
 
 #: The longest note a sheet or a class is returned with.
 RETURN_NOTE_MAX = 1000
@@ -162,6 +201,10 @@ PRINCIPAL_COMMENT_MAX = 600
 #: The longest reason a hold is placed with, and note it is lifted with.
 HOLD_REASON_MAX = 500
 HOLD_NOTE_MAX = 500
+
+#: The longest reason an amendment is raised with, and note it is decided with.
+AMENDMENT_REASON_MAX = 1000
+DECISION_NOTE_MAX = 1000
 
 #: Classes one publish request may name.
 PUBLISH_CLASSES_MAX = 50
@@ -207,6 +250,43 @@ class SetupStatus(models.TextChoices):
     DRAFT = "DRAFT", "Draft"
     IN_USE = "IN_USE", "In use"
     RETIRED = "RETIRED", "Retired"
+
+
+class AmendmentStatus(models.TextChoices):
+    """Where a correction to a published result stands.
+
+    PENDING waits for the principal. APPROVED changed the student's result and
+    REJECTED changed nothing; both are final and kept.
+    """
+
+    PENDING = "PENDING", "Pending"
+    APPROVED = "APPROVED", "Approved"
+    REJECTED = "REJECTED", "Rejected"
+
+
+class ImportOutcome(models.TextChoices):
+    """What confirming an uploaded cell would do to the sheet.
+
+    NEW fills an empty cell, SAME finds the value already there, REPLACES
+    overwrites a different value and BLANK is an empty cell in the file, which
+    leaves the sheet as it is and never erases.
+    """
+
+    NEW = "NEW", "New"
+    SAME = "SAME", "Same"
+    REPLACES = "REPLACES", "Replaces"
+    BLANK = "BLANK", "Blank"
+
+
+class ImportIssue:
+    """The codes an uploaded file or row is refused with in a preview."""
+
+    UNKNOWN_ADMISSION_NUMBER = "UNKNOWN_ADMISSION_NUMBER"
+    NOT_ON_THIS_SHEET = "NOT_ON_THIS_SHEET"
+    DUPLICATE_ROW = "DUPLICATE_ROW"
+    UNREADABLE_VALUE = "UNREADABLE_VALUE"
+    UNKNOWN_COLUMN = "UNKNOWN_COLUMN"
+    MISSING_COLUMN = "MISSING_COLUMN"
 
 
 class Marker(models.TextChoices):

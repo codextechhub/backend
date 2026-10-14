@@ -1,6 +1,6 @@
 """No gradebook field reaches a caller who may read none, at any depth.
 
-Every declared surface of the four resources is rendered as a caller whose role
+Every declared surface of the gradebook resources is rendered as a caller whose role
 has every field of that resource switched off, and the whole payload is walked.
 
 The setup surfaces are rendered on the structure, scale and templates the
@@ -134,7 +134,11 @@ class SingleBranchSchoolDeepPayloadTests(GradebookFixture):
         self.assertEqual(data["total"], 100)
 
 
-# The class-to-card surfaces are rendered by cases of their own; importing them
+# The class-to-card and amendment surfaces are rendered by cases of their own; importing them
 # registers them with the registry's coverage check.
+from . import test_amendment_field_access_deep_payload  # noqa: E402,F401
 from . import test_card_field_access_deep_payload  # noqa: E402,F401
 from . import test_class_field_access_deep_payload  # noqa: E402,F401
+from . import test_sheet_import_field_access_deep_payload  # noqa: E402,F401
+from . import test_cumulative_field_access_deep_payload  # noqa: E402,F401
+from . import test_analytics_field_access_deep_payload  # noqa: E402,F401

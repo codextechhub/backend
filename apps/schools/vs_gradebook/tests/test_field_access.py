@@ -229,12 +229,12 @@ class RegistryTests(TestCase):
             )
         }
 
-    def test_the_sync_writes_the_four_resources_under_the_gradebook_module(self):
+    def test_the_sync_writes_the_five_resources_under_the_gradebook_module(self):
         declared = {
             d.resource: {s.name for s in d.fields}
             for d in all_declarations() if d.module == "gradebook"
         }
-        self.assertEqual(set(declared), {"sheet", "result", "hold", "setup"})
+        self.assertEqual(set(declared), {"sheet", "result", "hold", "setup", "amendment"})
         for resource, names in declared.items():
             self.assertEqual(set(self.rows(resource)), names)
 
@@ -246,7 +246,7 @@ class RegistryTests(TestCase):
         self.assertEqual(
             set(result),
             {"overall_average", "position", "ratings", "teacher_comment",
-             "principal_comment", "guardian_contact", "email_state"},
+             "principal_comment", "guardian_contact", "promotion_line", "email_state"},
         )
         self.assertEqual(set(hold), {"reason", "balance"})
 
@@ -255,7 +255,7 @@ class RegistryTests(TestCase):
             "gradebook.sheet.row_result", "gradebook.sheet.class_stats",
             "gradebook.result.overall_average", "gradebook.result.position",
             "gradebook.result.guardian_contact", "gradebook.result.email_state",
-            "gradebook.hold.balance",
+            "gradebook.result.promotion_line", "gradebook.hold.balance",
         }
         writable = {
             "gradebook.sheet.mark", "gradebook.sheet.return_note",
@@ -290,8 +290,11 @@ class RegistryTests(TestCase):
 
     def test_the_position_has_a_switch_of_its_own_apart_from_the_average(self):
         names = {s.name: s.resolved_api_names for s in get_declaration("gradebook", "result").fields}
-        self.assertEqual(names["position"], ("position",))
-        self.assertEqual(names["overall_average"], ("overall_average", "average"))
+        self.assertEqual(names["position"], ("position", "annual_position", "tops"))
+        self.assertEqual(
+            names["overall_average"],
+            ("overall_average", "average", "annual_average", "from", "to", "change"),
+        )
 
     def test_a_second_sync_changes_nothing(self):
         self.assertIn("in sync", self.sync("--check"))

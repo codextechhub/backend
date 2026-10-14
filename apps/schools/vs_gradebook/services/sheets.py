@@ -44,6 +44,7 @@ from vs_config.clock import branch_today
 
 from ..constants import (
     CELL_BAD_MARKER,
+    CELL_BLANK,
     CELL_DUPLICATE,
     CELL_MARK_AND_MARKER,
     CELL_NOT_ON_SHEET,
@@ -329,8 +330,22 @@ def check_cells(ctx: SheetContext, cells) -> list:
     Nothing is written here. Every cell is judged, so one refusal lists all of
     the batch's problems at once.
     """
-    roll_ids = {student.pk for student in ctx.students}
-    components = {component.pk: component for component in ctx.components}
+    return check_batch({student.pk for student in ctx.students}, ctx.components, cells)
+
+
+def check_batch(student_ids, components, cells, *, allow_blank: bool = True) -> list:
+    """Judge a batch of cells against the students and components it may name.
+
+    The rule a sheet's save and an amendment's correction share, so a mark is
+    refused in the same words wherever it is typed. *student_ids* are the
+    students the batch may name and *components* the columns, each with ``pk``
+    and ``max_score``. A blank cell (no mark, no marker) is a valid way to clear
+    a cell on a sheet and is refused where *allow_blank* is False, as it is in a
+    correction to a published result, which has a value in every column.
+    Returns ``[(student_id, component_id, mark, marker)]`` or raises
+    :class:`CellsRefused` listing every refused cell.
+    """
+    by_id = {component.pk: component for component in components}
     clean, errors, seen = [], [], set()
 
     for cell in cells:
@@ -347,10 +362,10 @@ def check_cells(ctx: SheetContext, cells) -> list:
             refuse(CELL_DUPLICATE, "This cell appears twice in the same save.")
             continue
         seen.add((student_id, component_id))
-        if student_id not in roll_ids:
+        if student_id not in student_ids:
             refuse(CELL_NOT_ON_SHEET, "This student is not on this sheet.")
             continue
-        component = components.get(component_id)
+        component = by_id.get(component_id)
         if component is None:
             refuse(
                 CELL_UNKNOWN_COMPONENT,
@@ -375,6 +390,12 @@ def check_cells(ctx: SheetContext, cells) -> list:
             if whole > component.max_score:
                 refuse(OverMax.error_code, f"Max {component.max_score}")
                 continue
+        if whole is None and marker is None and not allow_blank:
+            refuse(
+                CELL_BLANK,
+                "A published result has a mark, ABS or Excused in every column. Enter one.",
+            )
+            continue
         clean.append((student_id, component_id, whole, marker))
 
     if errors:

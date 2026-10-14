@@ -18,6 +18,8 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 
 LATEST BASES ON 2026-10-14: MRD v2.106, M01 v1.34, M02 v1.10, M03 v1.23, M04 v1.35, M05 v1.12, M06 v1.9, M07 v1.26, M08 v1.16, M09 v2.18, M10 v1.11, M11 v2.16, M12 v2.20, M13 v2.14, M14 v3.8, M15 v1.0, M16 v1.0, M17 v1.12, M18 v1.17, M19 v1.18, M20 v1.10, M21 v1.9, M22 v1.18, M23 v1.18, M24 v1.8, M25 v1.6, M26 v1.9, M28 v1.2, M30 v1.6, M31 v1.11. Recheck on the day.
 
+M16 Gradebook, build 2 (commit pending, 2026-10-14): REVISE M16 (minor) to mark build 2 implemented: amendments (R44), analytics and exports (R45, B8), bulk upload (B7), the cumulative third-term card (B1) and its promotion line (B5). Source: `docs/gradebook-api-plan.md` section 11 (spec) and section 12 (as built; it overrides 11 where they differ). MUST SAY: an amendment carries the corrected marks, needs a different person to approve it, re-issues only that student's card (a new version, every earlier one kept) and also re-issues the same student's later cumulative card of the session, never a classmate's; a released result's guardian gets "an updated report card is ready" with nothing from the result in it; bulk upload checks every row and saves nothing until the teacher confirms chosen clean rows, refuses a confirm if the sheet changed since the preview, and matches admission numbers only within the uploader's branches; analytics read published results only and name no teacher; the promotion line is read live from Student Management's recorded outcome and the gradebook never decides promotion; a published class's broadsheet reads the issued cards. New keys `gradebook.amendment.create` / `.approve`, `gradebook.sheet.import`, `gradebook.analytics.view` / `.export` (M04). New Field Access switches `gradebook.amendment.amendment_reason`, `decision_note`, `gradebook.result.promotion_line`. Also revise M11 (the cumulative card reads its promotion outcome) and the portals M27/M28 (results to read: released, latest version, cumulative block). MRD: Module 16 capability table gains these; backend state per the evidence; remove whatever Needs Attention items build 2 closes.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
@@ -61,8 +63,8 @@ when the gradebook is built.
 and report-card options now exist as Gradebook setup (M16 build 1, 2026-10-13).
 What is still open is promotion by results (pass or repeat on marks): today
 repeating is a manual override in the promotion run, which reads no results.
-It needs the annual average (M16 build 2's cumulative third-term figures) and
-a product decision on whether the run should propose a repeat.
+The annual average now exists (M16 build 2 puts it on each third-term card);
+what is left is a product decision on whether the run should propose a repeat.
 (b) TEACHER LOAD LIMITS. A maximum number of periods a week per teacher.
 schools/vs_calendar/services/teachers.py rules it out deliberately ("no maximum
 load ... no workload figure carrying a threshold") because nothing records the
@@ -72,9 +74,9 @@ required, and when a suspension releases its class seat
 (schools/vs_students/constants.py, services/status.py). Kept fixed because
 promotion, workflow conditions and the audit trail all read the same state
 machine, so a per-school variant would ripple through all three.
-FIX: (a) once M16 build 2 computes an annual average; (b) and (c) need a
-decision first, not code.
-BLOCKED BY: M16 build 2 for (a), and the decisions for (b) and (c).
+FIX: all three need a decision first, not code; (a) can then read the
+annual average from the third-term card.
+BLOCKED BY: the three decisions.
 
 ### 3. Move staging to the -staging names, and update Paystack's Test webhook (2026-10-08)
 

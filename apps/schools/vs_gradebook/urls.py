@@ -1,5 +1,12 @@
 from django.urls import path
 
+from .views.amendments import (
+    AmendmentApproveView,
+    AmendmentFormView,
+    AmendmentRejectView,
+    AmendmentsView,
+)
+from .views.analytics import AnalyticsExportView, AnalyticsView
 from .views.classes import (
     ApprovalsView,
     BroadsheetView,
@@ -24,7 +31,15 @@ from .views.results import (
     StudentResultsView,
 )
 from .views.settings import SettingsView
-from .views.sheets import SheetRemindView, SheetScoresView, SheetSubmitView, SheetView
+from .views.sheets import (
+    SheetImportConfirmView,
+    SheetImportView,
+    SheetRemindView,
+    SheetScoresView,
+    SheetSubmitView,
+    SheetTemplateView,
+    SheetView,
+)
 from .views.setup import (
     RemarkTemplatesView,
     ScaleActivateView,
@@ -77,6 +92,18 @@ urlpatterns = [
         name="gradebook-sheet-submit",
     ),
     path(
+        "sheets/<int:class_id>/<int:subject_id>/template/", SheetTemplateView.as_view(),
+        name="gradebook-sheet-template",
+    ),
+    path(
+        "sheets/<int:class_id>/<int:subject_id>/import/", SheetImportView.as_view(),
+        name="gradebook-sheet-import",
+    ),
+    path(
+        "sheets/<int:class_id>/<int:subject_id>/import/<slug:token>/confirm/",
+        SheetImportConfirmView.as_view(), name="gradebook-sheet-import-confirm",
+    ),
+    path(
         "sheets/<int:class_id>/<int:subject_id>/approve/", SheetApproveView.as_view(),
         name="gradebook-sheet-approve",
     ),
@@ -114,6 +141,20 @@ urlpatterns = [
     ),
     path("classes/publish/", PublishView.as_view(), name="gradebook-publish"),
     path("approvals/", ApprovalsView.as_view(), name="gradebook-approvals"),
+    path("amendments/", AmendmentsView.as_view(), name="gradebook-amendments"),
+    path("amendments/form/", AmendmentFormView.as_view(), name="gradebook-amendment-form"),
+    path(
+        "amendments/<int:pk>/approve/", AmendmentApproveView.as_view(),
+        name="gradebook-amendment-approve",
+    ),
+    path(
+        "amendments/<int:pk>/reject/", AmendmentRejectView.as_view(),
+        name="gradebook-amendment-reject",
+    ),
+    path("analytics/", AnalyticsView.as_view(), name="gradebook-analytics"),
+    path(
+        "analytics/export/", AnalyticsExportView.as_view(), name="gradebook-analytics-export",
+    ),
     path("holds/", HoldsView.as_view(), name="gradebook-holds"),
     path("holds/<int:hold_id>/lift/", HoldLiftView.as_view(), name="gradebook-hold-lift"),
     path("release/<int:class_id>/", ReleaseListView.as_view(), name="gradebook-release"),

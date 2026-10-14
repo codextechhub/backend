@@ -33,7 +33,9 @@ statistics, averages and positions are worked out from the scores
 later change to a scale or a sheet cannot alter a published result.
 
 **History is not deleted.** A retired structure or scale stays because
-published results refer to it. A hold is lifted, not removed.
+published results refer to it. A hold is lifted, not removed. A published result
+changes only through an :class:`Amendment`, and every snapshot ever issued stays
+in :class:`ResultVersion`.
 """
 from __future__ import annotations
 
@@ -49,6 +51,7 @@ from .constants import (
     COMPONENT_MAX_SCORE_MIN,
     BAND_MIN_SCORE_MAX,
     BAND_MIN_SCORE_MIN,
+    AmendmentStatus,
     EmailState,
     Marker,
     SetupStatus,
@@ -388,6 +391,11 @@ class Score(_Owned):
     )
     entered_by = _user_fk()
     entered_at = models.DateTimeField(default=timezone.now)
+    #: Who asked for the correction that last changed this cell after the
+    #: result was published, and when it was approved. ``entered_by`` and
+    #: ``entered_at`` keep naming the teacher's original entry.
+    amended_by = _user_fk()
+    amended_at = models.DateTimeField(null=True, blank=True)
 
     class Meta(_Owned.Meta):
         constraints = [
@@ -407,6 +415,59 @@ class Score(_Owned):
 
     def __str__(self):
         return f"{self.student_id}: {self.marker or self.mark}"
+
+
+class ScoreImport(_Owned):
+    """A spreadsheet of scores that has been checked and is waiting to be confirmed.
+
+    Short-lived by design: it lives for a day (``expires_at``), is used once
+    (``confirmed_at``) and holds nothing the sheet does not. It is tied to the
+    user who uploaded it, to the sheet it was checked against and to the
+    structure that sheet had, so another teacher, another sheet or another set
+    of columns cannot confirm it.
+
+    ``fingerprint`` is a digest of every stored cell of the sheet at the time of
+    the check. A confirm that finds the sheet's cells digest differently refuses,
+    so a confirm never writes over marks entered after the preview.
+
+    ``rows`` is the checked file, row by row: the preview as the caller was
+    shown it, plus the cells each clean row would write. It is read back only by
+    the confirm, which renders nothing from it but the sheet itself.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE, related_name="gradebook_score_imports",
+    )
+    token = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+",
+    )
+    school_class = models.ForeignKey(
+        "vs_academics.SchoolClass", on_delete=models.CASCADE, related_name="+",
+    )
+    subject = models.ForeignKey(
+        "vs_academics.Subject", on_delete=models.CASCADE, related_name="+",
+    )
+    term = models.ForeignKey(
+        "vs_academics.AcademicTerm", on_delete=models.CASCADE, related_name="+",
+    )
+    structure = models.ForeignKey(
+        AssessmentStructure, on_delete=models.CASCADE, related_name="+",
+    )
+    fingerprint = models.CharField(max_length=64)
+    file_name = models.CharField(max_length=255, blank=True, default="")
+    rows = models.JSONField(default=list)
+    expires_at = models.DateTimeField()
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta(_Owned.Meta):
+        indexes = [
+            models.Index(fields=["expires_at"]),
+            models.Index(fields=["tenant", "user"]),
+        ]
+
+    def __str__(self):
+        return f"{self.school_class_id} / {self.subject_id} / {self.term_id}"
 
 
 # ── Results ────────────────────────────────────────────────────────────────
@@ -453,6 +514,101 @@ class StudentTermResult(_Owned):
 
     def __str__(self):
         return f"{self.student_id} / {self.class_term_id}"
+
+
+class ResultVersion(_Owned):
+    """One snapshot ever issued for a student's result, kept for good.
+
+    Publication writes version 1 for every student; an approved amendment writes
+    the next. The current snapshot is also on :class:`StudentTermResult`, so a
+    report card reads one row, while this table is the history: an earlier
+    version is never overwritten or deleted. ``amendment`` names the correction
+    that produced the version and is null for the first publication. One
+    correction produces one version of the amended student's own result and one
+    of each later term's cumulative result of the same school year, so an
+    amendment has at most one version for each result.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="gradebook_result_versions",
+    )
+    result = models.ForeignKey(
+        StudentTermResult, on_delete=models.PROTECT, related_name="versions",
+    )
+    version = models.PositiveSmallIntegerField()
+    snapshot = models.JSONField()
+    amendment = models.ForeignKey(
+        "Amendment", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="result_versions",
+    )
+
+    class Meta(_Owned.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["result", "version"], name="uq_gradebook_result_version",
+            ),
+            models.UniqueConstraint(
+                fields=["amendment", "result"], name="uq_gradebook_result_version_amendment",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "result"])]
+        ordering = ["result_id", "version"]
+
+    def __str__(self):
+        return f"{self.result_id} v{self.version}"
+
+
+class Amendment(_Owned):
+    """A correction to one subject of a student's published result.
+
+    ``before`` and ``after`` are the subject's cells as a list of
+    ``{"component", "mark", "marker"}`` in component order: ``before`` as it was
+    published and ``after`` as the correction would leave it. They are kept as
+    typed, not derived, so a decided amendment still reads the same years later.
+    One amendment waits at a time for each student, subject and term, which the
+    database holds as a partial unique constraint over PENDING rows.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="gradebook_amendments",
+    )
+    class_term = models.ForeignKey(
+        ClassTerm, on_delete=models.PROTECT, related_name="amendments",
+    )
+    student = models.ForeignKey(
+        "vs_students.Student", on_delete=models.PROTECT, related_name="gradebook_amendments",
+    )
+    subject = models.ForeignKey(
+        "vs_academics.Subject", on_delete=models.PROTECT, related_name="gradebook_amendments",
+    )
+    reason = models.TextField()
+    before = models.JSONField(default=list)
+    after = models.JSONField(default=list)
+    status = models.CharField(
+        max_length=10, choices=AmendmentStatus.choices, default=AmendmentStatus.PENDING,
+    )
+    raised_by = _user_fk()
+    raised_at = models.DateTimeField(default=timezone.now)
+    decided_by = _user_fk()
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.TextField(blank=True, default="")
+
+    class Meta(_Owned.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["class_term", "student", "subject"],
+                condition=Q(status=AmendmentStatus.PENDING),
+                name="uq_gradebook_amendment_pending",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "status", "raised_at"]),
+            models.Index(fields=["class_term", "student"]),
+            models.Index(fields=["tenant", "student"]),
+        ]
+
+    def __str__(self):
+        return f"{self.student_id} / {self.subject_id} ({self.status})"
 
 
 class PrincipalComment(_Owned):

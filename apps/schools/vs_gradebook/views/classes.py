@@ -73,9 +73,13 @@ class BroadsheetView(_ClassView):
     (two places), the position and the roll size where the school ranks (the
     keys are absent where it does not) and whether the class teacher's comment is
     written. ``gaps`` names each subject not in with its teacher,
-    ``attendance_warning`` says how many school days had no register, and
+    ``attendance_warning`` says how many school days had no register (null
+    once the class is published, when nothing is left to warn about), and
     ``can_submit`` and ``submit_blockers`` say whether the class teacher can send
-    the class to the principal and what stops them. The class teacher reads their
+    the class to the principal and what stops them. Once the class is published
+    every row is read from the student's latest snapshot (so it agrees with their
+    report card after a correction); before that it is worked out from the
+    sheets. The class teacher reads their
     own class; a holder of ``gradebook.hub.view`` or ``gradebook.class.publish``
     reads every class in their branches.
 

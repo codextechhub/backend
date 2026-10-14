@@ -2,10 +2,12 @@
 
 Every serializer that carries a registered field has the Field Access mixin for
 the resource it belongs to, so a field a role may not read is absent from what
-it is sent and a field it may not write is refused. Four resources are in play
+it is sent and a field it may not write is refused. Five resources are in play
 (:mod:`.field_access`): ``gradebook.setup`` for assessment setup,
 ``gradebook.sheet`` for the score sheet, ``gradebook.result`` for a student's
-compiled result and its release, and ``gradebook.hold`` for fee holds.
+compiled result and its release, ``gradebook.hold`` for fee holds and
+``gradebook.amendment`` for the reason and decision note of a correction to a
+published result.
 
 They are plain serializers over the dictionaries the services build, not over
 models, because these are documents assembled from sheets, rosters and settings
@@ -34,7 +36,10 @@ from schools.vs_students.serializers import GuardianSerializer
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
 from .constants import (
+    AMENDMENT_FIELD_RESOURCE,
+    AMENDMENT_REASON_MAX,
     CARD_GOVERNED_BY,
+    DECISION_NOTE_MAX,
     BAND_GRADE_MAX,
     BAND_MIN_SCORE_MAX,
     BAND_MIN_SCORE_MIN,
@@ -49,9 +54,12 @@ from .constants import (
     ATTENDANCE_COUNTS_FIELD,
     ATTENDANCE_STATUS_FIELD,
     HOLD_FIELD_RESOURCE,
+    OVERALL_AVERAGE_FIELD,
+    POSITION_FIELD,
     RATINGS_FIELD,
     HOLD_NOTE_MAX,
     HOLD_REASON_MAX,
+    IMPORT_MAX_ROWS,
     PRINCIPAL_COMMENT_MAX,
     PUBLISH_CLASSES_MAX,
     REMARK_TEMPLATES_FIELD,
@@ -517,6 +525,93 @@ class SubmitResultSerializer(serializers.Serializer):
     sheet = SheetSerializer(read_only=True)
 
 
+class SheetImportIssueSerializer(serializers.Serializer):
+    """A problem found in an uploaded file or one of its rows.
+
+    ``component`` names the column the problem is in, and is absent for a
+    problem of the row or of the file as a whole.
+    """
+
+    code = serializers.CharField(read_only=True)
+    message = serializers.CharField(read_only=True)
+    component = serializers.IntegerField(read_only=True)
+
+
+class SheetImportCellSerializer(FieldAccessMixin, serializers.Serializer):
+    """What one uploaded cell would do: the value in the file, the value on the sheet and the verdict.
+
+    ``value`` and ``existing`` are a whole mark, ``ABS`` or ``EXC``, or null for
+    an empty cell, and ``value`` is the text as typed when it could not be read.
+    ``outcome`` is NEW, SAME, REPLACES or BLANK, and null where the cell has an
+    issue. All three state a mark, so they follow the mark switch.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    component = serializers.IntegerField(read_only=True)
+    value = serializers.JSONField(read_only=True, allow_null=True)
+    outcome = serializers.CharField(read_only=True, allow_null=True)
+    existing = serializers.JSONField(read_only=True, allow_null=True)
+
+
+class SheetImportRowSerializer(FieldAccessMixin, serializers.Serializer):
+    """One row of an uploaded file: the student it named, its cells and its issues.
+
+    ``row_number`` is the row in the spreadsheet. ``student`` is null when the
+    admission number named nobody the caller can see.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    row_number = serializers.IntegerField(read_only=True)
+    admission_number = serializers.CharField(read_only=True, allow_blank=True)
+    student = RefSerializer(read_only=True, allow_null=True)
+    cells = SheetImportCellSerializer(many=True, read_only=True)
+    issues = SheetImportIssueSerializer(many=True, read_only=True)
+
+
+class SheetImportSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """How an uploaded file checked out: rows read, rows ready, rows with an issue, scores that would be replaced."""
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    rows = serializers.IntegerField(read_only=True)
+    ready = serializers.IntegerField(read_only=True)
+    with_issues = serializers.IntegerField(read_only=True)
+    replaces = serializers.IntegerField(read_only=True)
+
+
+class SheetImportPreviewSerializer(FieldAccessMixin, serializers.Serializer):
+    """The checked upload: a token to confirm it with, when it lapses, the summary and every row.
+
+    A file whose headings do not fit the sheet has ``file_issues``, no token
+    and no rows.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    token = serializers.CharField(read_only=True, allow_null=True)
+    expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    summary = SheetImportSummarySerializer(read_only=True)
+    file_issues = SheetImportIssueSerializer(many=True, read_only=True)
+    rows = SheetImportRowSerializer(many=True, read_only=True)
+
+
+class SheetImportFileSerializer(serializers.Serializer):
+    """The body of an upload: the file."""
+
+    file = serializers.FileField(allow_empty_file=False)
+
+
+class SheetImportConfirmSerializer(serializers.Serializer):
+    """The body of a confirm: the numbers of the rows to save."""
+
+    rows = serializers.ListField(
+        child=serializers.IntegerField(min_value=1, max_value=2**31),
+        allow_empty=True, max_length=IMPORT_MAX_ROWS,
+    )
+
+
 class CellWriteSerializer(FieldAccessMixin, serializers.Serializer):
     """One cell in the body of a batch save: a mark, or ABS or EXC, or neither (blank).
 
@@ -845,6 +940,51 @@ class CardRatingSerializer(serializers.Serializer):
     value = serializers.IntegerField(read_only=True)
 
 
+class CumulativeSubjectSerializer(FieldAccessMixin, serializers.Serializer):
+    """One subject of the year block: its total in each term and its annual average.
+
+    ``totals`` has one entry for each of the block's terms in order, an empty
+    string where the term has none, and follows the sheet's figures switch (the
+    sheet's ``totals`` name). ``annual_average`` is the mean of the term
+    percentages and follows the overall average switch.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    name = serializers.CharField(read_only=True)
+    totals = serializers.ListField(
+        child=serializers.CharField(allow_blank=True), read_only=True,
+    )
+    annual_average = serializers.CharField(read_only=True, allow_null=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"), OVERALL_AVERAGE_FIELD):
+            data.pop("annual_average", None)
+        return data
+
+
+class CumulativeSerializer(FieldAccessMixin, serializers.Serializer):
+    """The school year on the last term's card and Results-tab entry.
+
+    ``terms`` are the term names in order, ``subjects`` carry a total for each,
+    and ``annual_average`` is the overall figure, which follows the overall
+    average switch as the subjects' annual averages do. ``annual_position``
+    ("7th of 32") exists only where the school ranked and follows the position
+    switch, so a hidden position removes its line. ``promotion_line`` ("Promoted
+    to JSS2", "To repeat JSS1", "Graduated") is read live from Student
+    Management and exists only when an outcome is recorded.
+    """
+
+    field_resource = RESULT_FIELD_RESOURCE
+
+    terms = serializers.ListField(child=serializers.CharField(), read_only=True)
+    subjects = CumulativeSubjectSerializer(many=True, read_only=True)
+    annual_average = serializers.CharField(read_only=True, allow_null=True)
+    annual_position = serializers.CharField(read_only=True, required=False)
+    promotion_line = serializers.CharField(read_only=True, required=False)
+
+
 class ReportCardSerializer(FieldAccessMixin, serializers.Serializer):
     """A student's report card, every figure from the snapshot published with it.
 
@@ -857,6 +997,8 @@ class ReportCardSerializer(FieldAccessMixin, serializers.Serializer):
     when it was on; the key goes with the ratings. A comment and the name that signs it are one switch.
     ``next_term_line`` exists only when the school has a next term, and
     ``held`` is true for a student whose result is withheld from the family.
+    ``cumulative`` exists only on the last term of a school year with more than
+    one term (:class:`CumulativeSerializer`).
     """
 
     field_resource = RESULT_FIELD_RESOURCE
@@ -875,6 +1017,7 @@ class ReportCardSerializer(FieldAccessMixin, serializers.Serializer):
     principal_comment = serializers.CharField(read_only=True, allow_null=True)
     principal_name = serializers.CharField(read_only=True, allow_null=True)
     grading_key = serializers.CharField(read_only=True)
+    cumulative = CumulativeSerializer(read_only=True, required=False)
     next_term_line = serializers.CharField(read_only=True, required=False)
     version = serializers.IntegerField(read_only=True)
     held = serializers.BooleanField(read_only=True)
@@ -934,8 +1077,10 @@ class ResultTermSerializer(_AbsentStaysAbsent, FieldAccessMixin, serializers.Ser
 
     A published term carries ``overall_average``, ``position`` ("3rd of 24",
     only when that term ranked), ``released_at`` (null while unreleased),
-    ``release_label``, ``subjects`` and ``class_id``. An unpublished one carries
-    ``message`` instead.
+    ``release_label``, ``version`` (1 until a correction is approved),
+    ``subjects`` and ``class_id``. The last term of a school year with more than
+    one term also carries ``cumulative`` (:class:`CumulativeSerializer`). An
+    unpublished one carries ``message`` instead.
     """
 
     field_resource = RESULT_FIELD_RESOURCE
@@ -949,16 +1094,44 @@ class ResultTermSerializer(_AbsentStaysAbsent, FieldAccessMixin, serializers.Ser
     position = serializers.CharField(read_only=True, required=False)
     released_at = serializers.DateTimeField(read_only=True, allow_null=True, required=False)
     release_label = serializers.CharField(read_only=True, required=False)
+    version = serializers.IntegerField(read_only=True, required=False)
     subjects = ResultSubjectSerializer(many=True, read_only=True, required=False)
+    cumulative = CumulativeSerializer(read_only=True, required=False)
     class_id = serializers.IntegerField(read_only=True, required=False)
 
 
+class AmendmentHistorySerializer(FieldAccessMixin, serializers.Serializer):
+    """An amendment as one entry of a student's history: what was corrected, by whom and how it was decided.
+
+    ``decided_by`` and ``decided_at`` are null while the amendment waits, and
+    ``version`` is the report card version an approval produced, null until
+    then. The reason and the decision note follow the amendment switches and are
+    absent for a caller who may not read them.
+    """
+
+    field_resource = AMENDMENT_FIELD_RESOURCE
+
+    id = serializers.IntegerField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    subject = RefSerializer(read_only=True)
+    term = RefSerializer(read_only=True)
+    amendment_reason = serializers.CharField(read_only=True, allow_blank=True)
+    raised_by = serializers.CharField(read_only=True, allow_null=True)
+    raised_at = serializers.DateTimeField(read_only=True)
+    decided_by = serializers.CharField(read_only=True, allow_null=True)
+    decided_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    decision_note = serializers.CharField(read_only=True, allow_blank=True)
+    version = serializers.IntegerField(read_only=True, allow_null=True)
+
+
 class ResultHistorySerializer(FieldAccessMixin, serializers.Serializer):
-    """One hold placed or lifted.
+    """One hold placed or lifted, or one amendment.
 
     ``text`` names the event ("Result held for First Term"). A placed hold
     carries its ``reason`` and a lifted one its ``lift_note``; both follow the
-    hold's reason switch and are absent for a caller who may not read it.
+    hold's reason switch and are absent for a caller who may not read it. An
+    ``AMENDMENT`` entry carries its details in ``amendment`` and none of the
+    hold's fields; a hold entry has no ``amendment``.
     """
 
     field_resource = HOLD_FIELD_RESOURCE
@@ -967,6 +1140,7 @@ class ResultHistorySerializer(FieldAccessMixin, serializers.Serializer):
     text = serializers.CharField(read_only=True)
     reason = serializers.CharField(read_only=True, allow_blank=True, required=False)
     lift_note = serializers.CharField(read_only=True, allow_blank=True, required=False)
+    amendment = AmendmentHistorySerializer(read_only=True, required=False)
     by = serializers.CharField(read_only=True, allow_null=True)
     at = serializers.DateTimeField(read_only=True)
 
@@ -1066,8 +1240,8 @@ class SubmitBlockersSerializer(serializers.Serializer):
 class BroadsheetSerializer(_WithClass, serializers.Serializer):
     """The broadsheet of a class for a term.
 
-    ``attendance_warning`` is null when no school day is without a register, and
-    is left out for a caller who may not read the register's status.
+    ``attendance_warning`` is null when no school day is without a register or
+    the class is published, and is left out for a caller who may not read the register's status.
     """
 
     term = RefSerializer(read_only=True)
@@ -1363,3 +1537,305 @@ class HoldLiftResultSerializer(serializers.Serializer):
     hold = HoldLiftedSerializer(read_only=True)
     released = serializers.BooleanField(read_only=True)
     row = HoldRowSerializer(read_only=True)
+
+
+# ── Amendments ─────────────────────────────────────────────────────────────
+
+
+class PendingAmendmentSerializer(serializers.Serializer):
+    """The correction already waiting for a student's subject, so the drawer can say so."""
+
+    id = serializers.IntegerField(read_only=True)
+    raised_at = serializers.DateTimeField(read_only=True)
+
+
+class AmendmentLineSerializer(FieldAccessMixin, serializers.Serializer):
+    """A subject's cells and what is worked out from them, before or after a correction.
+
+    The cells follow the mark switch and the figures the row-result switch, as
+    on the sheet, and the grade and remark are those of the grading key the
+    result was published with.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    cells = SheetCellSerializer(many=True, read_only=True)
+    total = serializers.IntegerField(read_only=True, allow_null=True)
+    obtainable = serializers.IntegerField(read_only=True, allow_null=True)
+    percentage = serializers.DecimalField(
+        max_digits=6, decimal_places=2, read_only=True, allow_null=True,
+    )
+    grade = serializers.CharField(read_only=True, allow_null=True)
+    remark = serializers.CharField(read_only=True, allow_null=True)
+    is_fail = serializers.BooleanField(read_only=True, allow_null=True)
+
+
+class AmendmentFormSerializer(_WithClass, FieldAccessMixin, serializers.Serializer):
+    """What the amendment drawer shows: the columns and the subject's marks as published.
+
+    The marks follow the mark switch and the worked-out figures the row-result
+    switch, as on the sheet. ``pending`` is the correction already waiting for
+    this student's subject, or null; while one waits another cannot be raised.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    student = StudentRefSerializer(read_only=True)
+    subject = RefSerializer(read_only=True)
+    term = RefSerializer(read_only=True)
+    version = serializers.IntegerField(read_only=True)
+    components = ComponentColumnSerializer(many=True, read_only=True)
+    cells = SheetCellSerializer(many=True, read_only=True)
+    total = serializers.IntegerField(read_only=True, allow_null=True)
+    obtainable = serializers.IntegerField(read_only=True, allow_null=True)
+    percentage = serializers.DecimalField(
+        max_digits=6, decimal_places=2, read_only=True, allow_null=True,
+    )
+    grade = serializers.CharField(read_only=True, allow_null=True)
+    remark = serializers.CharField(read_only=True, allow_null=True)
+    is_fail = serializers.BooleanField(read_only=True, allow_null=True)
+    pending = PendingAmendmentSerializer(read_only=True, allow_null=True)
+
+
+class AmendmentRowSerializer(_WithClass, FieldAccessMixin, serializers.Serializer):
+    """A correction to a published result: who, what, why, and how it was decided.
+
+    ``before`` and ``after`` are the subject's cells with the line worked out
+    from them. ``version`` is the report card version an approval produced and is
+    null until then. ``branch`` is null at a school with one branch. The reason
+    and the decision note follow the amendment switches.
+    """
+
+    field_resource = AMENDMENT_FIELD_RESOURCE
+
+    id = serializers.IntegerField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    student = StudentRefSerializer(read_only=True)
+    term = RefSerializer(read_only=True)
+    subject = RefSerializer(read_only=True)
+    branch = RefSerializer(read_only=True, allow_null=True)
+    amendment_reason = serializers.CharField(read_only=True, allow_blank=True)
+    raised_by = serializers.CharField(read_only=True, allow_null=True)
+    raised_at = serializers.DateTimeField(read_only=True)
+    decided_by = serializers.CharField(read_only=True, allow_null=True)
+    decided_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    decision_note = serializers.CharField(read_only=True, allow_blank=True)
+    version = serializers.IntegerField(read_only=True, allow_null=True)
+    before = AmendmentLineSerializer(read_only=True)
+    after = AmendmentLineSerializer(read_only=True)
+
+
+class AmendmentCellWriteSerializer(FieldAccessMixin, serializers.Serializer):
+    """One corrected cell: a column, and a mark or ABS or EXC. The student is the amendment's own.
+
+    ``mark`` is taken as sent, not coerced, because the service decides what a
+    whole mark is and says which cell it refused.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    component = serializers.IntegerField()
+    mark = serializers.JSONField(required=False, allow_null=True)
+    marker = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+
+class AmendmentCellsBodySerializer(FieldAccessMixin, serializers.Serializer):
+    """The corrected cells of a request to amend: the columns being changed.
+
+    Read apart from the rest of the body because the cells are the sheet's
+    marks and are governed by the mark switch, while the reason is the
+    amendment's.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    cells = AmendmentCellWriteSerializer(many=True, allow_empty=False, max_length=COMPONENTS_MAX)
+
+
+class _WithClassId:
+    """Adds the ``class`` entry a request body carries, which cannot be declared as an attribute."""
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields["class"] = serializers.IntegerField(min_value=1, max_value=2**62)
+        return fields
+
+
+class _Aliased:
+    """Accepts a body key under the name the screens send it by, for the registered field it is.
+
+    The reason is sent as ``reason`` and the decision note as ``note``, and are
+    held as ``amendment_reason`` and ``decision_note``, the names the Field
+    Access registry knows them by, so the body is read under the registered
+    name. A body that carries both names keeps the registered one.
+    """
+
+    aliases: dict = {}
+
+    def to_internal_value(self, data):
+        if isinstance(data, Mapping):
+            for sent, registered in self.aliases.items():
+                if sent in data and registered not in data:
+                    data = {**data, registered: data[sent]}
+        return super().to_internal_value(data)
+
+
+class AmendmentRaiseBodySerializer(_Aliased, _WithClassId, FieldAccessMixin, serializers.Serializer):
+    """The identifying part of a request to amend: the term, class, student, subject and reason.
+
+    The reason is required, which the service enforces so a missing and a blank
+    one are the same refusal. The corrected cells travel in the same body and are
+    read by :class:`AmendmentCellsBodySerializer`.
+    """
+
+    field_resource = AMENDMENT_FIELD_RESOURCE
+    aliases = {"reason": "amendment_reason"}
+
+    term = serializers.IntegerField(min_value=1, max_value=2**62)
+    student = serializers.IntegerField(min_value=1, max_value=2**62)
+    subject = serializers.IntegerField(min_value=1, max_value=2**62)
+    amendment_reason = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default="",
+        max_length=AMENDMENT_REASON_MAX,
+    )
+
+
+class AmendmentDecisionBodySerializer(_Aliased, FieldAccessMixin, serializers.Serializer):
+    """The body of an approval or a rejection: the note, required to reject and optional to approve."""
+
+    field_resource = AMENDMENT_FIELD_RESOURCE
+    aliases = {"note": "decision_note"}
+
+    decision_note = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default="",
+        max_length=DECISION_NOTE_MAX,
+    )
+
+
+# ── Performance analytics ──────────────────────────────────────────────────
+
+
+class AnalyticsSpreadSerializer(serializers.Serializer):
+    """The number of students on one grade of a class's scale."""
+
+    grade = serializers.CharField(read_only=True)
+    count = serializers.IntegerField(read_only=True)
+
+
+class AnalyticsSubjectSerializer(_WithClass, FieldAccessMixin, serializers.Serializer):
+    """One subject in one published class: its average, grade spread, pass rate and how many were marked.
+
+    The average, the spread and the pass rate are the class figures of the sheet
+    and follow its class-figures switch (``average``, ``spread`` and ``pass_rate``
+    are names of that switch). ``marked`` counts students and has no switch.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    subject = RefSerializer(read_only=True)
+    average = serializers.CharField(read_only=True, allow_null=True)
+    spread = AnalyticsSpreadSerializer(many=True, read_only=True)
+    pass_rate = serializers.IntegerField(read_only=True, allow_null=True)
+    marked = serializers.IntegerField(read_only=True)
+
+
+class AnalyticsArmSerializer(_WithClass, FieldAccessMixin, serializers.Serializer):
+    """One class that offers a compared subject, with its average (the class-figures switch)."""
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    average = serializers.CharField(read_only=True)
+
+
+class AnalyticsCompareSerializer(FieldAccessMixin, serializers.Serializer):
+    """A subject offered by two or more published classes, and the gap between highest and lowest average.
+
+    The gap is a difference of class averages and follows the class-figures switch.
+    """
+
+    field_resource = SHEET_FIELD_RESOURCE
+
+    subject = RefSerializer(read_only=True)
+    arms = AnalyticsArmSerializer(many=True, read_only=True)
+    gap = serializers.CharField(read_only=True)
+
+
+class _WithFromTo:
+    """Adds the ``from`` and ``to`` entries a mover carries, which cannot be declared as attributes."""
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields["from"] = serializers.CharField(read_only=True)
+        fields["to"] = serializers.CharField(read_only=True)
+        return fields
+
+
+class AnalyticsMoverSerializer(_WithClass, _WithFromTo, FieldAccessMixin, serializers.Serializer):
+    """A student's overall average this term against their last earlier published term.
+
+    ``from``, ``to`` and the signed ``change`` are overall averages and follow
+    the overall average switch; the student, the class and the term compared
+    with are names and stay.
+    """
+
+    field_resource = RESULT_FIELD_RESOURCE
+
+    student = StudentRefSerializer(read_only=True)
+    from_term = RefSerializer(read_only=True)
+    change = serializers.CharField(read_only=True)
+
+
+class AnalyticsTopSerializer(_WithClass, FieldAccessMixin, serializers.Serializer):
+    """The highest overall average of a class and every student on it."""
+
+    field_resource = RESULT_FIELD_RESOURCE
+
+    students = RefSerializer(many=True, read_only=True)
+    average = serializers.CharField(read_only=True)
+
+
+class AnalyticsScopeClassSerializer(serializers.Serializer):
+    """A published class in scope; ``branch`` is null at a school with one branch."""
+
+    id = serializers.IntegerField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    branch = RefSerializer(read_only=True, allow_null=True)
+
+
+class AnalyticsScopeSerializer(serializers.Serializer):
+    branch_dimension = serializers.BooleanField(read_only=True)
+    classes = AnalyticsScopeClassSerializer(many=True, read_only=True)
+    published_count = serializers.IntegerField(read_only=True)
+
+
+class AnalyticsSerializer(FieldAccessMixin, serializers.Serializer):
+    """Performance analytics for a term, from published results only.
+
+    ``tops`` states who leads each class by overall average and by position, so
+    it is sent only to a caller who may read **both** switches: the stricter
+    wins, and a role that may not read positions or averages is sent no
+    ``tops`` at all. A role that may not read overall averages is also sent the
+    movers by name, because their order is an order of averages.
+    """
+
+    field_resource = RESULT_FIELD_RESOURCE
+
+    term = HubTermSerializer(read_only=True)
+    scope = AnalyticsScopeSerializer(read_only=True)
+    ranks = serializers.BooleanField(read_only=True)
+    subjects = AnalyticsSubjectSerializer(many=True, read_only=True)
+    compare = AnalyticsCompareSerializer(many=True, read_only=True)
+    movers = AnalyticsMoverSerializer(many=True, read_only=True)
+    tops = AnalyticsTopSerializer(many=True, read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if not can_read(request, OVERALL_AVERAGE_FIELD) or not can_read(request, POSITION_FIELD):
+            data.pop("tops", None)
+        if not can_read(request, OVERALL_AVERAGE_FIELD) and "movers" in data:
+            data["movers"] = sorted(
+                data["movers"],
+                key=lambda row: (row["student"]["name"].casefold(), row["student"]["id"]),
+            )
+        return data

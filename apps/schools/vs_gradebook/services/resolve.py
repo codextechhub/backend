@@ -57,6 +57,22 @@ def class_branch(tenant, school_class):
     return Branch.all_objects.get(pk=only) if only is not None else None
 
 
+def contact_phone(tenant, branch) -> str:
+    """The number a family should call about a class's report cards; ``""`` when none is held.
+
+    The class's branch phone when the branch has one, otherwise the school's own.
+    The printed card and the email to the family go to an outside party, so this
+    deliberately reads both numbers directly and is not narrowed by the school's
+    Field Access switches on the branch or the school record (those govern what
+    staff see in the app, not what the school says to a parent).
+    """
+    own = (getattr(branch, "phone", "") or "").strip()
+    if own:
+        return own
+    school = getattr(tenant, "school_profile", None)
+    return (getattr(school, "phone", "") or "").strip()
+
+
 def school_today(tenant, school_class) -> dt.date:
     """Today at the class's branch, or at the school where the class has none."""
     branch = class_branch(tenant, school_class)

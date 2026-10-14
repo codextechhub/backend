@@ -5,7 +5,7 @@ student's figures, comments, names and grading key on
 ``StudentTermResult.snapshot``; this module turns that document into the lines a
 card prints. A scale, a sheet, a remark template or a setting changed after
 publication changes nothing here. Only the letterhead is read live, because the
-school's name, logo, phone and the branch's address are the school's present
+school's name and logo and the branch's address and phone are the school's present
 identity and not part of a result.
 
 **The lines.** ``facts``, ``totals`` and ``attendance`` are lists of
@@ -16,6 +16,12 @@ caller may read the figure it states (:data:`..constants.CARD_GOVERNED_BY`); the
 the line when that switch is closed and removes the marker, because a line such
 as "Position in class" built from a hidden position would state the position
 the switch withholds.
+
+**The year block.** The last term of a school year with more than one term has a
+``cumulative`` block in its snapshot (:mod:`.cumulative`), and its card gains
+the year's term totals, annual averages and annual position, and the promotion
+line Student Management has recorded (:mod:`.promotion_line`), read live because
+the decision is made after the card is issued.
 
 **What is optional.** The position line exists only when the snapshot has a
 position, which is only when the school ranked. Class figures exist only when the
@@ -53,7 +59,7 @@ from ..constants import (
 )
 from ..exceptions import NotPublished
 from ..models import ClassTerm, ResultHold, StudentTermResult
-from . import book
+from . import book, promotion_line, resolve
 from .classbook import ClassContext
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -110,9 +116,12 @@ def grading_key_line(key) -> str:
 def letterhead(tenant, branch, user=None) -> dict:
     """The school's present identity for the top of a card.
 
-    The school's name and phone come from its record, the logo from its branding
-    as a URL signed for the reader, and the address from the class's branch,
-    falling back to the school's own. The branch is named only at a school with
+    The school's name comes from its record, the logo from its branding as a URL
+    signed for the reader, and the address and phone from the class's branch,
+    each falling back to the school's own (the phone line is left off when
+    neither has one), so a family calls the branch that holds the card. The
+    letterhead is a document for an outside party and is deliberately not
+    narrowed by the school's Field Access switches on branch contact details. The branch is named only at a school with
     several, where it says which site the card comes from; at a school with one
     it would repeat the school.
     """
@@ -131,7 +140,7 @@ def letterhead(tenant, branch, user=None) -> dict:
         "logo_url": logo,
         "branch_name": branch.name if several and branch is not None else None,
         "branch_address": address or None,
-        "phone": (getattr(school, "phone", "") or None) if school is not None else None,
+        "phone": resolve.contact_phone(tenant, branch) or None,
     }
 
 
@@ -157,10 +166,43 @@ def _subject_row(subject, show_stats) -> dict:
     return row
 
 
-def card(snapshot, *, letterhead_block, held, version) -> dict:
+def cumulative_lines(block, promotion=None) -> dict:
+    """The year block of a cumulative snapshot as a card and the Results tab print it.
+
+    ``terms`` are the term names in order. Each of ``subjects`` has its ``name``,
+    ``totals`` (one per term in the same order, ``""`` where the term has none)
+    and ``annual_average``. ``annual_average`` is the overall figure; the
+    ``annual_position`` line ("7th of 32") exists only where the snapshot ranked
+    and the pupil has a position, and ``promotion_line`` only when Student
+    Management has recorded an outcome. Averages are two-place figures without a
+    percent sign, as the Results tab's overall average is.
+    """
+    out = {
+        "terms": [each["name"] for each in block["terms"]],
+        "subjects": [
+            {
+                "name": row["subject"]["name"],
+                "totals": ["" if each["total"] is None else str(each["total"]) for each in row["terms"]],
+                "annual_average": row["annual_average"],
+            }
+            for row in block["subjects"]
+        ],
+        "annual_average": block["overall"]["annual_average"],
+    }
+    if block.get("annual_position") is not None:
+        out["annual_position"] = position_label(
+            block["annual_position"], block.get("annual_position_of"),
+        )
+    if promotion:
+        out["promotion_line"] = promotion
+    return out
+
+
+def card(snapshot, *, letterhead_block, held, version, promotion=None) -> dict:
     """The report card for *snapshot*, before Field Access is applied.
 
-    Pure: nothing is read but the snapshot and the letterhead handed in.
+    Pure: nothing is read but the snapshot, the letterhead and, for a cumulative
+    term, the promotion line handed in.
     """
     options = snapshot.get("options") or {}
     show_stats = bool(options.get("show_class_stats"))
@@ -219,6 +261,8 @@ def card(snapshot, *, letterhead_block, held, version) -> dict:
         ]
         if options.get("rating_key"):
             body["rating_key"] = RATING_KEY_TEXT
+    if snapshot.get("cumulative"):
+        body["cumulative"] = cumulative_lines(snapshot["cumulative"], promotion)
     if snapshot.get("next_term_begins"):
         body["next_term_line"] = "Next term begins " + day_label(
             dt.date.fromisoformat(snapshot["next_term_begins"]),
@@ -255,6 +299,18 @@ def _is_held(result) -> bool:
     return result.released_at is None
 
 
+def promotion_lines_for(tenant, session_id, results) -> dict:
+    """``{student_id: promotion line}`` for those of *results* whose snapshot is cumulative.
+
+    Read live from Student Management (:mod:`.promotion_line`), for the whole
+    list at once. A result that is not cumulative is not looked up.
+    """
+    return promotion_line.promotion_lines(
+        tenant, session_id,
+        [row.student_id for row in results if (row.snapshot or {}).get("cumulative")],
+    )
+
+
 def one_card(ctx: ClassContext, student_id, user=None) -> dict:
     """A published student's card, or a 404 for a student the class did not publish."""
     class_term = published_term(ctx)
@@ -267,6 +323,9 @@ def one_card(ctx: ClassContext, student_id, user=None) -> dict:
     return card(
         result.snapshot, letterhead_block=letterhead(ctx.tenant, ctx.branch, user),
         held=_is_held(result), version=result.version,
+        promotion=promotion_lines_for(ctx.tenant, ctx.term.session_id, [result]).get(
+            result.student_id,
+        ),
     )
 
 
@@ -275,9 +334,14 @@ def class_cards(ctx: ClassContext, user=None) -> dict:
     class_term = published_term(ctx)
     head = letterhead(ctx.tenant, ctx.branch, user)
     results = _published_results(ctx.tenant, class_term)
+    released = [r for r in results if r.released_at is not None]
+    promotion = promotion_lines_for(ctx.tenant, ctx.term.session_id, released)
     cards = [
-        card(r.snapshot, letterhead_block=head, held=False, version=r.version)
-        for r in results if r.released_at is not None
+        card(
+            r.snapshot, letterhead_block=head, held=False, version=r.version,
+            promotion=promotion.get(r.student_id),
+        )
+        for r in released
     ]
     published_ids = {r.student_id for r in results}
     left_out = [

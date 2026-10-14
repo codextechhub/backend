@@ -2,8 +2,8 @@
 
 The gradebook answers to the ``gradebook`` capability
 (:mod:`vs_rbac.capability_map`). Each place takes the key its screen's read
-endpoint requires. The report card options on the assessment setup screen are
-``vs_config`` definitions, labelled in their own words and anchored at the field
+endpoint requires, or any of the keys that endpoint accepts. The report card
+options on the assessment setup screen are ``vs_config`` definitions, labelled in their own words and anchored at the field
 name the screen's endpoint uses
 (:data:`~.services.configuration.KEY_FOR_FIELD`), so a setting added to the
 screen is searchable with it.
@@ -14,6 +14,9 @@ from vs_config.search_places import definition_setting_places
 from vs_search.registry import ACTION, Place, register, register_contributor
 
 from .constants import (
+    PERM_AMENDMENT_APPROVE,
+    PERM_AMENDMENT_CREATE,
+    PERM_ANALYTICS_VIEW,
     PERM_CLASS_PUBLISH,
     PERM_CLASS_SUBMIT,
     PERM_HOLD_VIEW,
@@ -31,6 +34,8 @@ HUB_SCREEN = "gradebook.hub"
 MODERATION_SCREEN = "gradebook.moderation"
 BROADSHEET_SCREEN = "gradebook.broadsheet"
 APPROVALS_SCREEN = "gradebook.approvals"
+AMENDMENTS_SCREEN = "gradebook.amendments"
+ANALYTICS_SCREEN = "gradebook.analytics"
 HOLDS_SCREEN = "gradebook.holds"
 RELEASE_SCREEN = "gradebook.release"
 SETUP_GROUP = "Assessment setup"
@@ -91,6 +96,27 @@ register(
         keywords=("gradebook", "approve results", "publish results", "principal",
                   "principal's comment", "release report cards", "return class"),
         screen=APPROVALS_SCREEN, permission=PERM_CLASS_PUBLISH, capability=CAPABILITY,
+    ),
+    Place(
+        kind=ACTION, key=AMENDMENTS_SCREEN, label="Amendments",
+        description="Corrections to results that were already published: the marks "
+                    "asked for, the reason, and approving or rejecting each one.",
+        keywords=("gradebook", "amendment", "correct result", "correct report card",
+                  "change published score", "approve correction", "reject correction",
+                  "updated report card", "results"),
+        screen=AMENDMENTS_SCREEN, permission=(PERM_AMENDMENT_CREATE, PERM_AMENDMENT_APPROVE),
+        capability=CAPABILITY,
+    ),
+    Place(
+        kind=ACTION, key=ANALYTICS_SCREEN, label="Performance analytics",
+        description="How a term's published results read: each subject's average, "
+                    "grade spread and pass rate, the same subject across classes, "
+                    "the students whose average moved since last term, and the top "
+                    "of each class, with the tables to export.",
+        keywords=("gradebook", "analytics", "performance", "subject average",
+                  "pass rate", "grade spread", "compare classes", "top of class",
+                  "term on term", "export results", "results"),
+        screen=ANALYTICS_SCREEN, permission=PERM_ANALYTICS_VIEW, capability=CAPABILITY,
     ),
     Place(
         kind=ACTION, key=HOLDS_SCREEN, label="Fee holds",

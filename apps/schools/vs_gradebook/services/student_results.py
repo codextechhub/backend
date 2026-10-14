@@ -10,11 +10,22 @@ grade and remark, and the release state in words ("Released Tue 16 Dec 2025",
 calm sentence. A held student's published term is still shown here: this is a
 staff screen, and the hold is the thing being worked.
 
-**History** lists each hold placed and each lifted, newest first, with who and
-when. A placed hold carries its reason and a lifted one its lift note, as fields
-of their own, so a caller whose hold-reason switch is closed loses them and the
-sentence that names the event is left.
-Amendments are a later build and none are listed.
+A cumulative term (the last of a school year with more than one) also carries
+the year's ``cumulative`` block in the same compact form its report card prints,
+with the promotion line Student Management has recorded read live
+(:mod:`.promotion_line`).
+
+Each published term reports the ``version`` of its report card: 1 as published,
+and one more for every correction approved since (:mod:`.amendments`).
+
+**History** lists each hold placed and each lifted, and each amendment, newest
+first, with who and when. A placed hold carries its reason and a lifted one its
+lift note, as fields of their own, so a caller whose hold-reason switch is closed
+loses them and the sentence that names the event is left. An amendment is one
+entry whatever its status, dated by when it was last acted on, and carries its
+subject, status, who raised it and who decided it, the version an approval
+produced, and its reason and decision note in a block of its own that the
+amendment switches govern.
 
 Which students a caller may open is the student module's rule
 (:func:`schools.vs_students.services.scoping.get_student_or_404`): another
@@ -31,8 +42,8 @@ from vs_config.clock import branch_today, branch_zone
 
 from ..constants import EmailState, HistoryKind, StoredStage
 from ..models import ResultHold, StudentTermResult
-from . import resolve
-from .reportcards import day_label, position_label
+from . import amendments, promotion_line, resolve
+from .reportcards import cumulative_lines, day_label, position_label
 
 NOTHING_PUBLISHED = (
     "Nothing has been published for this term yet. Results appear here once the "
@@ -52,13 +63,14 @@ def _release_label(result, tenant, branch) -> str:
     return HELD if result.email_state == EmailState.HELD else NOT_RELEASED
 
 
-def _published_entry(term, result, tenant, branch) -> dict:
+def _published_entry(term, result, tenant, branch, promotion=None) -> dict:
     snapshot = result.snapshot
     entry = {
         "term": _ref(term), "session": _ref(term.session), "published": True,
         "overall_average": snapshot.get("overall_average"),
         "released_at": result.released_at,
         "release_label": _release_label(result, tenant, branch),
+        "version": result.version,
         "subjects": [
             {
                 "name": subject["subject"]["name"], "total": subject["total"],
@@ -70,6 +82,8 @@ def _published_entry(term, result, tenant, branch) -> dict:
     }
     if snapshot.get("position") is not None:
         entry["position"] = position_label(snapshot["position"], snapshot.get("roll_size"))
+    if snapshot.get("cumulative"):
+        entry["cumulative"] = cumulative_lines(snapshot["cumulative"], promotion)
     return entry
 
 
@@ -100,6 +114,15 @@ def _term_entries(tenant, student, enrolments, today) -> list:
     for term_id, result in results.items():
         terms.setdefault(term_id, result.class_term.term)
 
+    cumulative_years = {
+        term.session_id for term in terms.values()
+        if term.pk in results and results[term.pk].snapshot.get("cumulative")
+    }
+    promotion = {
+        session_id: promotion_line.promotion_lines(tenant, session_id, [student.pk])
+        for session_id in cumulative_years
+    }
+
     entries = []
     for term in sorted(terms.values(), key=lambda t: (t.start_date, t.order_index, t.pk), reverse=True):
         result = results.get(term.pk)
@@ -109,12 +132,15 @@ def _term_entries(tenant, student, enrolments, today) -> list:
                 "message": NOTHING_PUBLISHED,
             })
         else:
-            entries.append(_published_entry(term, result, tenant, student.branch))
+            entries.append(_published_entry(
+                term, result, tenant, student.branch,
+                promotion.get(term.session_id, {}).get(student.pk),
+            ))
     return entries
 
 
 def _history(tenant, student) -> list:
-    """The student's holds, placed and lifted, newest first."""
+    """The student's holds (placed and lifted) and amendments, newest first."""
     entries = []
     holds = ResultHold.objects.filter(tenant=tenant, student=student).select_related(
         "term", "placed_by", "lifted_by",
@@ -131,6 +157,7 @@ def _history(tenant, student) -> list:
                 "text": f"Hold lifted for {hold.term.name}", "lift_note": hold.lift_note,
                 "by": hold.lifted_by.full_name if hold.lifted_by else None, "at": hold.lifted_at,
             })
+    entries.extend(amendments.history_entries(tenant, student))
     entries.sort(key=lambda entry: entry["at"], reverse=True)
     return entries
 
