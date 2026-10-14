@@ -34,6 +34,7 @@ from .settings_history import (
     BANK_SUMMARY_FIELDS,
     finance_setting_fields,
     settings_history,
+    settings_history_for_actions,
 )
 from .settings_ownership import (
     ACCOUNT_MAPPING_CONSUMERS,
@@ -336,3 +337,29 @@ class FinancePayrollSettingsView(_FinanceSettingsView):
             "Finance payroll settings saved.", data=self._payload(entity, settings),
         )
 
+
+class FinanceSettingsHistoryView(_FinanceSettingsView):
+    """The newest changes from every Finance settings section."""
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        actions = (
+            FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
+            FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
+            FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
+            FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED,
+            FinanceAuditAction.FINANCE_RECEIVABLES_SETTINGS_UPDATED,
+            FinanceAuditAction.PAYROLL_SETTINGS_UPDATED,
+            FinanceAuditAction.RETENTION_SETTINGS_UPDATED,
+        )
+        fields_by_action = {
+            action: finance_setting_fields(action) for action in actions
+        }
+        return success_response(
+            "Finance settings changes retrieved.",
+            data={
+                "history": settings_history_for_actions(
+                    entity, fields_by_action, request=request,
+                ),
+            },
+        )

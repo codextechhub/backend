@@ -24,6 +24,7 @@ urlpatterns = [
     path("public/rfqs/<str:token>/attachments/", views.PublicRfqAttachmentView.as_view(), name="public-rfq-attachment"),
     path("public/rfqs/<str:token>/attachments/<int:attachment_id>/", views.PublicRfqAttachmentDownloadView.as_view(), name="public-rfq-attachment-download"),
     path("settings/", views.ProcurementSettingsView.as_view(), name="proc-settings"),
+    path("settings/history/", views.ProcurementSettingsHistoryView.as_view(), name="proc-settings-history"),
 
     # Master data
     path("categories/", views.VendorCategoryListCreateView.as_view(), name="proc-categories"),

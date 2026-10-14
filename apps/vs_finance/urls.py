@@ -141,6 +141,7 @@ from .views_settings import (
     FinanceCalendarSettingsView,
     FinanceDocumentSettingsView,
     FinancePayrollSettingsView,
+    FinanceSettingsHistoryView,
 )
 from .views_ops.staff_bank import (
     StaffBankAccountBanksView,
@@ -323,6 +324,8 @@ urlpatterns = [
          name="finance-receivables-settings"),
     path("settings/payroll/", FinancePayrollSettingsView.as_view(),
          name="finance-payroll-settings"),
+    path("settings/history/", FinanceSettingsHistoryView.as_view(),
+         name="finance-settings-history"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),

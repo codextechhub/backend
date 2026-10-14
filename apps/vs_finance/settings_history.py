@@ -241,6 +241,55 @@ def settings_history(entity, action, fields, *, limit=10, request=None):
     return data if request is None else _readable_changes(rows, data)
 
 
+def settings_history_for_actions(entity, fields_by_action, *, limit=50, request=None):
+    """The newest settings changes across several settings families.
+
+    The audit rows are read in one bounded query, then serialized in family
+    groups so each change still uses that screen's labels and value wording.
+    The final list returns to the audit trail's newest-first order.
+    """
+    from .models import Account, FinanceAuditLog
+    from .serializers import SettingsHistorySerializer
+
+    rows = list(
+        FinanceAuditLog.objects.filter(entity=entity, action__in=fields_by_action)
+        .select_related("actor", "effective_user", "branch")
+        .order_by("-created_at", "-id")[:limit]
+    )
+    rows_by_action = {
+        action: [row for row in rows if row.action == action]
+        for action in fields_by_action
+    }
+    account_codes = {
+        str(snapshot[key])
+        for action, fields in fields_by_action.items()
+        for row in rows_by_action[action]
+        for snapshot in (row.before, row.after)
+        if isinstance(snapshot, dict)
+        for key, field in fields.items()
+        if field.kind == "account" and snapshot.get(key)
+    }
+    accounts = dict(
+        Account.objects.filter(entity=entity, code__in=account_codes)
+        .values_list("code", "name")
+    )
+    rank = {row.id: index for index, row in enumerate(rows)}
+    rendered = []
+    for action, action_rows in rows_by_action.items():
+        context = {
+            "fields": fields_by_action[action],
+            "tenant": entity.tenant,
+            "accounts": accounts,
+        }
+        if request is not None:
+            context["request"] = request
+        data = SettingsHistorySerializer(action_rows, many=True, context=context).data
+        rendered.extend(
+            data if request is None else _readable_changes(action_rows, data)
+        )
+    return sorted(rendered, key=lambda entry: rank[entry["id"]])
+
+
 def _readable_changes(rows, data) -> list:
     """``data`` without the changes the caller may read none of, the rest reworded.
 

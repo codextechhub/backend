@@ -5,7 +5,7 @@ from rest_framework.permissions import SAFE_METHODS
 
 from core.response import success_response
 from vs_finance.constants import FinanceAuditAction
-from vs_finance.settings_history import settings_history
+from vs_finance.settings_history import settings_history, settings_history_for_actions
 from vs_finance.views import resolve_entity
 from vs_finance.views_settings import WholeTenantSettingsMixin
 
@@ -72,5 +72,24 @@ class ProcurementSettingsView(WholeTenantSettingsMixin, _ProcBase):
                 "settings": serialize_procurement_settings(settings),
                 "consumers": PROCUREMENT_SETTING_CONSUMERS,
                 "history": _history(entity),
+            },
+        )
+
+
+class ProcurementSettingsHistoryView(WholeTenantSettingsMixin, _ProcBase):
+    """The newest changes from every Procurement settings section."""
+
+    rbac_permission = "procurement.settings.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        return success_response(
+            "Procurement settings changes retrieved.",
+            data={
+                "history": settings_history_for_actions(
+                    entity,
+                    {FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED: HISTORY_FIELDS},
+                    request=request,
+                ),
             },
         )
