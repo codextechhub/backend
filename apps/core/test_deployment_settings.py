@@ -62,6 +62,11 @@ _BASE_ENV = {
     "DB_USER": "unused_by_an_import",
     "DB_PASSWORD": "",
     "DB_HOST": "localhost",
+    # A deployed service must say which kind of Paystack key it takes. No key
+    # is set, which is allowed: payments are simply not configured.
+    "PAYSTACK_KEY_MODE": "test",
+    "PAYSTACK_SECRET_KEY": "",
+    "PAYSTACK_PUBLIC_KEY": "",
 }
 
 #: The addresses under test, cleared from the inherited environment so the run
@@ -227,3 +232,48 @@ class DeployedAddressTests(SimpleTestCase):
             ["corsheaders.middleware.CorsMiddleware",
              "whitenoise.middleware.WhiteNoiseMiddleware"],
         )
+
+    def test_a_deployment_must_say_which_kind_of_paystack_key_it_takes(self):
+        """No default: a guess here is a staging box charging real cards."""
+        for mode in ("", "   ", "sandbox", "LIVE"):
+            with self.subTest(mode=mode):
+                outcome = self._resolve(
+                    **_STAGING_ADDRESSES, PAYSTACK_KEY_MODE=mode,
+                )
+
+                self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
+                self.assertIn("PAYSTACK_KEY_MODE", outcome["message"])
+                self.assertIn("live or test", outcome["message"])
+
+    def test_a_test_server_refuses_a_live_paystack_key(self):
+        outcome = self._resolve(
+            **_STAGING_ADDRESSES,
+            PAYSTACK_KEY_MODE="test",
+            PAYSTACK_SECRET_KEY="sk_live_" + "x" * 30,
+        )
+
+        self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
+        self.assertIn("PAYSTACK_SECRET_KEY is a live key", outcome["message"])
+        self.assertNotIn("x" * 8, outcome["message"])
+
+    def test_a_live_server_refuses_a_test_paystack_key(self):
+        outcome = self._resolve(
+            **_STAGING_ADDRESSES,
+            PAYSTACK_KEY_MODE="live",
+            PAYSTACK_PUBLIC_KEY="pk_test_" + "x" * 30,
+        )
+
+        self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
+        self.assertIn("PAYSTACK_PUBLIC_KEY is a test key", outcome["message"])
+
+    def test_matching_paystack_keys_start_the_server(self):
+        for mode in ("live", "test"):
+            with self.subTest(mode=mode):
+                outcome = self._resolve(
+                    **_STAGING_ADDRESSES,
+                    PAYSTACK_KEY_MODE=mode,
+                    PAYSTACK_SECRET_KEY=f"sk_{mode}_" + "x" * 30,
+                    PAYSTACK_PUBLIC_KEY=f"pk_{mode}_" + "x" * 30,
+                )
+
+                self.assertNotIn("error", outcome, outcome)

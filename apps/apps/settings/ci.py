@@ -56,6 +56,10 @@ PAYMENTS_FAKE_WEBHOOK_SECRET = config(
 # tests switch it on for themselves.
 PAYMENTS_TERMINALS_AUTO_CREATE = False
 
+# A development or test run never takes a live Paystack secret key. See
+# paystack_keys.
+refuse_live_paystack_key_locally()
+
 # Throttling off: tests hammer endpoints far faster than the rates allow. Rates
 # are zeroed, never removed. See the module docstring.
 REST_FRAMEWORK = {

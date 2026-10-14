@@ -157,6 +157,8 @@ from urllib.parse import urlsplit
 from decouple import config
 from django.core.exceptions import ImproperlyConfigured
 
+from .paystack_keys import deployed_key_problem, local_key_problem
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -625,6 +627,34 @@ PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")
 PAYSTACK_BASE_URL = config("PAYSTACK_BASE_URL", default="https://api.paystack.co")
 # Bank slug (not code) asked for on dedicated virtual accounts; empty uses the adapter's default.
 PAYSTACK_DEDICATED_ACCOUNT_BANK = config("PAYSTACK_DEDICATED_ACCOUNT_BANK", default="")
+
+
+def require_matching_paystack_keys() -> str:
+    """The deployed server's ``PAYSTACK_KEY_MODE``, once its keys agree with it.
+
+    Called by the deployed settings module, never by this one. The variable has
+    no default, so a deployment that has not said whether it takes live or test
+    keys refuses to start instead of guessing. See ``paystack_keys``.
+    """
+    mode = str(config("PAYSTACK_KEY_MODE", default="") or "").strip()
+    problem = deployed_key_problem(mode, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY)
+    if problem:
+        raise ImproperlyConfigured(problem)
+    return mode
+
+
+def refuse_live_paystack_key_locally() -> None:
+    """Stop a laptop, a test run or CI from starting with a live secret key.
+
+    Called by the development, test and CI settings modules.
+    ``PAYSTACK_ALLOW_LIVE_KEY_LOCALLY=true`` is the deliberate override.
+    """
+    problem = local_key_problem(
+        PAYSTACK_SECRET_KEY,
+        allow_live=config("PAYSTACK_ALLOW_LIVE_KEY_LOCALLY", default=False, cast=bool),
+    )
+    if problem:
+        raise ImproperlyConfigured(problem)
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/

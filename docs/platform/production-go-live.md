@@ -106,10 +106,14 @@ Per service (not in the group), because they differ per deployment:
 | `API_PUBLIC_BASE_URL` | `https://api.codexng.com` |
 | `HEALTH_PROBE_BASE_URL` | `https://api.codexng.com` |
 | `HEALTH_SSL_DOMAIN` | `api.codexng.com` |
+| `PAYSTACK_KEY_MODE` | `live` |
 | `CELERY_EAGER` | `false` |
 | `REDIS_URL` | the Key Value internal connection string |
 
-The service refuses to start if any base URL is missing.
+The service refuses to start if any base URL is missing. It also refuses to
+start without `PAYSTACK_KEY_MODE` (`live` or `test`), or when a Paystack key
+set in the env group is the other kind: `live` takes only `sk_live_` and
+`pk_live_` keys. Set it on the worker as well as the web service.
 
 In the env group:
 
@@ -121,7 +125,7 @@ In the env group:
 | `CORS_ALLOWED_ORIGINS` | `https://intranet.codexng.com` |
 | `CORS_ALLOWED_ORIGIN_REGEXES` | default already matches `*.xvs.codexng.com`; leave unset |
 | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | Zoho account; `EMAIL_HOST` defaults to `smtp.zoho.com`, port 587 with TLS |
-| `PAYSTACK_PUBLIC_KEY`, `PAYSTACK_SECRET_KEY` | **live** keys from the active Paystack account |
+| `PAYSTACK_PUBLIC_KEY`, `PAYSTACK_SECRET_KEY` | **live** keys from the active Paystack account (`pk_live_`, `sk_live_`), matching `PAYSTACK_KEY_MODE=live` |
 | `PLATFORM_ISSUER_NAME` and the other `PLATFORM_ISSUER_*` | the company details printed on platform invoices |
 | `SUPERUSER_EMAIL`, `SUPERUSER_PASSWORD` | only if the build creates the superuser (see below) |
 
@@ -188,6 +192,11 @@ wildcard is its own domain entry, separate from `*.codexng.com`.
   URL to `https://api.codexng.com/v1/payments/webhooks/paystack/`. Paystack
   signs the call with the secret key, so the live secret key must be the one in
   the env group.
+- **Key mode.** Production sets `PAYSTACK_KEY_MODE=live` and staging sets
+  `PAYSTACK_KEY_MODE=test`, on the web service and the worker. A server whose
+  mode is missing, or whose keys are the other kind, does not start, and the
+  log names the variable. A laptop or CI run never takes a live secret key
+  unless `PAYSTACK_ALLOW_LIVE_KEY_LOCALLY=true` is set.
 - **Zoho.** Send a test activation mail from the Console and confirm it lands
   outside spam. Add SPF and DKIM records for the sending domain in Cloudflare
   DNS from Zoho's admin console.
@@ -248,6 +257,7 @@ Render service names do not change. These do.
 | `API_PUBLIC_BASE_URL` | `https://api-staging.codexng.com` |
 | `HEALTH_PROBE_BASE_URL` | `https://api-staging.codexng.com` |
 | `HEALTH_SSL_DOMAIN` | `api-staging.codexng.com` |
+| `PAYSTACK_KEY_MODE` | `test` (new; staging holds `sk_test_` and `pk_test_` keys only) |
 | `ALLOWED_HOSTS` | `api-staging.codexng.com,intranet-staging.codexng.com,.xvs-staging.codexng.com` |
 | `CORS_ALLOWED_ORIGINS` | `https://intranet-staging.codexng.com` |
 | `CORS_ALLOWED_ORIGIN_REGEXES` | `^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.xvs-staging\.codexng\.com$` (the default matches only `*.xvs.codexng.com`) |

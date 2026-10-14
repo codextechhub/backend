@@ -94,6 +94,10 @@ PAYMENTS_TERMINALS_AUTO_CREATE = config(
     "PAYMENTS_TERMINALS_AUTO_CREATE", default=False, cast=bool,
 )
 
+# A development or test run never takes a live Paystack secret key. See
+# paystack_keys.
+refuse_live_paystack_key_locally()
+
 # Frontend URL - must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
 # The school app, where a paying parent goes. Its slug is inserted as a

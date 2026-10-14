@@ -26,6 +26,11 @@ API_PUBLIC_BASE_URL = deployment_url("API_PUBLIC_BASE_URL")
 HEALTH_PROBE_BASE_URL = deployment_url("HEALTH_PROBE_BASE_URL")
 HEALTH_SSL_DOMAIN = deployment_host("HEALTH_SSL_DOMAIN")
 
+# Production takes live Paystack keys and staging takes test keys, and both run
+# this module. The server says which it is and refuses to start with the other
+# kind. See paystack_keys.
+PAYSTACK_KEY_MODE = require_matching_paystack_keys()
+
 # Every tenant is served from its own subdomain of the school app's host, so
 # the wildcard follows that host rather than naming one deployment's domain.
 _school_app = urlsplit(SCHOOL_APP_BASE_URL)
