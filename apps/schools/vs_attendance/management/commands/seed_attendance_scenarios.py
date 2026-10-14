@@ -270,7 +270,7 @@ class Command(BaseCommand):
                 logins.extend(self._seed(slug))
         self.stdout.write(self.style.SUCCESS(f"\nCreated this run: {self.created}"))
         self.stdout.write(
-            "\nLogins. Each school is reached at <slug>.localhost:5199. Admin "
+            "\nLogins. Each school is reached at <slug>.localhost:5174. Admin "
             "accounts take the dev fixture password (DEFAULT_PASSWORD in "
             "schools/vs_schools/dev/fixtures.py); teachers take the staff "
             "seeder's (SEED_PASSWORD in seed_staff_scenarios).",

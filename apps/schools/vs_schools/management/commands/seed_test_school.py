@@ -66,7 +66,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  {name} is ready.\n"
-            f"    address        {slug}.localhost:5199 (or ?tenant={slug})\n"
+            f"    address        {slug}.localhost:5174 (or ?tenant={slug})\n"
             f"    school admin   admin@{slug}.example.com / {password}\n"
             f"    branch admin   branch.admin@{slug}.example.com / {password}\n"
             f"    state          {'live' if live else 'pending - onboarding is open'}\n"

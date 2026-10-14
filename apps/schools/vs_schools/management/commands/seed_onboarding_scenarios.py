@@ -113,7 +113,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"\n  Cast ready. Every school signs in with {password}:\n"
             + "".join(
-                f"    {slug + '.localhost:5199':32} admin@{slug}.example.com\n"
+                f"    {slug + '.localhost:5174':32} admin@{slug}.example.com\n"
                 for slug in slugs
             )
         ))
