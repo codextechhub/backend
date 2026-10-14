@@ -33,7 +33,9 @@ from schools.vs_staff.models import (
 )
 from vs_rbac.tests.helpers import (
     make_branch,
+    make_permission,
     make_role,
+    make_role_permission,
     make_school,
     make_school_admin,
 )
@@ -390,6 +392,55 @@ class ScenarioCoverageTests(_Seeded):
                     profile.branch_id, (None, branch.pk),
                     "a posting is either this school's one branch or school-wide",
                 )
+
+
+class RestrictedFinanceAdminTests(_Base):
+    """A bursar reaches Finance Admin however the school spells it and whatever it carries.
+
+    Holy Cross's Finance Admin came from the console adoption command, so its key
+    is ``finance-admin``, and it carries a restricted key its School Admin does
+    not hold, as a real one does. A lookup under the other spelling misses it,
+    and inviting her straight into a restricted role is refused, so she is
+    seated through the grant ladder the way a school seats one.
+    """
+
+    def test_the_bursar_holds_finance_admin_and_nothing_waits(self):
+        from vs_rbac.models import (
+            TenantRoleGrantRequest,
+            TenantRoleTemplate,
+            TenantUserRoleAssignment,
+        )
+        from vs_user.models import User
+
+        tenant = self.multi_live.tenant
+        finance = TenantRoleTemplate.objects.get(tenant=tenant, key="finance_admin")
+        finance.key = "finance-admin"
+        finance.save(update_fields=["key"])
+        make_role_permission(
+            finance, make_permission("finance.account.create", is_restricted=True),
+        )
+        # The ladder's stage is the holders of the School Admin system role, so
+        # the school's administrator holds it here as at a real school.
+        admin = User.objects.get(email="staffseed0@example.test")
+        school_admin = TenantRoleTemplate.objects.get(tenant=tenant, key="school_admin")
+        school_admin.is_system_role = True
+        school_admin.save(update_fields=["is_system_role"])
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=admin, assigned_by=admin, role=school_admin,
+        )
+
+        self.seed(only="holy-cross")
+
+        bursar = StaffProfile.all_objects.get(tenant=tenant, job_title="Bursar").user
+        self.assertEqual(
+            set(TenantUserRoleAssignment.objects.filter(
+                tenant=tenant, user=bursar, assignment_status="ACTIVE",
+            ).values_list("role__key", flat=True)),
+            {"finance-admin"},
+        )
+        self.assertFalse(
+            TenantRoleGrantRequest.objects.filter(tenant=tenant, status="PENDING").exists(),
+        )
 
 
 class LockedAccountTests(_Base):

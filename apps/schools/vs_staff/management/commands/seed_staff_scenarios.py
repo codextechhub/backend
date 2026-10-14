@@ -162,11 +162,20 @@ class Command(BaseCommand):
         return user
 
     def _role(self, tenant, key):
+        """The school's active copy of the library role *key*, under either spelling.
+
+        The library keys Finance Admin ``finance_admin``, but schools whose copy
+        came from ``adopt_console_admin_roles`` hold it as ``finance-admin``
+        (``vs_rbac.library_growth`` matches both for the same reason). A lookup
+        under one spelling misses the other school's copy, and the job then
+        falls back to Teacher.
+        """
         from vs_rbac.models import TenantRoleTemplate
 
+        spellings = {key, key.replace("_", "-"), key.replace("-", "_")}
         return TenantRoleTemplate.objects.filter(
-            tenant=tenant, key=key, status="ACTIVE",
-        ).first()
+            tenant=tenant, key__in=spellings, status="ACTIVE",
+        ).order_by("key").first()
 
     # ── the work ───────────────────────────────────────────────────────────
 
@@ -239,9 +248,13 @@ class Command(BaseCommand):
 
         from ...services import creation
 
-        # The role the job title implies, then Teacher, then School Admin.
+        from vs_rbac.services import grant_needs_approval
+
+        # The role the job title implies when the inviter may grant it outright,
+        # then Teacher, then School Admin. A restricted one is seated after.
+        wanted = self._role(tenant, ROLE_FOR_JOB_TITLE.get(job_title, "teacher"))
         role = (
-            self._role(tenant, ROLE_FOR_JOB_TITLE.get(job_title, "teacher"))
+            (wanted if wanted is not None and not grant_needs_approval(actor, wanted) else None)
             or self._role(tenant, "teacher")
             or self._role(tenant, "school_admin")
         )
@@ -272,12 +285,77 @@ class Command(BaseCommand):
         )
         UserCreationService.finalize_invitation(user=user, requested_by=actor)
         prefix = "".join(word[0] for word in slug.split("-")).upper()
-        return creation.create_profile(
+        profile = creation.create_profile(
             tenant=tenant, user=user, actor=actor,
             staff_number=f"{prefix}/STF/{number:04d}",
             job_title=job_title, employment_type="FULL_TIME",
             hire_date=dt.date(2021, 9, 6), branch=branch,
         )
+        if wanted is not None and wanted.pk != role.pk:
+            self.seat(tenant=tenant, user=user, role=wanted, actor=actor)
+        return profile
+
+    def seat(self, *, tenant, user, role, actor):
+        """Give *user* the restricted *role*, through the grant ladder a school uses.
+
+        An inviter who lacks some restricted key *role* carries cannot grant it
+        outright: the grant becomes an ``rbac.role_grant`` request. The vote is
+        cast by an approver on the request's live stage, preferring anyone but
+        the inviter, because a school with a second administrator gets that
+        person's decision and only a sole administrator approves their own. The
+        seed does both steps for real, so a Bursar ends up holding Finance Admin
+        and not the Teacher role the invitation had to use. Returns the request
+        when no approver could decide it, which leaves the person on their
+        earlier role.
+        """
+        from vs_rbac.models import TenantUserRoleAssignment
+        from vs_rbac.services import grant_role
+        from vs_rbac.workflow_handlers import GRANT_DOCUMENT_TYPE
+        from vs_workflow.constants import WorkflowStageStatus
+        from vs_workflow.exceptions import WorkflowError
+        from vs_workflow.models import (
+            WorkflowInstance,
+            WorkflowStageApprover,
+            WorkflowStageInstance,
+        )
+        from vs_workflow.services.actions import record_action
+
+        current = TenantUserRoleAssignment.objects.filter(
+            tenant=tenant, user=user, assignment_status="ACTIVE",
+        ).exclude(role=role).first()
+        outcome = grant_role(
+            tenant=tenant, user=user, role=role,
+            branch=current.branch if current else None, actor=actor,
+            replaces=current, reason_note=f"Seeded {user.full_name} as {role.name}.",
+        )
+        if not outcome.pending:
+            return None
+        instance = WorkflowInstance.objects.filter(
+            tenant=tenant, document_object_id=str(outcome.request.pk),
+            document_type=GRANT_DOCUMENT_TYPE,
+        ).order_by("-pk").first()
+        stage = WorkflowStageInstance.objects.filter(
+            instance=instance, stage=instance.current_stage,
+            status=WorkflowStageStatus.ACTIVE,
+        ).order_by("-attempt").first()
+        voters = [
+            snap.user for snap in WorkflowStageApprover.objects.filter(
+                stage_instance=stage, attempt=stage.attempt,
+            ).select_related("user").order_by("user_id")
+        ] if stage is not None else []
+        voter = next((v for v in voters if v.pk != actor.pk), None) or (
+            actor if any(v.pk == actor.pk for v in voters) else None
+        )
+        try:
+            if voter is None:
+                raise WorkflowError("nobody is on the approval stage")
+            record_action(instance.pk, voter, "APPROVED", comment="Seeded grant.")
+        except WorkflowError as exc:
+            self.stdout.write(self.style.WARNING(
+                f"  {user.email} left on their earlier role: {exc}",
+            ))
+            return outcome.request
+        return None
 
     def _drive_to(self, profile, status, actor):
         """Walk somebody to their state through the real transitions.
