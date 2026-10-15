@@ -28,6 +28,8 @@ from ..services import holds
 from .base import GradebookViewMixin
 
 BALANCE_FIELD = "gradebook.hold.balance"
+#: The longest search the list reads; anything past it is ignored.
+SEARCH_MAX = 100
 
 
 def _sent(request, names) -> list:
@@ -45,8 +47,15 @@ class _HoldView(GradebookViewMixin, APIView):
 class HoldsView(_HoldView):
     """GET, POST /v1/gradebook/holds/
 
-    ``GET ?term=&class=&branch=&page=`` lists the roll students of the term's
-    classes in the caller's branches, by class and student name, paginated. Each
+    ``GET ?term=&class=&branch=&search=&owes=&page=`` lists the roll students of
+    the term's classes in the caller's branches, by class and student name,
+    paginated. ``search`` keeps the students whose name or admission number
+    contains it. ``owes=true`` keeps the students Finance says owe something,
+    and every student whose result is held; it applies only for a caller who may
+    read balances (filtering on a balance would tell the rest who owes) and only
+    while Finance answers, and ``owes_applied`` says whether it did. ``term``
+    names the term listed, which a hold is then placed for, and ``classes``
+    every class the list can be narrowed to, whatever the filters. Each
     row is ``{student, class, branch, balance, oldest_unpaid_on, days_owed, hold,
     released, released_on}``: the balance is kobo from Finance (a student Finance
     does not name owes 0), ``hold`` is null unless the result is held, and
@@ -79,19 +88,32 @@ class HoldsView(_HoldView):
 
     def get(self, request):
         term = self.term_from_query()
+        reads_balance = can_read(request, BALANCE_FIELD)
+        placed = holds.visible_classes(self.tenant, request.user, term, self.branch_from_query())
         seats = holds.seats(
-            self.tenant, request.user, term, self.branch_from_query(), self.class_from_query(),
+            self.tenant, request.user, term, None, self.class_from_query(),
+            search=request.query_params.get("search", "")[:SEARCH_MAX], placed=placed,
         )
+        finance = None
+        wants_owing = request.query_params.get("owes") == "true"
+        if wants_owing and reads_balance:
+            seats, finance = holds.owing_or_held(self.tenant, term, seats)
         paginator = XVSPagination()
         page = paginator.paginate_queryset(seats, request, view=self)
-        payload = holds.rows_payload(self.tenant, term, page)
+        payload = holds.rows_payload(self.tenant, term, page, finance=finance)
         rows = HoldRowSerializer(
             payload["rows"], many=True, context={"request": request},
         ).data
         response = paginator.get_paginated_response(rows)
-        if can_read(request, BALANCE_FIELD):
+        response.data["term"] = {"id": term.pk, "name": term.name}
+        response.data["classes"] = [
+            {"id": school_class.pk, "name": school_class.name} for school_class, _ in placed
+        ]
+        if reads_balance:
             response.data["as_of"] = payload["as_of"]
             response.data["finance_available"] = payload["finance_available"]
+        if wants_owing:
+            response.data["owes_applied"] = finance is not None and finance.available
         return response
 
     def post(self, request):

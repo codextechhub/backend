@@ -180,6 +180,82 @@ class HoldsListTests(ClassFixture):
         return next(r for r in body if r["student"]["id"] == student.pk)
 
 
+class HoldsFilterTests(ClassFixture):
+    """Search by name or admission number, and the list of families who owe."""
+
+    def setUp(self):
+        super().setUp()
+        self.finance((self.tunde, TUNDE_OWES, dt.date(2025, 9, 20)))
+
+    def names(self, response):
+        return [r["student"]["name"] for r in self.data(response)]
+
+    def test_search_finds_a_student_by_any_part_of_the_name_ignoring_case(self):
+        self.assertEqual(self.names(self.holds(self.bursar, search="  oJo ")), ["Sade Ojo"])
+
+    def test_search_finds_a_student_by_admission_number(self):
+        self.assertEqual(self.names(self.holds(self.bursar, search="bfs/002")), ["Tunde Bello"])
+
+    def test_a_search_nobody_matches_is_an_empty_list(self):
+        response = self.holds(self.bursar, search="Nobody Here")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.data(response), [])
+
+    def test_owes_keeps_the_students_who_owe_and_says_it_applied(self):
+        response = self.holds(self.bursar, owes="true")
+        self.assertEqual(self.names(response), ["Tunde Bello"])
+        self.assertTrue(response.data["owes_applied"])
+        self.assertEqual(response.data["pagination"]["totalItems"], 1)
+
+    def test_owes_keeps_a_held_student_who_has_paid_so_the_hold_can_be_lifted(self):
+        self.assertEqual(self.hold(self.bursar, self.zainab).status_code, 201)
+        self.assertEqual(
+            self.names(self.holds(self.bursar, owes="true")), ["Tunde Bello", "Zainab Aliyu"],
+        )
+
+    def test_owes_reads_finance_once_for_the_whole_list(self):
+        spy = SpyReader(debtors=())
+        registry.set_finance_reader(spy)
+        self.holds(self.bursar, owes="true", page_size=2)
+        [call] = spy.calls
+        [clause] = call[2]
+        self.assertEqual(len(clause.value), 8)
+
+    def test_owes_and_search_and_class_narrow_together(self):
+        self.finance(
+            (self.tunde, TUNDE_OWES, dt.date(2025, 9, 20)), (self.sade, 999, dt.date(2025, 9, 1)),
+        )
+        self.assertEqual(self.names(self.holds(self.bursar, owes="true", search="sade")), ["Sade Ojo"])
+        self.assertEqual(
+            self.names(self.holds(self.bursar, owes="true", **{"class": self.jss1a.pk})),
+            ["Tunde Bello"],
+        )
+
+    def test_owes_is_not_applied_while_finance_cannot_answer(self):
+        self.finance_down()
+        response = self.holds(self.bursar, owes="true")
+        self.assertEqual(len(self.data(response)), 8)
+        self.assertFalse(response.data["owes_applied"])
+        self.assertFalse(response.data["finance_available"])
+
+    def test_the_list_names_its_term_so_a_hold_can_be_placed_for_it(self):
+        self.assertEqual(
+            self.holds(self.bursar).data["term"],
+            {"id": self.first_term.pk, "name": self.first_term.name},
+        )
+
+    def test_the_list_names_every_class_it_can_be_narrowed_to_whatever_the_filters(self):
+        for query in ({}, {"class": self.jss1c.pk}, {"search": "Ojo"}):
+            with self.subTest(query=query):
+                classes = self.holds(self.bursar, **query).data["classes"]
+                self.assertEqual([c["name"] for c in classes], ["JSS1 A", "JSS1 B", "JSS1 C", "SSS1 A"])
+        lekki = self.holds(self.lekki_bursar).data["classes"]
+        self.assertEqual([c["name"] for c in lekki], ["JSS1 A", "JSS1 B", "SSS1 A"])
+
+    def test_owes_applied_is_absent_unless_owes_was_asked_for(self):
+        self.assertNotIn("owes_applied", self.holds(self.bursar).data)
+
+
 class HoldsStateTests(ClassFixture):
     def setUp(self):
         super().setUp()

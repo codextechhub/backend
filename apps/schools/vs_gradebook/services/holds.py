@@ -78,20 +78,66 @@ class Finance:
     owed: dict
 
 
-def seats(tenant, user, term, branch, class_id=None) -> list:
-    """Every roll student of the term's classes the caller can see, by class and student name."""
+def visible_classes(tenant, user, term, branch) -> list:
+    """``(class, home branch)`` for each of the term's classes the caller can see, by name."""
     placed, _, _, _ = hubs.reachable_classes(tenant, user, term, branch)
+    placed.sort(key=lambda pair: (pair[0].name.lower(), pair[0].pk))
+    return placed
+
+
+def seats(
+    tenant, user, term, branch, class_id=None, search: str = "", *, placed: list | None = None,
+) -> list:
+    """Every roll student of the term's classes the caller can see, by class and student name.
+
+    *search* keeps the students whose name or admission number contains it,
+    ignoring case. *placed* is :func:`visible_classes` when the caller has
+    already worked it out.
+    """
+    placed = list(placed) if placed is not None else visible_classes(tenant, user, term, branch)
     if class_id is not None:
         placed = [pair for pair in placed if pair[0].pk == class_id]
         if not placed:
             raise NotFound("No such class at this school.")
-    placed.sort(key=lambda pair: (pair[0].name.lower(), pair[0].pk))
     rolls = book.rolls_for(tenant, term, placed)
-    return [
+    found = [
         Seat(entry.student, school_class, home)
         for school_class, home in placed
         for entry in rolls.get(school_class.pk, [])
     ]
+    needle = search.strip().casefold()
+    if not needle:
+        return found
+    return [
+        seat for seat in found
+        if needle in seat.student.full_name.casefold()
+        or needle in (seat.student.student_number or "").casefold()
+    ]
+
+
+def owing_or_held(tenant, term, found: list) -> tuple[list, Finance]:
+    """The seats of *found* that owe Finance something or are held, and what Finance said.
+
+    Finance is read once for every seat, so the page that follows reuses the
+    answer. A held student stays in although Finance says they owe nothing,
+    because a family that has paid is the reason a hold is lifted. When Finance
+    cannot answer nothing can be said about who owes, so every seat is kept and
+    the answer says Finance was unavailable.
+    """
+    finance = read_finance(tenant, [seat.student for seat in found])
+    if not finance.available:
+        return found, finance
+    held = set(
+        ResultHold.objects.filter(
+            tenant=tenant, term=term, lifted_at__isnull=True,
+            student_id__in=[seat.student.pk for seat in found],
+        ).values_list("student_id", flat=True)
+    )
+    kept = [
+        seat for seat in found
+        if finance.owed.get(seat.student.pk, (0, None))[0] > 0 or seat.student.pk in held
+    ]
+    return kept, finance
 
 
 def locate(tenant, user, term, student_id) -> Seat:

@@ -229,6 +229,15 @@ class HoldSwitchTests(_Switches):
         self.assertIn("as_of", opened.data)
         self.assertTrue(opened.data["finance_available"])
 
+    def test_a_role_that_cannot_read_the_balance_cannot_filter_on_it(self):
+        response = self.holds(self.bursar, owes="true")
+        self.assertEqual(len(self.data(response)), 8)
+        self.assertFalse(response.data["owes_applied"])
+        self.close(self.bursar_role, BALANCE, read=True, write=False)
+        opened = self.holds(self.bursar, owes="true")
+        self.assertEqual([r["student"]["id"] for r in self.data(opened)], [self.tunde.pk])
+        self.assertTrue(opened.data["owes_applied"])
+
     def test_hiding_the_reason_removes_it_from_the_hold_and_refuses_a_hold_without_write(self):
         self.close(self.bursar_role, BALANCE, read=True, write=False)
         self.close(self.bursar_role, REASON, read=True, write=True)
