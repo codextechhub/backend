@@ -30,7 +30,7 @@ from django.test import TestCase, tag
 from django.urls import reverse
 
 from core.test_utils import TenantAPIClient
-from schools.vs_academics.models import Department, SchoolClass, Subject
+from schools.vs_academics.models import AcademicSession, Department, SchoolClass, Subject
 from schools.vs_gradebook.constants import (
     REASON_CANNOT_SIGN_IN,
     REASON_ENTERED,
@@ -55,6 +55,7 @@ from schools.vs_gradebook.models import (
     ScoreSheet,
     StudentTermResult,
 )
+from schools.vs_gradebook.services import book
 from schools.vs_gradebook.services.rules import read_gradebook_rules
 from schools.vs_schools.dev.fixtures import build_school
 from schools.vs_schools.models import School
@@ -1071,3 +1072,85 @@ class FamiliesWhoOweTests(SeededSchools, TestCase):
         self.assertIn("Created this run: 0", again)
         self.assertNotIn("families billed", again)
         self.assertEqual(_counts(self.tenants[self.SLUG]), self.after_billing)
+
+
+@tag("slow")
+class GradebookHistoryTests(SeededSchools, TestCase):
+    """``seed_gradebook_history`` replays last year for the pupils now in JSS2 A, and leaves the year closed."""
+
+    SLUGS = ("lagoon-view",)
+    ONLY = "lagoon-view"
+    SLUG = "lagoon-view"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        tenant = cls.tenants[cls.SLUG]
+        cls.year = (
+            AcademicSession.all_objects.filter(tenant=tenant, status="ARCHIVED")
+            .order_by("-start_date").first()
+        )
+        cls.archived_at = cls.year.archived_at
+        cls.notified = Notification.objects.filter(tenant=tenant).count()
+        cls.history = cls.run_history()
+        cls.after_history = _counts(tenant)
+
+    @classmethod
+    def run_history(cls, **options) -> str:
+        out = StringIO()
+        with school_clock(cls.AT):
+            call_command("seed_gradebook_history", stdout=out, **options)
+        return out.getvalue()
+
+    def last_class(self):
+        return SchoolClass.all_objects.get(
+            tenant=self.tenants[self.SLUG], session=self.year, name="JSS1 A", is_active=True,
+        )
+
+    def test_the_year_is_archived_again_at_the_same_moment(self):
+        self.year.refresh_from_db()
+        self.assertEqual(self.year.status, "ARCHIVED")
+        self.assertEqual(self.year.archived_at, self.archived_at)
+        self.assertIn("is archived again", self.history)
+
+    def test_the_pupils_now_in_jss2_a_were_in_last_years_jss1_a_and_promoted_out(self):
+        from schools.vs_students.models import ClassEnrolment
+
+        now = self.klass(self.SLUG, "JSS2 A")
+        with school_clock(self.AT):
+            rolls = book.rolls_for(self.tenants[self.SLUG], self.term(self.SLUG), [(now, now.branch)])
+        roll = {entry.student.pk for entry in rolls[now.pk]}
+        placed = ClassEnrolment.objects.filter(school_class=self.last_class())
+        self.assertEqual({row.student_id for row in placed}, roll)
+        self.assertEqual({row.outcome for row in placed}, {"PROMOTED"})
+        self.assertFalse(any(row.is_active for row in placed))
+
+    def test_every_term_of_last_year_is_published_and_the_third_carries_the_year(self):
+        terms = ClassTerm.objects.filter(school_class=self.last_class()).order_by("term__order_index")
+        self.assertEqual([t.stage for t in terms], [StoredStage.PUBLISHED] * 3)
+        for each in terms:
+            self.assertEqual(each.published_at.date(), each.term.end_date, "dated at its own term's end")
+        result = StudentTermResult.objects.filter(class_term=terms.last()).first()
+        block = result.snapshot["cumulative"]
+        self.assertEqual(len(block["terms"]), 3)
+        totals = {tuple(t["total"] for t in subject["terms"]) for subject in block["subjects"]}
+        self.assertTrue(any(len(set(row)) > 1 for row in totals), "the terms should differ")
+
+    def test_nobody_is_told_about_a_year_that_has_finished(self):
+        self.assertEqual(Notification.objects.filter(tenant=self.tenants[self.SLUG]).count(), self.notified)
+
+    def test_a_second_run_creates_nothing(self):
+        again = self.run_history()
+        self.assertIn("Created this run: 0", again)
+        self.assertEqual(_counts(self.tenants[self.SLUG]), self.after_history)
+
+    def test_the_year_is_closed_again_when_a_step_fails(self):
+        from unittest import mock
+
+        from schools.vs_gradebook.management.commands import seed_gradebook_history as history
+
+        with mock.patch.object(history.Command, "_place", side_effect=RuntimeError("stop")):
+            with self.assertRaises(RuntimeError):
+                self.run_history()
+        self.year.refresh_from_db()
+        self.assertEqual((self.year.status, self.year.archived_at), ("ARCHIVED", self.archived_at))

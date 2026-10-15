@@ -339,7 +339,8 @@ class ClassPlan:
     ``history`` brings the class to published for each earlier term of the year
     before this one, and ``drift`` marks a plan whose marks sit a little above or
     below the generated ones, so a term played against the current one shows
-    pupils who rose and pupils who fell. ``leads`` names a subject's main
+    pupils who rose and pupils who fell; ``drift_key`` varies the size of the move,
+    so terms played with different keys differ from each other as well. ``leads`` names a subject's main
     teacher by person key, in place of the one chosen by subject and branch;
     ``None`` leaves the subject with no main teacher.
     """
@@ -362,6 +363,7 @@ class ClassPlan:
     uploads: tuple = ()
     history: bool = False
     drift: bool = False
+    drift_key: str = ""
     leads: dict = field(default_factory=dict)
 
 
@@ -1085,13 +1087,13 @@ class Command(BaseCommand):
         A drifting plan is an earlier term. Pupils at even places did worse then
         than the generated mark says (so they rise to it), those at odd places
         did better (so they fall to it). The size of the move is a stable
-        function of the pupil and the subject, between 4 and 11 percent of the
-        column.
+        function of the pupil, the subject and the plan's ``drift_key``, between
+        4 and 11 percent of the column.
         """
         mark = generated_mark(student, subject, component)
         if not c.plan.drift:
             return mark
-        step = 4 + stable_hash(f"{pupil_key(student)}{subject.code}drift") % 8
+        step = 4 + stable_hash(f"{pupil_key(student)}{subject.code}drift{c.plan.drift_key}") % 8
         move = math.floor(component.max_score * step / 100 + 0.5)
         mark = mark - move if place % 2 == 0 else mark + move
         return max(0, min(component.max_score, mark))
