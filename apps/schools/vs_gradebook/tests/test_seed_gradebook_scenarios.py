@@ -32,6 +32,10 @@ from django.urls import reverse
 from core.test_utils import TenantAPIClient
 from schools.vs_academics.models import Department, SchoolClass, Subject
 from schools.vs_gradebook.constants import (
+    REASON_CANNOT_SIGN_IN,
+    REASON_ENTERED,
+    REASON_LAST_WORKING_DAY,
+    REASON_NO_MAIN_TEACHER,
     AmendmentStatus,
     ClassStage,
     EmailState,
@@ -54,11 +58,12 @@ from schools.vs_gradebook.models import (
 from schools.vs_gradebook.services.rules import read_gradebook_rules
 from schools.vs_schools.dev.fixtures import build_school
 from schools.vs_schools.models import School
-from schools.vs_staff.models import StaffProfile
+from schools.vs_staff.constants import EmploymentStatus, TeachingPart
+from schools.vs_staff.models import StaffProfile, TeachingAssignment
 from schools.vs_students.models import Student
 from vs_audit.models import AuditEvent
 from vs_notifications.models import Notification
-from vs_user.models import User
+from vs_user.models import AccountLockout, User
 
 from .base import school_clock
 
@@ -617,6 +622,106 @@ class SeedGradebookScenariosTests(SeededSchools, TestCase):
         [entry] = self.get(admin, "gradebook-student-results", student_id=result.student_id)["terms"]
         self.assertTrue(entry["published"])
         self.assertNotIn("position", entry)
+
+    # ── late reasons that name a person ───────────────────────────────────
+
+    def late_reasons_class(self, slug="sunrise-academy"):
+        """The class whose Mathematics the resigning teacher leads."""
+        lead = TeachingAssignment.objects.get(
+            tenant=self.tenants[slug], part=TeachingPart.LEAD,
+            staff__user=self.person(slug, "yetunde", "ogunleye"),
+            subject=self.subject(slug, "Mathematics"),
+        )
+        return lead.school_class
+
+    def late_rows(self, slug="sunrise-academy"):
+        hub = self.get(self.admin(slug), "gradebook-hub", {"term": self.term(slug).pk})
+        name = self.late_reasons_class(slug).name
+        return hub, {
+            row["subject"]["name"]: row for row in hub["late"] if row["class"]["name"] == name
+        }
+
+    def test_the_late_list_carries_all_three_reasons_that_name_a_person(self):
+        hub, rows = self.late_rows()
+
+        self.assertEqual(self.late_reasons_class().name, "JSS2 A")
+        self.assertTrue(
+            {REASON_LAST_WORKING_DAY, REASON_CANNOT_SIGN_IN, REASON_NO_MAIN_TEACHER}
+            <= {row["reason_kind"] for row in hub["late"]},
+        )
+        self.assertEqual(
+            {name: row["reason_kind"] for name, row in rows.items()},
+            {
+                "Mathematics": REASON_LAST_WORKING_DAY,
+                "English Language": REASON_CANNOT_SIGN_IN,
+                "Civic Education": REASON_NO_MAIN_TEACHER,
+            },
+        )
+        stage = next(c for c in hub["classes"] if c["name"] == "JSS2 A")
+        self.assertEqual((stage["stage"], stage["subjects_in"], stage["subjects_due"]),
+                         (ClassStage.ENTERING, 1, 4))
+
+    def test_the_last_working_day_is_a_resignation_inside_the_term(self):
+        slug = "sunrise-academy"
+        _, rows = self.late_rows(slug)
+        row = rows["Mathematics"]
+        teacher = StaffProfile.all_objects.get(user=self.person(slug, "yetunde", "ogunleye"))
+        term = self.term(slug)
+
+        self.assertEqual(row["main_teacher"]["name"], "Yetunde Ogunleye")
+        self.assertEqual(row["status"], SheetStatus.IN_PROGRESS)
+        self.assertTrue(0 < row["entered"] < row["roll"])
+        self.assertTrue(row["reason"].startswith("Last working day "))
+        self.assertIsNone(row["staff_link"])
+        self.assertEqual(teacher.employment_status, EmploymentStatus.RESIGNED)
+        self.assertTrue(MONDAY.date() < teacher.exit_date <= term.end_date)
+        self.assertTrue(teacher.user.may_sign_in)
+
+    def test_cannot_sign_in_is_a_suspended_account_with_a_link_to_the_staff_record(self):
+        slug = "sunrise-academy"
+        _, rows = self.late_rows(slug)
+        row = rows["English Language"]
+        teacher = StaffProfile.all_objects.get(user=self.person(slug, "emmanuel", "okon"))
+
+        self.assertEqual(row["status"], SheetStatus.NOT_STARTED)
+        self.assertEqual(row["reason"], "Emmanuel Okon cannot sign in")
+        self.assertEqual(row["staff_link"], teacher.pk)
+        self.assertEqual(teacher.employment_status, EmploymentStatus.SUSPENDED)
+        self.assertIsNone(teacher.exit_date)
+        self.assertEqual(teacher.user.status, User.Status.SUSPENDED)
+        self.assertFalse(teacher.user.may_sign_in)
+        self.assertFalse(AccountLockout.objects.filter(user=teacher.user).exists())
+
+    def test_a_reader_who_may_not_reactivate_accounts_sees_the_entered_count_instead(self):
+        from schools.vs_gradebook.services import hubs
+
+        slug = "sunrise-academy"
+        name = self.late_reasons_class(slug).name
+        with school_clock(MONDAY):
+            body = hubs.admin_hub(
+                self.tenants[slug], self.admin(slug), self.term(slug), None,
+                show_locked_accounts=False,
+            )
+        row = next(
+            r for r in body["late"]
+            if r["class"]["name"] == name and r["subject"]["name"] == "English Language"
+        )
+        self.assertEqual(row["reason_kind"], REASON_ENTERED)
+        self.assertIsNone(row["staff_link"])
+
+    def test_no_main_teacher_is_a_due_sheet_nobody_leads(self):
+        slug = "sunrise-academy"
+        _, rows = self.late_rows(slug)
+        row = rows["Civic Education"]
+
+        self.assertIsNone(row["main_teacher"])
+        self.assertEqual(row["reason"], "No main teacher assigned")
+        self.assertFalse(
+            TeachingAssignment.objects.filter(
+                tenant=self.tenants[slug], school_class=self.late_reasons_class(slug),
+                subject=self.subject(slug, "Civic Education"), part=TeachingPart.LEAD,
+            ).exists(),
+        )
 
     def test_a_report_card_email_says_the_card_is_ready_and_nothing_of_the_result(self):
         ready = [m for m in self.emails if "report card" in (m.subject + m.body).lower()]

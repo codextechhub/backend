@@ -47,6 +47,22 @@ first role that wants one, the next largest the second. On the rolls
 **Sunrise Academy**: the largest Junior Secondary class is PUBLISHED and the
 next is ENTERING (two sheets in, one in progress, one not started).
 
+The third Junior Secondary class (JSS2 A) carries the **late reasons** that
+name a person rather than a sheet's progress. It is ENTERING with Basic Science
+in, and three sheets late for three different reasons on the results hub:
+
+* Mathematics is IN_PROGRESS and its main teacher, Yetunde Ogunleye, has
+  resigned with a last working day two weeks ahead (within the term), so the
+  hub gives her **last working day**. She entered part of the sheet first.
+* English Language is NOT_STARTED and its main teacher, Emmanuel Okon, is
+  suspended, so his account **cannot sign in**. Only a hub reader who may
+  reactivate staff accounts is told so, with a link to his staff record.
+* Civic Education is NOT_STARTED with **no main teacher** at all.
+
+These live at Sunrise because Lagoon View has no sheet left to give them: every
+class there with pupils already plays a role, and the only optional subject no
+class takes is Yoruba in JSS2 B.
+
 The remaining classes are left with nothing entered, which is also a state.
 
 **Build-two states** (Lagoon View only):
@@ -103,6 +119,14 @@ academic department endpoint sets it: the member of staff is resolved by
 written. An existing lead who could not enter scores, such as a bursar the staff
 seeder named, is stepped back to assistant first, as the module requires.
 
+**Leaving and suspended teachers** are moved by the staff module's own
+``employment.change_status``, after their sheets are set up, because a suspended
+teacher cannot enter a mark afterwards. Resigning writes the last working
+day to the staff record; suspending asks the identity layer to suspend the
+account, which is what stops it signing in. Nothing about either is written
+directly, and a timed lockout is not used, because it is not what the hub
+counts as unable to sign in.
+
 **Corrections** are raised from the school's branch administrator account
 (``branch.admin@<slug>.example.com``, built with the school) and decided by the
 school's administrator, because the person who raises a correction may not
@@ -137,6 +161,7 @@ attendance seeders are optional. Never run against production.
 """
 from __future__ import annotations
 
+import datetime as dt
 import math
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -207,7 +232,7 @@ from schools.vs_staff.management.commands.seed_staff_scenarios import (
     Command as StaffSeeder,
 )
 from schools.vs_staff.models import StaffProfile, TeachingAssignment
-from schools.vs_staff.services import teaching
+from schools.vs_staff.services import employment, teaching
 from schools.vs_students.models import Student
 from schools.vs_students.services import enrolment as enrolment_service
 from schools.vs_students.services.policy import assert_number_allowed
@@ -295,7 +320,9 @@ class ClassPlan:
     ``history`` brings the class to published for each earlier term of the year
     before this one, and ``drift`` marks a plan whose marks sit a little above or
     below the generated ones, so a term played against the current one shows
-    pupils who rose and pupils who fell.
+    pupils who rose and pupils who fell. ``leads`` names a subject's main
+    teacher by person key, in place of the one chosen by subject and branch;
+    ``None`` leaves the subject with no main teacher.
     """
 
     label: str
@@ -316,11 +343,17 @@ class ClassPlan:
     uploads: tuple = ()
     history: bool = False
     drift: bool = False
+    leads: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Person:
-    """A member of staff the seeder needs: where they sit and what they teach."""
+    """A member of staff the seeder needs: where they sit and what they teach.
+
+    ``departure`` is ``(employment status, reason)`` for somebody moved off
+    ordinary work once their sheets are set up: RESIGNED, with a last working day
+    inside the term, or SUSPENDED. Empty for everybody still at work.
+    """
 
     key: str
     first: str
@@ -330,6 +363,12 @@ class Person:
     where: str
     number: int
     subjects: tuple = ()
+    departure: tuple = ()
+
+
+#: How far ahead of the day of the run a resigning teacher's last working day
+#: falls, unless the term ends sooner.
+NOTICE = dt.timedelta(days=14)
 
 
 STRUCTURES = {
@@ -408,6 +447,10 @@ PEOPLE = {
         Person("fashola", "Tolu", "Fashola", "FEMALE", "Teacher", "main", 703,
                ("Civic Education",)),
         Person("ibekwe", "Ngozi", "Ibekwe", "FEMALE", "Bursar", "any", 708),
+        Person("ogunleye", "Yetunde", "Ogunleye", "FEMALE", "Mathematics Teacher", "main", 709,
+               departure=(EmploymentStatus.RESIGNED, "Relocating to Abuja with her family.")),
+        Person("okon", "Emmanuel", "Okon", "MALE", "English Teacher", "main", 710,
+               departure=(EmploymentStatus.SUSPENDED, "Pending an internal review.")),
     ),
     "lagoon-view": (
         Person("okeke", "Chinedu", "Okeke", "MALE", "Mathematics Teacher", "main", 701,
@@ -438,6 +481,17 @@ PLANS = {
             sheets={
                 "Mathematics": SUBMITTED, "English Language": SUBMITTED,
                 "Basic Science": IN_PROGRESS, "Civic Education": NOT_STARTED,
+            },
+        ),
+        ClassPlan(
+            "late reasons", 0, "JSS", "fashola", ENTERING,
+            sheets={
+                "Mathematics": IN_PROGRESS, "English Language": NOT_STARTED,
+                "Civic Education": NOT_STARTED,
+            },
+            leads={
+                "Mathematics": "ogunleye", "English Language": "okon",
+                "Civic Education": None,
             },
         ),
     ),
@@ -646,6 +700,7 @@ class Command(BaseCommand):
             self._class(s, plan)
             if plan.history:
                 self._cumulative_card(s, plan)
+        self._departures(s)
         self._summary(s)
 
         lines = [f"{slug}: admin@{slug}.example.com (whole school, publishes)"]
@@ -655,7 +710,11 @@ class Command(BaseCommand):
                 f"corrections)",
             )
         for person in PEOPLE[slug]:
-            lines.append(f"{slug}: {self._email(s, person)} ({person.title})")
+            left = {
+                EmploymentStatus.RESIGNED: ", resigned",
+                EmploymentStatus.SUSPENDED: ", suspended and cannot sign in",
+            }.get(person.departure[0] if person.departure else None, "")
+            lines.append(f"{slug}: {self._email(s, person)} ({person.title}{left})")
         return lines
 
     # ── settings, structures and scales ───────────────────────────────────
@@ -763,6 +822,36 @@ class Command(BaseCommand):
         )
         self._made(f"head of {department.name}: {s.people[key].user.full_name}")
 
+    def _departures(self, s):
+        """Resign or suspend the people whose plan says they leave, through the staff module, once each.
+
+        Run after every class is set up: a suspended teacher cannot enter the
+        marks their sheet is meant to show, so the marks go in first, as they
+        would have before the school acted. The last working day is
+        :data:`NOTICE` after the day of the run, or the term's last day if that
+        is sooner, so it falls inside the term the hub is read for.
+        """
+        for person in PEOPLE[s.slug]:
+            if not person.departure:
+                continue
+            status, reason = person.departure
+            profile = s.people[person.key]
+            profile.refresh_from_db()
+            if profile.employment_status == status:
+                continue
+            last_day = (
+                min(s.today + NOTICE, s.term.end_date)
+                if status == EmploymentStatus.RESIGNED else None
+            )
+            employment.change_status(
+                profile, to_status=status, actor=s.admin, reason=reason,
+                last_working_day=last_day,
+            )
+            self._made(
+                f"{profile.user.full_name} {status.lower()}"
+                f"{f', last working day {last_day}' if last_day else ''}",
+            )
+
     def _person_for(self, s, home_index, subject_name):
         place = "main" if home_index == 0 else "second"
         for person in PEOPLE[s.slug]:
@@ -842,7 +931,8 @@ class Command(BaseCommand):
     def _check_plan(self, s, c, due_names):
         """Refuse a plan that names a subject the class owes no sheet for."""
         named = (
-            set(c.plan.sheets) | {subject for subject, _, _ in c.plan.cells}
+            set(c.plan.sheets) | set(c.plan.leads)
+            | {subject for subject, _, _ in c.plan.cells}
             | set(c.plan.remind) | set(c.plan.uploads)
             | {fix.subject for fix in c.plan.corrections}
         )
@@ -911,12 +1001,19 @@ class Command(BaseCommand):
         self._made(f"class teacher of {c.cls.name}: {staff.user.full_name}")
 
     def _leads(self, s, c):
-        """Make sure every due subject has a main teacher who can enter its scores."""
+        """Make sure every due subject has a main teacher who can enter its scores.
+
+        A subject the plan names in ``leads`` gets the person it names, kept on
+        later runs even once they have resigned or been suspended, or nobody.
+        """
         for subject in resolve.due_subjects(s.tenant, c.cls, s.term):
             held = TeachingAssignment.objects.filter(
                 tenant=s.tenant, session=s.year, school_class=c.cls, subject=subject,
                 part=TeachingPart.LEAD,
             ).select_related("staff", "staff__user").first()
+            if subject.name in c.plan.leads:
+                self._named_lead(s, c, subject, held, c.plan.leads[subject.name])
+                continue
             if held is not None:
                 if held.staff.is_on_roll and has_permission(
                     held.staff.user, PERM_SHEET_ENTER, tenant=s.tenant,
@@ -929,6 +1026,22 @@ class Command(BaseCommand):
                 subject=subject, session=s.year, part=TeachingPart.LEAD, actor=s.admin,
             )
             self._made(f"{person.first} {person.last} leads {subject.name} in {c.cls.name}")
+
+    def _named_lead(self, s, c, subject, held, key):
+        """Leave *subject* led by the plan's person, or by nobody when *key* is None."""
+        wanted = s.people[key] if key is not None else None
+        if held is not None and wanted is not None and held.staff_id == wanted.pk:
+            return
+        if held is not None:
+            teaching.set_part(held, TeachingPart.ASSISTANT, actor=s.admin)
+            self._made(f"{held.staff.user.full_name} steps back on {subject.name} in {c.cls.name}")
+        if wanted is None:
+            return
+        teaching.assign(
+            tenant=s.tenant, staff=wanted, school_class=c.cls, subject=subject,
+            session=s.year, part=TeachingPart.LEAD, actor=s.admin,
+        )
+        self._made(f"{wanted.user.full_name} leads {subject.name} in {c.cls.name}")
 
     # ── sheets ────────────────────────────────────────────────────────────
 
@@ -989,10 +1102,9 @@ class Command(BaseCommand):
         goal = c.plan.sheets.get(subject.name, IN)
         status, _ = self._status(s, c, subject)
         label = f"{subject.name}, {c.cls.name}"
-        lead = self._lead_user(s, c, subject)
-
         if goal == NOT_STARTED:
             return
+        lead = self._lead_user(s, c, subject)
         if goal == IN_PROGRESS:
             if status == SheetStatus.NOT_STARTED:
                 ctx = self._load(s, c, subject, lead, rule=sheets.ENTER)
