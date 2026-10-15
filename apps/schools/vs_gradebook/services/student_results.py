@@ -73,6 +73,7 @@ def _published_entry(term, result, tenant, branch, promotion=None) -> dict:
         "version": result.version,
         "subjects": [
             {
+                "id": subject["subject"]["id"],
                 "name": subject["subject"]["name"], "total": subject["total"],
                 "grade": subject["grade"], "remark": subject["remark"],
             }

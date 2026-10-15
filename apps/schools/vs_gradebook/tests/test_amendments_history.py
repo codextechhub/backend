@@ -74,3 +74,46 @@ class HistoryTests(AmendmentFixture):
     def test_a_correction_is_never_listed_for_another_student(self):
         self.raised(self.kelechi)
         self.assertEqual(self.history(self.chiamaka), [])
+
+
+class CanDecideTests(AmendmentFixture):
+    """Whether the reader may decide a correction now: waiting, and not raised by them."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.published()
+
+    def row(self, user, amendment_id):
+        rows = self.data(self.amendments_list(user))
+        return next(r for r in rows if r["id"] == amendment_id)
+
+    def test_a_waiting_correction_is_the_approvers_to_decide_and_not_the_raisers(self):
+        found = self.raised(self.tunde, user=self.both_keys)
+        self.assertTrue(self.row(self.approver, found)["can_decide"])
+        self.assertFalse(self.row(self.both_keys, found)["can_decide"])
+
+    def test_a_decided_correction_is_nobodys_to_decide(self):
+        found = self.raised(self.tunde)
+        self.assertEqual(self.approve_amendment(self.approver, found).status_code, 200)
+        self.assertFalse(self.row(self.approver, found)["can_decide"])
+        self.assertFalse(self.row(self.both_keys, found)["can_decide"])
+
+    def test_the_answer_to_raising_says_the_raiser_cannot_decide_it(self):
+        response = self.raise_amendment(self.both_keys, self.tunde)
+        self.assertFalse(self.data(response)["can_decide"])
+
+
+class ResultsTabSubjectIdTests(AmendmentFixture):
+    """The Results tab names each subject's id, so a correction can be asked for from it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.published()
+
+    def test_each_published_subject_carries_its_id(self):
+        terms = self.data(self.results_tab(self.result_reader, self.tunde))["terms"]
+        published = next(t for t in terms if t["published"])
+        maths = next(s for s in published["subjects"] if s["name"] == self.maths.name)
+        self.assertEqual(maths["id"], self.maths.pk)

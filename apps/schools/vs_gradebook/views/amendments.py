@@ -47,7 +47,7 @@ def _sent(request, names) -> list:
 class _AmendmentView(GradebookViewMixin, APIView):
     def row(self, amendment) -> dict:
         """The amendment as the caller may read it."""
-        payload = amendments.one_payload(self.tenant, amendment)
+        payload = amendments.one_payload(self.tenant, amendment, self.request.user)
         return dict(AmendmentRowSerializer(payload, context={"request": self.request}).data)
 
     def decision_note(self) -> str:
@@ -108,7 +108,9 @@ class AmendmentsView(_AmendmentView):
     and when, how it was decided (``decided_by``, ``decided_at``,
     ``decision_note``), the report card ``version`` an approval produced, and
     ``before`` and ``after`` (the subject's cells with the total and grade they
-    earn). ``status`` is PENDING, APPROVED or REJECTED. The answer also carries
+    earn). ``status`` is PENDING, APPROVED or REJECTED. ``can_decide`` is true
+    for a correction still waiting that the caller did not raise (deciding also
+    needs ``gradebook.amendment.approve``). The answer also carries
     ``branch_dimension``; ``branch`` is null on a row at a school with one
     branch. Needs either amendment key.
 
@@ -141,7 +143,7 @@ class AmendmentsView(_AmendmentView):
         )
         paginator = XVSPagination()
         page = paginator.paginate_queryset(query, request, view=self)
-        payload = amendments.rows_payload(self.tenant, page)
+        payload = amendments.rows_payload(self.tenant, page, request.user)
         rows = AmendmentRowSerializer(
             payload["rows"], many=True, context={"request": request},
         ).data

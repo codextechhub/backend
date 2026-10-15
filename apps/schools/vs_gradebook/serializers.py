@@ -1062,10 +1062,14 @@ class ClassCardsSerializer(_WithClass, serializers.Serializer):
 
 
 class ResultSubjectSerializer(FieldAccessMixin, serializers.Serializer):
-    """A subject on a published term of the Results tab: its total, grade and remark."""
+    """A subject on a published term of the Results tab: its total, grade and remark.
+
+    ``id`` is the subject's, so a correction to it can be asked for from the tab.
+    """
 
     field_resource = SHEET_FIELD_RESOURCE
 
+    id = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
     total = serializers.IntegerField(read_only=True, allow_null=True)
     grade = serializers.CharField(read_only=True, allow_null=True)
@@ -1603,7 +1607,8 @@ class AmendmentRowSerializer(_WithClass, FieldAccessMixin, serializers.Serialize
     ``before`` and ``after`` are the subject's cells with the line worked out
     from them. ``version`` is the report card version an approval produced and is
     null until then. ``branch`` is null at a school with one branch. The reason
-    and the decision note follow the amendment switches.
+    and the decision note follow the amendment switches. ``can_decide`` is true
+    for a correction still waiting that the caller did not raise.
     """
 
     field_resource = AMENDMENT_FIELD_RESOURCE
@@ -1623,6 +1628,7 @@ class AmendmentRowSerializer(_WithClass, FieldAccessMixin, serializers.Serialize
     version = serializers.IntegerField(read_only=True, allow_null=True)
     before = AmendmentLineSerializer(read_only=True)
     after = AmendmentLineSerializer(read_only=True)
+    can_decide = serializers.BooleanField(read_only=True)
 
 
 class AmendmentCellWriteSerializer(FieldAccessMixin, serializers.Serializer):

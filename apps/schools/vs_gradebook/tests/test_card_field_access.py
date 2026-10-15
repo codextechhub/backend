@@ -241,7 +241,7 @@ class ResultsTabSwitchTests(_Switches):
     def test_hiding_the_subject_figures_removes_totals_grades_and_remarks(self):
         self.close(self.result_role, ROW_RESULT)
         for subject in self.tab()["terms"][0]["subjects"]:
-            self.assertEqual(set(subject), {"name"})
+            self.assertEqual(set(subject), {"id", "name"})
 
     def test_hiding_the_guardian_contact_removes_the_guardian_from_the_tab(self):
         self.close(self.result_role, GUARDIAN)

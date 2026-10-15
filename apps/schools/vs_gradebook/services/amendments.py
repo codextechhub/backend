@@ -519,8 +519,12 @@ def _frames(tenant, amendments) -> dict:
     return frames
 
 
-def rows_payload(tenant, amendments) -> dict:
-    """``{"branch_dimension": bool, "rows": [...]}`` for *amendments*, before Field Access is applied."""
+def rows_payload(tenant, amendments, user=None) -> dict:
+    """``{"branch_dimension": bool, "rows": [...]}`` for *amendments*, before Field Access is applied.
+
+    ``can_decide`` is true for a correction still waiting that *user* did not
+    raise; whether they hold the key to decide is the screen's to ask.
+    """
     several = only_branch_id_or_several(tenant) is None
     frames = _frames(tenant, amendments)
     rows = []
@@ -550,17 +554,21 @@ def rows_payload(tenant, amendments) -> dict:
             "version": version.version if version is not None else None,
             "before": line_of(components, found.before, bands),
             "after": line_of(components, found.after, bands),
+            "can_decide": (
+                user is not None and found.status == AmendmentStatus.PENDING
+                and found.raised_by_id != user.pk
+            ),
         })
     return {"branch_dimension": several, "rows": rows}
 
 
-def one_payload(tenant, amendment) -> dict:
+def one_payload(tenant, amendment, user=None) -> dict:
     """*amendment* as a list row, for the answer to raising or deciding it."""
     found = (
         Amendment.objects.select_related(*_RELATED).prefetch_related(_versions())
         .get(pk=amendment.pk)
     )
-    return rows_payload(tenant, [found])["rows"][0]
+    return rows_payload(tenant, [found], user)["rows"][0]
 
 
 # ── Deciding ───────────────────────────────────────────────────────────────

@@ -47,7 +47,10 @@ class PublishedTermTests(CardFixture):
         self.assertEqual(entry["release_label"], "Released Tue 16 Dec 2025")
         self.assertEqual(entry["class_id"], self.jss1a.pk)
         maths = next(s for s in entry["subjects"] if s["name"] == "Mathematics")
-        self.assertEqual(maths, {"name": "Mathematics", "total": 75, "grade": "A", "remark": "Excellent"})
+        self.assertEqual(
+            maths,
+            {"id": self.maths.pk, "name": "Mathematics", "total": 75, "grade": "A", "remark": "Excellent"},
+        )
 
     def test_the_guardian_is_the_primary_guardian_by_name_and_address(self):
         body = self.data(self.results_tab(self.result_reader, self.chiamaka))
