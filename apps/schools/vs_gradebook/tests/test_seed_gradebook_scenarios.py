@@ -1008,3 +1008,66 @@ class SeedGradebookScenariosLateInTheYearTests(SeededSchools, TestCase):
             _counts(self.tenants[self.SLUG]), self.after_first_run[self.SLUG],
         )
         self.assertEqual(mail.outbox, [])
+
+
+@tag("slow")
+class FamiliesWhoOweTests(SeededSchools, TestCase):
+    """Lagoon View's books bill three families for the term, so fee holds have balances to show.
+
+    The first run finds no books and says so. The school's books are then opened
+    and given the finance module's starter fee structure, as the dev database has
+    them, and the second run bills the families through the Finance layer.
+    """
+
+    SLUGS = ("lagoon-view",)
+    ONLY = "lagoon-view"
+    SLUG = "lagoon-view"
+
+    @classmethod
+    def setUpTestData(cls):
+        from schools.core.fal.adapters.django_finance import DjangoEntityResolverAdapter
+
+        super().setUpTestData()
+        school = School.objects.get(slug=cls.SLUG)
+        with school_clock(cls.AT):
+            DjangoEntityResolverAdapter().provision_entity(
+                school.pk, code="LAGOONVIEW", name=school.name,
+            ).unwrap()
+            _build("seed_finance_ar_demo", entity="LAGOONVIEW")
+        cls.billed = cls.run_seed()
+        cls.after_billing = _counts(cls.tenants[cls.SLUG])
+
+    def holds(self, **query):
+        bursar = self.person(self.SLUG, "Ngozi", "Ibekwe")
+        url = reverse("gradebook-holds") + "?" + urlencode({"term": self.term(self.SLUG).pk, **query})
+        with school_clock(self.AT):
+            response = TenantAPIClient(bursar).get(url)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_a_school_with_no_fee_structure_bills_nobody_and_says_how_to_add_one(self):
+        self.assertIn("- no family owes:", self.first_run)
+        self.assertIn("seed_finance_ar_demo --entity", self.first_run)
+
+    def test_three_families_are_billed_and_owe_the_whole_bill(self):
+        self.assertIn("+ 3 families billed FS-TERM1 for", self.billed)
+        body = self.holds(owes="true")
+        self.assertTrue(body["owes_applied"])
+        owing = [row for row in body["data"] if row["balance"]]
+        self.assertEqual(len(owing), 3)
+        for row in owing:
+            self.assertGreater(row["balance"], 0)
+            self.assertIsNotNone(row["oldest_unpaid_on"])
+            self.assertIsNone(row["hold"])
+
+    def test_one_family_owes_with_a_result_already_released_and_two_can_still_be_held(self):
+        owing = [row for row in self.holds(owes="true")["data"] if row["balance"]]
+        self.assertEqual(sorted(row["released"] for row in owing), [False, False, True])
+        self.assertEqual({row["class"]["name"] for row in owing if not row["released"]}, {"SSS1 A"})
+        self.assertEqual({row["class"]["name"] for row in owing if row["released"]}, {"JSS1 A"})
+
+    def test_a_further_run_bills_nobody(self):
+        again = self.run_seed()
+        self.assertIn("Created this run: 0", again)
+        self.assertNotIn("families billed", again)
+        self.assertEqual(_counts(self.tenants[self.SLUG]), self.after_billing)

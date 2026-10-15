@@ -65,6 +65,14 @@ class takes is Yoruba in JSS2 B.
 
 The remaining classes are left with nothing entered, which is also a state.
 
+**Families who owe** (Lagoon View): one pupil of the published class and two of
+the class awaiting the principal are billed the term's fees through the
+Finance layer's cohort run and owe them, so the fee holds list has balances and
+an oldest unpaid day to show, for a result already released and for results
+that can still be held. It needs the school's books to hold the finance
+module's starter fee structure (``seed_finance_ar_demo --entity LAGOONVIEW``);
+without it the run says so and bills nobody.
+
 **Build-two states** (Lagoon View only):
 
 * JSS1 A's published card has three corrections raised by the main branch
@@ -275,6 +283,17 @@ UPLOAD_FILLS = 2
 #: The account the corrections are raised from, at a school that has them. The
 #: school's own administrator, who holds the approving key, decides them.
 RAISER = "branch.admin"
+
+#: The families each school's books bill for the current term, so the fee
+#: holds list has balances to show: ``(role, how many)``, the first pupils on
+#: the role's class roll whose result is not held. One from the published class
+#: owes with a result already released, which can no longer be held; two from
+#: the class awaiting the principal owe while their results can still be held.
+DEBTORS = {"lagoon-view": (("published", 1), ("awaiting", 2))}
+
+#: The fee structure the families are billed from, the starter one the finance
+#: module's ``seed_finance_ar_demo`` puts in a school's books.
+FEE_STRUCTURE = "FS-TERM1"
 
 
 @dataclass(frozen=True)
@@ -701,6 +720,7 @@ class Command(BaseCommand):
             if plan.history:
                 self._cumulative_card(s, plan)
         self._departures(s)
+        self._debtors(s)
         self._summary(s)
 
         lines = [f"{slug}: admin@{slug}.example.com (whole school, publishes)"]
@@ -1612,6 +1632,62 @@ class Command(BaseCommand):
             f"{label}: {done['scores']} scores entered from an uploaded spreadsheet "
             f"by {lead.full_name} ({done['replaced']} replacing earlier ones)",
         )
+
+    # ── what families owe ─────────────────────────────────────────────────
+
+    def _debtors(self, s):
+        """Bill a few families for the term through the Finance layer, so fee holds show what is owed.
+
+        Fee holds read each pupil's balance from Finance, and a school's books
+        hold nothing for its pupils until the school bills them. The pupils are
+        billed the way the school's own fee run bills them: the starter fee
+        structure is linked to the current term and a cohort run raises one
+        posted invoice per pupil (opening the pupil's finance account on the
+        first bill, at the branch they attend, due by the school's rule).
+        Nothing is paid, so each family owes the whole bill. A school whose
+        books have no fee structure is said so and left alone. A cohort run
+        skips a pupil already billed for the term, so a rerun bills nobody.
+        """
+        from schools.core.fal import registry
+        from vs_finance.models import FeeStructure, LedgerEntity
+
+        wanted = DEBTORS.get(s.slug)
+        if not wanted:
+            return
+        entity = LedgerEntity.objects.filter(tenant=s.tenant).first()
+        structure = (
+            FeeStructure.objects.filter(entity=entity, code=FEE_STRUCTURE, is_active=True).first()
+            if entity is not None else None
+        )
+        if structure is None or not structure.items.exists():
+            code = entity.code if entity is not None else "<the school's code>"
+            self._skipped(
+                f"no family owes: {s.school.name}'s books have no {FEE_STRUCTURE} fee "
+                f"structure to bill from. Run seed_finance_ar_demo --entity {code} first.",
+            )
+            return
+        held = set(
+            ResultHold.objects.filter(
+                tenant=s.tenant, term=s.term, lifted_at__isnull=True,
+            ).values_list("student_id", flat=True)
+        )
+        pupils = []
+        for role, count in wanted:
+            school_class, home = s.cast[role]
+            roll = book.rolls_for(s.tenant, s.term, [(school_class, home)])[school_class.pk]
+            pupils += [entry.student for entry in roll if entry.student.pk not in held][:count]
+
+        bridge = registry.get_fee_term_bridge()
+        bridge.link_term(structure.pk, s.year.pk, s.term.pk).unwrap()
+        result = bridge.generate_cohort_invoices(
+            structure.pk, tuple(str(pupil.pk) for pupil in pupils), raiser_ref=s.admin.pk,
+        ).unwrap()
+        if result.invoices_created:
+            billed = [pupil.full_name for pupil in pupils if str(pupil.pk) not in result.students_skipped]
+            self._made(
+                f"{len(result.invoices_created)} families billed {FEE_STRUCTURE} for "
+                f"{s.term.name} and owing it ({', '.join(billed)})",
+            )
 
     # ── what the run leaves ───────────────────────────────────────────────
 
