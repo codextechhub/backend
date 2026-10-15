@@ -219,3 +219,52 @@ class ReleaseAtAOneBranchSchoolTests(CardFixture):
             term=self.first_term,
         )
         self.assertEqual(response.status_code, 404)
+
+
+class ReleaseClassesTests(CardFixture):
+    """The class picker of the release screen: every class of the term the reader can see."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.publish_jss1a(held=[cls.amina])
+
+    def classes(self, user, **query):
+        return self.call("get", user, "gradebook-release-classes", term=query.pop("term", self.first_term))
+
+    def test_it_lists_the_terms_classes_with_their_stage_and_publication(self):
+        body = self.data(self.classes(self.releaser))
+        self.assertEqual(body["term"]["id"], self.first_term.pk)
+        self.assertTrue(body["branch_dimension"])
+        rows = {row["class"]["name"]: row for row in body["classes"]}
+        self.assertIn("JSS1 A", rows)
+        self.assertEqual(rows["JSS1 A"]["stage"], "PUBLISHED")
+        self.assertIsNotNone(rows["JSS1 A"]["published_at"])
+        self.assertEqual(rows["JSS1 A"]["branch"]["id"], self.jss1a.branch_id)
+        for name, row in rows.items():
+            if name != "JSS1 A":
+                self.assertNotEqual(row["stage"], "PUBLISHED", name)
+                self.assertIsNone(row["published_at"], name)
+
+    def test_only_the_release_key_may_read_it(self):
+        for user in (self.result_reader, self.principal, self.eze, self.admin, self.bursar, self.nobody):
+            with self.subTest(user=user.email):
+                self.assertEqual(self.classes(user).status_code, 403)
+
+    def test_a_branch_pinned_reader_sees_only_their_branchs_classes(self):
+        lekki = {row["class"]["id"] for row in self.data(self.classes(self.lekki_releaser))["classes"]}
+        ikeja = {row["class"]["id"] for row in self.data(self.classes(self.ikeja_releaser))["classes"]}
+        self.assertIn(self.jss1a.pk, lekki)
+        self.assertNotIn(self.jss1a.pk, ikeja)
+        self.assertFalse(lekki & ikeja)
+
+    def test_a_one_branch_school_names_no_branch(self):
+        response = self.call("get", self.solo_releaser, "gradebook-release-classes", term=self.solo_term)
+        body = self.data(response)
+        self.assertFalse(body["branch_dimension"])
+        self.assertTrue(body["classes"])
+        for row in body["classes"]:
+            self.assertIsNone(row["branch"])
+
+    def test_a_term_of_another_school_is_a_404(self):
+        self.assertEqual(self.classes(self.releaser, term=self.solo_term).status_code, 404)

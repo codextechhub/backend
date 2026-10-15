@@ -26,6 +26,7 @@ from .views.moderation import (
 )
 from .views.results import (
     ClassCardsView,
+    ReleaseClassesView,
     ReleaseListView,
     ReportCardView,
     StudentResultsView,
@@ -157,6 +158,7 @@ urlpatterns = [
     ),
     path("holds/", HoldsView.as_view(), name="gradebook-holds"),
     path("holds/<int:hold_id>/lift/", HoldLiftView.as_view(), name="gradebook-hold-lift"),
+    path("release/", ReleaseClassesView.as_view(), name="gradebook-release-classes"),
     path("release/<int:class_id>/", ReleaseListView.as_view(), name="gradebook-release"),
     path(
         "report-cards/<int:class_id>/", ClassCardsView.as_view(), name="gradebook-report-cards",

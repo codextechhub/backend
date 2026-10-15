@@ -59,7 +59,7 @@ from ..constants import (
 )
 from ..exceptions import NotPublished
 from ..models import ClassTerm, ResultHold, StudentTermResult
-from . import book, promotion_line, resolve
+from . import book, hubs, promotion_line, resolve
 from .classbook import ClassContext
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -373,6 +373,33 @@ def _email_state(result) -> str | None:
     if result.released_at is None:
         return EmailState.HELD
     return result.email_state or EMAIL_NOT_SENT
+
+
+def release_classes(tenant, user, term, branch) -> dict:
+    """The classes whose release a caller may read for *term*, for choosing one.
+
+    Every active class of the term in the caller's branches, in level order,
+    with where it stands in the chain and when it was published. ``branch`` is
+    named only at a school with several.
+    """
+    placed, _, _, _ = hubs.reachable_classes(tenant, user, term, branch)
+    several = only_branch_id_or_several(tenant) is None
+    entries = book.load(tenant, term, placed)
+    return {
+        "term": {"id": term.pk, "name": term.name},
+        "branch_dimension": several,
+        "classes": [
+            {
+                "class": {"id": entry.school_class.pk, "name": entry.school_class.name},
+                "branch": {"id": entry.home.pk, "name": entry.home.name} if several else None,
+                "stage": entry.stage,
+                "published_at": (
+                    entry.class_term.published_at if entry.class_term is not None else None
+                ),
+            }
+            for entry in entries
+        ],
+    }
 
 
 def release_list(ctx: ClassContext) -> dict:

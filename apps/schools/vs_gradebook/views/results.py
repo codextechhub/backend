@@ -1,6 +1,6 @@
 """Release, report cards and a student's results.
 
-* ``release/<class_id>/`` and ``report-cards/...`` need ``gradebook.release.view``
+* ``release/``, ``release/<class_id>/`` and ``report-cards/...`` need ``gradebook.release.view``
   and take the term as ``?term=<id>`` (the current term when absent).
 * ``students/<student_id>/results/`` needs ``gradebook.result.view``.
 
@@ -34,6 +34,27 @@ class _ReleaseView(GradebookViewMixin, APIView):
             self.tenant, self.request.user, class_id, self.term_from_query(),
             rule=classbook.RELEASE,
         )
+
+
+class ReleaseClassesView(GradebookViewMixin, APIView):
+    """GET /v1/gradebook/release/?term=&branch=
+
+    The classes whose release list the caller may open, for choosing one:
+    ``{term, branch_dimension, classes}``, each class ``{class, branch, stage,
+    published_at}`` in level order. ``stage`` is where the class stands in the
+    chain (ENTERING, COMPILING, AWAITING or PUBLISHED); ``branch`` is null at a
+    school with one branch. Every active class of the term in the caller's
+    branches is listed, published or not.
+
+    docstring-name: Release classes
+    """
+
+    rbac_permission = PERM_RELEASE_VIEW
+
+    def get(self, request):
+        return success_response(data=reportcards.release_classes(
+            self.tenant, request.user, self.term_from_query(), self.branch_from_query(),
+        ))
 
 
 class ReleaseListView(_ReleaseView):

@@ -30,6 +30,7 @@ from ..views.moderation import (
 )
 from ..views.results import (
     ClassCardsView,
+    ReleaseClassesView,
     ReleaseListView,
     ReportCardView,
     StudentResultsView,
@@ -121,6 +122,7 @@ ROUTES = {
     "gradebook-approvals": (ApprovalsView, "/v1/gradebook/approvals/", {}),
     "gradebook-holds": (HoldsView, "/v1/gradebook/holds/", {}),
     "gradebook-hold-lift": (HoldLiftView, "/v1/gradebook/holds/4/lift/", {"hold_id": 4}),
+    "gradebook-release-classes": (ReleaseClassesView, "/v1/gradebook/release/", {}),
     "gradebook-release": (ReleaseListView, "/v1/gradebook/release/3/", {"class_id": 3}),
     "gradebook-report-cards": (ClassCardsView, "/v1/gradebook/report-cards/3/", {"class_id": 3}),
     "gradebook-report-card": (
