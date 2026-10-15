@@ -13,6 +13,12 @@ from django.conf import settings
 from vs_tenants.models import Tenant
 
 
+# The XVS logo as the school app serves it for email: a square PNG, because the
+# header draws the logo in a 42px square and mail clients such as Gmail do not
+# display SVG. It is the XVS crest, never the CodeX mark, which is the console's.
+XVS_EMAIL_LOGO_PATH = "image/xvs-logo-square.png"
+
+
 def email_brand_for_tenant(tenant) -> dict[str, str]:
     """Return XVS branding for a school tenant and no override otherwise."""
     if getattr(tenant, "kind", None) != Tenant.Kind.SCHOOL:
@@ -21,5 +27,5 @@ def email_brand_for_tenant(tenant) -> dict[str, str]:
     base = (getattr(settings, "SCHOOL_APP_BASE_URL", "") or "").rstrip("/") + "/"
     return {
         "email_brand": "XVS",
-        "brand_logo_url": urljoin(base, "svg/logo-blue.svg") if base != "/" else "",
+        "brand_logo_url": urljoin(base, XVS_EMAIL_LOGO_PATH) if base != "/" else "",
     }

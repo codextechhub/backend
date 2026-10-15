@@ -410,7 +410,7 @@ class DispatchTests(_NotifFixture):
         email = Notification.objects.get(id__in=ids, channel=ChannelChoices.EMAIL)
         self.assertIn("XVS", email.html_body)
         self.assertIn(
-            'src="https://xvs.codexng.com/svg/logo-blue.svg"',
+            'src="https://xvs.codexng.com/image/xvs-logo-square.png"',
             email.html_body,
         )
         self.assertNotIn("CodeX Vision", email.html_body)

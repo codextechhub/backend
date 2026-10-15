@@ -606,3 +606,38 @@ goes for "site" and "location" when a branch is meant.
 The one exception is quoted third-party text - an error message from an
 external system, or a school's own words in a support ticket. Quote those
 verbatim and do not silently correct them.
+
+## Brands: **CodeX** is the console, **XVS** is the school app
+
+Two brands, one per application. Mixing them is the same mistake as
+"campus": a school administrator must never see the CodeX mark as their
+product's logo, and a CodeX staff member must never see the XVS crest as
+theirs.
+
+| | CodeX | XVS |
+| --- | --- | --- |
+| What it names | The company, and the platform console its staff use (`console-fe`, tab title "CX - Intranet") | The school product that schools use (`school-fe`) |
+| Its logo | The **CodeX mark**: the calligraphic X on its own | The **XVS crest**: a shield, the CodeX mark inside a cream hexagon, four lines, and an orbit with two points |
+| Logo files | `console-fe/public/image/codex-mark-blue.png`, `codex-mark-white.png` | `school-fe/public/svg/xvs-logo.svg` (light surfaces), `xvs-logo-white.svg` (dark surfaces), `public/image/xvs-logo.png` (picture) |
+| Loader files | `console-fe/public/image/codex-loading-blue.svg`, `codex-loading-white.svg` | `school-fe/public/svg/xvs-loading.svg` |
+| Email logo | none; console emails sign as "CX" | `school-fe/public/image/xvs-logo-square.png`, which the backend names in `XVS_EMAIL_LOGO_PATH` |
+
+The rules that follow from it:
+
+- **The CodeX mark inside the crest does not make it an XVS logo.** Never show
+  the bare CodeX mark anywhere in `school-fe`, including as a fallback, a
+  favicon or an email header. Never show the XVS crest in `console-fe`.
+- **A school's own uploaded crest comes first in `school-fe`.** `SchoolMark`
+  shows it, and falls back to the XVS logo, never to the CodeX mark.
+- **Every logo file carries its brand in its name** (`codex-...`, `xvs-...`).
+  A file called `logo.png` or `logo-blue.svg` says nothing about which brand
+  it is, and that is how both apps came to show the other's logo. Name new
+  files the same way.
+- **`school-fe/public/svg/logo-blue.svg` is a legacy address** that school
+  emails already in inboxes link to. It serves the XVS crest. Nothing new
+  links it.
+- **`@xvs/finance` (FinPro) ships no logo.** Its screens show whatever the host
+  supplies through `AppLogo` and `LoadingMark`, so each app shows its own brand
+  on the shared screens.
+
+In this repository the brand reaches users through email: a school tenant's emails carry the XVS logo (`schools/core/fal/notification_branding.py`), and everything else signs as CodeX.

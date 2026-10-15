@@ -79,7 +79,7 @@ class ProductEmailBrandTests(TestCase):
         self.assertEqual(context["email_brand"], "XVS")
         self.assertEqual(
             context["brand_logo_url"],
-            "https://xvs.codexng.com/svg/logo-blue.svg",
+            "https://xvs.codexng.com/image/xvs-logo-square.png",
         )
 
 
