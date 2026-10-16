@@ -104,6 +104,7 @@ FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
 # subdomain at call time: corona.localhost:5174 resolves to 127.0.0.1 without
 # any hosts-file entry, which is the same shape the onboarding seeder prints.
 SCHOOL_APP_BASE_URL = 'http://localhost:5174'  # school-fe
+STUDENT_APP_BASE_URL = 'http://localhost:5175'  # student-fe
 CSRF_TRUSTED_ORIGINS = [
     FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL, 'http://*.localhost:5174',
     # The student app's dev server.

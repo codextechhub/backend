@@ -8,6 +8,9 @@ and his history and receipt follow.
 """
 from __future__ import annotations
 
+from unittest import mock
+
+from django.test import override_settings
 from django.urls import reverse
 
 from core.test_utils import TenantAPIClient
@@ -102,6 +105,19 @@ class PortalFeesTests(FALFixture):
         self.assertEqual(intent.origin, CollectionOrigin.PORTAL)
         self.assertEqual(intent.created_by_id, self.tunde_user.pk)
         self.assertEqual(intent.invoice_id, self.tunde_invoice.pk)
+
+    @override_settings(
+        SCHOOL_APP_BASE_URL="https://xvs.codexng.com", STUDENT_APP_BASE_URL="",
+    )
+    def test_the_checkout_returns_the_pupil_to_the_student_apps_paid_page(self):
+        with mock.patch.object(
+            self.fake, "create_checkout", wraps=self.fake.create_checkout,
+        ) as checkout:
+            self.assertEqual(self.pay(200_000).status_code, 201)
+        self.assertEqual(
+            checkout.call_args.kwargs["callback_url"],
+            f"https://{self.corona.tenant.slug}.xvs.codexng.com/student/fees/paid",
+        )
 
     def test_the_whole_balance_may_always_be_paid(self):
         self.assertEqual(self.pay(300_000).status_code, 201)

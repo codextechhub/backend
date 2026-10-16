@@ -20,6 +20,7 @@ from schools.core.fal.exceptions import CrossTenantError, PaymentGatewayError
 from schools.core.fal.student_payments import read_student_payment_rules
 from rest_framework.exceptions import NotFound
 
+from .links import student_app_url
 from .exceptions import (
     AmountAboveBalance,
     AmountBelowMinimum,
@@ -29,6 +30,11 @@ from .exceptions import (
     PaymentProviderUnavailable,
     StudentPaymentOff,
 )
+
+#: Where the gateway returns a pupil after a card payment, inside the student
+#: app; the gateway adds ``?reference=`` and the page polls the collection's
+#: status by it.
+PAID_PATH = "fees/paid"
 
 STATUS_LABEL = {"UNPAID": "Owing", "PARTIAL": "Part-paid", "PAID": "Paid"}
 METHOD_LABEL = {
@@ -110,7 +116,8 @@ def start_payment(student, *, actor, invoice_ref, amount) -> dict:
 
     The rules are read here, at the school's end, and the balance from the
     pupil's own invoices, so an invoice that is not theirs is not found before
-    anything is asked of the gateway.
+    anything is asked of the gateway. The checkout returns the pupil to the
+    student app's paid page (``/student/fees/paid``).
     """
     rules = read_student_payment_rules(student.tenant)
     if not rules.enabled:
@@ -147,6 +154,7 @@ def start_payment(student, *, actor, invoice_ref, amount) -> dict:
         result = registry.get_student_payment().start_payment_session(
             student_ref=_ref(student), invoice_ref=invoice["invoice_ref"],
             amount=amount, actor=actor,
+            callback_url=student_app_url(student.tenant, PAID_PATH),
         )
     except CrossTenantError:
         raise NotFound("No such invoice on your account.") from None

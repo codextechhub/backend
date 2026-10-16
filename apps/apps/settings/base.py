@@ -609,6 +609,10 @@ PAYMENTS_TERMINALS_AUTO_CREATE = config("PAYMENTS_TERMINALS_AUTO_CREATE", defaul
 # The school apps, not the Console. Scheme and host only; the slug becomes a
 # subdomain at call time. See the module docstring.
 SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="http://localhost:5174")
+# The student app is served at /student/ on each school's own host. Empty means
+# the school app's host, which is where it lives in every deployed
+# environment; development serves it from a second dev server.
+STUDENT_APP_BASE_URL = config("STUDENT_APP_BASE_URL", default="")
 
 # Product-specific notification branding resolves through the schools FAL, so
 # the domain-neutral notification engine never imports a school application.

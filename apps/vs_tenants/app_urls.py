@@ -26,19 +26,25 @@ from django.core.exceptions import ImproperlyConfigured
 _TENANT_ACCOUNT_PREFIX = "/accounts"
 
 
-def school_app_url(slug: str) -> str:
+def school_app_url(slug: str, *, base: str | None = None) -> str:
     """The address a school's own users sign in at, or "" when unresolvable.
 
     Returns "" rather than a half-built address for a missing slug or a missing
     setting. A blank is a thing a caller can test and a screen can leave out; a
     URL that is wrong in a way nobody notices is worse than no URL, because the
     person clicking it believes it.
+
+    ``base`` names another configured host to put the slug into, for an app
+    served per tenant on a host of its own in some environments (a second dev
+    server); it defaults to ``SCHOOL_APP_BASE_URL``.
     """
     slug = (slug or "").strip().lower()
     if not slug:
         return ""
 
-    base = str(getattr(settings, "SCHOOL_APP_BASE_URL", "") or "").strip().rstrip("/")
+    if base is None:
+        base = getattr(settings, "SCHOOL_APP_BASE_URL", "")
+    base = str(base or "").strip().rstrip("/")
     if not base:
         return ""
 

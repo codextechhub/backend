@@ -651,7 +651,11 @@ that year in `session`.
 
 ### 13.10 Still to build from this plan
 
+A card checkout started in the portal returns the pupil to
+`<school host>/student/fees/paid?reference=...` (`STUDENT_APP_BASE_URL` names
+another host only for a separate dev server); the page polls the public
+collection status by that reference.
+
 Messages and Assignments when their turn comes. For the installable app: the
-per-school app file and icons, the card return to `/student/fees/paid`, the
-bank-transfer account and deposit reads, applying transfers to open bills
+per-school app file and icons, the bank-transfer account and deposit reads, applying transfers to open bills
 (per-school switch, default on), and push.
