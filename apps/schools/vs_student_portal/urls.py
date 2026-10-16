@@ -7,6 +7,10 @@ from django.urls import path
 
 from .views import (
     AttendanceView,
+    FeesView,
+    PayInvoiceView,
+    PaymentHistoryView,
+    ReceiptView,
     MeView,
     NoticeDetailView,
     NoticeFeedView,
@@ -29,6 +33,16 @@ urlpatterns = [
     ),
     path("timetable/", TimetableView.as_view(), name="student-portal-timetable"),
     path("attendance/", AttendanceView.as_view(), name="student-portal-attendance"),
+    path("fees/", FeesView.as_view(), name="student-portal-fees"),
+    path("fees/payments/", PaymentHistoryView.as_view(), name="student-portal-payments"),
+    path(
+        "fees/payments/<int:payment_ref>/receipt/", ReceiptView.as_view(),
+        name="student-portal-receipt",
+    ),
+    path(
+        "fees/invoices/<int:invoice_ref>/pay/", PayInvoiceView.as_view(),
+        name="student-portal-pay",
+    ),
     path("results/", ResultsView.as_view(), name="student-portal-results"),
     path(
         "results/session/", SessionResultsView.as_view(),

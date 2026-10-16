@@ -40,15 +40,18 @@ enforces the boundary:
 
     onboarding         -> EntityResolverPort (+ ProcurementActionPort for seeding)
     students           -> StudentCustomerPort + FinanceReadPort (read-only)
+    student portal     -> FinanceReadPort + StudentPaymentPort
     dashboards         -> FinanceReadPort  (+ ProcurementReadPort)
     reports            -> FinanceReadPort  (+ ProcurementReadPort)
     parent portal      -> FinanceReadPort + ParentPaymentBridgePort
     school procurement -> ProcurementActionPort + ProcurementReadPort
 
-Because the student portal is handed a ``FinanceReadPort`` (never a
-``ParentPaymentBridgePort``), it is *structurally incapable* of applying or
-initiating a payment: the method is not on the type it holds. The read-only
-guarantee is enforced by the type-checker, not by convention.
+The student portal is handed a ``FinanceReadPort`` and a
+``StudentPaymentPort``. The second lets a pupil start a payment for their own
+invoice, as a fallback when their family cannot pay through their own app
+(owner decision, 15 October 2026), and read their own payment history and
+receipts. Like the parent bridge it can only start a payment: settlement stays
+inside ``vs_payments``, and no port a portal holds has a method that books.
 
 Guarantees every implementation must uphold
 --------------------------------------------
@@ -661,6 +664,54 @@ class ParentPaymentBridgePort(ABC):
 
 
 # =========================================================================== #
+# Component 6b - Student portal payments
+# =========================================================================== #
+class StudentPaymentPort(ABC):
+    """A pupil's own payments: start one for their own invoice, read the history,
+    read a receipt. **It never books anything.**
+
+    Every method takes the ``student_ref`` the portal admitted (the pupil the
+    signed-in account is linked to) and refuses anything outside that pupil's
+    own accounts with ``CrossTenantError``, rendered 404, so another child's
+    invoice or payment cannot be named into it.
+
+    Starting a payment delegates to ``vs_payments.services.initiate_collection``
+    with the pupil's account as the actor and the ``PORTAL`` origin, so the
+    account that pressed Pay is told when it is confirmed. Settlement stays
+    inside ``vs_payments`` (confirm, then book), exactly as for the parent
+    bridge.
+    """
+
+    @abstractmethod
+    def payment_history(self, student_ref: StudentRef) -> FinanceResult[tuple]:
+        """The pupil's payments, newest first: posted receipts and gateway
+        payments still being confirmed. A tuple of ``PaymentHistoryRow``."""
+
+    @abstractmethod
+    def start_payment_session(
+        self, *, student_ref: StudentRef, invoice_ref: InvoiceRef, amount: Kobo,
+        actor, callback_url: str = "",
+    ) -> FinanceResult:
+        """Create a gateway checkout for the pupil's own invoice; a ``Checkout``.
+
+        Outage versus rejection, as for the parent bridge: a provider that is
+        down or not configured answers ``UNAVAILABLE``; an invoice that is not
+        payable, or an amount over its balance, raises ``PaymentGatewayError``.
+
+        :raises CrossTenantError: the invoice is not on this pupil's account.
+        """
+
+    @abstractmethod
+    def receipt(self, student_ref: StudentRef, payment_ref: PaymentRef) -> FinanceResult:
+        """The ``ReceiptDocument`` for a posted payment on the pupil's account,
+        or None when there is none (not posted, or not theirs: the same answer)."""
+
+    @abstractmethod
+    def receipt_pdf(self, student_ref: StudentRef, payment_ref: PaymentRef) -> FinanceResult:
+        """The same receipt as the PDF the school's receipt email attaches, or None."""
+
+
+# =========================================================================== #
 # Component 7 - Procurement actions
 # =========================================================================== #
 class ProcurementActionPort(ABC):
@@ -956,6 +1007,7 @@ __all__ = [
     "FinanceReadPort",
     "GuardianLinkPort",
     "ParentPaymentBridgePort",
+    "StudentPaymentPort",
     "ProcurementActionPort",
     "ProcurementReadPort",
     # v1.2 (deferred): importable from this module, but deliberately NOT

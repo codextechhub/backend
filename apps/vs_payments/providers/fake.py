@@ -52,6 +52,8 @@ class FakeProvider(Provider):
         # The fee (kobo) verify reports per reference; ``default_fee`` for the rest.
         self.forced_fee: dict[str, int] = {}
         self.default_fee: int | None = 0
+        # How verify says each reference was paid; card unless a test names another.
+        self.forced_paid_via: dict[str, str] = {}
         # Every subaccount named on a checkout or virtual account, by reference.
         self.subaccounts_named: dict[str, str] = {}
         # Subaccounts created or refreshed, by code: the bank details they settle to.
@@ -120,6 +122,7 @@ class FakeProvider(Provider):
             amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
             paid_at=self.forced_paid_at.get(reference),  # None unless a test names the paid instant.
             fee=self.forced_fee.get(reference, self.default_fee),
+            paid_via=self.forced_paid_via.get(reference, "CARD" if status == "SUCCEEDED" else ""),
             raw={"forced": status},  # Show where the verification status came from.
         )
 

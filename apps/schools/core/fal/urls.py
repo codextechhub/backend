@@ -12,6 +12,7 @@ belong to the procurement bridge, which is its own piece of work.
 """
 from django.urls import path
 
+from .student_payments import StudentPaymentRulesView
 from .views import FeeDuePolicyView, GenerateInvoicesView, LinkTermView
 
 urlpatterns = [
@@ -19,6 +20,11 @@ urlpatterns = [
         "settings/fee-due-policy/",
         FeeDuePolicyView.as_view(),
         name="fal-fee-due-policy",
+    ),
+    path(
+        "settings/student-payments/",
+        StudentPaymentRulesView.as_view(),
+        name="fal-student-payment-rules",
     ),
     path(
         "fee-structures/<int:pk>/link-term/",

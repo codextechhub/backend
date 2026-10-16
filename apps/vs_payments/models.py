@@ -29,6 +29,7 @@ from .constants import (
     CollectionOrigin,
     CollectionStatus,
     CustodyMode,
+    PaidVia,
     HeldMovementKind,
     HeldSettlementStatus,
     PaymentAuditAction,
@@ -170,7 +171,11 @@ class CollectionIntent(TimeStampedModel):
     )
     origin = models.CharField(
         max_length=10, choices=CollectionOrigin.choices, default=CollectionOrigin.STANDARD,
-        help_text="Where the collection was started: a branch desk, or any other way.",
+        help_text="Where the collection was started: a branch desk, the payer's own account, or any other way.",
+    )
+    paid_via = models.CharField(
+        max_length=16, choices=PaidVia.choices, blank=True, default="",
+        help_text="How the payer actually paid, as the provider reported it at confirmation.",
     )
     reference = models.CharField(
         max_length=64, unique=True,

@@ -61,6 +61,7 @@ from ..contracts import (
     SOURCE_TYPE_STUDENT,
     student_pk,
     AccountMove,
+    Checkout,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -84,6 +85,7 @@ from ..contracts import (
     MovedBill,
     Page,
     PaymentMethod,
+    PaymentHistoryRow,
     PaymentRow,
     Period,
     ProcApprovalState,
@@ -93,6 +95,8 @@ from ..contracts import (
     ProcurementRow,
     ProcurementSnapshot,
     Receipt,
+    PaymentReceiptLine,
+    ReceiptDocument,
     Series,
     SeriesPoint,
     Unavailable,
@@ -124,6 +128,7 @@ from ..ports import (
     FinanceReadPort,
     GuardianLinkPort,
     ParentPaymentBridgePort,
+    StudentPaymentPort,
     ProcurementActionPort,
     ProcurementReadPort,
     StudentCustomerPort,
@@ -1634,6 +1639,9 @@ def _invoice_view(invoice):
         amount_paid=invoice.amount_paid,
         balance=invoice.balance_due,
         status=InvoiceStatus(invoice.payment_status),
+        document_number=invoice.document_number or "",
+        invoice_date=invoice.invoice_date,
+        due_date=invoice.due_date,
     )
 
 
@@ -2093,6 +2101,180 @@ class DjangoParentPaymentBridgeAdapter(ParentPaymentBridgePort):
                 allocation.invoice_id for allocation in payment.allocations.all()
             ),
         ))
+
+
+# --------------------------------------------------------------------------- #
+# Component 6b - Student portal payments
+# --------------------------------------------------------------------------- #
+#: A posted receipt's own method, in the history's words.
+_HISTORY_METHOD = {
+    "CASH": "CASH", "BANK_TRANSFER": "BANK_TRANSFER", "CARD": "CARD",
+    "ONLINE": "ONLINE", "CHEQUE": "CHEQUE", "OTHER": "OTHER",
+}
+
+
+def _payer(intent) -> str:
+    """The name of the account that started an online payment, else empty."""
+    if intent is None or not intent.created_by_id:
+        return ""
+    return intent.created_by.full_name
+
+
+class DjangoStudentPaymentAdapter(StudentPaymentPort):
+    """Component 6b. The pupil's own accounts bound every read and every write.
+
+    A pupil's accounts are the AR customers carrying their loose reference
+    (``_customers_for_student``); an invoice or payment outside them is
+    refused as ``CrossTenantError`` before anything is read or started.
+    """
+
+    def _customers(self, student_ref):
+        customers = list(_customers_for_student(student_ref))
+        if customers:
+            _one_tenant(customers, "This student's AR accounts")
+        return customers
+
+    @envelope
+    def payment_history(self, student_ref):
+        from vs_finance.models import Payment
+        from vs_payments.constants import CollectionStatus
+        from vs_payments.models import CollectionIntent
+
+        customers = self._customers(student_ref)
+        if not customers:
+            return _available(())
+        rows = []
+        payments = (
+            Payment.objects.filter(customer__in=customers, status="POSTED")
+            .prefetch_related("collection_intents__created_by", "allocations__invoice")
+        )
+        for payment in payments:
+            intent = next(iter(payment.collection_intents.all()), None)
+            allocation = next(iter(payment.allocations.all()), None)
+            rows.append(PaymentHistoryRow(
+                reference=(intent.reference if intent else payment.reference) or "",
+                amount=payment.amount,
+                status="CONFIRMED",
+                method=(intent.paid_via if intent and intent.paid_via
+                        else _HISTORY_METHOD.get(payment.method, "OTHER")),
+                paid_on=payment.payment_date,
+                payer_name=_payer(intent),
+                payment_ref=payment.pk,
+                receipt_number=payment.document_number or "",
+                invoice_number=allocation.invoice.document_number if allocation else "",
+            ))
+        waiting = (
+            CollectionIntent.objects.filter(
+                customer__in=customers, payment__isnull=True,
+                status__in=(CollectionStatus.PENDING, CollectionStatus.PROCESSING),
+            )
+            .exclude(provider_reference="")
+            .select_related("created_by", "invoice")
+        )
+        for intent in waiting:
+            rows.append(PaymentHistoryRow(
+                reference=intent.reference,
+                amount=intent.amount,
+                status="PENDING",
+                method=intent.paid_via or "ONLINE",
+                paid_on=intent.created_at.date(),
+                payer_name=_payer(intent),
+                invoice_number=intent.invoice.document_number if intent.invoice_id else "",
+            ))
+        rows.sort(key=lambda row: (row.paid_on, row.status == "PENDING"), reverse=True)
+        return _available(tuple(rows))
+
+    @envelope
+    def start_payment_session(self, *, student_ref, invoice_ref, amount, actor,
+                              callback_url=""):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        from vs_finance.models import Invoice
+        from vs_payments.constants import CollectionOrigin
+        from vs_payments.exceptions import ProviderError, ProviderNotConfiguredError
+        from vs_payments.services import initiate_collection
+
+        customers = self._customers(student_ref)
+        invoice = (
+            Invoice.objects.filter(pk=invoice_ref, customer__in=customers)
+            .select_related("customer", "entity").first()
+            if customers else None
+        )
+        if invoice is None:
+            raise CrossTenantError("That invoice is not on this student's account.")
+        try:
+            intent = initiate_collection(
+                entity=invoice.entity, amount=amount, customer=invoice.customer,
+                invoice=invoice,
+                payer_email=(getattr(actor, "email", "") or invoice.customer.billing_email or ""),
+                payer_name=getattr(actor, "full_name", "") or invoice.customer.name,
+                callback_url=callback_url or None, actor_user=actor,
+                origin=CollectionOrigin.PORTAL,
+            )
+        except ProviderNotConfiguredError:
+            return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
+        except ProviderError:
+            return FinanceResult.unavailable(Unavailable.GATEWAY_UNAVAILABLE)
+        except DRFValidationError as exc:
+            raise PaymentGatewayError(str(exc.detail)) from exc
+        return _available(Checkout(checkout_url=intent.checkout_url, reference=intent.reference))
+
+    def _payment(self, student_ref, payment_ref):
+        from vs_finance.models import Payment
+
+        customers = self._customers(student_ref)
+        if not customers:
+            return None
+        return (
+            Payment.objects.filter(pk=payment_ref, customer__in=customers, status="POSTED")
+            .select_related("customer", "entity")
+            .prefetch_related("collection_intents__created_by", "allocations__invoice")
+            .first()
+        )
+
+    @envelope
+    def receipt(self, student_ref, payment_ref):
+        from vs_finance.document_email import _issuer_name
+        from vs_finance.documents import customer_net_after
+
+        payment = self._payment(student_ref, payment_ref)
+        if payment is None:
+            return _available(None)
+        intent = next(iter(payment.collection_intents.all()), None)
+        lines = tuple(
+            PaymentReceiptLine(
+                invoice_number=alloc.invoice.document_number or "",
+                term_label=alloc.invoice.billing_period_label or "",
+                amount_applied=alloc.amount,
+                balance_after=(alloc.invoice_balance_after
+                               if alloc.invoice_balance_after is not None
+                               else alloc.invoice.balance_due),
+            )
+            for alloc in payment.allocations.all()
+        )
+        return _available(ReceiptDocument(
+            payment_ref=payment.pk,
+            receipt_number=payment.document_number or "",
+            paid_on=payment.payment_date,
+            amount=payment.amount,
+            method=(intent.paid_via if intent and intent.paid_via
+                    else _HISTORY_METHOD.get(payment.method, "OTHER")),
+            reference=(intent.reference if intent else payment.reference) or "",
+            payer_name=_payer(intent),
+            customer_name=payment.customer.name,
+            lines=lines,
+            balance_after=(payment.customer_balance_after
+                           if payment.customer_balance_after is not None
+                           else customer_net_after(payment.entity, payment.customer)),
+            issuer_name=_issuer_name(payment.entity),
+        ))
+
+    @envelope
+    def receipt_pdf(self, student_ref, payment_ref):
+        from vs_finance.pdf import receipt_pdf
+
+        payment = self._payment(student_ref, payment_ref)
+        return _available(receipt_pdf(payment) if payment is not None else None)
 
 
 # --------------------------------------------------------------------------- #

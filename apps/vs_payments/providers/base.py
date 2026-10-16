@@ -58,6 +58,7 @@ class CollectionStatusResult:
     currency: str = "NGN"  # Settlement currency code.
     paid_at: datetime | None = None  # Aware instant the payer paid, when the provider says.
     fee: int | None = None  # Kobo the provider kept from the payment; None when unreported.
+    paid_via: str = ""  # PaidVia value: how the payer paid; "" when unreported.
     raw: dict = field(default_factory=dict)  # Full provider payload preserved verbatim.
 
     @property

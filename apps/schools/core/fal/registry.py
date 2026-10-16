@@ -24,6 +24,7 @@ Settings keys::
     FAL_FINANCE_READER
     FAL_GUARDIAN_LINK
     FAL_PARENT_PAYMENT
+    FAL_STUDENT_PAYMENT
     FAL_PROCUREMENT_READER
     FAL_PROCUREMENT_ACTIONS
 
@@ -64,6 +65,7 @@ from .ports import (
     FinanceReadPort,
     GuardianLinkPort,
     ParentPaymentBridgePort,
+    StudentPaymentPort,
     ProcurementActionPort,
     ProcurementReadPort,
     StudentCustomerPort,
@@ -82,6 +84,7 @@ _DEFAULTS = {
     "FAL_FINANCE_READER": f"{_ADAPTER_MODULE}.DjangoFinanceReadAdapter",
     "FAL_GUARDIAN_LINK": f"{_ADAPTER_MODULE}.DjangoGuardianLinkAdapter",
     "FAL_PARENT_PAYMENT": f"{_ADAPTER_MODULE}.DjangoParentPaymentBridgeAdapter",
+    "FAL_STUDENT_PAYMENT": f"{_ADAPTER_MODULE}.DjangoStudentPaymentAdapter",
     "FAL_PROCUREMENT_READER": f"{_ADAPTER_MODULE}.DjangoProcurementReadAdapter",
     "FAL_PROCUREMENT_ACTIONS": f"{_ADAPTER_MODULE}.DjangoProcurementActionAdapter",
 }
@@ -164,6 +167,10 @@ def get_parent_payment_bridge() -> ParentPaymentBridgePort:
     return _get("FAL_PARENT_PAYMENT")  # type: ignore[return-value]
 
 
+def get_student_payment() -> StudentPaymentPort:
+    return _get("FAL_STUDENT_PAYMENT")  # type: ignore[return-value]
+
+
 def get_procurement_reader() -> ProcurementReadPort:
     return _get("FAL_PROCUREMENT_READER")  # type: ignore[return-value]
 
@@ -201,6 +208,10 @@ def set_guardian_link(port: GuardianLinkPort) -> None:
 
 def set_parent_payment_bridge(port: ParentPaymentBridgePort) -> None:
     _cache["FAL_PARENT_PAYMENT"] = port
+
+
+def set_student_payment(port: StudentPaymentPort) -> None:
+    _cache["FAL_STUDENT_PAYMENT"] = port
 
 
 def set_procurement_reader(port: ProcurementReadPort) -> None:

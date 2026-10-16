@@ -291,6 +291,15 @@ def _invoice_context(invoice, delivery) -> dict:
     }
 
 
+def receipt_notice_context(payment) -> dict:
+    """What the payment-received notice prints about *payment*, with no covering note.
+
+    The same words the receipt email uses, for a notice sent to somebody other
+    than the customer's billing address (the person who paid in their own app).
+    """
+    return _receipt_context(payment, None)
+
+
 def _receipt_context(payment, delivery) -> dict:
     allocation = payment.allocations.select_related("invoice").first()
     return {
@@ -301,7 +310,7 @@ def _receipt_context(payment, delivery) -> dict:
         "receipt_number": payment.document_number,
         "school_name": _issuer_name(payment.entity),
         "issuer_name": _issuer_name(payment.entity),
-        "note": delivery.note,
+        "note": delivery.note if delivery is not None else "",
     }
 
 

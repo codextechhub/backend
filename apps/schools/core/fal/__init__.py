@@ -27,11 +27,13 @@ Public surface (accessors, port types, DTOs)::
         # DI accessors, one per port
         get_entity_resolver, get_fee_term_bridge, get_student_customer,
         get_finance_rbac, get_finance_reader, get_parent_payment_bridge,
-        get_procurement_reader, get_procurement_actions, get_guardian_link,
+        get_student_payment, get_procurement_reader, get_procurement_actions,
+        get_guardian_link,
         # port types
         EntityResolverPort, FeeTermBridgePort, StudentCustomerPort,
         FinanceRbacPort, FinanceReadPort, ParentPaymentBridgePort,
-        ProcurementReadPort, ProcurementActionPort, GuardianLinkPort,
+        StudentPaymentPort, ProcurementReadPort, ProcurementActionPort,
+        GuardianLinkPort,
         # envelope / money / refs
         FinanceResult, Availability, Unavailable, Kobo, Ref, LooseRef,
         # ... plus the DTOs in schools.core.fal.contracts
@@ -124,6 +126,7 @@ from .ports import (
     ProcurementActionPort,
     ProcurementReadPort,
     StudentCustomerPort,
+    StudentPaymentPort,
 )
 from .registry import (
     get_entity_resolver,
@@ -135,6 +138,7 @@ from .registry import (
     get_procurement_actions,
     get_procurement_reader,
     get_student_customer,
+    get_student_payment,
 )
 
 #: The version of the contract this package implements.
@@ -142,7 +146,7 @@ from .registry import (
 #: Bumped on any change to a port signature, a source-type constant or a
 #: default resolver. A consuming module pins the version it was written
 #: against; the FAL's own change log lives with the spec, not here.
-FAL_CONTRACT_VERSION = "1.1.6"
+FAL_CONTRACT_VERSION = "1.1.7"
 
 default_app_config = "schools.core.fal.apps.FalConfig"
 
@@ -156,6 +160,7 @@ __all__ = [
     "get_finance_reader",
     "get_guardian_link",
     "get_parent_payment_bridge",
+    "get_student_payment",
     "get_procurement_reader",
     "get_procurement_actions",
     # ports
@@ -166,6 +171,7 @@ __all__ = [
     "FinanceReadPort",
     "GuardianLinkPort",
     "ParentPaymentBridgePort",
+    "StudentPaymentPort",
     "ProcurementReadPort",
     "ProcurementActionPort",
     # envelope / money

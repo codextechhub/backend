@@ -239,7 +239,7 @@ def _payment_status_badge(payment_status: str) -> str:
 
 
 # Compute customer net receivable after current postings.
-def _customer_net_after(entity, customer) -> int:
+def customer_net_after(entity, customer) -> int:
     """The customer's net AR position (kobo; positive = owes) after current postings.
 
     Reuses the AR ledger already backing the customer drawer
@@ -357,7 +357,11 @@ def receipt_document_context(payment) -> dict:
             "invoice_ref": inv.document_number,  # Settled invoice number.
             "sub": inv.narration or inv.reference or "",  # Secondary invoice text.
             "amount_applied": format_naira(alloc.amount),  # Display amount applied to invoice.
-            "invoice_balance_after": format_naira(inv.balance_due),  # Display invoice balance after allocation.
+            # The balance frozen when this slice was applied; today's for older rows.
+            "invoice_balance_after": format_naira(
+                alloc.invoice_balance_after if alloc.invoice_balance_after is not None
+                else inv.balance_due
+            ),
         })
 
     try:  # Convert stored method value to human label when enum knows it.
@@ -376,7 +380,11 @@ def receipt_document_context(payment) -> dict:
             "amount": format_naira(payment.amount),  # Display receipt amount.
             "amount_in_words": naira_in_words(payment.amount),  # Display amount in words.
             "allocations": allocations,  # Prepared allocation rows.
-            "customer_balance_after": format_naira(_customer_net_after(entity, payment.customer)),  # Display net AR after receipt.
+            # Frozen at posting; worked out now only for receipts posted before that.
+            "customer_balance_after": format_naira(
+                payment.customer_balance_after if payment.customer_balance_after is not None
+                else customer_net_after(entity, payment.customer)
+            ),
             "settled_stamp": "Received",  # Static stamp text for the template.
         },
     }

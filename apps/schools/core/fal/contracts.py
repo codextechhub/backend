@@ -450,7 +450,11 @@ class InvoiceLine:
 
 @dataclass(frozen=True)
 class InvoiceView:
-    """A single invoice with its line items, for the parent portal."""
+    """A single invoice with its line items, for the student and parent portals.
+
+    ``document_number`` is the number printed on the invoice, and
+    ``invoice_date`` and ``due_date`` the dates it carries.
+    """
 
     invoice_ref: InvoiceRef
     student_ref: StudentRef
@@ -460,6 +464,9 @@ class InvoiceView:
     amount_paid: Kobo
     balance: Kobo
     status: InvoiceStatus
+    document_number: str = ""
+    invoice_date: Optional[date] = None
+    due_date: Optional[date] = None
 
 
 @dataclass(frozen=True)
@@ -471,6 +478,68 @@ class FeeStatus:
     total_billed: Kobo
     total_paid: Kobo
     invoices: tuple[InvoiceView, ...]
+
+
+@dataclass(frozen=True)
+class PaymentHistoryRow:
+    """One payment on a student's account, settled or still being confirmed.
+
+    ``status`` is ``CONFIRMED`` (a posted receipt, which has a receipt) or
+    ``PENDING`` (a gateway payment the provider has not confirmed yet, which
+    has none). ``method`` is how it was paid: ``CARD``, ``BANK_TRANSFER``,
+    ``USSD``, ``CASH``, ``CHEQUE``, ``ONLINE`` (a gateway payment whose method
+    the provider did not report) or ``OTHER``. ``payer_name`` names the account
+    that started an online payment, and is empty for a payment the school
+    recorded.
+    """
+
+    reference: str
+    amount: Kobo
+    status: str
+    method: str
+    paid_on: date
+    payer_name: str = ""
+    payment_ref: Optional[PaymentRef] = None
+    receipt_number: str = ""
+    invoice_number: str = ""
+
+
+@dataclass(frozen=True)
+class Checkout:
+    """A payment session handed to a payer: where to pay, and the reference to watch."""
+
+    checkout_url: str
+    reference: str
+
+
+@dataclass(frozen=True)
+class PaymentReceiptLine:
+    """One invoice a payment receipt settled, and what it still owed right after.
+
+    Named apart from ``ReceiptLine``, which is a line of a goods receipt.
+    """
+
+    invoice_number: str
+    term_label: str
+    amount_applied: Kobo
+    balance_after: Kobo
+
+
+@dataclass(frozen=True)
+class ReceiptDocument:
+    """A confirmed payment's receipt, as a student or family reads it."""
+
+    payment_ref: PaymentRef
+    receipt_number: str
+    paid_on: date
+    amount: Kobo
+    method: str
+    reference: str
+    payer_name: str
+    customer_name: str
+    lines: tuple[PaymentReceiptLine, ...]
+    balance_after: Kobo
+    issuer_name: str
 
 
 @dataclass(frozen=True)

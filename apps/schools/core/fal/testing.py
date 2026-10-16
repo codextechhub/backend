@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .contracts import (
+    Checkout,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -81,6 +82,7 @@ from .ports import (
     FinanceReadPort,
     GuardianLinkPort,
     ParentPaymentBridgePort,
+    StudentPaymentPort,
     ProcurementActionPort,
     ProcurementReadPort,
     StudentCustomerPort,
@@ -702,6 +704,47 @@ class FakeProcurementReader(ProcurementReadPort):
 
 
 # --------------------------------------------------------------------------- #
+# Component 6b
+# --------------------------------------------------------------------------- #
+class FakeStudentPayment(StudentPaymentPort):
+    """A pupil's payments in memory.
+
+    ``invoices`` maps an invoice reference to the student it belongs to, so the
+    ownership refusal can be reproduced; ``reject=True`` reproduces a
+    deterministic gateway refusal.
+    """
+
+    def __init__(self, *, invoices: Optional[dict] = None, history: tuple = (),
+                 receipts: Optional[dict] = None, reject: bool = False,
+                 checkout_url: str = "https://pay.example/checkout/FAKE") -> None:
+        self.invoices: dict = dict(invoices or {})
+        self.history = tuple(history)
+        self.receipts: dict = dict(receipts or {})
+        self.reject = reject
+        self.checkout_url = checkout_url
+        self.sessions: list = []
+
+    def payment_history(self, student_ref):
+        return _ok(self.history)
+
+    def start_payment_session(self, *, student_ref, invoice_ref, amount, actor,
+                              callback_url=""):
+        if self.invoices.get(invoice_ref) != student_ref:
+            raise CrossTenantError("That invoice is not on this student's account.")
+        if self.reject:
+            raise PaymentGatewayError("The gateway refused this request.")
+        self.sessions.append((student_ref, invoice_ref, amount))
+        return _ok(Checkout(checkout_url=self.checkout_url, reference=f"FAKE-{len(self.sessions)}"))
+
+    def receipt(self, student_ref, payment_ref):
+        return _ok(self.receipts.get((student_ref, payment_ref)))
+
+    def receipt_pdf(self, student_ref, payment_ref):
+        found = self.receipts.get((student_ref, payment_ref))
+        return _ok(b"%PDF-fake" if found is not None else None)
+
+
+# --------------------------------------------------------------------------- #
 # Unavailable variants - the state a consumer must render instead of zero
 # --------------------------------------------------------------------------- #
 class _UnavailableMixin:
@@ -739,6 +782,15 @@ class UnavailableParentPaymentBridge(_UnavailableMixin, ParentPaymentBridgePort)
     def receipt_for(self, *a, **k): return self._u()
 
 
+class UnavailableStudentPayment(_UnavailableMixin, StudentPaymentPort):
+    reason = Unavailable.GATEWAY_UNAVAILABLE
+
+    def payment_history(self, *a, **k): return self._u()
+    def start_payment_session(self, *a, **k): return self._u()
+    def receipt(self, *a, **k): return self._u()
+    def receipt_pdf(self, *a, **k): return self._u()
+
+
 def unavailable_finance_reader() -> FinanceReadPort:
     return UnavailableFinanceReader()
 
@@ -751,6 +803,10 @@ def unavailable_parent_payment_bridge() -> ParentPaymentBridgePort:
     return UnavailableParentPaymentBridge()
 
 
+def unavailable_student_payment() -> StudentPaymentPort:
+    return UnavailableStudentPayment()
+
+
 __all__ = [
     "FakeEntityResolver",
     "FakeFeeTermBridge",
@@ -760,12 +816,15 @@ __all__ = [
     "FakeGuardianLink",
     "UnconfiguredGuardianLink",
     "FakeParentPaymentBridge",
+    "FakeStudentPayment",
     "FakeProcurementActions",
     "FakeProcurementReader",
     "UnavailableFinanceReader",
     "UnavailableProcurementReader",
     "UnavailableParentPaymentBridge",
+    "UnavailableStudentPayment",
     "unavailable_finance_reader",
     "unavailable_procurement_reader",
     "unavailable_parent_payment_bridge",
+    "unavailable_student_payment",
 ]

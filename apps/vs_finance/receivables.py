@@ -896,6 +896,9 @@ def _apply_payment_subledger(payment, plan, *, remaining):
             target.amount_paid += apply_amount  # Increase the invoice's paid amount.
             target.refresh_payment_status(save=False)  # Recompute the invoice payment status.
             target.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+            # What the invoice still owes now, frozen for the receipt.
+            alloc.invoice_balance_after = target.balance_due
+            alloc.save(update_fields=["invoice_balance_after"])
             # Keep any installment plan on this invoice in step with the new settlement.  # Sync installment state.
             from .installments import refresh_plans_for_invoice
             refresh_plans_for_invoice(target)  # Refresh linked installment plans.
@@ -1030,6 +1033,11 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     payment.status = DocumentStatus.POSTED  # Mark the receipt as posted.
     payment.allocated_amount = applied  # Store the amount actually applied to documents.
     payment.save(update_fields=["journal", "status", "allocated_amount", "updated_at"])
+    # The customer's position now, frozen for the receipt's "balance after".
+    from .documents import customer_net_after
+
+    payment.customer_balance_after = customer_net_after(payment.entity, customer)
+    payment.save(update_fields=["customer_balance_after"])
 
     record(  # Log the successful payment posting in the audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_POSTED,

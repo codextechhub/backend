@@ -354,3 +354,90 @@ class ReportCardView(PortalView):
                 self.student, request.query_params.get("term") or None, user=request.user,
             ),
         )
+
+
+class FeesView(PortalView):
+    """GET /v1/portal/student/fees/
+
+    The pupil's balance, what was billed and paid, and each invoice with its
+    number, title, dates, lines and status, all in kobo; ``can_pay`` and
+    ``min_part_payment`` are the school's rules for paying here. 503
+    ``FINANCE_UNAVAILABLE`` when the books cannot be read, never a zero.
+
+    docstring-name: My fees
+    """
+
+    def get(self, request):
+        from .fees import fee_summary
+
+        return success_response(data=fee_summary(self.student))
+
+
+class PaymentHistoryView(PortalView):
+    """GET /v1/portal/student/fees/payments/
+
+    The pupil's payments, newest first: confirmed ones with a receipt, and
+    online ones still being confirmed, each with how it was paid and who
+    started it.
+
+    docstring-name: My payments
+    """
+
+    def get(self, request):
+        from .fees import payment_history
+
+        return success_response(data=payment_history(self.student))
+
+
+class PayInvoiceView(PortalView):
+    """POST /v1/portal/student/fees/invoices/<invoice_ref>/pay/
+
+    Starts a payment for one of the pupil's own invoices and answers with the
+    gateway checkout to send them to. ``amount`` is kobo: the whole balance, or
+    a part of at least the school's smallest part payment. Refusals:
+    403 ``STUDENT_PAYMENT_OFF``, 404 for an invoice not on the pupil's account,
+    400 ``AMOUNT_BELOW_MINIMUM`` / ``AMOUNT_ABOVE_BALANCE`` /
+    ``PAYMENT_AMOUNT_INVALID``, 409 ``INVOICE_NOT_PAYABLE``, 503
+    ``PROVIDER_UNAVAILABLE``. Card and bank details are entered on the
+    gateway's own page, never here. Its status is read on the public
+    collection status route with the returned ``reference``.
+
+    docstring-name: Pay my invoice
+    """
+
+    def post(self, request, invoice_ref):
+        from .fees import start_payment
+
+        return success_response(
+            "Continue to the secure payment page.",
+            data=start_payment(
+                self.student, actor=request.user, invoice_ref=invoice_ref,
+                amount=request.data.get("amount"),
+            ),
+            status=201,
+        )
+
+
+class ReceiptView(PortalView):
+    """GET /v1/portal/student/fees/payments/<payment_ref>/receipt/?as=pdf
+
+    A confirmed payment's receipt on the pupil's account: JSON for the screen,
+    or with ``as=pdf`` the PDF the school's receipt email attaches. (Not
+    ``format``, which DRF reserves for choosing a renderer.) The
+    balance it states is the one left right after the payment. 404 for a
+    payment not confirmed or not the pupil's.
+
+    docstring-name: My receipt
+    """
+
+    def get(self, request, payment_ref):
+        from django.http import HttpResponse
+
+        from .fees import receipt, receipt_pdf
+
+        if request.query_params.get("as") == "pdf":
+            body = receipt_pdf(self.student, payment_ref)
+            response = HttpResponse(body, content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="receipt-{payment_ref}.pdf"'
+            return response
+        return success_response(data=receipt(self.student, payment_ref))

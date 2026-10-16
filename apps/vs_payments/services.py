@@ -61,6 +61,8 @@ from vs_finance.wording import state_word
 
 _logger = logging.getLogger("vs_payments.services")  # Diagnostics for off-request dispatch work.
 
+logger = logging.getLogger(__name__)
+
 
 # --------------------------------------------------------------------------- #
 # Irreversible-side-effect guards                                             #
@@ -615,6 +617,7 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     verify_raw = None
     paid_at = None
     fee = None
+    paid_via = ""
     if status is None:  # When no explicit status is supplied, verify with the PSP.
         client = get_provider(intent.provider)  # Resolve the provider using the stored intent value.
         result = client.verify_collection(  # Ask the PSP for the final collection state.
@@ -633,10 +636,11 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
         verify_raw = result.raw  # Carried into the locked half; applied to the row it re-reads.
         paid_at = getattr(result, "paid_at", None)  # The day the payer paid dates the receipt.
         fee = getattr(result, "fee", None)  # What the provider kept; the settlement books it.
+        paid_via = getattr(result, "paid_via", "") or ""  # Card, transfer or USSD, when it says.
 
     return _confirm_collection_atomic(
         intent.pk, status=status, amount=amount, verify_raw=verify_raw,
-        actor_user=actor_user, paid_at=paid_at, fee=fee,
+        actor_user=actor_user, paid_at=paid_at, fee=fee, paid_via=paid_via,
     )
 
 
@@ -647,7 +651,7 @@ def _collection_is_settled(intent) -> bool:
 
 @transaction.atomic
 def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user,
-                               paid_at=None, fee=None):
+                               paid_at=None, fee=None, paid_via=""):
     """Take the lock, re-check, and book. Every write in the flow happens here.
 
     A non-success answer changes the row only when it is news: FAILED or
@@ -710,6 +714,8 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
 
     if fee is not None and fee >= 0:
         intent.fee = fee
+    if paid_via:  # How the payer actually paid, for their history and receipt.
+        intent.paid_via = paid_via
     if intent.channel == CollectionChannel.TERMINAL:
         # A terminal payer names no customer: book it to the branch's unidentified
         # receipts and apply it to a customer if one is certain.
@@ -725,8 +731,10 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     intent.save(update_fields=[
         "status", "payment", "customer", "amount", "metadata", "confirmed_at", "raw_response",
         "fee", "clearing_account", "branch", "held_by_platform", "payer_email", "payer_name",
-        "updated_at",
+        "paid_via", "updated_at",
     ])
+    if intent.origin == CollectionOrigin.PORTAL and intent.created_by_id:
+        _tell_the_payer(intent)
 
     audit_metadata = {"payment_id": intent.payment_id}
     audit_metadata.update(_dating_metadata(intent.metadata))
@@ -743,6 +751,37 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     )
 
     return intent  # Return the confirmed collection intent.
+
+
+def _tell_the_payer(intent):
+    """Tell the account that started a portal payment that it went through.
+
+    The receipt email goes to the customer's billing address whatever started
+    the payment; this reaches the person who pressed Pay, in their app and at
+    their own address, once the booking commits. Best effort: a notice that
+    cannot be sent never undoes a booked receipt.
+    """
+    from vs_finance.document_email import receipt_notice_context
+    from vs_notifications.notify import send_notification
+
+    payment = intent.payment
+    payer = intent.created_by
+    if payment is None:
+        return
+
+    def _send():
+        try:
+            send_notification(
+                event_key="billing.payment_received",
+                context=receipt_notice_context(payment),
+                recipients=[payer],
+                tenant=getattr(intent.entity, "tenant", None),
+                metadata={"payment_id": payment.pk, "collection_reference": intent.reference},
+            )
+        except Exception:  # pragma: no cover - best effort by contract
+            logger.warning("payer notice failed for collection %s", intent.reference, exc_info=True)
+
+    transaction.on_commit(_send)
 
 
 def _dating_metadata(metadata) -> dict:

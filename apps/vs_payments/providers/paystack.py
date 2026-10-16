@@ -114,6 +114,25 @@ _REFUND_STATUS = {
 
 
 # Group behavior for Paystack Provider.
+#: Paystack's ``channel`` on a verified transaction, in the platform's words.
+_PAID_VIA = {
+    "card": "CARD",
+    "bank": "BANK_TRANSFER",
+    "bank_transfer": "BANK_TRANSFER",
+    "dedicated_nuban": "BANK_TRANSFER",
+    "eft": "BANK_TRANSFER",
+    "ussd": "USSD",
+}
+
+
+def _paid_via(channel) -> str:
+    """How the payer paid; OTHER for a channel this platform does not name, "" for none."""
+    text = str(channel or "").strip().lower()
+    if not text:
+        return ""
+    return _PAID_VIA.get(text, "OTHER")
+
+
 class PaystackProvider(Provider):
     name = "PAYSTACK"  # Provider lookup key used by the registry.
 
@@ -244,6 +263,7 @@ class PaystackProvider(Provider):
             currency=data.get("currency", "NGN"),
             paid_at=_instant(data.get("paid_at") or data.get("paidAt")),
             fee=_kobo_or_none(data.get("fees")),
+            paid_via=_paid_via(data.get("channel")),
             raw=data,  # Keep the raw response payload.
         )
 

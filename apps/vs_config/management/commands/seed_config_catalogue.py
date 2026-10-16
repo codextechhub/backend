@@ -296,6 +296,20 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "fees.student_payment_enabled", "Students Pay Their Own Fees",
+        "Whether a student may pay their own fees in the student portal, as a "
+        "fallback when their family cannot pay through their own app. Off "
+        "removes the Pay action from every student's fees screen.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "fees.min_part_payment", "Smallest Part Payment",
+        "The smallest part payment, in Naira, a student may make towards an "
+        "invoice in the student portal. Paying the whole balance is always "
+        "allowed, however small.",
+        "INTEGER", 1000, {"min": 0, "max": 1000000},
+    ),
+    (
         "students.suspension.notice", "Who Is Told When A Pupil Is Suspended",
         "Who the school writes to when a pupil is suspended. "
         "PRIMARY_GUARDIAN tells the one guardian marked as the pupil's main "

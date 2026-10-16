@@ -404,6 +404,14 @@ class Payment(FinanceDocument):
     )
     amount = MoneyField(help_text="Total received, in kobo.")
     allocated_amount = MoneyField(help_text="Portion allocated to invoices, in kobo.")
+    #: The customer's net position (owed less credit) the moment this receipt
+    #: posted, printed on the receipt as the balance after it. Frozen so a
+    #: reprint says what was owed then. Empty only on receipts posted before it
+    #: was recorded, where the receipt falls back to the present position.
+    customer_balance_after = MoneyField(
+        null=True, default=None,
+        help_text="Customer net AR (kobo) right after this receipt posted; empty on older receipts.",
+    )
     refunded_amount = MoneyField(
         help_text="Portion of this receipt's unapplied cash already paid back out as a "
                   "customer refund, in kobo. Maintained by RefundAllocation.",
@@ -495,6 +503,14 @@ class PaymentAllocation(TimeStampedModel):
         Invoice, on_delete=models.PROTECT, related_name="allocations",
     )
     amount = MoneyField(help_text="Amount of the payment applied to this invoice, in kobo.")
+    #: What the invoice still owed the moment this slice was applied, so a
+    #: receipt printed months later says what was left then, not what is left
+    #: now. Empty only on rows applied before it was recorded, where a receipt
+    #: falls back to the invoice's present balance.
+    invoice_balance_after = MoneyField(
+        null=True, default=None,
+        help_text="Invoice balance (kobo) right after this slice was applied; empty on older rows.",
+    )
     effective_date = models.DateField(
         null=True, blank=True,
         help_text="Accounting date this settlement took effect - the date of the "

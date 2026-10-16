@@ -522,7 +522,48 @@ The gradebook snapshot now records each subject's main teacher (inside
 the class's overall average (`class_average`). Cards published before this
 carry neither, and the portal omits them rather than inventing them.
 
-### 13.7 Still to build from this plan
+### 13.7 Fees, payments, receipts and the pay flow
 
-Home (composed), fees, receipts and the pay flow (sections 3.1 R6 and R16 to
-R22), and Messages and Assignments when their turn comes.
+Under `/v1/portal/student/`, through the finance abstraction layer only
+(`FinanceReadPort.fee_status` and a new `StudentPaymentPort`, contract 1.1.7).
+
+- `fees/`: balance, billed, paid, and each invoice with its number, title,
+  dates, lines, total, paid, balance and status (`Owing`, `Part-paid`,
+  `Paid`), all in kobo; `can_pay` and `min_part_payment` are the school's
+  rules. 503 `FINANCE_UNAVAILABLE` when the books cannot be read.
+- `fees/payments/`: confirmed receipts and online payments still being
+  confirmed, newest first, each with how it was paid (card, bank transfer,
+  USSD as the provider reported it; a school-recorded payment shows its own
+  method) and who started it (the account; empty for a payment the school
+  recorded).
+- `fees/invoices/{ref}/pay/` POST `{amount}` (kobo): the whole balance, or a
+  part of at least `fees.min_part_payment` (default ₦1,000.00), while
+  `fees.student_payment_enabled` (default on) allows it. Refusals:
+  `STUDENT_PAYMENT_OFF` 403, `AMOUNT_BELOW_MINIMUM` / `AMOUNT_ABOVE_BALANCE` /
+  `PAYMENT_AMOUNT_INVALID` 400, `INVOICE_NOT_PAYABLE` 409, 404 for an invoice
+  not on the pupil's account, `PROVIDER_UNAVAILABLE` 503. Answers
+  `{checkout_url, reference, amount, balance_after}`; the status is read on the
+  public collection status route by `reference`. The collection is started
+  with the `PORTAL` origin and the pupil's account as its actor.
+- `fees/payments/{payment_ref}/receipt/`: the receipt as JSON, or `?as=pdf`
+  (not `format`, which DRF reserves) for the PDF the receipt email attaches.
+- Staff set the two rules on `GET/PATCH /v1/school-finance/settings/student-payments/`
+  (`school.fees.view` / `school.fees.update`, whole-school reach).
+
+Engine changes the flow needed, which also fix staff receipts:
+
+- **A receipt's "balance after" is frozen when it posts**
+  (`PaymentAllocation.invoice_balance_after`, `Payment.customer_balance_after`);
+  every receipt surface (HTML, PDF, email, portal) reads the frozen figure and
+  falls back to today's only for receipts posted before it was recorded. A
+  February receipt reprinted in July now says what was owed in February.
+- **A gateway payment records how it was paid** (`CollectionIntent.paid_via`,
+  from Paystack's `channel` at confirmation).
+- **A `PORTAL` collection tells the account that started it** when it is
+  confirmed (`billing.payment_received`, in-app and by email, once the booking
+  commits). A collection staff started tells them nothing.
+
+### 13.8 Still to build from this plan
+
+Home (composed, section 3.1 R6), and Messages and Assignments when their turn
+comes.

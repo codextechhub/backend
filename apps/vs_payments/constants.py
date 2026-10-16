@@ -46,12 +46,30 @@ class CollectionOrigin(models.TextChoices):
     """Where a collection was started, so reports can tell the counter from the rest.
 
     ``DESK``: a member of staff at a branch desk started the checkout and the
-    payer paid on their own phone from a code or link shown there. ``STANDARD``
-    is every other way: a pay link, a payer's own portal, a virtual account.
+    payer paid on their own phone from a code or link shown there. ``PORTAL``:
+    the payer started it while signed in to their own account. ``STANDARD`` is
+    every other way: a pay link, a virtual account, a collection staff raised.
     """
 
     STANDARD = "STANDARD", "Standard"
     DESK = "DESK", "Taken at a branch desk"
+    #: Started by the payer themselves, signed in to their own account. The
+    #: account that started it is told when the payment is confirmed.
+    PORTAL = "PORTAL", "Started by the payer in their own account"
+
+
+class PaidVia(models.TextChoices):
+    """How the payer actually paid, as the provider reports it at confirmation.
+
+    Distinct from the collection's channel, which is how it was offered (a
+    hosted checkout offers card, transfer and USSD alike). Empty until a
+    provider says, and on a provider that does not.
+    """
+
+    CARD = "CARD", "Card"
+    BANK_TRANSFER = "BANK_TRANSFER", "Bank transfer"
+    USSD = "USSD", "USSD"
+    OTHER = "OTHER", "Other"
 
 
 # Define Collection Status values.
