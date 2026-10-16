@@ -1067,32 +1067,34 @@ do not bind CodeX staff to a school's switches (Q-D6, answered in 8.1).
 
 All are `finance.settings.view` to read and `finance.settings.update` to write
 (whole-tenant writer, `views_settings.py`), with history from
-`FinanceSettingsHistoryView`. Only the receivables policy is registered (8
-fields). Whether these join the school-settings change or the finance change is
-open (Q-D5); the recommendation is the finance change, because they carry money.
+`FinanceSettingsHistoryView`. Every value on the Finance settings screens is a
+`finance.settings` field with its own Read and Write switch, labelled as the
+settings history labels it (`vs_finance.field_access`). A hidden value leaves
+its section, its consumer entry, the section and combined history and the audit
+trail; a read-only value is named in `_read_only_fields` (`read_only_keys` for
+account mappings) and a change to it is refused with 403 `field_write_denied`
+before anything is saved. The `@xvs/finance` screens follow the same switches.
 Routes are under `/finance/settings/`: `payroll/` (`payroll_settings.py`),
 `account-mappings/`, `documents/`, `banking/`, `calendar/`, `records/`
 (`views_records.py`), `history/`.
 
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| payroll `paye_method`, `tax_country` | how PAYE is worked out | Stored | PATCH payroll | `finance.settings.paye_method`, `finance.settings.tax_country` | PAYE method, Tax country | RW | open; rates and switches change pay, so Write is the consequential switch | recorded |
-| payroll `employee_pension_enabled`, `employer_pension_enabled`, `nhf_enabled`, `nsitf_enabled`, `itf_enabled` | statutory deductions on or off | Stored | PATCH payroll | `finance.settings.employee_pension_enabled`, `finance.settings.employer_pension_enabled`, `finance.settings.nhf_enabled`, `finance.settings.nsitf_enabled`, `finance.settings.itf_enabled` | Statutory deduction switches | RW | open | recorded |
-| payroll `payslip_in_app`, `payslip_email`, `previous_pay_required` | payslip delivery and pay history | Stored | PATCH payroll | `finance.settings.payslip_in_app`, `finance.settings.payslip_email`, `finance.settings.previous_pay_required` | Payslip delivery | RW | open | recorded |
-| payroll `employee_pension_rate_bps`, `employer_pension_rate_bps`, `nhf_rate_bps`, `nsitf_rate_bps`, `itf_rate_bps` | statutory rates | Stored | PATCH payroll | `finance.settings.employee_pension_rate_bps`, `finance.settings.employer_pension_rate_bps`, `finance.settings.nhf_rate_bps`, `finance.settings.nsitf_rate_bps`, `finance.settings.itf_rate_bps` | Statutory rates | RW | open | recorded |
-| payroll `payroll_moved_here_on` | date payroll moved onto the platform | Stored | PATCH payroll | `finance.settings.payroll_moved_here_on` | Payroll moved here on | RW | open | recorded |
-| payroll `paye_method_label`, `updated_at`, `updated_by` | label and audit; `updated_by` is the editor's email | Computed | none | `finance.settings.payroll_updated_by` | Payroll last changed by | RO | open; audit value | recorded |
-| account mappings: per role, account (code and name) and source | role to ledger account map | Stored | PATCH account-mappings | `finance.settings.account_mappings` | Account mappings | RW | open; account code and name are chart labels | recorded |
-| documents `default_invoice_due_days`, `default_invoice_narration` | invoice defaults | Stored | PATCH documents | `finance.settings.default_invoice_due_days`, `finance.settings.default_invoice_narration` | Invoice defaults | RW | open | recorded |
-| documents `auto_post_manual_invoices`, `allow_customer_opening_balances`, `auto_apply_customer_credit` | behaviour switches | Stored | PATCH documents | `finance.settings.auto_post_manual_invoices`, `finance.settings.allow_customer_opening_balances`, `finance.settings.auto_apply_customer_credit` | Receivables behaviour | RW | open | recorded |
-| documents `term_collection_target_pct` | collection target | Stored | PATCH documents | `finance.settings.term_collection_target_pct` | Collection target | RW | open | recorded |
-| documents `concession_second_person_threshold` | amount that needs a second person (money) | Stored | PATCH documents | `finance.settings.concession_second_person_threshold` | Concession second-person threshold | RW | open | recorded |
-| documents `primary_collection_bank_account`, `primary_collection_bank_accounts`, `bank_account_options` | bank summary: account name, bank name, currency, branch (no account number) | Stored | PATCH documents | `finance.settings.primary_collection_bank_account` | Primary collection bank account | RW | open; bank name and currency are unregistered `finance.bankaccount` fields to decide with section 4.10 | recorded |
-| banking `default_bank_reconciliation_tolerance_days`, `default_group_reconciliation_matches`, `default_receipt_allocation_strategy`, `petty_cash_low_balance_threshold_bps` | banking defaults | Stored | PATCH banking | `finance.settings.default_bank_reconciliation_tolerance_days`, `finance.settings.default_group_reconciliation_matches`, `finance.settings.default_receipt_allocation_strategy`, `finance.settings.petty_cash_low_balance_threshold_bps` | Banking defaults | RW | open | recorded |
-| calendar `next_year_mode`, `next_year_lead_days`, `periods_close_in_order` | fiscal calendar behaviour | Stored | PATCH calendar | `finance.settings.next_year_mode`, `finance.settings.next_year_lead_days`, `finance.settings.periods_close_in_order` | Fiscal calendar | RW | open | recorded |
-| records `retention_years`, `archive_min_age_years` | record retention | Stored | PATCH records | `finance.settings.retention_years`, `finance.settings.archive_min_age_years` | Record retention | RW | open | recorded |
-| records `statutory_years`, `effective_retention_years` | statutory minimum and effective retention | Computed | none | `finance.settings.effective_retention_years` | Effective retention | RO | open | recorded |
-| settings history for the sections above | before and after per setting | Computed | none | - | - | - | filtered per field as the receivables history already is | recorded |
+| payroll `paye_method` (with `_label`, `_options`), `tax_country` | how PAYE is worked out | Stored | PATCH payroll | `finance.settings.paye_method`, `finance.settings.tax_country` | Where PAYE comes from, Tax table country | RW | open | registered |
+| payroll `payment_route` (with `_label`, `_options`) | how staff are paid | Stored | PATCH payroll | `finance.settings.payment_route` | How staff are paid | RW | open | registered |
+| payroll `employee_pension_enabled`, `employer_pension_enabled`, `nhf_enabled`, `nsitf_enabled`, `itf_enabled` | statutory deductions on or off | Stored | PATCH payroll | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| payroll `employee_pension_rate_bps`, `employer_pension_rate_bps`, `nhf_rate_bps`, `nsitf_rate_bps`, `itf_rate_bps` | statutory rates | Stored | PATCH payroll | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| payroll `payslip_in_app`, `payslip_email`, `previous_pay_required`, `payroll_moved_here_on` | payslip delivery and earlier pay | Stored | PATCH payroll | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| payroll `paystack_route_available`, `paystack_route_unavailable_reason` | whether the provider route is open: the books' state, not a setting | Computed | none | - | - | - | - | no switch: state of the books |
+| account mappings, one row per role key (`CASH_BANK`) | role to ledger account map | Stored | PATCH account-mappings | `finance.settings.mapping_<key>`, travelling under the role key | the role's own label | RW | open | registered |
+| documents `default_invoice_due_days`, `default_invoice_narration`, `auto_post_manual_invoices`, `allow_customer_opening_balances`, `term_collection_target_pct`, `auto_apply_customer_credit`, `concession_second_person_threshold` | document and receivables defaults | Stored | PATCH documents | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| documents `primary_collection_bank_account`, `primary_collection_bank_accounts`, `bank_account_options` | the collection account and its options | Stored | PATCH documents | follows `finance.bankaccount` (`is_primary_collection` to change it; bank name and currency to read them) | - | - | - | no `finance.settings` switch: follows the bank account switches |
+| banking `default_bank_reconciliation_tolerance_days`, `default_group_reconciliation_matches`, `default_receipt_allocation_strategy`, `apply_transfers_automatically`, `petty_cash_low_balance_threshold_bps` | banking defaults | Stored | PATCH banking | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| calendar `next_year_mode` (with `_label`, `_options`), `next_year_lead_days`, `periods_close_in_order` | fiscal calendar behaviour | Stored | PATCH calendar | one switch each, `finance.settings.<name>` | as the settings history names each | RW | open | registered |
+| records `retention_years` (with `effective_retention_years`), `archive_min_age_years` | record retention; the period in force travels with the school's own | Stored | PATCH records | `finance.settings.retention_years`, `finance.settings.archive_min_age_years` | Years financial records are kept, Years before records may be archived | RW | open | registered |
+| records `statutory_years` | CodeX's statutory floor | Computed | none | - | - | - | - | no switch: CodeX's floor, the same for every school |
+| every section's `updated_at`, `updated_by` | when a setting last changed, and who changed it | Computed | none | `finance.settings.last_changed` | Last changed | RO | open; audit value | registered |
+| settings history for the sections above | before and after per setting | Computed | none | - | - | - | filtered per field: a change shows only to a caller who may read that setting | registered |
 
 ### 6.3 Not switched in this area
 
@@ -1557,7 +1559,8 @@ threshold and the pension rates on the finance settings screen. In the school
 settings change, those switches sit under `school.settings` beside admission
 numbers. In the finance change, they sit under `finance.settings` beside the
 receivables policy already closed to the Ikeja clerk. Recommendation: the finance
-change, because they carry money.
+change, because they carry money. Settled: they are `finance.settings` fields
+(section 6.2).
 
 ### 8.6 Area E: receipts, petty cash, issuer, audit and approvals
 
