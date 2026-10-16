@@ -45,6 +45,9 @@ records that nothing was sent.
     python manage.py seed_gradebook_history
 
 Run ``seed_gradebook_scenarios`` first. Never run against production.
+
+Fill a school onboarded through the app instead with ``--school <slug> --like
+<school above> --admin-email <its admin>`` (see ``schools.vs_schools.dev.targets``).
 """
 from __future__ import annotations
 
@@ -54,8 +57,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from django.core.management.base import BaseCommand, CommandError
-from django.test.utils import override_settings
 
+from schools.vs_schools.dev.targets import add_target_arguments, quiet, resolve_targets
 from schools.vs_academics.models import AcademicSession, AcademicTerm, SchoolClass, SessionStatus
 from schools.vs_gradebook.models import ClassTerm
 from schools.vs_gradebook.constants import StoredStage
@@ -109,22 +112,19 @@ class Command(BaseCommand):
     help = "Replay the school year before the current one for the pupils who came through it."
 
     def add_arguments(self, parser):
-        parser.add_argument("--only", help="One school slug.")
+        add_target_arguments(parser)
 
     def handle(self, *args, **options):
-        only = options.get("only")
-        slugs = [only] if only else list(HISTORY)
-        unknown = [slug for slug in slugs if slug not in HISTORY]
-        if unknown:
-            raise CommandError(f"No history is replayed for {', '.join(unknown)}. Pick one of: {', '.join(HISTORY)}")
+        targets = resolve_targets(options, tuple(HISTORY))
         self.seeder = ScenarioSeeder(stdout=self.stdout, stderr=self.stderr)
         self.seeder.created = 0
-        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
-            for slug in slugs:
-                self._replay(slug)
+        with quiet():
+            for target in targets:
+                self._replay(target)
         self.stdout.write(self.style.SUCCESS(f"\nCreated this run: {self.seeder.created}"))
 
-    def _replay(self, slug):
+    def _replay(self, target):
+        slug, recipe = target.slug, target.recipe
         seeder = self.seeder
         school = seeder._school(slug)
         tenant = school.tenant
@@ -140,7 +140,8 @@ class Command(BaseCommand):
             raise CommandError(f"{slug} has no year before {year.name} to replay.")
 
         s = SimpleNamespace(
-            slug=slug, school=school, tenant=tenant, admin=seeder._admin(tenant, slug),
+            slug=slug, recipe=recipe, school=school, tenant=tenant,
+            admin=seeder._admin(tenant, target),
             branches=list(tenant.branches.order_by("-is_main", "code")),
             year=year, term=term, today=today, people={},
         )
@@ -149,8 +150,8 @@ class Command(BaseCommand):
         ))
         seeder._people(s)
         s.cast = seeder._pick_classes(s)
-        role, teacher = HISTORY[slug]
-        if role not in {plan.label for plan in PLANS[slug]}:
+        role, teacher = HISTORY[recipe]
+        if role not in {plan.label for plan in PLANS[recipe]}:
             raise CommandError(f"{slug} has no {role!r} role in seed_gradebook_scenarios to replay.")
         source, home = s.cast[role]
         last = self._counterpart(tenant, previous, source, home)

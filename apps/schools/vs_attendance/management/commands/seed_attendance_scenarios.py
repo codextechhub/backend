@@ -102,15 +102,19 @@ in-app notifications the notices produce are written as usual.
 Run ``seed_all_permissions``, ``seed_onboarding_scenarios``,
 ``seed_academic_scenarios``, ``seed_student_scenarios`` and
 ``seed_staff_scenarios`` first. Never run against production.
+
+Fill a school onboarded through the app instead of the cast with
+``--school <slug> --like <cast slug> --admin-email <its admin>`` (see
+``schools.vs_schools.dev.targets``).
 """
 from __future__ import annotations
 
 import datetime as dt
 
 from django.core.management.base import BaseCommand, CommandError
-from django.test.utils import override_settings
 from django.utils import timezone
 
+from schools.vs_schools.dev.targets import add_target_arguments, admin_email, quiet, resolve_targets
 from schools.vs_academics.models import AcademicSession, SchoolClass, SessionStatus, Subject
 from schools.vs_calendar.models import (
     CalendarEvent,
@@ -253,21 +257,15 @@ class Command(BaseCommand):
     help = "Seed class registers, notices, reminders and corrections for two live schools."
 
     def add_arguments(self, parser):
-        parser.add_argument("--only", help="One school slug from the cast.")
+        add_target_arguments(parser)
 
     def handle(self, *args, **options):
-        only = options.get("only")
-        if only and only not in CAST:
-            raise CommandError(
-                f"{only!r} is not in the cast. Pick one of: {', '.join(CAST)}",
-            )
+        targets = resolve_targets(options, CAST)
         self.created = 0
         logins = []
-        with override_settings(
-            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        ):
-            for slug in ([only] if only else list(CAST)):
-                logins.extend(self._seed(slug))
+        with quiet():
+            for target in targets:
+                logins.extend(self._seed(target))
         self.stdout.write(self.style.SUCCESS(f"\nCreated this run: {self.created}"))
         self.stdout.write(
             "\nLogins. Each school is reached at <slug>.localhost:5174. Admin "
@@ -335,10 +333,11 @@ class Command(BaseCommand):
 
     # ── the school ────────────────────────────────────────────────────────
 
-    def _seed(self, slug):
+    def _seed(self, target):
+        slug = target.slug
         school = self._school(slug)
         tenant = school.tenant
-        admin = self._user(tenant, f"admin@{slug}.example.com")
+        admin = self._user(tenant, admin_email(target))
         branches = list(tenant.branches.order_by("-is_main", "code"))
         year = AcademicSession.objects.filter(
             tenant=tenant, status=SessionStatus.ACTIVE,
@@ -377,9 +376,12 @@ class Command(BaseCommand):
         self._staff_registers(tenant, admin, slug, branches, today)
         self._summary(tenant, admin, cast, today, branches)
 
+        from vs_user.models import User
+
         branch_admin = f"branch.admin@{slug}.example.com"
-        lines = [f"{slug}: admin@{slug}.example.com (whole school)"]
-        lines.append(f"{slug}: {branch_admin} (main branch)")
+        lines = [f"{slug}: {admin.email} (whole school)"]
+        if User.objects.filter(tenant=tenant, email=branch_admin).exists():
+            lines.append(f"{slug}: {branch_admin} (main branch)")
         for entry in cast:
             if entry.school_class.class_teacher_id:
                 lines.append(

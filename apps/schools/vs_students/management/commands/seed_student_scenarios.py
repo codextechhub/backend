@@ -39,6 +39,10 @@ Idempotent: re-running tops each school up and leaves what already matches.
 
 Run ``seed_onboarding_scenarios`` and ``seed_academic_scenarios`` first - this
 one hangs children off the classes they build. Never run against production.
+
+Fill a school onboarded through the app instead of the cast with
+``--school <slug> --like <cast slug> --admin-email <its admin>`` (see
+``schools.vs_schools.dev.targets``).
 """
 from __future__ import annotations
 
@@ -47,6 +51,7 @@ import datetime as dt
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from schools.vs_schools.dev.targets import add_target_arguments, quiet, resolve_targets
 from schools.vs_academics.models import AcademicSession, SchoolClass, SessionStatus
 from schools.vs_students.constants import (
     Gender,
@@ -58,6 +63,7 @@ from schools.vs_students.services import enrolment as enrolment_service
 from schools.vs_students.services import guardians as guardian_service
 from schools.vs_students.services.placement import place
 from schools.vs_students.services.status import transition
+from vs_config.clock import tenant_today
 
 CAST = (
     "brightfield-lekki", "st-monicas", "holy-cross",
@@ -85,16 +91,14 @@ class Command(BaseCommand):
     help = "Seed students, guardians and their movements for three shapes of school."
 
     def add_arguments(self, parser):
-        parser.add_argument("--only", help="One school slug from the cast.")
+        add_target_arguments(parser)
 
     def handle(self, *args, **options):
-        only = options.get("only")
-        if only and only not in CAST:
-            raise CommandError(
-                f"{only!r} is not in the cast. Pick one of: {', '.join(CAST)}",
-            )
-        for slug in ([only] if only else list(CAST)):
-            self._seed(slug)
+        with quiet():
+            for target in resolve_targets(options, CAST):
+                # A school filled for real gets reserved addresses nobody can own.
+                self.mail_domain = "example.ng" if target.slug == target.recipe else "example.com"
+                self._seed(target.slug)
 
     def _school(self, slug):
         from schools.vs_schools.models import School
@@ -262,6 +266,8 @@ class Command(BaseCommand):
                 "emergency_contact_name": f"{home['honorific']} {last}",
                 "emergency_contact_phone": f"0803555{seed % 10000:04d}",
                 "student_number": "",
+                # Joined on the year's first day, so the year has days to register.
+                "enrolment_date": min(year.start_date, tenant_today(tenant)),
             },
             guardian_rows=[{
                 # One guardian per household, keyed on the surname: students
@@ -270,7 +276,7 @@ class Command(BaseCommand):
                 # exists to show.
                 "full_name": f"{home['honorific']} {home['initial']}. {last}",
                 "phone": home["phone"],
-                "email": f"{last.lower()}.household@example.ng",
+                "email": f"{last.lower()}.household@{self.mail_domain}",
                 "relationship": home["relationship"],
                 "is_primary": True,
             }],
@@ -299,7 +305,7 @@ class Command(BaseCommand):
         first, second = (rows[0] for rows in list(by_branch.values())[:2])
         guardian, _ = guardian_service.upsert_guardian(
             tenant, first_name="Patricia", last_name="Okafor",
-            phone="08065550130", email="patricia.okafor@example.ng",
+            phone="08065550130", email=f"patricia.okafor@{self.mail_domain}",
             occupation="Trader",
             address="17 Bisola Durosinmi Etti Drive, Lekki, Lagos",
         )
@@ -340,7 +346,7 @@ class Command(BaseCommand):
                 guardian_rows=[{
                     "full_name": f"Mrs. {first[0]}. {last}",
                     "phone": f"0811555{index:04d}",
-                    "email": f"{last.lower()}.applicant@example.ng",
+                    "email": f"{last.lower()}.applicant@{self.mail_domain}",
                     "relationship": Relationship.MOTHER, "is_primary": True,
                 }],
                 as_applicant=True, confirm_duplicate=True,

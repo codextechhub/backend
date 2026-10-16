@@ -50,11 +50,19 @@ Idempotent: re-running leaves what already matches.
 Run ``seed_student_scenarios``, ``seed_school_permissions`` and
 ``seed_gradebook_scenarios`` (with ``seed_gradebook_history``) first. Never run
 against production.
+
+Fill a school onboarded through the app instead of the cast with
+``--school <slug> --like <cast slug>`` (see ``schools.vs_schools.dev.targets``).
+Where the fake payment provider is off, as on a deployed server, the card
+payment being confirmed and the transfer account are skipped and said so.
 """
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+
+from schools.vs_schools.dev.targets import add_target_arguments, quiet, resolve_targets
+from vs_payments.providers.registry import fake_provider_enabled
 
 CAST = ("lagoon-view", "sunrise-academy")
 
@@ -88,13 +96,17 @@ PENDING_CARD = 5_000_00
 class Command(BaseCommand):
     help = "Give pupils portal access in every state and post notices for them to read."
 
+    def add_arguments(self, parser):
+        add_target_arguments(parser)
+
     def handle(self, *args, **options):
-        for slug in CAST:
-            cast = self._seed(slug)
-            self._pending_card(cast)
-            self._transfer_account(cast)
-            self._report(slug, cast)
-            self._bursar(cast["tenant"], cast["admin"])
+        with quiet():
+            for target in resolve_targets(options, CAST):
+                cast = self._seed(target.slug)
+                self._pending_card(cast)
+                self._transfer_account(cast)
+                self._report(target.slug, cast)
+                self._bursar(cast["tenant"], cast["admin"])
 
     @transaction.atomic
     def _bursar(self, tenant, admin):
@@ -448,6 +460,12 @@ class Command(BaseCommand):
         from vs_payments.models import VirtualAccount
         from vs_payments.services import create_virtual_account
 
+        if not fake_provider_enabled():
+            self._skipped(cast["tenant"].slug, "no card payment being confirmed: the fake payment provider is off here")
+            return
+        if not fake_provider_enabled():
+            self._skipped(cast["tenant"].slug, "no transfer account: the fake payment provider is off here")
+            return
         invoice = cast["invoice"]
         if invoice is None:
             return

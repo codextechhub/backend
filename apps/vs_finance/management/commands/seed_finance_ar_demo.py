@@ -10,6 +10,8 @@ Usage::
     manage.py seed_finance_ar_demo                 # platform entity
     manage.py seed_finance_ar_demo --entity CREST  # a specific entity
     manage.py seed_finance_ar_demo --all           # every active entity
+
+Refuses to run where Paystack takes live keys, which is production.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from vs_finance.wording import counted
 import calendar
 import datetime
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
@@ -62,6 +65,11 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        if str(getattr(settings, "PAYSTACK_KEY_MODE", "") or "").lower() == "live":
+            raise CommandError(
+                "This server takes live Paystack keys, so it is production. Demo "
+                "customers and fee structures are never seeded here.",
+            )
         seed_currencies()
 
         if options["all"]:

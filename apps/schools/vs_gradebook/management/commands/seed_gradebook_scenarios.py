@@ -166,6 +166,12 @@ Run ``seed_all_permissions``, ``seed_notification_event_types``,
 ``seed_notification_templates``, ``seed_onboarding_scenarios``,
 ``seed_academic_scenarios`` and ``seed_student_scenarios`` first. Staff and
 attendance seeders are optional. Never run against production.
+
+Fill a school onboarded through the app instead of the cast with
+``--school <slug> --like <cast slug> --admin-email <its admin>`` (see
+``schools.vs_schools.dev.targets``). Tables keyed by school are read by the
+recipe; corrections are raised by anybody besides the administrator who may
+raise one, and skipped where nobody may.
 """
 from __future__ import annotations
 
@@ -176,8 +182,8 @@ from types import SimpleNamespace
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management.base import BaseCommand, CommandError
-from django.test.utils import override_settings
 
+from schools.vs_schools.dev.targets import add_target_arguments, admin_email, quiet, resolve_targets
 from schools.vs_academics.models import (
     AcademicSession,
     AcademicTerm,
@@ -632,21 +638,15 @@ class Command(BaseCommand):
     help = "Seed score sheets, class results, approvals, publication and fee holds for two live schools."
 
     def add_arguments(self, parser):
-        parser.add_argument("--only", help="One school slug from the cast.")
+        add_target_arguments(parser)
 
     def handle(self, *args, **options):
-        only = options.get("only")
-        if only and only not in CAST:
-            raise CommandError(
-                f"{only!r} is not in the cast. Pick one of: {', '.join(CAST)}",
-            )
+        targets = resolve_targets(options, CAST)
         self.created = 0
         logins = []
-        with override_settings(
-            EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-        ):
-            for slug in ([only] if only else list(CAST)):
-                logins.extend(self._seed(slug))
+        with quiet():
+            for target in targets:
+                logins.extend(self._seed(target))
         self.stdout.write(self.style.SUCCESS(f"\nCreated this run: {self.created}"))
         self.stdout.write(
             "\nLogins. Each school is reached at <slug>.localhost:5174. The admin "
@@ -674,20 +674,22 @@ class Command(BaseCommand):
             )
         return school
 
-    def _admin(self, tenant, slug):
+    def _admin(self, tenant, target):
         from vs_user.models import User
 
-        email = f"admin@{slug}.example.com"
+        email = admin_email(target)
         user = User.objects.filter(tenant=tenant, email=email).first()
         if user is None:
             raise CommandError(
-                f"{slug} has no account {email}. Run seed_onboarding_scenarios first.",
+                f"{target.slug} has no account {email}. Run seed_onboarding_scenarios "
+                f"first, or name the school's administrator with --admin-email.",
             )
         return user
 
     # ── the school ────────────────────────────────────────────────────────
 
-    def _seed(self, slug):
+    def _seed(self, target):
+        slug, recipe = target.slug, target.recipe
         school = self._school(slug)
         tenant = school.tenant
         branches = list(tenant.branches.order_by("-is_main", "code"))
@@ -702,7 +704,8 @@ class Command(BaseCommand):
             raise CommandError(f"{slug} has no term running on {today}.")
 
         s = SimpleNamespace(
-            slug=slug, school=school, tenant=tenant, admin=self._admin(tenant, slug),
+            slug=slug, recipe=recipe, school=school, tenant=tenant,
+            admin=self._admin(tenant, target),
             branches=branches, year=year, term=term, today=today, people={},
         )
         self.stdout.write(self.style.MIGRATE_HEADING(
@@ -715,7 +718,7 @@ class Command(BaseCommand):
         self._people(s)
         self._department_head(s)
         s.cast = self._pick_classes(s)
-        for plan in PLANS[slug]:
+        for plan in PLANS[recipe]:
             if plan.history:
                 self._earlier_terms(s, plan)
             self._class(s, plan)
@@ -725,13 +728,11 @@ class Command(BaseCommand):
         self._debtors(s)
         self._summary(s)
 
-        lines = [f"{slug}: admin@{slug}.example.com (whole school, publishes)"]
-        if any(plan.corrections for plan in PLANS[slug]):
-            lines.append(
-                f"{slug}: {RAISER}@{slug}.example.com (branch administrator, raises "
-                f"corrections)",
-            )
-        for person in PEOPLE[slug]:
+        lines = [f"{slug}: {s.admin.email} (whole school, publishes)"]
+        raiser = self._raiser(s) if any(plan.corrections for plan in PLANS[recipe]) else None
+        if raiser is not None:
+            lines.append(f"{slug}: {raiser.email} (raises corrections)")
+        for person in PEOPLE[recipe]:
             left = {
                 EmploymentStatus.RESIGNED: ", resigned",
                 EmploymentStatus.SUSPENDED: ", suspended and cannot sign in",
@@ -743,12 +744,12 @@ class Command(BaseCommand):
 
     def _settings(self, s):
         before = read_gradebook_rules(s.tenant)
-        after = configuration.write_settings(s.tenant, s.admin, SETTINGS[s.slug])
+        after = configuration.write_settings(s.tenant, s.admin, SETTINGS[s.recipe])
         if before != after:
             self._made("gradebook settings written")
 
     def _setup(self, s):
-        for code, (structure_key, scale_key) in SETUP[s.slug].items():
+        for code, (structure_key, scale_key) in SETUP[s.recipe].items():
             program = Program.all_objects.filter(tenant=s.tenant, code=code).first()
             if program is None:
                 raise CommandError(f"{s.slug} has no programme {code}.")
@@ -804,7 +805,7 @@ class Command(BaseCommand):
         """Invite each person the plans need, once, and index them by key."""
         staff_seeder = StaffSeeder()
         staff_seeder.stdout = self.stdout
-        for person in PEOPLE[s.slug]:
+        for person in PEOPLE[s.recipe]:
             email = self._email(s, person)
             profile = StaffProfile.objects.filter(
                 tenant=s.tenant, user__email=email,
@@ -824,7 +825,7 @@ class Command(BaseCommand):
 
     def _department_head(self, s):
         """Name the head of the moderated department, as the department endpoint does."""
-        key = HEADS.get(s.slug)
+        key = HEADS.get(s.recipe)
         if key is None:
             return
         department = Department.all_objects.filter(
@@ -853,7 +854,7 @@ class Command(BaseCommand):
         :data:`NOTICE` after the day of the run, or the term's last day if that
         is sooner, so it falls inside the term the hub is read for.
         """
-        for person in PEOPLE[s.slug]:
+        for person in PEOPLE[s.recipe]:
             if not person.departure:
                 continue
             status, reason = person.departure
@@ -876,7 +877,7 @@ class Command(BaseCommand):
 
     def _person_for(self, s, home_index, subject_name):
         place = "main" if home_index == 0 else "second"
-        for person in PEOPLE[s.slug]:
+        for person in PEOPLE[s.recipe]:
             if subject_name in person.subjects and person.where == place:
                 return person
         raise CommandError(f"{s.slug} has nobody for {subject_name} in the {place} branch.")
@@ -900,7 +901,7 @@ class Command(BaseCommand):
                   for school_class in classes]
         rolls = book.rolls_for(s.tenant, s.term, placed)
         taken, cast = set(), {}
-        for plan in PLANS[s.slug]:
+        for plan in PLANS[s.recipe]:
             branch = s.branches[min(plan.branch, len(s.branches) - 1)]
             candidates = sorted(
                 (
@@ -1146,7 +1147,7 @@ class Command(BaseCommand):
 
         _, sheet = self._status(s, c, subject)
         if status == SheetStatus.SUBMITTED and sheet.needs_moderation:
-            head = s.people[HEADS[s.slug]].user
+            head = s.people[HEADS[s.recipe]].user
             ctx = self._load(s, c, subject, head)
             if goal == RETURNED:
                 moderation.return_sheet(ctx, c.plan.sheet_notes[subject.name])
@@ -1427,6 +1428,13 @@ class Command(BaseCommand):
 
         email = f"{RAISER}@{s.slug}.example.com"
         user = User.objects.filter(tenant=s.tenant, email=email).first()
+        if user is None and s.recipe != s.slug:
+            # A school onboarded for real: anybody besides the admin who may raise one.
+            return next((
+                other for other in User.objects.filter(tenant=s.tenant, is_active=True)
+                .exclude(pk=s.admin.pk).order_by("pk")
+                if has_permission(other, PERM_AMENDMENT_CREATE, tenant=s.tenant)
+            ), None)
         if user is None:
             raise CommandError(
                 f"{s.slug} has no account {email}. Run seed_onboarding_scenarios first.",
@@ -1447,6 +1455,12 @@ class Command(BaseCommand):
         if class_term is None or class_term.stage != StoredStage.PUBLISHED:
             raise CommandError(f"{c.cls.name} is not published, so it has nothing to correct.")
         raiser = self._raiser(s)
+        if raiser is None:
+            self._skipped(
+                f"no corrections on {c.cls.name}: nobody at {s.slug} besides "
+                f"{s.admin.full_name} may raise one.",
+            )
+            return
         roll = self._roll(s, c)
         for fix in c.plan.corrections:
             student = roll[fix.index]
@@ -1653,7 +1667,7 @@ class Command(BaseCommand):
         from schools.core.fal import registry
         from vs_finance.models import FeeStructure, LedgerEntity
 
-        wanted = DEBTORS.get(s.slug)
+        wanted = DEBTORS.get(s.recipe)
         if not wanted:
             return
         entity = LedgerEntity.objects.filter(tenant=s.tenant).first()
@@ -1695,7 +1709,7 @@ class Command(BaseCommand):
 
     def _summary(self, s):
         self.stdout.write("\n  Classes:")
-        for plan in PLANS[s.slug]:
+        for plan in PLANS[s.recipe]:
             school_class, home = s.cast[plan.label]
             entry = book.load(s.tenant, s.term, [(school_class, home)])[0]
             held = ResultHold.objects.filter(

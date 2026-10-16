@@ -33,6 +33,10 @@ Idempotent: re-running tops each school up and leaves what already matches.
 
 Run ``seed_onboarding_scenarios`` first, which builds the schools themselves.
 Never run against production.
+
+Fill a school onboarded through the app instead of the cast with
+``--school <slug> --like <cast slug> --admin-email <its admin>`` (see
+``schools.vs_schools.dev.targets``).
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ import datetime as dt
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from schools.vs_schools.dev.targets import add_target_arguments, quiet, resolve_targets
 from schools.vs_academics.models import (
     AcademicSession,
     AcademicTerm,
@@ -127,17 +132,12 @@ class Command(BaseCommand):
     help = "Seed academic structure for the multi-branch and single-branch cases."
 
     def add_arguments(self, parser):
-        parser.add_argument("--only", help="One school slug from the cast.")
+        add_target_arguments(parser)
 
     def handle(self, *args, **options):
-        only = options.get("only")
-        slugs = [only] if only else list(CAST)
-        if only and only not in CAST:
-            raise CommandError(
-                f"{only!r} is not in the cast. Pick one of: {', '.join(CAST)}",
-            )
-        for slug in slugs:
-            self._seed(slug)
+        with quiet():
+            for target in resolve_targets(options, CAST):
+                self._seed(target.slug)
 
     def _school(self, slug):
         from schools.vs_schools.models import School
