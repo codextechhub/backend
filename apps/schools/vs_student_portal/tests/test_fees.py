@@ -37,7 +37,7 @@ def give_access(pupil, number):
     return User.objects.get(pk=pupil.user_id)
 
 
-class PortalFeesTests(FALFixture):
+class _FeesFixture(FALFixture):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
@@ -72,6 +72,7 @@ class PortalFeesTests(FALFixture):
         url = reverse("student-portal-pay", kwargs={"invoice_ref": (invoice or self.tunde_invoice).pk})
         return self.as_pupil().post(url, {"amount": amount}, format="json")
 
+class PortalFeesTests(_FeesFixture):
     # ── reading ──────────────────────────────────────────────────────────
 
     def test_the_pupil_reads_their_balance_and_invoice(self):
@@ -190,3 +191,97 @@ class PortalFeesTests(FALFixture):
         bola_user = give_access(self.bola, "COR/002")
         url = reverse("student-portal-receipt", kwargs={"payment_ref": intent.payment_id})
         self.assertEqual(TenantAPIClient(bola_user).get(url).status_code, 404)
+
+
+class PortalTransferTests(_FeesFixture):
+    """Tunde pays by bank transfer into his own permanent account.
+
+    He asks for his account once and gets the same number every time after.
+    His mother transfers ₦2,500.00 into it: his page sees it arriving as soon
+    as the provider reports it, and received once its receipt is booked. Bola
+    sees nothing of Tunde's account or his transfers.
+    """
+
+    account_url = "student-portal-transfer-account"
+    deposits_url = "student-portal-transfer-deposits"
+
+    def transfer_account(self, method="get", user=None):
+        client = self.as_pupil(user)
+        return getattr(client, method)(reverse(self.account_url), format="json")
+
+    def deposits(self, since, user=None):
+        return self.as_pupil(user).get(reverse(self.deposits_url), {"since": since})
+
+    def deposit(self, amount, reference="DEP-001"):
+        from vs_payments.models import VirtualAccount
+
+        account = VirtualAccount.objects.get(customer__source_id=str(self.tunde.pk))
+        intent, _ = payment_services.record_virtual_account_deposit(
+            virtual_account=account, reference=reference, amount=amount,
+        )
+        return intent
+
+    def test_a_pupil_with_no_account_is_issued_one_and_keeps_it(self):
+        self.assertEqual(self.transfer_account().data["data"]["state"], "NONE")
+        first = self.transfer_account("post").data["data"]
+        self.assertEqual(first["state"], "ISSUED")
+        self.assertTrue(first["account_number"])
+        again = self.transfer_account("post").data["data"]
+        self.assertEqual(again["account_number"], first["account_number"])
+        self.assertEqual(self.transfer_account().data["data"]["account_number"], first["account_number"])
+
+    def test_a_deposit_is_seen_arriving_then_received(self):
+        as_of = self.transfer_account("post").data["data"]["as_of"]
+        intent = self.deposit(250_000)
+
+        rows = self.deposits(as_of).data["data"]["deposits"]
+        self.assertEqual([(r["amount"], r["status"]) for r in rows], [(250_000, "PENDING")])
+
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        self.fake.forced_amount[intent.reference] = 250_000
+        payment_services.confirm_collection(intent)
+        row = self.deposits(as_of).data["data"]["deposits"][0]
+        self.assertEqual(row["status"], "CONFIRMED")
+        self.assertTrue(row["has_receipt"])
+
+    def test_a_deposit_before_the_page_opened_is_not_listed(self):
+        self.transfer_account("post")
+        self.deposit(100_000)
+        later = self.transfer_account().data["data"]["as_of"]
+        self.assertEqual(self.deposits(later).data["data"]["deposits"], [])
+
+    def test_another_pupil_sees_nothing_of_tunde_s_account(self):
+        as_of = self.transfer_account("post").data["data"]["as_of"]
+        self.deposit(250_000)
+        bola = give_access(self.bola, "COR/002")
+        self.assertEqual(self.transfer_account(user=bola).data["data"]["state"], "NONE")
+        self.assertEqual(self.deposits(as_of, user=bola).data["data"]["deposits"], [])
+
+    def test_a_since_that_is_not_a_time_is_refused(self):
+        response = self.deposits("yesterday")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "SINCE_INVALID")
+
+    def test_a_provider_that_issues_no_accounts_says_so(self):
+        from vs_payments.exceptions import ProviderNotConfiguredError
+
+        with mock.patch.object(
+            self.fake, "create_virtual_account", side_effect=ProviderNotConfiguredError("no"),
+        ):
+            data = self.transfer_account("post").data["data"]
+        self.assertEqual(data["state"], "UNAVAILABLE")
+        self.assertIn("bank transfers", data["message"])
+
+    def test_a_school_that_turns_pupil_payments_off_shows_no_account(self):
+        from django.core.management import call_command
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+
+        call_command("seed_config_catalogue", verbosity=0)
+        definition = ConfigurationDefinition.objects.get(key="fees.student_payment_enabled")
+        set_value(definition=definition, value=False, actor=self.bursar, tenant=self.corona.tenant)
+        self.assertEqual(self.transfer_account().status_code, 403)
+
+    def test_staff_cannot_read_a_pupils_transfer_account(self):
+        response = TenantAPIClient(self.bursar).get(reverse(self.account_url))
+        self.assertEqual(response.status_code, 404)

@@ -22,6 +22,7 @@ from rest_framework.exceptions import NotFound
 
 from .links import student_app_url
 from .exceptions import (
+    DepositSinceInvalid,
     AmountAboveBalance,
     AmountBelowMinimum,
     FinanceUnavailable,
@@ -211,3 +212,96 @@ def receipt_pdf(student, payment_ref) -> bytes:
     if result.value is None:
         raise NotFound("No receipt for that payment.")
     return result.value
+
+
+# ── Bank transfer ─────────────────────────────────────────────────────────
+
+TRANSFER_UNAVAILABLE_SENTENCE = (
+    "Your school cannot take bank transfers here yet. Pay by card, or ask the "
+    "school office how to pay."
+)
+
+
+def _transfer_rules(student):
+    if not read_student_payment_rules(student.tenant).enabled:
+        raise StudentPaymentOff()
+
+
+def _account_body(account) -> dict:
+    from django.utils import timezone
+
+    if account is None:
+        return {"state": "NONE", "as_of": timezone.now()}
+    return {
+        "state": "ISSUED",
+        "bank_name": account.bank_name,
+        "account_number": account.account_number,
+        "account_name": account.account_name,
+        "as_of": timezone.now(),
+    }
+
+
+def _account_result(result) -> dict:
+    from schools.core.fal.contracts import Unavailable
+
+    if result.is_available:
+        return _account_body(result.value)
+    if result.reason == Unavailable.NOT_CONFIGURED:
+        return {"state": "UNAVAILABLE", "message": TRANSFER_UNAVAILABLE_SENTENCE}
+    raise PaymentProviderUnavailable()
+
+
+def transfer_account(student) -> dict:
+    """The pupil's permanent account for bank transfers, or NONE.
+
+    ``as_of`` is the server's time, which the page sends back to watch for a
+    deposit, so a phone whose clock is wrong still sees it arrive.
+    """
+    _transfer_rules(student)
+    return _account_result(
+        registry.get_student_payment().transfer_account(_ref(student)),
+    )
+
+
+def open_transfer_account(student, *, actor) -> dict:
+    """Issue the pupil's account, or return the one they already have."""
+    _transfer_rules(student)
+    return _account_result(
+        registry.get_student_payment().open_transfer_account(_ref(student), actor=actor),
+    )
+
+
+def transfer_deposits(student, since) -> dict:
+    """Transfers into the pupil's account since *since* (an ISO time), oldest first.
+
+    No minimum applies: a transfer cannot be refused once it lands. A deposit
+    appears as ``PENDING`` as soon as the provider reports it and turns
+    ``CONFIRMED`` once its receipt is booked.
+    """
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+
+    _transfer_rules(student)
+    moment = parse_datetime(str(since or "").strip().replace(" ", "+"))
+    if moment is None:
+        raise DepositSinceInvalid()
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment, timezone.utc)
+    result = registry.get_student_payment().transfer_deposits(_ref(student), since=moment)
+    if not result.is_available:
+        raise FinanceUnavailable()
+    return {
+        "as_of": timezone.now(),
+        "deposits": [
+            {
+                "reference": d.reference,
+                "amount": d.amount,
+                "status": d.status,
+                "status_label": "Received" if d.status == "CONFIRMED" else "Arriving",
+                "received_at": d.received_at,
+                "payment_ref": d.payment_ref,
+                "has_receipt": d.status == "CONFIRMED" and d.payment_ref is not None,
+            }
+            for d in result.value
+        ],
+    }

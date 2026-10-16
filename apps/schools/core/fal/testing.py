@@ -35,6 +35,7 @@ from typing import Optional
 
 from .contracts import (
     Checkout,
+    TransferAccount,
     AgeingBucket,
     AgeingRow,
     ApprovalDecision,
@@ -716,13 +717,18 @@ class FakeStudentPayment(StudentPaymentPort):
 
     def __init__(self, *, invoices: Optional[dict] = None, history: tuple = (),
                  receipts: Optional[dict] = None, reject: bool = False,
-                 checkout_url: str = "https://pay.example/checkout/FAKE") -> None:
+                 checkout_url: str = "https://pay.example/checkout/FAKE",
+                 issues_accounts: bool = True) -> None:
         self.invoices: dict = dict(invoices or {})
         self.history = tuple(history)
         self.receipts: dict = dict(receipts or {})
         self.reject = reject
         self.checkout_url = checkout_url
         self.sessions: list = []
+        self.issues_accounts = issues_accounts
+        self.transfer_accounts: dict = {}
+        #: student_ref -> tuple of TransferDeposit.
+        self.deposits: dict = {}
 
     def payment_history(self, student_ref):
         return _ok(self.history)
@@ -742,6 +748,23 @@ class FakeStudentPayment(StudentPaymentPort):
     def receipt_pdf(self, student_ref, payment_ref):
         found = self.receipts.get((student_ref, payment_ref))
         return _ok(b"%PDF-fake" if found is not None else None)
+
+    def transfer_account(self, student_ref):
+        return _ok(self.transfer_accounts.get(student_ref))
+
+    def open_transfer_account(self, student_ref, *, actor):
+        if not self.issues_accounts:
+            return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
+        account = self.transfer_accounts.setdefault(student_ref, TransferAccount(
+            bank_name="Fake Bank", account_number=f"99{len(self.transfer_accounts):08d}",
+            account_name=f"Pupil {student_ref}",
+        ))
+        return _ok(account)
+
+    def transfer_deposits(self, student_ref, *, since):
+        return _ok(tuple(
+            d for d in self.deposits.get(student_ref, ()) if d.received_at >= since
+        ))
 
 
 # --------------------------------------------------------------------------- #
@@ -789,6 +812,9 @@ class UnavailableStudentPayment(_UnavailableMixin, StudentPaymentPort):
     def start_payment_session(self, *a, **k): return self._u()
     def receipt(self, *a, **k): return self._u()
     def receipt_pdf(self, *a, **k): return self._u()
+    def transfer_account(self, *a, **k): return self._u()
+    def open_transfer_account(self, *a, **k): return self._u()
+    def transfer_deposits(self, *a, **k): return self._u()
 
 
 def unavailable_finance_reader() -> FinanceReadPort:

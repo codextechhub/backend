@@ -663,6 +663,15 @@ A card checkout started in the portal returns the pupil to
 another host only for a separate dev server); the page polls the public
 collection status by that reference.
 
+Bank transfer (FAL contract 1.1.8, `StudentPaymentPort.transfer_account`,
+`open_transfer_account`, `transfer_deposits`): `GET fees/transfer-account/`
+answers `ISSUED` (bank, number, name, `as_of`), `NONE` or `UNAVAILABLE` with a
+sentence; `POST` issues the pupil's permanent virtual account for their own AR
+account (one, under a lock on the customer; 10 an hour), or returns it.
+`GET fees/transfer-account/deposits/?since=<as_of>` lists transfers since then,
+`PENDING` as soon as the provider reports one and `CONFIRMED` with its receipt
+once booked. Both need the school to let pupils pay. No minimum applies.
+
 Messages and Assignments when their turn comes. For the installable app: the
-per-school app file and icons, the bank-transfer account and deposit reads, applying transfers to open bills
+per-school app file and icons, applying transfers to open bills
 (per-school switch, default on), and push.

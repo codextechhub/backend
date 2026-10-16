@@ -421,10 +421,11 @@ class ActivationPreviewView(APIView):
 
 class ActivationView(APIView):
     """
-    POST /auth/activate/{user_id}/
-    User submits password + confirm_password.
-    On success: account is activated and JWT tokens are returned
-    so the user is logged in immediately - no separate login step.
+    POST /auth/activate/{token}/
+    The person sets their password (``password`` and ``confirm_password``)
+    and the account becomes active. Nothing signs them in: no token is issued
+    and no cookie is set, so the page sends them on to sign in, to the app
+    the activation preview's ``device_app`` names when there is one.
 
     Permission: AllowAny (public - user hasn't logged in yet).
     RBAC: identity.user_account.activate

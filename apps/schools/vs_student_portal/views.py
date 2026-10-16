@@ -412,6 +412,58 @@ class PaymentHistoryView(PortalView):
         return success_response(data=payment_history(self.student))
 
 
+class TransferAccountView(PortalView):
+    """GET, POST /v1/portal/student/fees/transfer-account/
+
+    The pupil's permanent account for paying fees by bank transfer. GET
+    answers ``state`` ``ISSUED`` (``bank_name``, ``account_number``,
+    ``account_name``, ``as_of``), ``NONE`` (POST to issue one) or
+    ``UNAVAILABLE`` with a sentence to show. POST issues the account, or
+    returns the one the pupil has; it is rate limited. 403
+    ``STUDENT_PAYMENT_OFF`` where the school does not let pupils pay; 503
+    ``PROVIDER_UNAVAILABLE`` when the provider is down.
+
+    docstring-name: My bank transfer account
+    """
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            from rest_framework.throttling import ScopedRateThrottle
+
+            self.throttle_scope = "portal_transfer_account"
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
+    def get(self, request):
+        from .fees import transfer_account
+
+        return success_response(data=transfer_account(self.student))
+
+    def post(self, request):
+        from .fees import open_transfer_account
+
+        return success_response(data=open_transfer_account(self.student, actor=request.user))
+
+
+class TransferDepositsView(PortalView):
+    """GET /v1/portal/student/fees/transfer-account/deposits/?since=<as_of>
+
+    Transfers into the pupil's account since the ``as_of`` the account read
+    answered, oldest first: ``PENDING`` (``Arriving``) as soon as the provider
+    reports one, ``CONFIRMED`` (``Received``) once its receipt is booked. The
+    page polls this while it shows the account, then re-reads ``fees/``.
+
+    docstring-name: Transfers into my account
+    """
+
+    def get(self, request):
+        from .fees import transfer_deposits
+
+        return success_response(
+            data=transfer_deposits(self.student, request.query_params.get("since")),
+        )
+
+
 class PayInvoiceView(PortalView):
     """POST /v1/portal/student/fees/invoices/<invoice_ref>/pay/
 

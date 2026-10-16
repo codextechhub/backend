@@ -513,6 +513,34 @@ class Checkout:
 
 
 @dataclass(frozen=True)
+class TransferAccount:
+    """The bank account a pupil's family transfers fees into, kept for good.
+
+    A permanent account issued by the payment provider for the pupil's own AR
+    account, so every transfer into it is credited to that pupil.
+    """
+
+    bank_name: str
+    account_number: str
+    account_name: str
+
+
+@dataclass(frozen=True)
+class TransferDeposit:
+    """One transfer into a pupil's account, as soon as the provider reports it.
+
+    ``status`` is ``PENDING`` until the provider confirms it and a receipt is
+    booked, then ``CONFIRMED`` with ``payment_ref`` naming that receipt.
+    """
+
+    reference: str
+    amount: Kobo
+    status: str
+    received_at: datetime
+    payment_ref: Optional[PaymentRef] = None
+
+
+@dataclass(frozen=True)
 class PaymentReceiptLine:
     """One invoice a payment receipt settled, and what it still owed right after.
 

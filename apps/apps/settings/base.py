@@ -287,6 +287,9 @@ REST_FRAMEWORK = {
         "login_preview":      "10/minute",
         "card_login_preview": "10/minute",
         "card_login":         "5/minute",
+        # A pupil asking for their bank-transfer account: each issue is a
+        # provider call, and one account lasts for good.
+        "portal_transfer_account": "10/hour",
     },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
     "DATE_FORMAT":     "%Y-%m-%d",

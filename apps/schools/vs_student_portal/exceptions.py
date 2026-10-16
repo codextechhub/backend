@@ -71,3 +71,12 @@ class PaymentProviderUnavailable(PortalError):
         "charged. Try again in a few minutes."
     )
     http_status = 503
+
+
+class DepositSinceInvalid(PortalError):
+    error_code = "SINCE_INVALID"
+    default_message = (
+        "Send since as the as_of time the transfer account answered, such as "
+        "2026-10-16T09:30:00Z."
+    )
+    http_status = 400

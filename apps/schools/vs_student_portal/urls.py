@@ -23,6 +23,8 @@ from .views import (
     ResultsView,
     SessionResultsView,
     TimetableView,
+    TransferAccountView,
+    TransferDepositsView,
 )
 
 urlpatterns = [
@@ -44,6 +46,14 @@ urlpatterns = [
     path(
         "fees/invoices/<int:invoice_ref>/pay/", PayInvoiceView.as_view(),
         name="student-portal-pay",
+    ),
+    path(
+        "fees/transfer-account/", TransferAccountView.as_view(),
+        name="student-portal-transfer-account",
+    ),
+    path(
+        "fees/transfer-account/deposits/", TransferDepositsView.as_view(),
+        name="student-portal-transfer-deposits",
     ),
     path("results/", ResultsView.as_view(), name="student-portal-results"),
     path(

@@ -96,6 +96,8 @@ from ..contracts import (
     ProcurementSnapshot,
     Receipt,
     PaymentReceiptLine,
+    TransferAccount,
+    TransferDeposit,
     ReceiptDocument,
     Series,
     SeriesPoint,
@@ -2275,6 +2277,100 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
 
         payment = self._payment(student_ref, payment_ref)
         return _available(receipt_pdf(payment) if payment is not None else None)
+
+    @staticmethod
+    def _transfer_view(account):
+        return TransferAccount(
+            bank_name=account.bank_name, account_number=account.account_number,
+            account_name=account.account_name,
+        )
+
+    @staticmethod
+    def _active_account(customers):
+        from vs_payments.constants import VirtualAccountStatus
+        from vs_payments.models import VirtualAccount
+
+        return (
+            VirtualAccount.objects.filter(
+                customer__in=customers, status=VirtualAccountStatus.ACTIVE,
+            )
+            .order_by("-created_at", "-pk")
+            .first()
+        )
+
+    @envelope
+    def transfer_account(self, student_ref):
+        customers = self._customers(student_ref)
+        account = self._active_account(customers) if customers else None
+        return _available(self._transfer_view(account) if account else None)
+
+    @envelope
+    def open_transfer_account(self, student_ref, *, actor):
+        """Issue one account for the pupil's AR account, under a lock on it.
+
+        The customer row is locked first, so two requests racing for a pupil
+        with none issue one account between them: the second finds the first's.
+        A provider that issues no accounts, or a branch not set up to take
+        payments directly, is ``NOT_CONFIGURED``.
+        """
+        from django.db import transaction
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        from vs_finance.models import Customer
+        from vs_payments.custody import SubaccountMissingError
+        from vs_payments.exceptions import ProviderError, ProviderNotConfiguredError
+        from vs_payments.services import create_virtual_account
+
+        customers = self._customers(student_ref)
+        if not customers:
+            return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
+        with transaction.atomic():
+            customer = (
+                Customer.objects.select_for_update().select_related("entity")
+                .get(pk=customers[0].pk)
+            )
+            existing = self._active_account(customers)
+            if existing is not None:
+                return _available(self._transfer_view(existing))
+            try:
+                account = create_virtual_account(
+                    entity=customer.entity, customer=customer, actor_user=actor,
+                )
+            except (ProviderNotConfiguredError, SubaccountMissingError, NotImplementedError):
+                return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
+            except ProviderError:
+                return FinanceResult.unavailable(Unavailable.GATEWAY_UNAVAILABLE)
+            except DRFValidationError:
+                existing = self._active_account(customers)
+                if existing is None:
+                    return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
+                account = existing
+        return _available(self._transfer_view(account))
+
+    @envelope
+    def transfer_deposits(self, student_ref, *, since):
+        from vs_payments.constants import CollectionChannel, CollectionStatus
+        from vs_payments.models import CollectionIntent
+
+        customers = self._customers(student_ref)
+        if not customers:
+            return _available(())
+        rows = (
+            CollectionIntent.objects.filter(
+                customer__in=customers, channel=CollectionChannel.VIRTUAL_ACCOUNT,
+                created_at__gte=since,
+            )
+            .exclude(status__in=(CollectionStatus.FAILED, CollectionStatus.ABANDONED))
+            .order_by("created_at", "pk")
+        )
+        return _available(tuple(
+            TransferDeposit(
+                reference=row.reference, amount=row.amount,
+                status="CONFIRMED" if row.payment_id else "PENDING",
+                received_at=row.created_at, payment_ref=row.payment_id,
+            )
+            for row in rows
+        ))
 
 
 # --------------------------------------------------------------------------- #

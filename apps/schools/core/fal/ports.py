@@ -91,7 +91,7 @@ the engines; the engines may never import schools.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from .contracts import (
@@ -709,6 +709,25 @@ class StudentPaymentPort(ABC):
     @abstractmethod
     def receipt_pdf(self, student_ref: StudentRef, payment_ref: PaymentRef) -> FinanceResult:
         """The same receipt as the PDF the school's receipt email attaches, or None."""
+
+    @abstractmethod
+    def transfer_account(self, student_ref: StudentRef) -> FinanceResult:
+        """The pupil's permanent bank-transfer account, a ``TransferAccount``,
+        or None when none has been issued."""
+
+    @abstractmethod
+    def open_transfer_account(self, student_ref: StudentRef, *, actor) -> FinanceResult:
+        """Issue the pupil's bank-transfer account, or return the one they have.
+
+        ``UNAVAILABLE`` (``NOT_CONFIGURED``) when the school's payment provider
+        does not issue accounts, ``GATEWAY_UNAVAILABLE`` when it is down.
+        Asking twice issues one account.
+        """
+
+    @abstractmethod
+    def transfer_deposits(self, student_ref: StudentRef, *, since: datetime) -> FinanceResult:
+        """Transfers into the pupil's account recorded at or after *since*,
+        oldest first: a tuple of ``TransferDeposit``."""
 
 
 # =========================================================================== #
