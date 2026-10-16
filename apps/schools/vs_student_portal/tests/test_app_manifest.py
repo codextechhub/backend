@@ -59,7 +59,13 @@ class StudentAppManifestTests(TestCase):
         self.assertEqual((body["name"], body["short_name"]), ("Corona Secondary School", "Corona"))
         self.assertEqual((body["start_url"], body["scope"]), ("/student/", "/student/"))
         icon = next(i for i in body["icons"] if i["purpose"] == "maskable")
-        self.assertIn(reverse("student-app-icon", args=["corona", "maskable-512.png"]), icon["src"])
+        self.assertEqual(icon["src"], "icons/maskable-512.png")
+        # Relative to the manifest, it is the icon route, whatever host served it.
+        manifest_url = reverse("student-app-manifest", args=["corona"])
+        self.assertEqual(
+            manifest_url.rsplit("/", 1)[0] + "/" + icon["src"],
+            reverse("student-app-icon", args=["corona", "maskable-512.png"]),
+        )
 
     def test_icons_are_drawn_from_the_crest_at_the_size_asked(self):
         for name, size in (("icon-192.png", 192), ("maskable-512.png", 512), ("apple-touch-icon.png", 180)):

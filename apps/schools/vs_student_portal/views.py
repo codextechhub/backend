@@ -544,8 +544,11 @@ class StudentAppManifestView(_PublicAppView):
 
     The web app manifest a phone installs the student app from: the school's
     name, and icons cut from its crest, or the app's own XVS icons where it
-    has none. The school's host serves it at ``/student/manifest.webmanifest``
-    by passing that address through here. 404 for a slug that names no school
+    has none. The school's host serves it by passing its own address through
+    here (``/student/app/<slug>/manifest.webmanifest``). A crest icon's
+    address is relative to the manifest (``icons/icon-192.png``), so it is
+    right through that pass-through and straight from the API alike, whatever
+    host a proxy forwards. 404 for a slug that names no school
     able to sign in.
 
     docstring-name: Student app manifest
@@ -555,14 +558,12 @@ class StudentAppManifestView(_PublicAppView):
         import json
 
         from django.http import HttpResponse
-        from django.urls import reverse
 
         from .app_manifest import manifest
 
-        school = self.school(slug)
-        body = manifest(school, icon_url=lambda name: request.build_absolute_uri(
-            reverse("student-app-icon", args=[school.slug, name]),
-        ))
+        # Relative, so an icon resolves against wherever the manifest was
+        # fetched from: the school's host passing it through, or the API.
+        body = manifest(self.school(slug), icon_url=lambda name: f"icons/{name}")
         response = HttpResponse(json.dumps(body), content_type="application/manifest+json")
         response["Cache-Control"] = "public, max-age=3600"
         return response

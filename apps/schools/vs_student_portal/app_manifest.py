@@ -4,7 +4,7 @@ The student app is one build served at ``/student/`` on every school's host.
 What a phone puts on its home screen comes from the web app manifest, so the
 school's host passes ``/student/manifest.webmanifest`` through to this one,
 which names the school and, where it has uploaded a crest, points at icons cut
-from it. A school with no crest keeps the app's own XVS icons, which the app
+from it, by addresses relative to the manifest itself. A school with no crest keeps the app's own XVS icons, which the app
 serves at ``/student/icons/``, so a phone never shows the bare CodeX mark.
 
 Icons are drawn from the crest on a white square, the crest at 80% of the

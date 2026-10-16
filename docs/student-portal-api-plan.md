@@ -684,7 +684,10 @@ passes `/student/manifest.webmanifest` through to
 `GET /v1/portal/student/app/<slug>/manifest.webmanifest` (public, cached an
 hour): the school's name, a short name that fits under an icon, and icons cut
 from its crest at `.../app/<slug>/icons/<name>` (192, 512, maskable 512 and
-the 180 Apple icon, the crest on white). A school with no crest keeps the
+the 180 Apple icon, the crest on white), addressed relative to the manifest
+(`icons/icon-192.png`) so they resolve through the school's own address
+(`/student/app/<slug>/...`, passed through to the API) and straight from the
+API alike. A school with no crest keeps the
 app's own XVS icons at `/student/icons/`.
 
 Push (owner decisions of 16 October: pywebpush, no figures on a locked
