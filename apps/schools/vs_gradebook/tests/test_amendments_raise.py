@@ -344,7 +344,9 @@ class RaiseTests(AmendmentFixture):
         self.assertIn("Amara Amend asked to correct Mathematics", event.summary)
         self.assertIn("Kelechi Eze", event.summary)
         self.assertNotIn("private", event.summary + str(event.metadata))
-        self.assertNotIn("50", event.summary + str(event.metadata))
+        self.assertNotIn("50", event.summary)
+        # Record ids only; an id can itself be 50, so the keys are checked.
+        self.assertEqual(set(event.metadata), {"term_id", "class_id", "student_id", "subject_id"})
 
 
 class DrawerTests(AmendmentFixture):
