@@ -132,7 +132,12 @@ class PromotionRulesView(StudentsViewMixin, APIView):
     ``effective_capacity_mode`` is what a run applies, and
     ``enrolment_capacity_mode`` the enrolment rule it follows.
 
-    PUT takes all four rules every time, plus an optional ``reason`` for the
+    ``pass_mark`` is the school's promotion pass mark (1 to 100, or null for
+    none), shown to staff for guidance and deciding nothing; it also appears in
+    the promotion preview's ``rules``.
+
+    PUT takes all four rules every time, plus an optional ``pass_mark`` (left
+    unchanged when absent, cleared by null) and an optional ``reason`` for the
     audit trail, and answers with the GET body. Refusals are 400s keyed on the
     field, in sentences.
 

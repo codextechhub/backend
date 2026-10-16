@@ -280,6 +280,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         {"choices": ["FOLLOW_ENROLMENT", "WARN", "HARD", "OFF"]},
     ),
     (
+        "students.promotion.pass_mark", "Promotion Pass Mark",
+        "The average, as a percentage, the school treats as the mark for "
+        "moving up a class. Shown to staff on the promotion screen for "
+        "guidance; it promotes and holds back nobody, and pupils and families "
+        "never see it. Empty means the school sets no pass mark.",
+        "INTEGER", None, {"min": 1, "max": 100},
+    ),
+    (
         "students.suspension.notice", "Who Is Told When A Pupil Is Suspended",
         "Who the school writes to when a pupil is suspended. "
         "PRIMARY_GUARDIAN tells the one guardian marked as the pupil's main "

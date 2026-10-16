@@ -125,6 +125,10 @@ CFG_PROMOTION_SUSPENDED = "students.promotion.suspended"
 CFG_PROMOTION_NOT_PLACED = "students.promotion.not_placed"
 CFG_PROMOTION_ARMS = "students.promotion.arms"
 CFG_PROMOTION_CAPACITY_MODE = "students.promotion.capacity_mode"
+#: The average a school treats as the mark for promotion, shown to staff beside
+#: the promotion for guidance. It decides nothing: promotion is the outcome a
+#: member of staff records, and pupils never see the figure.
+CFG_PROMOTION_PASS_MARK = "students.promotion.pass_mark"
 
 
 class PromotionSuspended(models.TextChoices):

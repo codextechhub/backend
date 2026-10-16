@@ -30,7 +30,7 @@ from .base import StudentsFixture
 
 DEFAULTS = {
     "suspended": "HOLD", "not_placed": "HOLD", "arms": "SAME_ARM",
-    "capacity_mode": "FOLLOW_ENROLMENT",
+    "capacity_mode": "FOLLOW_ENROLMENT", "pass_mark": None,
 }
 
 
@@ -291,6 +291,67 @@ class PromotionRulesShapeTests(_PromotionRulesFixture):
         )
         self.assertNotIn("arms", detail)
         self.assertEqual(read_promotion_rules(self.tenant).arms, "SAME_ARM")
+
+
+class PromotionPassMarkTests(_PromotionRulesFixture):
+    """Brightfield sets 50% as its pass mark; it informs staff and decides nothing."""
+
+    RULES = {
+        "suspended": "HOLD", "not_placed": "HOLD", "arms": "SAME_ARM",
+        "capacity_mode": "FOLLOW_ENROLMENT",
+    }
+
+    def save(self, user=None, **extra):
+        return self.put(
+            user or self.settings_admin, "student-promotion-rules", {**self.RULES, **extra},
+        )
+
+    def test_a_school_sets_its_pass_mark_and_staff_read_it(self):
+        response = self.save(pass_mark=50)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["pass_mark"], 50)
+        data = self.get(self.admin, "student-promotion-rules").data["data"]
+        self.assertEqual(data["pass_mark"], 50)
+
+    def test_leaving_it_out_keeps_it_and_null_clears_it(self):
+        self.save(pass_mark=50)
+        self.assertEqual(self.save().data["data"]["pass_mark"], 50)
+        self.assertIsNone(self.save(pass_mark=None).data["data"]["pass_mark"])
+
+    def test_a_mark_outside_one_to_a_hundred_is_refused_and_nothing_is_written(self):
+        for bad in (0, 101, "half"):
+            with self.subTest(bad=bad):
+                response = self.save(pass_mark=bad)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("pass_mark", response.data["error"]["detail"])
+                if bad != "half":
+                    self.assertEqual(
+                        response.data["error"]["detail"]["pass_mark"],
+                        ["A pass mark is between 1% and 100%."],
+                    )
+        self.assertIsNone(read_promotion_rules(self.tenant).pass_mark)
+
+    def test_a_branch_bound_administrator_cannot_set_it(self):
+        response = self.save(user=self.kemi, pass_mark=40)
+        self.assertEqual(response.status_code, 403)
+        self.assertIsNone(read_promotion_rules(self.tenant).pass_mark)
+
+    def test_one_schools_pass_mark_never_reaches_another(self):
+        self.save(pass_mark=50)
+        theirs = self.get(self.solo_admin, "student-promotion-rules").data["data"]
+        self.assertIsNone(theirs["pass_mark"])
+
+    def test_the_promotion_preview_shows_it_to_staff(self):
+        self.save(pass_mark=50)
+        self.assertEqual(self.preview()["rules"]["pass_mark"], 50)
+
+    def test_the_pass_mark_is_audited_once(self):
+        from vs_config.models import ConfigurationAuditEvent
+
+        before = ConfigurationAuditEvent.objects.count()
+        self.save(pass_mark=50, reason="Agreed at the board meeting.")
+        self.save(pass_mark=50)
+        self.assertEqual(ConfigurationAuditEvent.objects.count(), before + 1)
 
 
 # ── what the rules do ──────────────────────────────────────────────────────

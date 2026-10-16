@@ -1523,7 +1523,8 @@ class PromotionRulesSerializer(serializers.Serializer):
     """The full set of a school's promotion rules, as the settings screen saves it.
 
     Every rule is sent every time, for the reason ``EnrolmentRulesSerializer``
-    gives. Each refusal is keyed on its own field, as a sentence.
+    gives; the pass mark, which decides nothing, may be left out. Each refusal
+    is keyed on its own field, as a sentence.
     """
 
     suspended = serializers.ChoiceField(
@@ -1550,6 +1551,17 @@ class PromotionRulesSerializer(serializers.Serializer):
         error_messages=_choice_errors(
             PromotionCapacityMode, "what the promotion does when a class is full",
         ),
+    )
+    #: Optional, unlike the four rules: a screen that does not show the pass
+    #: mark saves the rules without touching it. Null clears it.
+    pass_mark = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1, max_value=100,
+        error_messages={
+            "invalid": "Give the pass mark as a whole percentage, such as 50.",
+            # Doubled because DRF fills these in with the limit using %.
+            "min_value": "A pass mark is between 1%% and 100%%.",
+            "max_value": "A pass mark is between 1%% and 100%%.",
+        },
     )
     reason = serializers.CharField(
         required=False, allow_blank=True, max_length=200,

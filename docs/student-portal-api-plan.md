@@ -469,9 +469,18 @@ false at a one-branch school.
 `Pupil@School2026`), one invited, one revoked, and four notices (school-wide
 published, class published and read, withdrawn, draft). Idempotent.
 
-### 13.5 Still to build from this plan
+### 13.5 The promotion pass mark (decision 4)
+
+`students.promotion.pass_mark` (school scope, a whole percentage 1 to 100,
+empty by default) sits with the school's promotion rules: read on
+`GET /v1/students/promotion-rules/` as `pass_mark` and in the promotion
+preview's `rules`, written on the same PUT (optional; absent leaves it, null
+clears it) under `school.settings.update` by a whole-school caller. It decides
+no promotion. No portal route carries it, and the pupil's promotion tile will
+show the decision alone.
+
+### 13.6 Still to build from this plan
 
 Home, timetable, attendance, results and report cards, profile and self-edit,
-fees, receipts and the pay flow (sections 3.1 R6 to R23), the promotion
-pass-mark setting (decision 4), and Messages and Assignments when their turn
-comes.
+fees, receipts and the pay flow (sections 3.1 R6 to R23), and Messages and
+Assignments when their turn comes.
