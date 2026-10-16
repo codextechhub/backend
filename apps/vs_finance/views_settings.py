@@ -147,70 +147,159 @@ class _FinanceSettingsView(WholeTenantSettingsMixin, APIView):
         )
 
 
+def _mapping_serializer():
+    """A ``finance.settings`` serializer with one field per account role key."""
+    from .account_mappings import ACCOUNT_MAPPING_SPECS
+
+    return type("AccountMappingsSerializer", (FieldAccessMixin, serializers.Serializer), {
+        "__module__": __name__,
+        "__doc__": (
+            "The account mappings keyed by role (``CASH_BANK``), under ``finance.settings``.\n\n"
+            "Each role is its own field; the view lists the rows the caller may read."
+        ),
+        "field_resource": "finance.settings",
+        "field_access_detail": True,
+        **{str(key): serializers.ReadOnlyField() for key in ACCOUNT_MAPPING_SPECS},
+    })
+
+
+AccountMappingsSerializer = _mapping_serializer()
+
+
+def _readable_mappings(request, rows) -> tuple[list, list]:
+    """The mapping rows the caller may read, and the keys of those they may not change."""
+    by_key = AccountMappingsSerializer(
+        {row["key"]: row for row in rows}, context={"request": request},
+    ).data
+    read_only = list(by_key.get("_read_only_fields") or [])
+    shown = [row for row in rows if row["key"] in by_key]
+    return shown, [key for key in read_only if key in by_key]
+
+
 class FinanceAccountSettingsView(_FinanceSettingsView):
-    """Read or update typed account-role mappings for one ledger entity."""
+    """Read or update typed account-role mappings for one ledger entity.
+
+    Every role is a ``finance.settings`` field travelling under its key
+    (``CASH_BANK``). A role the caller may not read is absent from
+    ``mappings``, ``consumers`` and the history; ``read_only_keys`` names the
+    roles they may read and not change, and a PATCH changing one of those, or
+    one they may not read, is refused before anything is saved.
+
+    docstring-name: Account mappings
+    """
 
     settings_subject = "the finance account mappings"
+
+    def _payload(self, request, entity, rows):
+        shown, read_only = _readable_mappings(request, rows)
+        return {
+            "mappings": shown,
+            "read_only_keys": read_only,
+            "consumers": visible(request, "finance.settings", ACCOUNT_MAPPING_CONSUMERS),
+            "account_options": account_mapping_options(entity),
+            "history": _settings_history(
+                entity, FinanceAuditAction.FINANCE_SETTINGS_UPDATED, request=request,
+            ),
+        }
 
     def get(self, request):
         entity = resolve_entity(request)
         return success_response(
             "Finance account settings retrieved.",
-            data={
-                "mappings": account_mapping_snapshot(entity),
-                "consumers": ACCOUNT_MAPPING_CONSUMERS,
-                "account_options": account_mapping_options(entity),
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, account_mapping_snapshot(entity)),
         )
 
     def patch(self, request):
+        from .account_mappings import mapping_submission
+
         entity = resolve_entity(request)
-        mappings = update_account_mappings(
+        values = (request.data or {}).get("mappings")
+        if isinstance(values, dict):
+            submitted, current = mapping_submission(request, entity, values)
+            assert_writable(request, "finance.settings", submitted, current=current)
+        rows = update_account_mappings(
             request=request,
             entity=entity,
-            values=(request.data or {}).get("mappings"),
+            values=values,
             actor_user=request.user,
         )
         return success_response(
             "Finance account settings saved.",
-            data={
-                "mappings": mappings,
-                "consumers": ACCOUNT_MAPPING_CONSUMERS,
-                "account_options": account_mapping_options(entity),
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, rows),
         )
 
 
+class DocumentSettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The document defaults as the settings screen shows them, under ``finance.settings``.
+
+    The collection account and its options follow the bank account switches
+    instead (:func:`_hide_bank_copies`), and are not ``finance.settings`` fields.
+    """
+
+    field_resource = "finance.settings"
+    field_access_detail = True
+
+    default_invoice_due_days = serializers.ReadOnlyField()
+    default_invoice_narration = serializers.ReadOnlyField()
+    auto_post_manual_invoices = serializers.ReadOnlyField()
+    allow_customer_opening_balances = serializers.ReadOnlyField()
+    term_collection_target_pct = serializers.ReadOnlyField()
+    auto_apply_customer_credit = serializers.ReadOnlyField()
+    concession_second_person_threshold = serializers.ReadOnlyField()
+    primary_collection_bank_account = serializers.ReadOnlyField()
+    primary_collection_bank_accounts = serializers.ReadOnlyField()
+    bank_account_options = serializers.ReadOnlyField()
+    updated_at = serializers.ReadOnlyField()
+    updated_by = serializers.ReadOnlyField()
+
+
 class FinanceDocumentSettingsView(_FinanceSettingsView):
-    """Read or update customer-document defaults for one ledger entity."""
+    """Read or update customer-document defaults for one ledger entity.
+
+    Every default is a ``finance.settings`` field with its own Read and Write
+    switch; the collection account follows the bank account switches.
+
+    docstring-name: Document settings
+    """
 
     settings_subject = "the finance document settings"
+
+    def _payload(self, request, entity, settings):
+        return {
+            "settings": DocumentSettingsSerializer(
+                _hide_bank_copies(request, serialize_finance_document_settings(settings)),
+                context={"request": request},
+            ).data,
+            "consumers": visible(request, "finance.settings", DOCUMENT_SETTING_CONSUMERS),
+            "history": _settings_history(
+                entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
+                request=request,
+            ),
+        }
 
     def get(self, request):
         entity = resolve_entity(request)
         return success_response(
             "Finance document settings retrieved.",
-            data={
-                "settings": _hide_bank_copies(request, serialize_finance_document_settings(
-                    resolve_finance_document_settings(entity),
-                )),
-                "consumers": DOCUMENT_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
-                    request=request,
-                ),
-            },
+            data=self._payload(request, entity, resolve_finance_document_settings(entity)),
         )
 
     def patch(self, request):
+        from .document_settings import SETTING_FIELDS, _validated_values
+        from .settings_access import normalised_submission, stored_values
+
         entity = resolve_entity(request)
         body = request.data or {}
+        if isinstance(body, dict):
+            fields = SETTING_FIELDS[:-1]
+            assert_writable(
+                request, "finance.settings",
+                normalised_submission(
+                    {k: v for k, v in body.items() if k != "primary_collection_bank_account"},
+                    fields, _validated_values,
+                ),
+                current=stored_values(resolve_finance_document_settings(entity), fields),
+            )
         if "primary_collection_bank_account" in body:
             _assert_collection_account_writable(
                 request, entity, body["primary_collection_bank_account"])
@@ -219,15 +308,7 @@ class FinanceDocumentSettingsView(_FinanceSettingsView):
         )
         return success_response(
             "Finance document settings saved.",
-            data={
-                "settings": _hide_bank_copies(
-                    request, serialize_finance_document_settings(settings)),
-                "consumers": DOCUMENT_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
-                    request=request,
-                ),
-            },
+            data=self._payload(request, entity, settings),
         )
 
 
@@ -302,56 +383,129 @@ class FinanceBankingSettingsView(_FinanceSettingsView):
         )
 
 
+class CalendarSettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The fiscal calendar rules as the settings screen shows them, under ``finance.settings``."""
+
+    field_resource = "finance.settings"
+    field_access_detail = True
+
+    next_year_mode = serializers.ReadOnlyField()
+    next_year_mode_label = serializers.ReadOnlyField()
+    next_year_mode_options = serializers.ReadOnlyField()
+    next_year_lead_days = serializers.ReadOnlyField()
+    periods_close_in_order = serializers.ReadOnlyField()
+    updated_at = serializers.ReadOnlyField()
+    updated_by = serializers.ReadOnlyField()
+
+
 class FinanceCalendarSettingsView(_FinanceSettingsView):
-    """Read or update how the fiscal calendar is kept ahead of today."""
+    """Read or update how the fiscal calendar is kept ahead of today.
+
+    Every rule is a ``finance.settings`` field with its own Read and Write switch.
+
+    docstring-name: Fiscal calendar settings
+    """
 
     settings_subject = "the fiscal calendar settings"
+
+    def _payload(self, request, entity, settings):
+        return {
+            "settings": CalendarSettingsSerializer(
+                serialize_finance_calendar_settings(settings), context={"request": request},
+            ).data,
+            "consumers": visible(request, "finance.settings", CALENDAR_SETTING_CONSUMERS),
+            "history": _settings_history(
+                entity, FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED, request=request,
+            ),
+        }
 
     def get(self, request):
         entity = resolve_entity(request)
         return success_response(
             "Finance calendar settings retrieved.",
-            data={
-                "settings": serialize_finance_calendar_settings(
-                    resolve_finance_calendar_settings(entity),
-                ),
-                "consumers": CALENDAR_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, resolve_finance_calendar_settings(entity)),
         )
 
     def patch(self, request):
+        from .calendar_settings import SETTING_FIELDS, _validated_values
+        from .settings_access import normalised_submission, stored_values
+
         entity = resolve_entity(request)
+        body = request.data or {}
+        if isinstance(body, dict):
+            assert_writable(
+                request, "finance.settings",
+                normalised_submission(body, SETTING_FIELDS, _validated_values),
+                current=stored_values(resolve_finance_calendar_settings(entity), SETTING_FIELDS),
+            )
         settings = update_finance_calendar_settings(
-            entity=entity, data=request.data or {}, actor_user=request.user,
+            entity=entity, data=body, actor_user=request.user,
         )
         return success_response(
             "Finance calendar settings saved.",
-            data={
-                "settings": serialize_finance_calendar_settings(settings),
-                "consumers": CALENDAR_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, settings),
         )
 
 
+class PayrollSettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The payroll policy as the settings screen shows them, under ``finance.settings``.
+
+    Whether the payment provider route is open is the books' state, not a
+    setting, and carries no switch.
+    """
+
+    field_resource = "finance.settings"
+    field_access_detail = True
+
+    paye_method = serializers.ReadOnlyField()
+    paye_method_label = serializers.ReadOnlyField()
+    paye_method_options = serializers.ReadOnlyField()
+    tax_country = serializers.ReadOnlyField()
+    payment_route = serializers.ReadOnlyField()
+    payment_route_label = serializers.ReadOnlyField()
+    payment_route_options = serializers.ReadOnlyField()
+    employee_pension_enabled = serializers.ReadOnlyField()
+    employer_pension_enabled = serializers.ReadOnlyField()
+    nhf_enabled = serializers.ReadOnlyField()
+    nsitf_enabled = serializers.ReadOnlyField()
+    itf_enabled = serializers.ReadOnlyField()
+    payslip_in_app = serializers.ReadOnlyField()
+    payslip_email = serializers.ReadOnlyField()
+    previous_pay_required = serializers.ReadOnlyField()
+    employee_pension_rate_bps = serializers.ReadOnlyField()
+    employer_pension_rate_bps = serializers.ReadOnlyField()
+    nhf_rate_bps = serializers.ReadOnlyField()
+    nsitf_rate_bps = serializers.ReadOnlyField()
+    itf_rate_bps = serializers.ReadOnlyField()
+    payroll_moved_here_on = serializers.ReadOnlyField()
+    paystack_route_available = serializers.ReadOnlyField()
+    paystack_route_unavailable_reason = serializers.ReadOnlyField()
+    updated_at = serializers.ReadOnlyField()
+    updated_by = serializers.ReadOnlyField()
+
+
 class FinancePayrollSettingsView(_FinanceSettingsView):
-    """Read or update the payroll policy: statutory switches and rates, payslip delivery."""
+    """Read or update the payroll policy: statutory switches and rates, payslip delivery.
+
+    Every value is a ``finance.settings`` field with its own Read and Write switch.
+
+    docstring-name: Payroll settings
+    """
 
     settings_subject = "the payroll settings"
 
-    def _payload(self, entity, settings):
+    def _payload(self, request, entity, settings):
         from .payroll_settings import serialize_finance_payroll_settings
         from .settings_ownership import PAYROLL_SETTING_CONSUMERS
 
         return {
-            "settings": serialize_finance_payroll_settings(settings),
-            "consumers": PAYROLL_SETTING_CONSUMERS,
-            "history": _settings_history(entity, FinanceAuditAction.PAYROLL_SETTINGS_UPDATED),
+            "settings": PayrollSettingsSerializer(
+                serialize_finance_payroll_settings(settings), context={"request": request},
+            ).data,
+            "consumers": visible(request, "finance.settings", PAYROLL_SETTING_CONSUMERS),
+            "history": _settings_history(
+                entity, FinanceAuditAction.PAYROLL_SETTINGS_UPDATED, request=request,
+            ),
         }
 
     def get(self, request):
@@ -360,18 +514,31 @@ class FinancePayrollSettingsView(_FinanceSettingsView):
         entity = resolve_entity(request)
         return success_response(
             "Finance payroll settings retrieved.",
-            data=self._payload(entity, resolve_finance_payroll_settings(entity)),
+            data=self._payload(request, entity, resolve_finance_payroll_settings(entity)),
         )
 
     def patch(self, request):
-        from .payroll_settings import update_finance_payroll_settings
+        from .payroll_settings import (
+            SETTING_FIELDS, _validated_values, resolve_finance_payroll_settings,
+            update_finance_payroll_settings,
+        )
+        from .settings_access import normalised_submission, stored_values
 
         entity = resolve_entity(request)
+        body = request.data or {}
+        if isinstance(body, dict):
+            assert_writable(
+                request, "finance.settings",
+                normalised_submission(
+                    body, SETTING_FIELDS, lambda data: _validated_values(data, entity),
+                ),
+                current=stored_values(resolve_finance_payroll_settings(entity), SETTING_FIELDS),
+            )
         settings = update_finance_payroll_settings(
-            entity=entity, data=request.data or {}, actor_user=request.user,
+            entity=entity, data=body, actor_user=request.user,
         )
         return success_response(
-            "Finance payroll settings saved.", data=self._payload(entity, settings),
+            "Finance payroll settings saved.", data=self._payload(request, entity, settings),
         )
 
 

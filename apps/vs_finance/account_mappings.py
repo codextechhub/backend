@@ -187,6 +187,43 @@ def _codes_by_key(entity):
     }
 
 
+def mapping_submission(request, entity, values):
+    """``(submitted, current)``: each named role's account code after and before a write.
+
+    What :func:`vs_rbac.field_enforcement.assert_writable` compares, by role
+    key, so naming the account a role already uses is not a change. Clearing a
+    role puts it back on its default account. A reference that names no
+    account of these books is ``UNPARSED``, judged as a change; whether the
+    caller may name the account is the update's own check.
+    """
+    from vs_rbac.field_enforcement import UNPARSED
+
+    from .models import Account
+
+    current = _codes_by_key(entity)
+    defaults = {
+        account.code: account.code
+        for account in Account.objects.filter(
+            entity=entity, code__in=[code for code, _type in ACCOUNT_MAPPING_SPECS.values()],
+        )
+    }
+    accounts = Account.objects.filter(entity=entity)
+    submitted = {}
+    for key, reference in values.items():
+        if key not in ACCOUNT_MAPPING_SPECS:
+            submitted[key] = reference
+            continue
+        if reference in (None, ""):
+            submitted[key] = defaults.get(ACCOUNT_MAPPING_SPECS[key][0])
+            continue
+        found = (
+            accounts.filter(pk=int(reference)) if str(reference).isdigit()
+            else accounts.filter(code=str(reference).strip())
+        ).values_list("code", flat=True).first()
+        submitted[key] = found if found is not None else UNPARSED
+    return submitted, {key: current.get(key) for key in values if key in current}
+
+
 @transaction.atomic
 def update_account_mappings(*, request, entity, values, actor_user):
     """Apply a partial mapping update and audit the effective before/after codes.

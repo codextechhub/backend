@@ -2843,6 +2843,21 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 #: resource those fields are registered under. The receivables policy's
 #: snapshots are keyed by the policy's own setting names, which are the client
 #: names ``finance.settings`` registers.
+#: Audit actions whose snapshots carry registered fields whatever target they
+#: name: every finance settings section is a ``finance.settings`` field, and
+#: the record retention change names the books themselves as its target.
+from .constants import FinanceAuditAction  # noqa: E402 - constants import no models
+
+AUDIT_SNAPSHOT_FIELDS_BY_ACTION = {
+    FinanceAuditAction.FINANCE_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.FINANCE_CALENDAR_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.FINANCE_RECEIVABLES_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.PAYROLL_SETTINGS_UPDATED: "finance.settings",
+    FinanceAuditAction.RETENTION_SETTINGS_UPDATED: "finance.settings",
+}
+
 AUDIT_SNAPSHOT_FIELDS = {
     "EmployeeSalary": "finance.salary",
     "FinanceReceivablesPolicy": "finance.settings",
@@ -2969,7 +2984,8 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         data = super().to_representation(obj)
         data["message"] = entry_sentence(obj)
         request = self.context.get("request")
-        resource = AUDIT_SNAPSHOT_FIELDS.get(obj.target_type)
+        resource = (AUDIT_SNAPSHOT_FIELDS.get(obj.target_type)
+                    or AUDIT_SNAPSHOT_FIELDS_BY_ACTION.get(obj.action))
         if resource is not None:
             data["before"] = visible(request, resource, data.get("before") or {})
             data["after"] = visible(request, resource, data.get("after") or {})

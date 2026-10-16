@@ -79,10 +79,12 @@ role until a school closes a field:
   read-only. The release and forfeit responses are rendered through the same
   switches, and a caller who may not read a deposit's customer may not name one
   to release.
-* ``finance.settings``: the receivables policy and the banking and cash
-  defaults on the finance settings screen. Each value is stored and submitted,
-  so each has a Read and a Write switch; the last change (when and by whom) is
-  audit data and read-only. The
+* ``finance.settings``: every value on the finance settings screen: account
+  mappings, document defaults, banking and cash, the fiscal calendar, the
+  receivables policy, payroll and record retention. Each value is stored and
+  submitted, so each has a Read and a Write switch, labelled as the settings
+  history labels it; the last change (when and by whom) is audit data and
+  read-only. An account mapping travels under its role key (``CASH_BANK``). The
   settings history shows a changed value only to a caller who may read that
   setting.
 
@@ -894,6 +896,11 @@ def register():
         surfaces=(
             "vs_finance.views_accruals.ReceivablesPolicySerializer",
             "vs_finance.views_settings.BankingSettingsSerializer",
+            "vs_finance.views_settings.DocumentSettingsSerializer",
+            "vs_finance.views_settings.CalendarSettingsSerializer",
+            "vs_finance.views_settings.PayrollSettingsSerializer",
+            "vs_finance.views_settings.AccountMappingsSerializer",
+            "vs_finance.views_records.RetentionSettingsSerializer",
         ),
         fields=(
             FieldSpec("revenue_recognition", "Revenue recognition", group="Receivables policy",
@@ -931,7 +938,7 @@ def register():
                       group="Banking and cash", scope=_TENANT, sort_order=140),
             FieldSpec("petty_cash_low_balance_threshold_bps", "Petty cash low-balance alert",
                       group="Banking and cash", scope=_TENANT, sort_order=150),
-        ),
+        ) + _settings_section_specs(),
     )
     register_fields(
         "finance",
@@ -1096,3 +1103,56 @@ def register():
                     "The year's result the close rolled into retained earnings."),
         ),
     )
+
+
+def _settings_section_specs() -> tuple:
+    """The ``finance.settings`` fields of the sections other than receivables and banking.
+
+    Labelled from the settings history's own maps, so a switch and a history
+    line name a value the same way. A choice carries its label and options,
+    and the retention period its effective value, under the same switch.
+    """
+    from .account_mappings import ACCOUNT_MAPPING_SPECS, PLATFORM_ONLY_MAPPING_KEYS
+    from .constants import AccountMappingKey
+    from .settings_history import (
+        DOCUMENT_SETTING_FIELDS,
+        PAYROLL_SETTING_FIELDS,
+        RETENTION_SETTING_FIELDS,
+        _calendar_fields,
+    )
+
+    choice_names = {"paye_method", "payment_route", "next_year_mode"}
+    extra_names = {"retention_years": ("effective_retention_years",)}
+    specs = []
+    sections = (
+        ("Documents", 200, {
+            name: field for name, field in DOCUMENT_SETTING_FIELDS.items()
+            if name != "primary_collection_bank_account"
+        }),
+        ("Fiscal calendar", 300, _calendar_fields()),
+        ("Payroll", 400, PAYROLL_SETTING_FIELDS),
+        ("Record retention", 500, RETENTION_SETTING_FIELDS),
+    )
+    for group, base, fields in sections:
+        for offset, (name, field) in enumerate(fields.items()):
+            api_names = (name,)
+            if name in choice_names:
+                api_names += (f"{name}_label", f"{name}_options")
+            api_names += extra_names.get(name, ())
+            specs.append(FieldSpec(
+                name, field.label, group=group, scope=_TENANT,
+                sort_order=base + offset * 10,
+                **({"api_names": api_names} if len(api_names) > 1 else {}),
+            ))
+    keys = [key for key in ACCOUNT_MAPPING_SPECS if key not in PLATFORM_ONLY_MAPPING_KEYS]
+    for offset, key in enumerate(keys):
+        specs.append(FieldSpec(
+            mapping_field_name(key), AccountMappingKey(key).label, group="Account mappings",
+            scope=_TENANT, sort_order=600 + offset * 10, api_names=(key,),
+        ))
+    return tuple(specs)
+
+
+def mapping_field_name(key: str) -> str:
+    """The ``finance.settings`` field an account mapping role travels under."""
+    return f"mapping_{str(key).lower()}"

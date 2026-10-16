@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework import serializers
 from rest_framework.views import APIView
 
 from core.response import success_response
+from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import caller_reaches_whole_tenant
 
@@ -178,6 +180,22 @@ class FiscalYearUnarchiveView(FiscalYearArchiveView):
     archive = False
 
 
+class RetentionSettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """How long the books are kept, under ``finance.settings``.
+
+    The statutory floor is CodeX's and carries no switch; the effective
+    period travels with the school's own.
+    """
+
+    field_resource = "finance.settings"
+    field_access_detail = True
+
+    statutory_years = serializers.ReadOnlyField()
+    retention_years = serializers.ReadOnlyField()
+    effective_retention_years = serializers.ReadOnlyField()
+    archive_min_age_years = serializers.ReadOnlyField()
+
+
 class RecordRetentionSettingsView(_FinanceSettingsView):
     """GET / PATCH /finance/settings/records/?entity= - how long the books are kept.
 
@@ -192,6 +210,10 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
     audit trail. ``finance.settings.view`` reads; ``finance.settings.update``
     writes, with whole-tenant reach.
 
+    Each value is a ``finance.settings`` field with its own Read and Write
+    switch; the effective period travels with the school's own, and the
+    statutory floor is CodeX's and carries none.
+
     docstring-name: Record retention settings
     """
 
@@ -202,7 +224,7 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
         "archive_min_age_years": "finance.archive.min_age_years",
     }
 
-    def _payload(self, entity):
+    def _values(self, entity):
         from .archive import min_age_years
         from .retention import TENANT_YEARS_KEY, retention_years, statutory_years
         from vs_config.conf import get_config
@@ -213,12 +235,21 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
             "retention_years": get_config(TENANT_YEARS_KEY, None, tenant=tenant),
             "effective_retention_years": retention_years(tenant),
             "archive_min_age_years": min_age_years(tenant),
-            "history": _settings_history(entity, FinanceAuditAction.RETENTION_SETTINGS_UPDATED),
+        }
+
+    def _payload(self, request, entity):
+        return {
+            **RetentionSettingsSerializer(self._values(entity), context={"request": request}).data,
+            "history": _settings_history(
+                entity, FinanceAuditAction.RETENTION_SETTINGS_UPDATED, request=request,
+            ),
         }
 
     def get(self, request):
         entity = resolve_entity(request)
-        return success_response("Record retention settings retrieved.", data=self._payload(entity))
+        return success_response(
+            "Record retention settings retrieved.", data=self._payload(request, entity),
+        )
 
     def patch(self, request):
         from vs_config.models import ConfigurationDefinition
@@ -232,7 +263,8 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
                 "settings": f"Provide any of: {', '.join(self.FIELDS)}."
                 + (f" Unknown: {', '.join(unknown)}." if unknown else ""),
             })
-        before = self._payload(entity)
+        self._assert_writable(request, entity, body)
+        before = self._values(entity)
         with transaction.atomic():
             for field_name, key in self.FIELDS.items():
                 if field_name not in body:
@@ -250,7 +282,7 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
                         definition=definition, value=value, actor=request.user,
                         tenant=entity.tenant,
                     )
-            after = self._payload(entity)
+            after = self._values(entity)
             changed = {f: after[f] for f in self.FIELDS if before[f] != after[f]}
             if changed:
                 record(
@@ -260,6 +292,27 @@ class RecordRetentionSettingsView(_FinanceSettingsView):
                     before={f: before[f] for f in changed}, after=changed,
                 )
         return success_response(
-            "Record retention settings saved.", data=self._payload(entity),
+            "Record retention settings saved.", data=self._payload(request, entity),
+        )
+
+    def _assert_writable(self, request, entity, body):
+        """Refuse a change to a value the caller may not write, before anything is saved."""
+        from vs_rbac.field_enforcement import UNPARSED, assert_writable
+
+        def parsed(value):
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return UNPARSED
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return UNPARSED
+
+        current = self._values(entity)
+        assert_writable(
+            request, "finance.settings",
+            {name: parsed(value) for name, value in body.items() if name in self.FIELDS},
+            current={name: current[name] for name in self.FIELDS},
         )
 

@@ -16,9 +16,22 @@ fiscal year (``finance.dashboard``, ``finance.period``, ``finance.seal`` and
 """
 from __future__ import annotations
 
+from vs_finance.account_mappings import account_mapping_snapshot
 from vs_finance.banking_settings import (
     resolve_finance_banking_settings,
     serialize_finance_banking_settings,
+)
+from vs_finance.calendar_settings import (
+    resolve_finance_calendar_settings,
+    serialize_finance_calendar_settings,
+)
+from vs_finance.document_settings import (
+    resolve_finance_document_settings,
+    serialize_finance_document_settings,
+)
+from vs_finance.payroll_settings import (
+    resolve_finance_payroll_settings,
+    serialize_finance_payroll_settings,
 )
 
 import datetime
@@ -296,6 +309,11 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
         _ACCRUALS + "DepositSkippedSerializer",
         _ACCRUALS + "ReceivablesPolicySerializer",
         "vs_finance.views_settings.BankingSettingsSerializer",
+        "vs_finance.views_settings.DocumentSettingsSerializer",
+        "vs_finance.views_settings.CalendarSettingsSerializer",
+        "vs_finance.views_settings.PayrollSettingsSerializer",
+        "vs_finance.views_settings.AccountMappingsSerializer",
+        "vs_finance.views_records.RetentionSettingsSerializer",
     })
 
     @classmethod
@@ -337,6 +355,15 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
             "policy": serialize_receivables_policy(resolve_receivables_policy(books)),
             "banking": serialize_finance_banking_settings(
                 resolve_finance_banking_settings(books)),
+            "documents": serialize_finance_document_settings(
+                resolve_finance_document_settings(books)),
+            "calendar": serialize_finance_calendar_settings(
+                resolve_finance_calendar_settings(books)),
+            "payroll": serialize_finance_payroll_settings(
+                resolve_finance_payroll_settings(books)),
+            "mappings": {row["key"]: row for row in account_mapping_snapshot(books)},
+            "retention": {"statutory_years": 6, "retention_years": 8,
+                          "effective_retention_years": 8, "archive_min_age_years": 9},
         }
 
     @classmethod
@@ -403,6 +430,16 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
                        tenant=tenant),
                 Sample("vs_finance.views_settings.BankingSettingsSerializer",
                        rec["banking"], tenant=tenant),
+                Sample("vs_finance.views_settings.DocumentSettingsSerializer",
+                       rec["documents"], tenant=tenant),
+                Sample("vs_finance.views_settings.CalendarSettingsSerializer",
+                       rec["calendar"], tenant=tenant),
+                Sample("vs_finance.views_settings.PayrollSettingsSerializer",
+                       rec["payroll"], tenant=tenant),
+                Sample("vs_finance.views_settings.AccountMappingsSerializer",
+                       rec["mappings"], tenant=tenant),
+                Sample("vs_finance.views_records.RetentionSettingsSerializer",
+                       rec["retention"], tenant=tenant),
             ]
         return samples
 
