@@ -79,9 +79,10 @@ role until a school closes a field:
   read-only. The release and forfeit responses are rendered through the same
   switches, and a caller who may not read a deposit's customer may not name one
   to release.
-* ``finance.settings``: the receivables policy on the finance settings screen.
-  Each policy value is stored and submitted, so each has a Read and a Write
-  switch; the last change (when and by whom) is audit data and read-only. The
+* ``finance.settings``: the receivables policy and the banking and cash
+  defaults on the finance settings screen. Each value is stored and submitted,
+  so each has a Read and a Write switch; the last change (when and by whom) is
+  audit data and read-only. The
   settings history shows a changed value only to a caller who may read that
   setting.
 
@@ -890,7 +891,10 @@ def register():
     register_fields(
         "finance",
         "settings",
-        surfaces=("vs_finance.views_accruals.ReceivablesPolicySerializer",),
+        surfaces=(
+            "vs_finance.views_accruals.ReceivablesPolicySerializer",
+            "vs_finance.views_settings.BankingSettingsSerializer",
+        ),
         fields=(
             FieldSpec("revenue_recognition", "Revenue recognition", group="Receivables policy",
                       scope=_TENANT, sort_order=10,
@@ -911,6 +915,22 @@ def register():
             FieldSpec("last_changed", "Last changed", group="Receivables policy",
                       writable=False, scope=_TENANT, sort_order=70,
                       api_names=("updated_at", "updated_by")),
+            FieldSpec("default_bank_reconciliation_tolerance_days",
+                      "Reconciliation date window", group="Banking and cash",
+                      scope=_TENANT, sort_order=110),
+            FieldSpec("default_group_reconciliation_matches",
+                      "Allow grouped automatic matches", group="Banking and cash",
+                      scope=_TENANT, sort_order=120),
+            FieldSpec("default_receipt_allocation_strategy", "Receipt allocation order",
+                      group="Banking and cash", scope=_TENANT, sort_order=130,
+                      api_names=("default_receipt_allocation_strategy",
+                                 "default_receipt_allocation_strategy_label",
+                                 "default_receipt_allocation_strategy_options")),
+            FieldSpec("apply_transfers_automatically",
+                      "Apply bank transfers to open bills automatically",
+                      group="Banking and cash", scope=_TENANT, sort_order=140),
+            FieldSpec("petty_cash_low_balance_threshold_bps", "Petty cash low-balance alert",
+                      group="Banking and cash", scope=_TENANT, sort_order=150),
         ),
     )
     register_fields(

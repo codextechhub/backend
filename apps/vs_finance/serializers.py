@@ -2846,6 +2846,7 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 AUDIT_SNAPSHOT_FIELDS = {
     "EmployeeSalary": "finance.salary",
     "FinanceReceivablesPolicy": "finance.settings",
+    "FinanceBankingSettings": "finance.settings",
     "Customer": "finance.customer",
     "BankAccount": "finance.bankaccount",
     "BankTransaction": "finance.banktransaction",

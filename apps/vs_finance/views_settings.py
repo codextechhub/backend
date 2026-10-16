@@ -5,7 +5,8 @@ from rest_framework.permissions import SAFE_METHODS
 from rest_framework.views import APIView
 
 from core.response import success_response
-from vs_rbac.field_enforcement import UNPARSED, assert_writable
+from rest_framework import serializers
+from vs_rbac.field_enforcement import UNPARSED, FieldAccessMixin, assert_writable, visible
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import WholeTenantWriteMixin
 
@@ -15,6 +16,8 @@ from .account_mappings import (
     update_account_mappings,
 )
 from .banking_settings import (
+    normalised_submission as banking_submission,
+    stored_banking_values,
     resolve_finance_banking_settings,
     serialize_finance_banking_settings,
     update_finance_banking_settings,
@@ -228,40 +231,74 @@ class FinanceDocumentSettingsView(_FinanceSettingsView):
         )
 
 
+class BankingSettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The banking and cash defaults as the settings screen shows them, under ``finance.settings``.
+
+    The names are those of :func:`vs_finance.banking_settings.serialize_finance_banking_settings`.
+    Each default is a stored, submitted setting with its own Read and Write
+    switch, and the label and options beside the allocation order go with it.
+    """
+
+    field_resource = "finance.settings"
+    field_access_detail = True
+
+    default_bank_reconciliation_tolerance_days = serializers.ReadOnlyField()
+    default_group_reconciliation_matches = serializers.ReadOnlyField()
+    default_receipt_allocation_strategy = serializers.ReadOnlyField()
+    default_receipt_allocation_strategy_label = serializers.ReadOnlyField()
+    default_receipt_allocation_strategy_options = serializers.ReadOnlyField()
+    apply_transfers_automatically = serializers.ReadOnlyField()
+    petty_cash_low_balance_threshold_bps = serializers.ReadOnlyField()
+    updated_at = serializers.ReadOnlyField()
+    updated_by = serializers.ReadOnlyField()
+
+
 class FinanceBankingSettingsView(_FinanceSettingsView):
-    """Read or update reconciliation and receipt-allocation defaults."""
+    """Read or update reconciliation, receipt-allocation and transfer defaults.
+
+    Every default is a ``finance.settings`` field. A default the caller may not
+    read is absent from ``settings``, from ``consumers`` and from the history;
+    a PATCH that changes one the caller may not write is refused with the
+    standard field refusal before anything is saved, and sending one back
+    exactly as stored is not a change.
+
+    docstring-name: Banking settings
+    """
 
     settings_subject = "the finance banking settings"
+
+    def _payload(self, request, entity, settings):
+        return {
+            "settings": BankingSettingsSerializer(
+                serialize_finance_banking_settings(settings), context={"request": request},
+            ).data,
+            "consumers": visible(request, "finance.settings", BANKING_SETTING_CONSUMERS),
+            "history": _settings_history(
+                entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED, request=request,
+            ),
+        }
 
     def get(self, request):
         entity = resolve_entity(request)
         return success_response(
             "Finance banking settings retrieved.",
-            data={
-                "settings": serialize_finance_banking_settings(
-                    resolve_finance_banking_settings(entity),
-                ),
-                "consumers": BANKING_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, resolve_finance_banking_settings(entity)),
         )
 
     def patch(self, request):
         entity = resolve_entity(request)
+        body = request.data or {}
+        if isinstance(body, dict):
+            assert_writable(
+                request, "finance.settings", banking_submission(body),
+                current=stored_banking_values(resolve_finance_banking_settings(entity)),
+            )
         settings = update_finance_banking_settings(
-            entity=entity, data=request.data or {}, actor_user=request.user,
+            entity=entity, data=body, actor_user=request.user,
         )
         return success_response(
             "Finance banking settings saved.",
-            data={
-                "settings": serialize_finance_banking_settings(settings),
-                "consumers": BANKING_SETTING_CONSUMERS,
-                "history": _settings_history(
-                    entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
-                ),
-            },
+            data=self._payload(request, entity, settings),
         )
 
 

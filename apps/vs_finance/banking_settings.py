@@ -6,6 +6,8 @@ from vs_finance.wording import choice_options, choose_one_of, counted
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
+from vs_rbac.field_enforcement import UNPARSED
+
 from .audit import record
 from .constants import FinanceAuditAction
 from .models import FinanceBankingSettings
@@ -52,6 +54,35 @@ def serialize_finance_banking_settings(settings):
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
     }
+
+
+def stored_banking_values(settings) -> dict:
+    """The settings as :func:`update_finance_banking_settings` stores them.
+
+    What a write is compared with when Field Access judges whether a submitted
+    setting changes anything (:func:`vs_rbac.field_enforcement.assert_writable`).
+    """
+    return {field: getattr(settings, field) for field in SETTING_FIELDS}
+
+
+def normalised_submission(data) -> dict:
+    """Each submitted setting as the update would store it.
+
+    A value that does not validate becomes ``UNPARSED``, which counts as a
+    change, so a caller who may not write a setting is refused before they are
+    told what is wrong with the value. A name that is not a setting is passed
+    on untouched for the update to refuse.
+    """
+    submitted = {}
+    for name, value in (data or {}).items():
+        if name not in SETTING_FIELDS:
+            submitted[name] = value
+            continue
+        try:
+            submitted[name] = _validated_values({name: value})[name]
+        except ValidationError:
+            submitted[name] = UNPARSED
+    return submitted
 
 
 def _validated_values(data):

@@ -16,6 +16,11 @@ fiscal year (``finance.dashboard``, ``finance.period``, ``finance.seal`` and
 """
 from __future__ import annotations
 
+from vs_finance.banking_settings import (
+    resolve_finance_banking_settings,
+    serialize_finance_banking_settings,
+)
+
 import datetime
 
 from django.contrib.auth import get_user_model
@@ -290,6 +295,7 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
         _ACCRUALS + "DepositForfeitureSerializer",
         _ACCRUALS + "DepositSkippedSerializer",
         _ACCRUALS + "ReceivablesPolicySerializer",
+        "vs_finance.views_settings.BankingSettingsSerializer",
     })
 
     @classmethod
@@ -329,6 +335,8 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
             "provision": provision, "line": line, "deposit": deposit,
             "forfeiture": forfeiture, "note": note, "code": code,
             "policy": serialize_receivables_policy(resolve_receivables_policy(books)),
+            "banking": serialize_finance_banking_settings(
+                resolve_finance_banking_settings(books)),
         }
 
     @classmethod
@@ -393,6 +401,8 @@ class AccrualsDeepPayloadTests(DeepPayloadChecks, _AccrualFixture):
                 }], many=True, tenant=tenant),
                 Sample(_ACCRUALS + "ReceivablesPolicySerializer", rec["policy"],
                        tenant=tenant),
+                Sample("vs_finance.views_settings.BankingSettingsSerializer",
+                       rec["banking"], tenant=tenant),
             ]
         return samples
 
