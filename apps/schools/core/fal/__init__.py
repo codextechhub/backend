@@ -146,7 +146,7 @@ from .registry import (
 #: Bumped on any change to a port signature, a source-type constant or a
 #: default resolver. A consuming module pins the version it was written
 #: against; the FAL's own change log lives with the spec, not here.
-FAL_CONTRACT_VERSION = "1.1.8"
+FAL_CONTRACT_VERSION = "1.1.9"
 
 default_app_config = "schools.core.fal.apps.FalConfig"
 

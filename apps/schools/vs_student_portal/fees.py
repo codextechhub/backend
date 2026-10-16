@@ -37,6 +37,13 @@ from .exceptions import (
 #: status by it.
 PAID_PATH = "fees/paid"
 
+#: Where a payment came from, as the history says it.
+SOURCE_LABEL = {
+    "TRANSFER_ACCOUNT": "Transfer into your account",
+    "ONLINE": "Paid online",
+    "SCHOOL": "Recorded by the school",
+}
+
 STATUS_LABEL = {"UNPAID": "Owing", "PARTIAL": "Part-paid", "PAID": "Paid"}
 METHOD_LABEL = {
     "CARD": "Card", "BANK_TRANSFER": "Bank transfer", "USSD": "USSD", "CASH": "Cash",
@@ -106,6 +113,8 @@ def payment_history(student) -> list:
             "payer_name": row.payer_name,
             "receipt_number": row.receipt_number,
             "invoice_number": row.invoice_number,
+            "source": row.source,
+            "source_label": SOURCE_LABEL.get(row.source, ""),
             "has_receipt": row.status == "CONFIRMED" and row.payment_ref is not None,
         }
         for row in result.value

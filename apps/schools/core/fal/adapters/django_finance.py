@@ -2115,6 +2115,30 @@ _HISTORY_METHOD = {
 }
 
 
+def _history_method(intent, payment) -> str:
+    """How a history row was paid: a transfer into the pupil's account is a bank transfer."""
+    from vs_payments.constants import CollectionChannel
+
+    if intent is not None and intent.channel == CollectionChannel.VIRTUAL_ACCOUNT:
+        return "BANK_TRANSFER"
+    if intent is not None and intent.paid_via:
+        return intent.paid_via
+    if payment is None:
+        return "ONLINE"
+    return _HISTORY_METHOD.get(payment.method, "OTHER")
+
+
+def _history_source(intent) -> str:
+    """Where a history row's money came from (see ``PaymentHistoryRow``)."""
+    from vs_payments.constants import CollectionChannel
+
+    if intent is None:
+        return "SCHOOL"
+    if intent.channel == CollectionChannel.VIRTUAL_ACCOUNT:
+        return "TRANSFER_ACCOUNT"
+    return "ONLINE"
+
+
 def _payer(intent) -> str:
     """The name of the account that started an online payment, else empty."""
     if intent is None or not intent.created_by_id:
@@ -2138,8 +2162,10 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
 
     @envelope
     def payment_history(self, student_ref):
+        from django.db.models import Q
+
         from vs_finance.models import Payment
-        from vs_payments.constants import CollectionStatus
+        from vs_payments.constants import CollectionChannel, CollectionStatus
         from vs_payments.models import CollectionIntent
 
         customers = self._customers(student_ref)
@@ -2157,20 +2183,22 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
                 reference=(intent.reference if intent else payment.reference) or "",
                 amount=payment.amount,
                 status="CONFIRMED",
-                method=(intent.paid_via if intent and intent.paid_via
-                        else _HISTORY_METHOD.get(payment.method, "OTHER")),
+                method=_history_method(intent, payment),
+                source=_history_source(intent),
                 paid_on=payment.payment_date,
                 payer_name=_payer(intent),
                 payment_ref=payment.pk,
                 receipt_number=payment.document_number or "",
                 invoice_number=allocation.invoice.document_number if allocation else "",
             ))
+        # A checkout that never reached the provider is not a payment; a
+        # transfer into the pupil's account carries no provider reference and is.
         waiting = (
             CollectionIntent.objects.filter(
                 customer__in=customers, payment__isnull=True,
                 status__in=(CollectionStatus.PENDING, CollectionStatus.PROCESSING),
             )
-            .exclude(provider_reference="")
+            .exclude(Q(provider_reference="") & ~Q(channel=CollectionChannel.VIRTUAL_ACCOUNT))
             .select_related("created_by", "invoice")
         )
         for intent in waiting:
@@ -2178,7 +2206,8 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
                 reference=intent.reference,
                 amount=intent.amount,
                 status="PENDING",
-                method=intent.paid_via or "ONLINE",
+                method=_history_method(intent, None),
+                source=_history_source(intent),
                 paid_on=intent.created_at.date(),
                 payer_name=_payer(intent),
                 invoice_number=intent.invoice.document_number if intent.invoice_id else "",

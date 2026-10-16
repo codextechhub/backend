@@ -491,6 +491,12 @@ class PaymentHistoryRow:
     the provider did not report) or ``OTHER``. ``payer_name`` names the account
     that started an online payment, and is empty for a payment the school
     recorded.
+
+    ``source`` is where the money came from: ``TRANSFER_ACCOUNT`` (a transfer
+    into the pupil's own account number, always a bank transfer), ``ONLINE``
+    (a checkout somebody started) or ``SCHOOL`` (a receipt the school
+    recorded). A transfer is listed ``PENDING`` from the moment the provider
+    reports it.
     """
 
     reference: str
@@ -502,6 +508,7 @@ class PaymentHistoryRow:
     payment_ref: Optional[PaymentRef] = None
     receipt_number: str = ""
     invoice_number: str = ""
+    source: str = "SCHOOL"
 
 
 @dataclass(frozen=True)

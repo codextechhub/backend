@@ -171,6 +171,7 @@ class PortalFeesTests(_FeesFixture):
         self.assertEqual(row["status"], "CONFIRMED")
         self.assertEqual(row["method"], "CARD")
         self.assertEqual(row["payer_name"], self.tunde_user.full_name)
+        self.assertEqual((row["source"], row["source_label"]), ("ONLINE", "Paid online"))
 
         url = reverse("student-portal-receipt", kwargs={"payment_ref": row["payment_ref"]})
         response = self.as_pupil().get(url)
@@ -246,6 +247,25 @@ class PortalTransferTests(_FeesFixture):
         # The school applies transfers to open bills, so the invoice moved.
         fees = self.as_pupil().get(reverse("student-portal-fees")).data["data"]
         self.assertEqual(fees["balance"], 50_000)
+
+    def test_the_payment_history_lists_a_transfer_as_arriving_then_received(self):
+        self.transfer_account("post")
+        intent = self.deposit(300_000)
+        history = self.as_pupil().get(reverse("student-portal-payments")).data["data"]
+        row = next(r for r in history if r["reference"] == intent.reference)
+        self.assertEqual((row["status"], row["method"]), ("PENDING", "BANK_TRANSFER"))
+        self.assertEqual(row["source"], "TRANSFER_ACCOUNT")
+        self.assertEqual(row["source_label"], "Transfer into your account")
+
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        self.fake.forced_amount[intent.reference] = 300_000
+        payment_services.confirm_collection(intent)
+        history = self.as_pupil().get(reverse("student-portal-payments")).data["data"]
+        row = next(r for r in history if r["reference"] == intent.reference)
+        self.assertEqual((row["status"], row["method"], row["method_label"]),
+                         ("CONFIRMED", "BANK_TRANSFER", "Bank transfer"))
+        self.assertEqual(row["payer_name"], "")
+        self.assertEqual(row["source"], "TRANSFER_ACCOUNT")
 
     def test_a_deposit_before_the_page_opened_is_not_listed(self):
         self.transfer_account("post")

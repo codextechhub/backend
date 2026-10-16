@@ -48,6 +48,8 @@ Every Finance setting under Field Access (commit df62adf0, 2026-10-16): REVISE M
 
 Push notifications (commit e2240e67, 2026-10-16): REVISE M08 (minor): a third delivery channel, push (Web Push via pywebpush), beside in-app and email: per-event switch at school and branch like email, its own templates that name what happened and never a figure (owner decision: lock-screen text carries no marks, positions or amounts), sent only to recipients with a subscribed device; device subscription routes; a subscription made from a device session ends with it; a device the push service has forgotten is dropped; a shared device's pushes start with the recipient's first name. New event `gradebook.result_released` (in-app and push, to the pupil). REVISE M16 (minor): releasing a result tells the pupil, where they have a portal account, that the term's result is ready, with nothing from it. REVISE M03 (patch): `device_session_ended` signal. REVISE M27 (fold into v1.0): the student app receives pushes for notices, results and confirmed payments. MUST SAY: each environment needs its own VAPID key pair (WEB_PUSH_VAPID_PUBLIC_KEY / _PRIVATE_KEY / WEB_PUSH_CONTACT), generated once and kept; without them push is off. MRD: Module 08 gains the push channel; no SMS.
 
+Pupil payment history says where money came from (commit ROWS_COMMIT, 2026-10-16): REVISE M27 (fold into v1.0): each payment row carries `source` (TRANSFER_ACCOUNT, ONLINE, SCHOOL) with a label; a transfer into the pupil's account reads as a bank transfer and is listed pending from the moment the provider reports it. REVISE M28 (patch): FAL contract 1.1.9, `PaymentHistoryRow.source`. MRD: no change.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
