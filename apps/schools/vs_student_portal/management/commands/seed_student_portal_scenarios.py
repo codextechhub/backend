@@ -25,6 +25,12 @@ Then the pupils the portal's screens are checked against, each active:
     held       a pupil whose result was held when their class's results were
                published, where the school has one.
 
+And one member of staff, so the finance settings the pupils' payments follow
+can be changed end to end:
+
+    bursar     Kemi Afolabi, the school's Finance Admin with no branch, who
+               covers every branch, signing in with the staff password.
+
 A state a school cannot be put in through its own data is said so and skipped:
 sunrise-academy has no fee structure to bill from and no held result.
 
@@ -55,6 +61,9 @@ CAST = ("lagoon-view", "sunrise-academy")
 #: The password the activated pupil signs in with, long enough for the password policy.
 PASSWORD = "Pupil@School2026"
 
+#: The password every seeded member of staff signs in with, as the staff seeder's.
+STAFF_PASSWORD = "SchoolStaff@2026"
+
 NOTICES = (
     ("Mid-term break begins Oct 25", "School closes on Friday 24 October and "
      "reopens on Monday 3 November. Enjoy the break.", "SCHOOL", "PUBLISHED"),
@@ -84,6 +93,52 @@ class Command(BaseCommand):
             cast = self._seed(slug)
             self._pending_card(cast)
             self._report(slug, cast)
+            self._bursar(cast["tenant"], cast["admin"])
+
+    @transaction.atomic
+    def _bursar(self, tenant, admin):
+        """A whole-school Finance Admin, granted the way a school grants a role.
+
+        The grant goes through the staff seeder's ``seat``: through
+        :func:`vs_rbac.services.grant_role` with no branch, and where the
+        administrator may not grant it outright, through the school's own
+        grant approval, voted on by an approver on its live stage. A grant
+        nobody could approve stops the seed rather than being written in.
+        """
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_user.models import User
+
+        email = f"kemi.afolabi@{tenant.slug}.example.com"
+        user = User.objects.filter(tenant=tenant, email=email).first()
+        if user is None:
+            user = User.objects.create_user(
+                email=email, password=STAFF_PASSWORD, tenant=tenant,
+                first_name="Kemi", last_name="Afolabi", status=User.Status.ACTIVE,
+            )
+        role = TenantRoleTemplate.objects.filter(
+            tenant=tenant, key__in=("finance_admin", "finance-admin"),
+        ).first()
+        if role is None:
+            self._skipped(tenant.slug, "the school has no Finance Admin role")
+            return
+        held = TenantUserRoleAssignment.objects.filter(
+            tenant=tenant, user=user, role=role, branch__isnull=True,
+            assignment_status="ACTIVE",
+        ).exists()
+        if not held:
+            from schools.vs_staff.management.commands.seed_staff_scenarios import (
+                Command as StaffSeed,
+            )
+
+            seed = StaffSeed(stdout=self.stdout)
+            if seed.seat(tenant=tenant, user=user, role=role, actor=admin) is not None:
+                raise CommandError(
+                    f"{tenant.slug}: the grant of Finance Admin to Kemi Afolabi is "
+                    f"waiting for an approval nobody could give.",
+                )
+        self.stdout.write(
+            f"    bursar   Kemi Afolabi (Finance Admin, every branch): {email} / {STAFF_PASSWORD}.",
+        )
 
     def _school(self, slug):
         from schools.vs_schools.models import School
