@@ -463,11 +463,28 @@ false at a one-branch school.
 
 ### 13.4 Seeder
 
-`seed_student_portal_scenarios` (after `seed_student_scenarios` and
-`seed_school_permissions`): at lagoon-view (two branches) and sunrise-academy
-(one branch), one pupil active (signs in by admission number with
-`Pupil@School2026`), one invited, one revoked, and four notices (school-wide
-published, class published and read, withdrawn, draft). Idempotent.
+`seed_student_portal_scenarios` (after `seed_student_scenarios`,
+`seed_school_permissions` and the gradebook seeders): at lagoon-view (two
+branches) and sunrise-academy (one branch), one pupil active (signs in by
+admission number with `Pupil@School2026`), one invited, one revoked, and four
+notices (school-wide published, class published and read, withdrawn, draft).
+
+Then, all active, the pupils the screens are checked against:
+
+- **full:** the first child of the family whose results show the most (a
+  whole released year with its year-end block where there is one), with an
+  email of their own, billed `FS-TERM1` for the term, part-paid by a bursar's
+  receipt, and with a ₦5,000.00 card payment started in the portal (fake
+  provider) and still being confirmed;
+- **sibling:** the same primary guardian's next child, admission number only,
+  owing nothing: the shared-phone pair;
+- **held:** a pupil whose result was held when their class's results were
+  published.
+
+A state a school's own data cannot reach is skipped with a sentence:
+sunrise-academy has no fee structure and no held result. The command ends by
+printing each pupil's sign-in and what their portal shows, read through the
+portal's own reads. Idempotent.
 
 ### 13.5 The promotion pass mark (decision 4)
 

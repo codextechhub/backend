@@ -13,16 +13,36 @@ At each school, from the pupils already on the roll:
 and four notices: a published school-wide one, a published one to the active
 pupil's class (which they have read), a withdrawn one and a draft.
 
+Then the pupils the portal's screens are checked against, each active:
+
+    full       the first child of a family, chosen for the richest results the
+               school has released (a whole year with its year-end block where
+               there is one), with an email of their own so they can sign in
+               with it, billed for the term, part-paid at the desk, and with a
+               card payment started in the portal and still being confirmed;
+    sibling    the next child of the same primary guardian, signing in by
+               admission number only, owing nothing: the two share a phone;
+    held       a pupil whose result was held when their class's results were
+               published, where the school has one.
+
+A state a school cannot be put in through its own data is said so and skipped:
+sunrise-academy has no fee structure to bill from and no held result.
+
 **Everything goes through the real services**: access is issued, activated
 through the invitation token and revoked exactly as the API does it, and the
 notices are drafted, published and withdrawn by the school's administrator, so
-a state the services refuse fails here rather than being written in.
+a state the services refuse fails here rather than being written in. The bill
+is raised by the finance layer's cohort run, the desk payment is posted as a
+bursar's receipt, and the card payment is started with the fake provider (on
+only in development settings), after the rest has committed, because a payment
+may not be started inside a transaction.
 
 Idempotent: re-running leaves what already matches.
 
     python manage.py seed_student_portal_scenarios
 
-Run ``seed_student_scenarios`` and ``seed_school_permissions`` first. Never run
+Run ``seed_student_scenarios``, ``seed_school_permissions`` and
+``seed_gradebook_scenarios`` (with ``seed_gradebook_history``) first. Never run
 against production.
 """
 from __future__ import annotations
@@ -46,13 +66,24 @@ NOTICES = (
      "end of term.", "SCHOOL", "DRAFT"),
 )
 
+#: The fee structure the full pupil is billed from, the finance module's starter one.
+FEE_STRUCTURE = "FS-TERM1"
+
+#: The bank account the desk payment is deposited into.
+DESK_ACCOUNT = "1100"
+
+#: The card payment left being confirmed, in kobo (₦5,000.00).
+PENDING_CARD = 5_000_00
+
 
 class Command(BaseCommand):
     help = "Give pupils portal access in every state and post notices for them to read."
 
     def handle(self, *args, **options):
         for slug in CAST:
-            self._seed(slug)
+            cast = self._seed(slug)
+            self._pending_card(cast)
+            self._report(slug, cast)
 
     def _school(self, slug):
         from schools.vs_schools.models import School
@@ -121,6 +152,210 @@ class Command(BaseCommand):
             f"with {PASSWORD}; {roles['invited'].full_name} is invited; "
             f"{roles['revoked'].full_name} was revoked.",
         ))
+
+        cast = {"tenant": tenant, "admin": admin, "active": active, "invoice": None}
+        family = self._family(pupils, taken=set(p.pk for p in roles.values()))
+        if family is None:
+            self._skipped(slug, "no two pupils on the roll share a primary guardian")
+        else:
+            full, sibling = family
+            self._own_email(full, slug)
+            for pupil in family:
+                self._give_access(pupil, admin)
+            cast.update(full=full, sibling=sibling)
+            cast["invoice"] = self._bill_and_part_pay(slug, tenant, admin, full)
+        held = self._held(tenant, taken=set(p.pk for p in roles.values()) | set(
+            p.pk for p in family or ()
+        ))
+        if held is None:
+            self._skipped(slug, "no pupil's result was held at publication")
+        else:
+            self._give_access(held, admin)
+            cast["held"] = held
+        return cast
+
+    def _skipped(self, slug, why):
+        self.stdout.write(self.style.WARNING(f"  {slug}: skipped, {why}."))
+
+    def _family(self, pupils, *, taken):
+        """The first two children of one primary guardian, the elder with the richest results.
+
+        A shared phone holding two pupils is what the portal's pupil switcher is
+        for, so the full pupil comes with a sibling. Families are ranked by what
+        their first child's results can show: a whole released year with its
+        year-end block first, then any released term, then none; the lowest id
+        breaks a tie, so a rerun picks the same family.
+        """
+        from schools.vs_students.models import StudentGuardian
+
+        from ...results import session_results, term_result
+
+        children = {}
+        for pupil in pupils:
+            if pupil.pk in taken:
+                continue
+            guardian = (
+                StudentGuardian.objects.filter(student=pupil, is_primary=True)
+                .values_list("guardian_id", flat=True).first()
+            )
+            if guardian is not None:
+                children.setdefault(guardian, []).append(pupil)
+
+        def richness(kids):
+            first = kids[0]
+            if session_results(first)["cumulative"]:
+                return 2
+            return 1 if term_result(first, None)["state"] == "released" else 0
+
+        families = [kids[:2] for kids in children.values() if len(kids) >= 2]
+        if not families:
+            return None
+        return max(families, key=lambda kids: (richness(kids), -kids[0].pk))
+
+    def _held(self, tenant, *, taken):
+        """An on-roll pupil whose result was published held, or None."""
+        from schools.vs_gradebook.constants import StoredStage
+        from schools.vs_gradebook.models import StudentTermResult
+        from schools.vs_students.constants import ON_ROLL
+
+        row = (
+            StudentTermResult.objects.filter(
+                tenant=tenant, class_term__stage=StoredStage.PUBLISHED,
+                released_at__isnull=True, snapshot__isnull=False,
+                student__status__in=ON_ROLL,
+            )
+            .exclude(student_id__in=taken)
+            .select_related("student").order_by("student_id").first()
+        )
+        return row.student if row is not None else None
+
+    def _own_email(self, pupil, slug):
+        """Give the full pupil an email of their own, so they can sign in with it too.
+
+        Set before access is first issued, because the account takes its sign-in
+        address from the record then. A pupil who already has an account keeps
+        the address it was made with.
+        """
+        if pupil.email or pupil.user_id:
+            return
+        local = "".join(
+            ch for ch in f"{pupil.first_name}.{pupil.last_name}".lower()
+            if ch.isalnum() or ch == "."
+        )
+        pupil.email = f"{local}@{slug}.example.com"
+        pupil.save(update_fields=["email", "updated_at"])
+
+    def _give_access(self, pupil, admin):
+        """Issue access where the pupil has none (or had it taken away), then activate it."""
+        from schools.vs_students.services import portal_access
+
+        if portal_access.state_of(pupil) in ("none", "revoked"):
+            self._ensure_number(pupil)
+            portal_access.issue(pupil, actor=admin)
+        self._activate(pupil)
+        pupil.refresh_from_db()
+
+    def _bill_and_part_pay(self, slug, tenant, admin, pupil):
+        """Bill the pupil for the term and post a bursar's receipt for part of it.
+
+        The bill comes from the finance layer's cohort run, as a school's own fee
+        run raises it, which skips a pupil already billed for the term. The
+        receipt is posted against that bill and carries a reference of its own,
+        so a rerun finds it and posts nothing. Returns the bill.
+        """
+        from schools.core.fal import registry
+        from schools.vs_gradebook.services.resolve import current_term
+        from vs_config.clock import branch_today
+        from vs_finance.models import Account, FeeStructure, Invoice, LedgerEntity, Payment
+        from vs_finance.receivables import post_payment
+
+        from ...fees import fee_summary
+
+        entity = LedgerEntity.objects.filter(tenant=tenant).first()
+        structure = (
+            FeeStructure.objects.filter(entity=entity, code=FEE_STRUCTURE, is_active=True).first()
+            if entity is not None else None
+        )
+        if structure is None or not structure.items.exists():
+            self._skipped(slug, f"the books have no {FEE_STRUCTURE} fee structure to bill from")
+            return None
+        today = branch_today(tenant, pupil.branch_id)
+        term = current_term(tenant, today)
+        bridge = registry.get_fee_term_bridge()
+        bridge.link_term(structure.pk, term.session_id, term.pk).unwrap()
+        bridge.generate_cohort_invoices(
+            structure.pk, (str(pupil.pk),), raiser_ref=admin.pk,
+        ).unwrap()
+
+        bill = next(iter(fee_summary(pupil)["invoices"]), None)
+        if bill is None:
+            self._skipped(slug, f"the cohort run raised no bill for {pupil.full_name}")
+            return None
+        invoice = Invoice.objects.select_related("customer").get(pk=bill["invoice_ref"])
+        reference = f"PORTAL-SEED-DESK-{pupil.pk}"
+        if not Payment.objects.filter(entity=entity, reference=reference).exists():
+            amount = max(1_000_00, bill["total"] * 2 // 5 // 1_000_00 * 1_000_00)
+            payment = Payment.objects.create(
+                entity=entity, customer=invoice.customer, branch=invoice.branch,
+                payment_date=today, amount=amount, method="BANK_TRANSFER",
+                deposit_account=Account.objects.get(entity=entity, code=DESK_ACCOUNT),
+                reference=reference, created_by=admin,
+            )
+            post_payment(payment, actor_user=admin, allocations=[(invoice, amount)])
+        return invoice
+
+    def _pending_card(self, cast):
+        """Start a card payment in the portal for the full pupil and leave it unconfirmed.
+
+        Started with the fake provider, which never confirms on its own, and
+        outside the seeding transaction, as the payment engine requires. A
+        rerun finds the pending payment and starts no second one.
+        """
+        from vs_payments.constants import CollectionOrigin, CollectionStatus
+        from vs_payments.models import CollectionIntent
+        from vs_payments.services import initiate_collection
+
+        invoice, pupil = cast["invoice"], cast.get("full")
+        if invoice is None or pupil is None:
+            return
+        if CollectionIntent.objects.filter(
+            invoice=invoice, origin=CollectionOrigin.PORTAL,
+            status__in=(CollectionStatus.PENDING, CollectionStatus.PROCESSING),
+        ).exists():
+            return
+        initiate_collection(
+            entity=invoice.entity, amount=PENDING_CARD, customer=invoice.customer,
+            invoice=invoice, provider="FAKE",
+            payer_email=pupil.user.email or invoice.customer.billing_email or "",
+            payer_name=pupil.full_name, actor_user=pupil.user,
+            origin=CollectionOrigin.PORTAL,
+        )
+
+    def _report(self, slug, cast):
+        """Say who to sign in as and what each pupil's portal shows, read through the portal itself."""
+        from ...fees import fee_summary, payment_history
+        from ...results import session_results, term_result
+        from ...services import timetable
+
+        for role in ("active", "full", "sibling", "held"):
+            pupil = cast.get(role)
+            if pupil is None:
+                continue
+            pupil.refresh_from_db()
+            sign_in = pupil.student_number + (f" or {pupil.user.email}" if pupil.user.email else "")
+            result = term_result(pupil, None)["state"]
+            year = session_results(pupil)
+            fees = fee_summary(pupil)
+            payments = payment_history(pupil)
+            self.stdout.write(
+                f"    {role:8} {pupil.full_name}: {sign_in} / {PASSWORD}. "
+                f"Results {result}"
+                f"{', year-end block' if year.get('cumulative') else ''}; "
+                f"timetable {'published' if timetable(pupil)['published'] else 'unpublished'}; "
+                f"balance ₦{fees['balance'] / 100:,.2f}; "
+                f"{sum(p['status'] == 'CONFIRMED' for p in payments)} confirmed and "
+                f"{sum(p['status'] != 'CONFIRMED' for p in payments)} pending payments.",
+            )
 
     def _ensure_number(self, pupil):
         """Give a pupil without one the school's next admission number.
