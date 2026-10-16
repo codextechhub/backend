@@ -29,10 +29,18 @@ def _account(request) -> str:
 
 
 def _refused(exc, account: str, *, http_status=status.HTTP_401_UNAUTHORIZED):
+    """The refusal, clearing the account's cookie unless the session lives on.
+
+    ``TOKEN_STALE`` answers 409 and leaves the cookie alone: another window
+    has just rotated it, and clearing it here would sign the account out of
+    the device after all.
+    """
+    if not exc.ends_session:
+        http_status = status.HTTP_409_CONFLICT
     response = error_response(
         message=exc.message, error={"error_code": exc.code}, status=http_status,
     )
-    if account:
+    if account and exc.ends_session:
         clear_device_cookie(response, account)
     return response
 
@@ -54,7 +62,8 @@ class DeviceRefreshView(_DeviceView):
     cookie rewritten with the session's lifetime starting again. 401 with
     ``TOKEN_EXPIRED``, ``TOKEN_REVOKED`` or ``TOKEN_INVALID`` clears the
     cookie; the app then drops the account from its list and asks for a
-    sign-in.
+    sign-in. 409 ``TOKEN_STALE`` means another window refreshed the same
+    account a moment earlier: nothing is cleared, and asking again succeeds.
 
     docstring-name: Refresh a device session
     """

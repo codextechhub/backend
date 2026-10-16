@@ -128,16 +128,23 @@ class DeviceSessionTests(TestCase):
         self.assertEqual(self.cookie(bayo), bayo_before)
         self.assertEqual(self.call("refresh", {"account": bayo}).status_code, 200)
 
-    def test_a_rotated_credential_cannot_be_used_again(self):
+    def test_the_window_that_loses_a_refresh_race_is_told_to_ask_again(self):
         account = self.sign_in(self.ada).json()["data"]["account"]
         old = self.cookie(account)
         self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+        new = self.cookie(account)
 
+        # The second window still sent the credential the first just rotated.
         self.client.cookies[f"{PREFIX}{account}"] = old
         response = self.call("refresh", {"account": account})
-        self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
-        self.assertEqual(response.cookies[f"{PREFIX}{account}"]["max-age"], 0)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_STALE")
+        self.assertNotIn(f"{PREFIX}{account}", response.cookies)
+        self.assertTrue(LoginSession.all_objects.get(device_key=account).is_active)
+
+        # Asking again, with the cookie the browser now holds, succeeds.
+        self.client.cookies[f"{PREFIX}{account}"] = new
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
 
     def test_one_accounts_credential_cannot_refresh_another(self):
         ada = self.sign_in(self.ada).json()["data"]["account"]
@@ -148,7 +155,10 @@ class DeviceSessionTests(TestCase):
     def test_ending_every_session_of_an_account_reaches_its_device_session(self):
         account = self.sign_in(self.ada).json()["data"]["account"]
         blacklist_all_user_tokens(self.ada)
-        self.assertEqual(self.call("refresh", {"account": account}).status_code, 401)
+        response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+        self.assertFalse(LoginSession.all_objects.get(device_key=account).is_active)
 
     def test_an_account_no_longer_offered_the_app_is_signed_out_for_good(self):
         account = self.sign_in(self.ada).json()["data"]["account"]

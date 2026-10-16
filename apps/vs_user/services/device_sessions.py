@@ -80,12 +80,34 @@ class DeviceSessionRefused(Exception):
     """A device session that cannot be issued or continued.
 
     ``code`` is the stable error code; ``message`` the sentence to show.
+    ``ends_session`` is False only for ``TOKEN_STALE``: the session is alive
+    and its cookie already holds a newer credential, so the refusal must not
+    clear it.
     """
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, ends_session: bool = True):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.ends_session = ends_session
+
+
+def _invalid():
+    return DeviceSessionRefused("TOKEN_INVALID", "Invalid token. Please sign in again.")
+
+
+def _revoked():
+    return DeviceSessionRefused(
+        "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
+    )
+
+
+def _stale():
+    return DeviceSessionRefused(
+        "TOKEN_STALE",
+        "This sign-in was just renewed in another window. Try again.",
+        ends_session=False,
+    )
 
 
 def register_device_session_policy(name: str, provider: PolicyProvider) -> None:
@@ -160,61 +182,72 @@ def issue(user, *, policy: DeviceSessionPolicy, request=None):
 
 
 def _read(account: str, raw: str):
-    """The verified credential and live session for *account*, or a refusal."""
+    """The signature-checked claims of *raw* and *account*'s live, locked session.
+
+    Being blacklisted is not judged here, because a credential that was
+    rotated away a moment ago is blacklisted too, and that is not a revoked
+    session: the caller compares the credential with the one the session last
+    issued and decides.
+    """
+    from rest_framework_simplejwt.exceptions import TokenBackendError
+    from rest_framework_simplejwt.state import token_backend
+
     if not _valid_key(account) or not raw:
-        raise DeviceSessionRefused("TOKEN_INVALID", "Invalid token. Please sign in again.")
+        raise _invalid()
     try:
-        token = RefreshToken(raw)
-    except TokenError as exc:
-        text = str(exc).lower()
-        if "blacklisted" in text:
-            raise DeviceSessionRefused(
-                "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
-            ) from None
-        if "expired" in text:
+        claims = token_backend.decode(raw, verify=True)
+    except TokenBackendError as exc:
+        if "expired" in str(exc).lower():
             raise DeviceSessionRefused(
                 "TOKEN_EXPIRED", "Your session has expired. Please sign in again.",
             ) from None
-        raise DeviceSessionRefused("TOKEN_INVALID", "Invalid token. Please sign in again.") from None
-    if token.get(DEVICE_KEY_CLAIM) != account:
-        raise DeviceSessionRefused("TOKEN_INVALID", "Invalid token. Please sign in again.")
+        raise _invalid() from None
+    if claims.get("token_type") != "refresh" or claims.get(DEVICE_KEY_CLAIM) != account:
+        raise _invalid()
     session = (
         LoginSession.all_objects.select_for_update()
         .select_related("user__tenant")
-        .filter(device_key=account, user_id=token.get("user_id"), is_active=True)
+        .filter(device_key=account, user_id=claims.get("user_id"), is_active=True)
         .first()
     )
-    if session is None or session.refresh_jti != str(token["jti"]):
-        raise DeviceSessionRefused(
-            "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
-        )
-    return token, session
+    if session is None:
+        raise _revoked()
+    return claims, session
+
+
+def _blacklisted(jti: str) -> bool:
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+    return BlacklistedToken.objects.filter(token__jti=jti).exists()
 
 
 def refresh(account: str, raw: str):
     """Rotate *account*'s credential; returns ``(session, refresh, access)``.
 
     The session row is locked, so two refreshes racing with one credential
-    cannot both rotate it: the second finds the session already moved on and
-    is refused. The account must still be allowed to sign in and still be
-    offered a device session; when it is not, the session is ended for good
-    before the refusal is raised.
+    rotate it once. The one that loses presented the credential the session
+    has just rotated away from, and is answered ``TOKEN_STALE``: the session
+    lives on, the cookie already holds the new credential, and the caller
+    simply asks again. A credential the session still holds but that has been
+    blacklisted (every session of the account ended, by a force logout or a
+    suspension), or an account no longer allowed in or no longer offered a
+    device session, ends the session for good before the refusal is raised.
     """
     with transaction.atomic():
-        token, session = _read(account, raw)
+        claims, session = _read(account, raw)
+        if session.refresh_jti != str(claims["jti"]):
+            raise _stale()
         user = session.user
         policy = device_session_policy(user)
-        if user.may_sign_in and policy is not None:
-            token.blacklist()
+        if user.may_sign_in and policy is not None and not _blacklisted(claims["jti"]):
+            RefreshToken(raw).blacklist()
             new = _credential(user, account, policy)
             session.refresh_jti = str(new["jti"])
             session.last_seen_at = timezone.now()
             session.save(update_fields=["refresh_jti", "last_seen_at"])
             return session, str(new), str(new.access_token)
         _end(session, reason="NOT_ALLOWED")
-    raise DeviceSessionRefused(
-        "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
-    )
+    raise _revoked()
 
 
 def _end(session, *, reason: str) -> None:
@@ -228,9 +261,10 @@ def _end(session, *, reason: str) -> None:
 def sign_out(account: str, raw: str):
     """End *account* on this device; returns the session's user, or None.
 
-    Only the holder of the account's credential can end it. A missing,
-    expired or already revoked credential has nothing left to end, so the
-    caller answers success either way and clears the cookie.
+    Only the holder of a credential the session issued can end it, the
+    current one or one just rotated away from in another window. A missing,
+    expired or forged credential ends nothing, and the caller answers success
+    either way and clears the cookie.
     """
     try:
         _token, session = _read(account, raw)
