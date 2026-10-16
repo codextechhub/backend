@@ -92,6 +92,7 @@ class Command(BaseCommand):
         for slug in CAST:
             cast = self._seed(slug)
             self._pending_card(cast)
+            self._transfer_account(cast)
             self._report(slug, cast)
             self._bursar(cast["tenant"], cast["admin"])
 
@@ -434,6 +435,26 @@ class Command(BaseCommand):
             payer_name=pupil.full_name, actor_user=pupil.user,
             origin=CollectionOrigin.PORTAL,
         )
+
+    def _transfer_account(self, cast):
+        """Give the full pupil the account number a family pays school fees into.
+
+        Issued on the fake provider, which writes no money and answers no
+        network call, so a deposit into it can be simulated in development;
+        outside the seeding transaction, as the payment engine requires. A
+        pupil whose account already exists is left with it.
+        """
+        from vs_payments.constants import VirtualAccountStatus
+        from vs_payments.models import VirtualAccount
+        from vs_payments.services import create_virtual_account
+
+        invoice = cast["invoice"]
+        if invoice is None:
+            return
+        customer = invoice.customer
+        if VirtualAccount.objects.filter(customer=customer, status=VirtualAccountStatus.ACTIVE).exists():
+            return
+        create_virtual_account(entity=invoice.entity, customer=customer, provider="FAKE")
 
     def _report(self, slug, cast):
         """Say who to sign in as and what each pupil's portal shows, read through the portal itself."""
