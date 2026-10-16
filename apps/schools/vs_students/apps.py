@@ -36,3 +36,10 @@ class VsStudentsConfig(AppConfig):
         # After the datasets, because a screen binding names one.
         export_datasets.register_screens()
         import_registry.register()
+
+        # An admission number is accepted wherever the sign-in box takes an
+        # email, and a pupil's account links also reach their primary guardian.
+        # The account engine is told, and imports nothing from this app.
+        from . import sign_in
+
+        sign_in.register()

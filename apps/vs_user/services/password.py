@@ -15,7 +15,8 @@ from ..action_tokens import issue_password_reset_token, password_reset_token_dig
 from ..auth_events import AuthEvent
 from ..models import User, PasswordResetRequest, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
-from .sign_in_scope import resolve_sign_in_account, resolve_staff_number_account
+from .sign_in_identifiers import extra_delivery_addresses
+from .sign_in_scope import resolve_sign_in_account, resolve_identifier_account
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class PasswordService:
 
     @staticmethod
     def request_reset(
-        email: str = "", tenant: str | None = None, request=None, staff_number: str = "",
+        email: str = "", tenant: str | None = None, request=None, identifier: str = "",
     ):
         """
         Self-service password reset request.
@@ -96,13 +97,17 @@ class PasswordService:
         refusal stays silent because a reset request must never say whether the
         address exists, here or anywhere else on the platform.
 
-        A school staff member may name themselves by ``staff_number`` instead.
-        It resolves only inside the asserted school, as at sign-in, and the
-        link still goes to the email on the account.
+        A person may name themselves by an ``identifier`` their tenant issued
+        instead. It resolves only inside the asserted tenant, as at sign-in.
+        The link goes to the email on the account and to any extra addresses
+        the tenant's products register for it
+        (``sign_in_identifiers.extra_delivery_addresses``), and to nothing that
+        was typed here. An account with neither an address nor an extra one is
+        answered like any other: no link is made and nothing says so.
         """
-        if staff_number:
-            user, _resolved, scope_failure = resolve_staff_number_account(
-                staff_number=staff_number, tenant=tenant,
+        if identifier:
+            user, _resolved, scope_failure = resolve_identifier_account(
+                identifier=identifier, tenant=tenant,
             )
         else:
             user, _resolved, scope_failure = resolve_sign_in_account(
@@ -116,6 +121,9 @@ class PasswordService:
         # so an ineligible account has to look like an unknown one.
         if scope_failure or not user or not user.may_hold_password:
             return  # Do not reveal whether the account exists
+
+        if not user.email and not extra_delivery_addresses(user):
+            return  # Nowhere to send a link; answered like an unknown account.
 
         PasswordService._create_and_send_reset(
             user, origin="SELF", sender_name="CodeX System", actor=user,

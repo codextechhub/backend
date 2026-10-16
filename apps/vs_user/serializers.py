@@ -667,14 +667,16 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 # =============================================================================
 
 class LoginRequestSerializer(serializers.Serializer):
-    """What a sign-in may name the account by: an email address, a school's own
-    staff number, or (platform only) an ID card key. Exactly one of them.
+    """What a sign-in may name the account by: an email address, an identifier
+    its tenant issued (a staff number, an admission number), or (platform only)
+    an ID card key. Exactly one of them.
 
     ``identifier`` is the single box a sign-in page offers. It is read as an
-    email address when it holds an ``@`` and as a staff number otherwise, and
-    the result lands in ``email`` or ``staff_number`` so the service never sees
-    the raw box. A staff number is only unique inside one school, so the service
-    refuses one that arrives without a tenant, whatever the tenant switch says.
+    email address when it holds an ``@`` and as a tenant-issued identifier
+    otherwise, and the result lands in ``email`` or ``identifier`` so the
+    service never sees the raw box. An identifier is only unique inside one
+    tenant, so the service refuses one that arrives without a tenant, whatever
+    the tenant switch says.
     """
 
     email            = serializers.EmailField(required=False)
@@ -700,20 +702,20 @@ class LoginRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         email = normalize_email(attrs.get('email'))
-        staff_number = ''
+        school_identifier = ''
         identifier = str(attrs.get('identifier') or '').strip()
         if identifier and not email:
             if '@' in identifier:
                 email = normalize_email(identifier)
             else:
-                staff_number = identifier
+                school_identifier = identifier
         card_id = str(attrs.get('card_id') or '').strip().lower()
-        if sum(bool(value) for value in (email, staff_number, card_id)) != 1:
+        if sum(bool(value) for value in (email, school_identifier, card_id)) != 1:
             raise serializers.ValidationError({
-                'credentials': 'Provide an email address, a staff ID or an ID card identifier.',
+                'credentials': 'Provide an email address, the ID your school gave you, or an ID card identifier.',
             })
         attrs['email'] = email
-        attrs['staff_number'] = staff_number
+        attrs['identifier'] = school_identifier
         attrs['card_id'] = card_id
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
@@ -763,11 +765,12 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    """Who a reset is for: an email address or a school's staff number.
+    """Who a reset is for: an email address or an identifier the tenant issued.
 
     ``identifier`` is read exactly as :class:`LoginRequestSerializer` reads it,
     so the box on the forgot-password page accepts whatever the sign-in box
-    does. Either way the link goes to the account's email on file, never to
+    does. Either way the link goes to the addresses the account is reachable
+    at (its own email and any the tenant's products register for it), never to
     anything typed here.
     """
 
@@ -780,19 +783,19 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         email = normalize_email(attrs.get('email'))
-        staff_number = ''
+        school_identifier = ''
         identifier = str(attrs.get('identifier') or '').strip()
         if identifier and not email:
             if '@' in identifier:
                 email = normalize_email(identifier)
             else:
-                staff_number = identifier
-        if not email and not staff_number:
+                school_identifier = identifier
+        if not email and not school_identifier:
             raise serializers.ValidationError({
-                'identifier': 'Enter your email address or staff ID.',
+                'identifier': 'Enter your email address or the ID your school gave you.',
             })
         attrs['email'] = email
-        attrs['staff_number'] = staff_number
+        attrs['identifier'] = school_identifier
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
 

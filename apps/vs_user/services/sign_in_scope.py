@@ -158,31 +158,37 @@ def resolve_sign_in_account(*, email: str, tenant: str | None):
     return user, resolved, ''
 
 
-def resolve_staff_number_account(*, staff_number: str, tenant: str | None):
-    """Find the school account a sign-in names by its staff number.
+def resolve_identifier_account(*, identifier: str, tenant: str | None):
+    """Find the account a sign-in names by an identifier its tenant issued.
 
     Returns the same ``(user, tenant, failure_code)`` triple as
     :func:`resolve_sign_in_account`, and refuses in the same indistinguishable
     way.
 
-    A staff number is the school's own label (``BFS/STF/0012``), unique inside
-    one school and nowhere else, so this lookup is ALWAYS scoped: a request that
-    names no tenant is refused whatever ``REQUIRE_TENANT_ON_SIGN_IN`` says,
-    because there is no platform-wide answer to "who is STF/0012".
+    An identifier (a staff number such as ``BFS/STF/0012``, an admission number)
+    is the tenant's own label, unique inside one tenant and nowhere else, so
+    this lookup is ALWAYS scoped: a request that names no tenant is refused
+    whatever ``REQUIRE_TENANT_ON_SIGN_IN`` says, because there is no
+    platform-wide answer to "who is STF/0012".
 
-    The match ignores case, since nobody should fail to sign in over ``stf`` and
-    ``STF``, and so does the stored uniqueness (``uq_staff_number_per_tenant_ci``),
-    so one school holds at most one row per number. Should two rows ever match,
-    the number is ambiguous and signs nobody in rather than picking one of them.
-    A blank number never matches, because a blank identifier never reaches here.
+    What an identifier means is decided by the products that issue them, each
+    of which registers a resolver (:mod:`.sign_in_identifiers`). Every resolver
+    runs, and exactly one distinct account across all of them signs in. Zero
+    matches is an unknown identifier; two or more is an ambiguous one (a staff
+    number and an admission number that collide inside one tenant), and signs
+    nobody in rather than picking one. Both are refused as TENANT_MISMATCH,
+    which the caller cannot tell from a wrong password. Matching ignores case,
+    since nobody should fail to sign in over ``stf`` and ``STF``. A blank
+    identifier never matches, because a blank identifier never reaches here.
 
-    Only an employee's own row is consulted, through ``all_objects`` with the
-    tenant named explicitly: there is no ambient tenant before sign-in.
+    The resolvers query with the tenant named explicitly: there is no ambient
+    tenant before sign-in. An unresolved slug is run against the sentinel id so
+    the unknown-tenant path costs the same as the unknown-identifier one.
     """
-    from schools.vs_staff.models import StaffProfile
+    from .sign_in_identifiers import resolve_identifier_users
 
     slug = normalize_tenant(tenant)
-    number = (staff_number or '').strip()
+    value = (identifier or '').strip()
     if not slug:
         return None, None, FAILURE_TENANT_REQUIRED
 
@@ -190,13 +196,10 @@ def resolve_staff_number_account(*, staff_number: str, tenant: str | None):
         slug=slug, status__in=Tenant.AUTHENTICABLE_STATUSES,
     ).first()
 
-    matches = list(
-        StaffProfile.all_objects.select_related('user__tenant')
-        .filter(
-            tenant_id=resolved.pk if resolved is not None else _NO_SUCH_TENANT_ID,
-            staff_number__iexact=number,
-        )[:2]
+    matches = resolve_identifier_users(
+        tenant_id=resolved.pk if resolved is not None else _NO_SUCH_TENANT_ID,
+        identifier=value,
     )
     if len(matches) != 1:
         return None, resolved, FAILURE_TENANT_MISMATCH
-    return matches[0].user, resolved, ''
+    return matches[0], resolved, ''

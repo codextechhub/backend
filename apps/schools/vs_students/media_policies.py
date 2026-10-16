@@ -29,6 +29,8 @@ def _may_read_student_file(request, student) -> bool:
     user = getattr(request, "user", None)
     if tenant is None or user is None or student.tenant_id != getattr(tenant, "pk", None):
         return False
+    if _is_own_record(user, student):
+        return True
     if not has_permission(user, PERM_VIEW, tenant=tenant):
         return False
     # The branch check, made against the same scoped queryset the list uses so
@@ -38,7 +40,27 @@ def _may_read_student_file(request, student) -> bool:
     ).exists()
 
 
+def _is_own_record(user, student) -> bool:
+    """Whether *user* is the pupil this record belongs to, signed in as themselves."""
+    return bool(
+        student.user_id is not None
+        and getattr(user, "pk", None) == student.user_id
+        and getattr(user, "is_active", False)
+    )
+
+
 def _may_read_document(request, doc) -> bool:
+    """Staff by the student rules; the pupil themselves, their own photograph only.
+
+    A pupil sees their own face in the portal. Every other document held
+    against them (a birth certificate, a medical letter) is the school's file
+    about the child, not something the child reads through the portal.
+    """
+    from .constants import DocumentType
+
+    user = getattr(request, "user", None)
+    if _is_own_record(user, doc.student):
+        return doc.document_type == DocumentType.PASSPORT_PHOTO
     return _may_read_student_file(request, doc.student)
 
 

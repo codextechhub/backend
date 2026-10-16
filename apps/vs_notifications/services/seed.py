@@ -768,6 +768,26 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── notices.published ───────────────────────────────────────────────
+        # Goes to the pupils it was written for and carries the notice itself:
+        # nothing in it is withheld from its own audience. One message serves
+        # the whole audience, so it greets nobody by name.
+        ("notices.published", C.IN_APP): {
+            "subject": "New notice: {{ notice_title }}",
+            "body": "{{ notice_excerpt }}",
+        },
+        ("notices.published", C.EMAIL): {
+            "subject": "{{ notice_title }}",
+            "body": (
+                "Hello,\n\n"
+                "{{ tenant_name }} has posted a notice for {{ audience_label }}.\n\n"
+                "{{ notice_title }}\n\n"
+                "{{ notice_body }}\n\n"
+                "You can read it any time in your student portal.\n\n"
+                "{{ tenant_name }} via {{ email_brand }}"
+            ),
+        },
+
         # ── student.deactivated ─────────────────────────────────────────────
         ("student.deactivated", C.IN_APP): {
             "subject": "{{ student_first_name }} {{ student_last_name }} is no longer active",

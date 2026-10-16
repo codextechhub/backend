@@ -61,6 +61,7 @@ _ALREADY_TITLED = {
     "gradebook.class_returned",
     "gradebook.report_card_ready",
     "gradebook.report_card_updated",
+    "notices.published",
 }
 
 

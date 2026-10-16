@@ -74,7 +74,7 @@ class LoginView(APIView):
     LoginService.
 
     The account is named by ``email``, by ``identifier`` (an email address or
-    the school's staff number, typed into one box), or by a platform ``card_id``.
+    an identifier the tenant issued, typed into one box), or by a platform ``card_id``.
     See LoginRequestSerializer.
 
     The body may carry an optional ``tenant`` - the slug the frontend reads off
@@ -111,7 +111,7 @@ class LoginView(APIView):
                 tenant=ser.validated_data.get('tenant', ''),
                 request=request,
                 card_id=ser.validated_data.get('card_id', ''),
-                staff_number=ser.validated_data.get('staff_number', ''),
+                identifier=ser.validated_data.get('identifier', ''),
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}

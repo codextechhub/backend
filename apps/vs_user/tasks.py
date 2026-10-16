@@ -54,6 +54,30 @@ _INVITATION_TOKEN_MARKER = "__XVS_INVITATION_TOKEN__"
 _PASSWORD_RESET_TOKEN_MARKER = "__XVS_PASSWORD_RESET_TOKEN__"
 
 
+def _recipients_for(user):
+    """Who a link for *user* is written to: the account and its extra addresses.
+
+    Returns ``(registered, unregistered)`` for ``send_notification``. The
+    account is a registered recipient only when it has an address of its own;
+    the extra addresses tenants register for it
+    (``services.sign_in_identifiers``) go as unregistered ones, since they
+    belong to people other than the account holder. An account with neither is
+    still passed as a registered recipient, so the engine records the
+    NO_EMAIL_ADDRESS failure on the invitation rather than sending nothing
+    and saying nothing.
+    """
+    from vs_notifications.notify import UnregisteredRecipient
+
+    from .services.sign_in_identifiers import extra_delivery_addresses
+
+    extras = [
+        UnregisteredRecipient(email=a.email, name=a.name)
+        for a in extra_delivery_addresses(user)
+    ]
+    registered = [user] if (user.email or not extras) else []
+    return registered, extras
+
+
 def _tenant_display_name(user) -> str:
     """Return the product-facing workspace name for an account's tenant."""
     profile = getattr(user.tenant, 'school_profile', None)
@@ -139,6 +163,7 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
     tenant_name = _tenant_display_name(user)
     invitation_url = f'{account_link_base(user.tenant)}/activate/{_INVITATION_TOKEN_MARKER}'
 
+    registered, extras = _recipients_for(user)
     send_notification(
         event_key="user.invited",
         context={
@@ -156,7 +181,8 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
             # invitations with it; everyone else keeps the platform initials.
             'brand_logo_url':  _tenant_logo_url(user),
         },
-        recipients=[user],
+        recipients=registered,
+        unregistered_recipients=extras,
         tenant=user.tenant,
         metadata={
             'invitation_id': invitation.pk,
@@ -164,7 +190,7 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
         },
         delivery_replacements={_INVITATION_TOKEN_MARKER: token},
     )
-    logger.info('Invitation email dispatched for %s', user.email)
+    logger.info('Invitation email dispatched for user %s', user.pk)
 
 
 def _record_refused_dispatch(invitation_id, exc) -> None:
@@ -353,11 +379,12 @@ def send_password_reset_email_task(
         reset_request.expires_at, user.tenant, branch=user.branch_id, with_zone=True,
     )
 
+    registered, extras = _recipients_for(user)
     send_notification(
         event_key="user.password_reset",
         context={
             'user_first_name': user.first_name,
-            'user_email':      user.email,
+            'user_email':      user.email or '',
             'tenant_name':     _tenant_display_name(user),
             'brand_logo_url':  _tenant_logo_url(user),
             'reset_url':       reset_url,
@@ -366,12 +393,13 @@ def send_password_reset_email_task(
             'origin':          origin,
             'sender_name':     sender_name,
         },
-        recipients=[user],
+        recipients=registered,
+        unregistered_recipients=extras,
         tenant=user.tenant,
         metadata={'from_name': sender_name},
         delivery_replacements={_PASSWORD_RESET_TOKEN_MARKER: token},
     )
-    logger.info('Password reset email dispatched for %s (origin=%s)', user.email, origin)
+    logger.info('Password reset email dispatched for user %s (origin=%s)', user.pk, origin)
 
 
 def queue_password_reset_email(*, reset_request_id, token, origin,

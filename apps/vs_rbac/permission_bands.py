@@ -35,6 +35,12 @@ CAPABILITY_MODULE = {
     ("school", "staff_records"): "teachers",
     ("school", "leave"): "teachers",
     ("school", "organogram"): "teachers",
+    # Giving pupils their own sign-in accounts is the school end of the
+    # Student Portal module.
+    ("school", "portal_access"): "student_portal",
+    # Notices reach pupils through the portal, so they are its school end too.
+    ("school", "notices"): "student_portal",
+    ("school", "class_notices"): "student_portal",
     ("academics", "calendar"): "calendar",
     ("academics", "timetable"): "calendar",
     ("academics", "exam"): "calendar",
@@ -99,6 +105,9 @@ RESOURCE_BANDS = {
     ("school", "fees"): CORE,
     ("school", "students"): CORE,
     ("school", "teachers"): CORE,
+    ("school", "portal_access"): CORE,
+    ("school", "notices"): CORE,
+    ("school", "class_notices"): CORE,
     ("school", "leave"): PLUS,
     ("school", "staff_records"): PLUS,
     # Core, because an ORGANOGRAM approval stage climbs this chart: a school

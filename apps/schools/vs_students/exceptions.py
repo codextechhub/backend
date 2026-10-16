@@ -381,3 +381,60 @@ class FinanceDidNotAnswer(StudentsError):
         "in a few minutes."
     )
     http_status = 503
+
+
+class PortalAccessError(StudentsError):
+    """Base for refusals about a pupil's portal sign-in account.
+
+    Every message is written for the member of staff who pressed the button,
+    names what to do next, and never says whose account an address belongs to.
+    """
+
+    error_code = "PORTAL_ACCESS_ERROR"
+    default_message = "That could not be done to this pupil's portal access."
+    http_status = 422
+
+
+class PortalPupilNotOnRoll(PortalAccessError):
+    error_code = "PORTAL_PUPIL_NOT_ON_ROLL"
+    http_status = 422
+
+
+class PortalAccessAlreadyGiven(PortalAccessError):
+    error_code = "PORTAL_ACCESS_ALREADY_GIVEN"
+    http_status = 409
+
+
+class PortalNoWayToSignIn(PortalAccessError):
+    """No admission number and no email: nothing the pupil could type to sign in."""
+
+    error_code = "PORTAL_NO_WAY_TO_SIGN_IN"
+    default_message = (
+        "This pupil has no admission number or email, so they would have no "
+        "way to sign in. Give them an admission number first."
+    )
+    http_status = 422
+
+
+class PortalNoDeliveryAddress(PortalAccessError):
+    """Nobody with an email address to send the invitation link to."""
+
+    error_code = "PORTAL_NO_DELIVERY_ADDRESS"
+    http_status = 422
+
+
+class PortalEmailInUse(PortalAccessError):
+    """The pupil's email already belongs to another account at this school."""
+
+    error_code = "PORTAL_EMAIL_IN_USE"
+    http_status = 409
+
+
+class PortalAccessNotGiven(PortalAccessError):
+    error_code = "PORTAL_ACCESS_NOT_GIVEN"
+    http_status = 409
+
+
+class PortalInviteNotPending(PortalAccessError):
+    error_code = "PORTAL_INVITE_NOT_PENDING"
+    http_status = 409

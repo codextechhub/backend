@@ -66,3 +66,9 @@ class VsStaffConfig(AppConfig):
         from .person_exit import register as register_person_exit
 
         register_person_exit()
+
+        # A staff number is accepted wherever the sign-in box takes an email.
+        # The account engine is told, and imports nothing from this app.
+        from . import sign_in
+
+        sign_in.register()

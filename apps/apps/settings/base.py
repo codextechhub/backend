@@ -350,6 +350,11 @@ INSTALLED_APPS = [
     # After vs_academics, vs_students and vs_staff: a sheet points at a class,
     # its students and its subjects.
     "schools.vs_gradebook",
+    # Notices to pupils. After vs_academics and vs_students: an audience names
+    # a class, a level or a branch, and reaches the pupils placed in them.
+    "schools.vs_notices",
+    # The pupil portal. Owns no table: it reads every school app above it.
+    "schools.vs_student_portal",
     # The Finance Abstraction Layer: the boundary where school words meet the
     # neutral finance engines, so it belongs here and never in apps/core/. A
     # Django app only because it owns the fee-structure-to-term link table.

@@ -51,6 +51,7 @@ class RecordFamily:
     IMPORT_JOB = "import_job"
     HEALTH_INCIDENT = "health_incident"
     TODO_TASK = "todo_task"
+    NOTICE = "notice"
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,13 @@ _WORKFLOW_APPROVAL_KEYS = ("workflow.stage_activated", "workflow.escalated")
 _WORKFLOW_RELEASED_KEYS = ("workflow.approver_removed",)
 
 RECORD_DESTINATIONS = (
+    # A pupil opens a notice in the portal; opening it clears the bell entry.
+    RecordDestination(
+        family=RecordFamily.NOTICE,
+        keys=EventKeys(prefix="notices."),
+        id_key="notice_id",
+        route="/portal/notices/{id}",
+    ),
     RecordDestination(
         family=RecordFamily.TICKET,
         keys=EventKeys(prefix="ticket."),

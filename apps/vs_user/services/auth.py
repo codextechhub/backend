@@ -16,7 +16,7 @@ from ..models import User, LoginSession, AccountLockout, AuthAttempt
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
-from .sign_in_scope import resolve_sign_in_account, resolve_staff_number_account
+from .sign_in_scope import resolve_sign_in_account, resolve_identifier_account
 
 class LoginService:
 
@@ -27,7 +27,7 @@ class LoginService:
         tenant: str | None = None,
         request=None,
         card_id: str = "",
-        staff_number: str = "",
+        identifier: str = "",
     ) -> dict:
         """
         Authenticates a user and returns tokens + user data.
@@ -50,10 +50,12 @@ class LoginService:
         revocable identifier resolves only inside the platform tenant. The
         account email remains server-side throughout the card flow.
 
-        A school staff member may supply their ``staff_number`` instead of
-        ``email``. It resolves only inside the asserted school, and the attempt
-        log records the number as typed, so support reading a failed attempt
-        sees what the person actually entered.
+        A person may supply an ``identifier`` their tenant issued (a staff
+        number, an admission number) instead of ``email``. It resolves only
+        inside the asserted tenant, through the resolvers the tenant's
+        products registered (``sign_in_identifiers``), and the attempt log
+        records it as typed, so support reading a failed attempt sees what the
+        person actually entered.
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -75,13 +77,13 @@ class LoginService:
         # reads the checked object and never the caller's raw claim.
         if card_id:
             user, tenant = LoginService._resolve_card_login_account(card_id)
-            email = user.email if user else ""
+            email = (user.email or "") if user else ""
             scope_failure = None
-        elif staff_number:
-            user, tenant, scope_failure = resolve_staff_number_account(
-                staff_number=staff_number, tenant=tenant,
+        elif identifier:
+            user, tenant, scope_failure = resolve_identifier_account(
+                identifier=identifier, tenant=tenant,
             )
-            email = staff_number.strip()
+            email = identifier.strip()
         else:
             user, tenant, scope_failure = resolve_sign_in_account(email=email, tenant=tenant)
 
@@ -346,7 +348,7 @@ class LoginService:
         # Always record the email as ENTERED - for unknown accounts this is the
         # only identifying datum the security team has (spraying, typos, probes).
         record_attempt(
-            email_entered=email_entered or (user.email if user else ''),
+            email_entered=email_entered or ((user.email or '') if user else ''),
             user=user, tenant=tenant,
             result=AuthAttempt.Result.FAIL, failure_code='INVALID_CREDENTIALS',
             request=request,

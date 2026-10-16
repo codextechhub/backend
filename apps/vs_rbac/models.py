@@ -1301,13 +1301,32 @@ class TenantUserRoleAssignment(TimeStampedModel):
         ).values_list("permission_id", flat=True)
         assert_tenant_may_hold(keys, tenant, field="role")
 
+    def assert_account_may_hold_role(self):
+        """Refuse a role for an account that has no email address.
+
+        An account with no address exists to sign in by an identifier its
+        tenant issued (``User.email_requirement_error``) and is reached by
+        nothing else, so it cannot be approved, invited or recovered the way a
+        role holder must be. Only an ACTIVE grant is checked: a revocation of
+        an older row must still save.
+        """
+        if not self.user_id or self.assignment_status != self.AssignmentStatus.ACTIVE:
+            return
+        if self.user.email:
+            return
+        raise ValidationError({
+            "user": "An account with no email address cannot be given a role.",
+        })
+
     def save(self, *args, **kwargs):
         self.assert_scope_allowed()
+        self.assert_account_may_hold_role()
         return super().save(*args, **kwargs)
 
     def clean(self):
         super().clean()
         self.assert_scope_allowed()
+        self.assert_account_may_hold_role()
         errors = {}
         if self.user_id and self.user.tenant_id != self.tenant_id:
             errors["user"] = "User must belong to the assignment tenant."

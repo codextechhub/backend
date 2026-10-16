@@ -580,6 +580,7 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
     photo_url = serializers.SerializerMethodField()
     allowed_transitions = serializers.SerializerMethodField()
     suspension = serializers.SerializerMethodField()
+    portal_access = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
@@ -593,12 +594,18 @@ class StudentDetailSerializer(FieldAccessMixin, _AdmissionStageFields, _BranchAw
             "branch", "branch_name", "class_name", "level_name", "session_name",
             "applied_for", "applied_for_name", "applied_on",
             *ADMISSION_STAGE_FIELDS,
-            "photo_url", "allowed_transitions", "suspension",
+            "photo_url", "allowed_transitions", "suspension", "portal_access",
             "created_at", "updated_at",
         ]
         read_only_fields = [
             "status", "branch", "applied_on", "stage_entered_on", "offer_expires_on",
         ]
+
+    def get_portal_access(self, obj):
+        """``none``, ``invited``, ``active`` or ``revoked``; the detail is its own route."""
+        from .services.portal_access import state_of
+
+        return state_of(obj)
 
     def get_age(self, obj):
         as_at = self.context.get("as_at")

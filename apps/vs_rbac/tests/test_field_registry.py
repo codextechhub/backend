@@ -105,6 +105,7 @@ EXPECTED_RESOURCES = {
     ("procurement", "approval"),
     ("school", "branches"),
     ("school", "guardians"),
+    ("school", "notices"),
     ("school", "profile"),
     ("school", "students"),
     ("school", "teachers"),
@@ -781,6 +782,13 @@ READ_PATH_ALLOWLIST = {
         "The invitee's own name, shown to them on their own activation page.",
     ("vs_user.serializers.ActivationPreviewSerializer", "last_name"):
         "See the first_name entry above.",
+    **{
+        ("schools.vs_notices.serializers.PortalNoticeSerializer", name):
+            "A pupil's own notice feed. A pupil holds no role, so a role's switches "
+            "do not govern what the school sent them; the staff surfaces of the same "
+            "notice carry the switches."
+        for name in ("title", "body", "audience_label", "published_at", "edited_at")
+    },
     ("vs_import_data.serializers.ImportTemplateCreateSerializer", "validation_rules"):
         "The response to creating a template, behind import.templates.create, a "
         "platform-only key; it returns the rules the caller has just written.",

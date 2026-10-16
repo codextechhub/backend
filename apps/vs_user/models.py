@@ -72,14 +72,14 @@ class UserQuerySet(VersionedQuerySetMixin, models.QuerySet):
     def bulk_create(self, objs, *args, **kwargs):
         objs = list(objs)  # may arrive as a generator; normalising consumes it
         for obj in objs:
-            obj.email = email_normalization.normalize_email(obj.email)
+            obj.email = email_normalization.normalize_optional_email(obj.email)
         return super().bulk_create(objs, *args, **kwargs)
 
     def bulk_update(self, objs, fields, *args, **kwargs):
         objs = list(objs)
         if 'email' in fields:
             for obj in objs:
-                obj.email = email_normalization.normalize_email(obj.email)
+                obj.email = email_normalization.normalize_optional_email(obj.email)
         return super().bulk_update(objs, fields, *args, **kwargs)
 
 
@@ -99,6 +99,9 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
         if not email:
             raise ValueError('Email is required')
         email = self.normalize_email(email)
+        return self._build_user(email, password, extra_fields)
+
+    def _build_user(self, email, password, extra_fields):
         user  = self.model(email=email, **extra_fields)
         if password:
             user.set_password(password)
@@ -110,6 +113,20 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
         user.full_clean()
         user.save(using=self._db)
         return user
+
+    def create_user_without_email(self, password=None, **extra_fields):
+        """Create an account that signs in by an identifier its tenant issued.
+
+        The only door to an account with no address. ``create_user`` still
+        demands one, so every route that creates staff or administrators keeps
+        requiring it; the model refuses the result for platform staff and
+        Django staff or superusers (``User.email_requirement_error``), and a
+        role cannot be granted to the account afterwards
+        (``TenantUserRoleAssignment.save``).
+        """
+        extra_fields.setdefault('is_staff', False)
+        extra_fields.setdefault('is_superuser', False)
+        return self._build_user(None, password, extra_fields)
 
     def create_user(self, email: str, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', False)
@@ -255,7 +272,12 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # another at Greenfield and uses ada@gmail.com at both, and neither school
     # may learn anything about the other. Uniqueness is per tenant instead -
     # see uq_user_email_per_tenant below.
-    email      = models.EmailField(max_length=254)
+    #
+    # Nullable for an account that signs in by an identifier its tenant issued
+    # rather than by an address (see ``email_requirement_error``). NULL, never
+    # '': PostgreSQL treats NULLs as distinct, so such accounts never collide
+    # on uq_user_email_per_tenant.
+    email      = models.EmailField(max_length=254, null=True, blank=True)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
     gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='')
@@ -425,6 +447,25 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             return 'Platform staff must not be assigned to a branch.'
         return None
 
+    @classmethod
+    def email_requirement_error(cls, tenant, email, *, is_staff=False, is_superuser=False) -> str | None:
+        """Whether this account may exist without an address, stated once.
+
+        Returns the refusal in words, or ``None`` when the pairing is legal.
+
+        An address is how an account is reached for approval, invitation and
+        recovery, so every account that works for the platform or administers
+        a tenant must have one: platform staff, and anyone Django treats as
+        staff or a superuser. An account without one exists only to sign in by
+        an identifier its tenant issued, holds no role, and is created through
+        :meth:`UserManager.create_user_without_email`.
+        """
+        if email:
+            return None
+        if getattr(tenant, 'kind', None) == PLATFORM_TENANT_KIND or is_staff or is_superuser:
+            return 'An email address is required for this account.'
+        return None
+
     def clean(self):
         super().clean()
         # Reads tenant_id first so an unsaved instance with no tenant yet asks
@@ -434,6 +475,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         error = self.branch_assignment_error(tenant, bool(self.branch_id))
         if error:
             raise ValidationError(error)
+        email_error = self.email_requirement_error(
+            tenant, self.email, is_staff=self.is_staff, is_superuser=self.is_superuser,
+        )
+        if email_error:
+            raise ValidationError({'email': [email_error]})
         self._guard_cross_tenant_email()
 
     def validate_unique(self, exclude=None):
@@ -571,7 +617,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         ``ada@gmail.com`` and fail later as an IntegrityError; now both sides
         of that comparison are lowercase.
         """
-        self.email = email_normalization.normalize_email(self.email)
+        self.email = email_normalization.normalize_optional_email(self.email)
 
     def full_clean(self, *args, **kwargs):
         # Derive the tenant BEFORE super().full_clean(): clean_fields() runs
@@ -598,6 +644,15 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             update_fields = kwargs.get('update_fields')
             if update_fields is not None and 'card_login_id' not in update_fields:
                 kwargs['update_fields'] = list(update_fields) + ['card_login_id']
+        # Only an account without an address is checked, so the tenant is
+        # loaded for nobody else.
+        if not self.email:
+            email_error = self.email_requirement_error(
+                self.tenant if self.tenant_id else None, self.email,
+                is_staff=self.is_staff, is_superuser=self.is_superuser,
+            )
+            if email_error:
+                raise ValidationError({'email': [email_error]})
         # Backstop for the many writers that never call full_clean().
         self._guard_cross_tenant_email(update_fields=kwargs.get('update_fields'))
         if self.uid is None:
@@ -745,7 +800,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         self.password_changed_at = timezone.now()
 
     def __str__(self):
-        return f'{self.email} ({self.status})'
+        return f'{self.email or self.full_name} ({self.status})'
 
 # =============================================================================
 # UserInvitation

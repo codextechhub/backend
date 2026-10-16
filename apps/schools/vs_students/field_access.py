@@ -136,6 +136,7 @@ STUDENT_SNAPSHOT_KEYS: dict[str, tuple[str, ...]] = {
     "allergies": ("allergies",),
     "conditions": ("conditions",),
     "enrolment_date": ("enrolment_date",),
+    "portal_access": ("portal_access",),
     "status_reason": ("suspension.reason",),
 }
 
@@ -235,6 +236,13 @@ def register():
                       sensitive=True, scope=_TENANT, sort_order=30),
             FieldSpec("enrolment_date", "Enrolment date", group="Enrolment",
                       scope=_TENANT, sort_order=10, open_on_create=True),
+            FieldSpec("portal_access", "Portal access", group="Portal",
+                      writable=False, scope=_TENANT, sort_order=10,
+                      api_names=("portal_access",),
+                      description="Whether the pupil has their own sign-in "
+                                  "account for the pupil portal, whether they "
+                                  "have activated it, and when they last "
+                                  "signed in."),
             FieldSpec("status_reason", "Status change reason", group="Status",
                       sensitive=True, writable=False, scope=_TENANT,
                       sort_order=10, api_names=("reason",),

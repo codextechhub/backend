@@ -170,6 +170,21 @@ class Student(_Owned):
         null=True, blank=True, related_name="+",
     )
 
+    #: The pupil's own sign-in account, where the school has given them one.
+    #: One account per pupil and one pupil per account; an account holds no
+    #: role, and what it may reach is computed from this link on every
+    #: request. PROTECT rather than SET_NULL: the account carries the pupil's
+    #: sign-in history, and a school that leaves a pupil removes their access
+    #: by deactivating the account (``services.portal_access``), which keeps
+    #: this row pointing at it. Deleting the account out from under the link
+    #: would erase that history and is refused. The account belongs to this
+    #: record's tenant, which :meth:`clean` and the portal-access service
+    #: check, since a database constraint cannot span the two tables.
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name="student_record",
+    )
+
     class Meta(_Owned.Meta):
         constraints = [
             models.UniqueConstraint(
@@ -188,6 +203,14 @@ class Student(_Owned):
 
     def __str__(self):
         return self.full_name
+
+    def clean(self):
+        """A linked account must belong to the pupil's own school."""
+        from django.core.exceptions import ValidationError
+
+        super().clean()
+        if self.user_id and self.user.tenant_id != self.tenant_id:
+            raise ValidationError({"user": "That account belongs to another school."})
 
     @property
     def full_name(self) -> str:

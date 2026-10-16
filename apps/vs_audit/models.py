@@ -70,6 +70,7 @@ class AuditModuleKey(models.TextChoices):
     STAFF = "STAFF", "Staff Management"
     ATTENDANCE = "ATTENDANCE", "Attendance Management"
     GRADEBOOK = "GRADEBOOK", "Gradebook and Assessments"
+    NOTICES = "NOTICES", "Notices"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
@@ -225,6 +226,22 @@ class AuditActionType(models.TextChoices):
     # Audited separately from the attach: removal is the direction that loses
     # evidence.
     STUDENT_DOCUMENT_REMOVED = "STUDENT_DOCUMENT_REMOVED", "Student Document Removed"
+    # A pupil's own sign-in account: given, taken away, and the invitation
+    # sent again. Looked up by name when a family asks who could sign in as
+    # their child, and when.
+    STUDENT_PORTAL_ACCESS_ISSUED = (
+        "STUDENT_PORTAL_ACCESS_ISSUED", "Student Portal Access Issued",
+    )
+    STUDENT_PORTAL_ACCESS_REVOKED = (
+        "STUDENT_PORTAL_ACCESS_REVOKED", "Student Portal Access Revoked",
+    )
+    STUDENT_PORTAL_INVITE_RESENT = (
+        "STUDENT_PORTAL_INVITE_RESENT", "Student Portal Invitation Resent",
+    )
+    # A notice reaching its audience, and being taken back out of it. Drafting
+    # and correcting use CREATE and UPDATE.
+    NOTICE_PUBLISHED = "NOTICE_PUBLISHED", "Notice Published"
+    NOTICE_WITHDRAWN = "NOTICE_WITHDRAWN", "Notice Withdrawn"
 
     # Staff management. Ordinary creates, edits and deletes use CREATE, UPDATE
     # and DELETE with entity_type naming the model; only the acts those three

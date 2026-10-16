@@ -63,6 +63,11 @@ def settle_primary_admin_invite(sender, invitation_id, user, accepted, **kwargs)
     """
     from .models import BranchPrimaryAdmin, InviteStatus, SchoolPrimaryAdmin
 
+    # An account with no address of its own is never a primary administrator,
+    # and an empty lookup would read as "contacts with no email".
+    if not user.email:
+        return
+
     try:
         now = timezone.now()
         settled = InviteStatus.SENT if accepted else InviteStatus.FAILED

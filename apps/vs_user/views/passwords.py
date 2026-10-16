@@ -99,7 +99,9 @@ class PasswordResetRequestView(APIView):
     - prevents user enumeration.
 
     The account is named by ``email`` or by ``identifier`` (an email address or
-    the school's staff number); the link always goes to the email on file.
+    an identifier the tenant issued). The link goes only to the addresses the
+    account is reachable at (``PasswordService.request_reset``), never to what
+    was typed.
 
     Takes the same optional ``tenant`` body key as login (the slug the frontend
     reads off the subdomain). When present the account is looked up only within
@@ -123,7 +125,7 @@ class PasswordResetRequestView(APIView):
         # found in the tenant the request named.
         PasswordService.request_reset(
             email=ser.validated_data['email'],
-            staff_number=ser.validated_data['staff_number'],
+            identifier=ser.validated_data['identifier'],
             tenant=ser.validated_data.get('tenant', ''),
             request=request,
         )

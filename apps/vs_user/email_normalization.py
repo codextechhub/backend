@@ -40,3 +40,14 @@ def normalize_email(value: str | None) -> str:
     if not isinstance(value, str):
         value = "" if value is None else str(value)
     return value.strip().lower()
+
+
+def normalize_optional_email(value: str | None) -> str | None:
+    """Fold an address that may be absent: the stored form, or ``None`` when blank.
+
+    ``User.email`` is nullable, and an account without an address must store
+    NULL rather than ``''``. PostgreSQL treats NULLs as distinct, so any number
+    of such accounts coexist under ``uq_user_email_per_tenant``; two empty
+    strings in one tenant would collide.
+    """
+    return normalize_email(value) or None

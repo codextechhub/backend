@@ -289,7 +289,7 @@ class UserCreationService:
             token=token,
             user=user,
             owner_id=str(requested_by.id) if requested_by else None,
-            label=f"Invitation email to {user.email}",
+            label=f"Invitation email to {user.email or user.full_name}",
         )
 
 

@@ -25,6 +25,11 @@ from .movements import (
     TransferOutView,
     WithdrawStudentView,
 )
+from .portal_access import (
+    BulkPortalAccessView,
+    PortalAccessReissueView,
+    PortalAccessView,
+)
 from .promotion import (
     PromotionBatchView,
     PromotionPreviewView,
@@ -56,6 +61,7 @@ __all__ = [
     "BulkStatusView", "ChangeStatusView", "ClassHistoryView", "ClassRosterView",
     "ConfirmApplicantView", "EnrolmentRulesView", "GuardianDetailView",
     "GuardianDirectoryView", "GuardianRulesView", "GuardianStudentsView",
+    "BulkPortalAccessView", "PortalAccessReissueView", "PortalAccessView",
     "PromotionBatchView", "PromotionPreviewView", "PromotionRulesView",
     "PromotionRunView", "ReactivateStudentView", "RejectApplicantView",
     "StageMoveView", "StatusHistoryView", "StudentDetailView",

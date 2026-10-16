@@ -38,6 +38,14 @@ def _update_invitation(notification, *, success: bool):
 
         inv = UserInvitation.objects.get(pk=invitation_id)
         inv.email_attempts += 1
+        # One invitation may be written to several inboxes (the account's own
+        # and those its tenant registers for it). It counts as sent once any
+        # copy lands, so a bounced address does not turn a delivered link into
+        # a failure the retry sweep would replace, killing the link already
+        # delivered.
+        if not success and inv.email_status == UserInvitation.EmailStatus.SENT:
+            inv.save(update_fields=['email_attempts', 'updated_at'])
+            return
         if success:
             inv.email_status     = UserInvitation.EmailStatus.SENT
             inv.email_sent_at    = notification.dispatched_at

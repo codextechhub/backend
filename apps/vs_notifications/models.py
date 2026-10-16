@@ -642,7 +642,8 @@ class Notification(models.Model):
 
     def __str__(self):
         recipient_label = (
-            self.recipient.email if self.recipient_id else self.unregistered_email
+            (self.recipient.email or self.recipient.full_name)
+            if self.recipient_id else self.unregistered_email
         )
         return f"{self.event_type.key} → {recipient_label} [{self.channel}] {self.status}"
 

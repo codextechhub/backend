@@ -30,6 +30,9 @@ from .views import (
     GuardianPhotoView,
     GuardianRulesView,
     GuardianStudentsView,
+    BulkPortalAccessView,
+    PortalAccessReissueView,
+    PortalAccessView,
     PromotionBatchView,
     PromotionPreviewView,
     PromotionRulesView,
@@ -102,6 +105,10 @@ student_patterns = [
         name="student-bulk-assign",
     ),
     path("bulk/status/", BulkStatusView.as_view(), name="student-bulk-status"),
+    path(
+        "portal-access/", BulkPortalAccessView.as_view(),
+        name="student-portal-access-bulk",
+    ),
 
     path("<int:pk>/", StudentDetailView.as_view(), name="student-detail"),
     path("<int:pk>/confirm/", ConfirmApplicantView.as_view(), name="student-confirm"),
@@ -147,6 +154,14 @@ student_patterns = [
     path(
         "<int:pk>/guardians/<int:guardian_id>/",
         StudentGuardianDetailView.as_view(), name="student-guardian-detail",
+    ),
+    path(
+        "<int:pk>/portal-access/", PortalAccessView.as_view(),
+        name="student-portal-access",
+    ),
+    path(
+        "<int:pk>/portal-access/reissue/", PortalAccessReissueView.as_view(),
+        name="student-portal-access-reissue",
     ),
     path(
         "<int:pk>/documents/", StudentDocumentsView.as_view(),

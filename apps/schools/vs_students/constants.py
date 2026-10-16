@@ -37,6 +37,11 @@ PERM_SETTINGS_UPDATE = "school.settings.update"
 #: another school: the two acts have nothing in common but a destination.
 PERM_CHANGE_BRANCH = "school.students.change_branch"
 
+#: Giving a pupil a sign-in account for the pupil portal, sending the invitation
+#: again, and taking the account away. Its own key rather than ``update``: it
+#: creates a login, which is a different decision from correcting a record.
+PERM_PORTAL_ACCESS = "school.portal_access.issue"
+
 PERM_CLASS_ASSIGN = "academics.classes.assign"
 PERM_CLASS_VIEW = "academics.classes.view"
 
@@ -299,6 +304,14 @@ LEAVES_THE_ROLL = frozenset({
     StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED,
     StudentStatus.GRADUATED, StudentStatus.REJECTED,
 })
+
+#: The statuses in which a pupil's portal account works. A pupil on the roll
+#: may hold access, and a suspended pupil keeps it: a suspension is temporary
+#: and ends with the pupil back in class, so the account is left alone and the
+#: school withdraws it explicitly if it means to. Leaving the roll
+#: (``LEAVES_THE_ROLL``) is the end of the pupil's time at the school and
+#: deactivates the account in the same transaction as the status move.
+PORTAL_STATUSES = ON_ROLL
 
 #: What the directory shows unless a status filter says otherwise. A withdrawn
 #: or graduated student is still a record and is still reachable by name; they

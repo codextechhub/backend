@@ -23,6 +23,7 @@ from ..constants import (
     ALLOWED_TRANSITIONS,
     LEAVES_THE_ROLL,
     ON_ROLL,
+    PORTAL_STATUSES,
     REASON_OPTIONAL,
     EnrolmentOutcome,
     StudentStatus,
@@ -182,6 +183,13 @@ def transition(
 
     if to_status in LEAVES_THE_ROLL:
         _release_seat(student, to_status)
+    if student.user_id and to_status not in PORTAL_STATUSES:
+        from .portal_access import revoke
+
+        revoke(
+            student, actor=None, system=True,
+            reason=f"They moved to {StudentStatus(to_status).label.lower()}.",
+        )
     _sync_billing(student, from_status, to_status, actor=None if system else actor)
 
     StudentStatusLog.objects.create(

@@ -31,7 +31,8 @@ without the students module is offered student permissions; mark it gated and
 the same school loses access to its own branches and roles.
 
 Capabilities with no permission module yet: ``parents``, ``parent_portal``,
-``student_portal``, ``vendors``. When those
+``vendors``. ``student_portal`` is reached per resource
+(``school.portal_access``). When those
 modules get permissions, map them here rather than at the call site.
 """
 from __future__ import annotations
@@ -60,6 +61,9 @@ CAPABILITY_BY_MODULE: dict[str, str] = {
 CAPABILITY_BY_RESOURCE: dict[tuple[str, str], str] = {
     ("school", "students"): "students",
     ("school", "teachers"): "teachers",
+    ("school", "portal_access"): "student_portal",
+    ("school", "notices"): "student_portal",
+    ("school", "class_notices"): "student_portal",
 }
 
 

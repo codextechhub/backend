@@ -460,6 +460,19 @@ EVENT_TYPE_REGISTRY = [
         "branch_scoped": True,
     },
 
+    # ── Notices (vs_notices) ───────────────────────────────────────────────
+    {
+        "key": "notices.published",
+        "label": "New notice",
+        "description": (
+            "Fires when a school publishes a notice, and is sent to every pupil "
+            "in its audience who has a portal account."
+        ),
+        "source_module": "vs_notices",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+
     # ── Workflow Approval (vs_workflow) ────────────────────────────────────
     # Wired lifecycle points (services/routing.py): stage_activated → the
     # stage's approvers; returned / rejected / final_approved → the requester.

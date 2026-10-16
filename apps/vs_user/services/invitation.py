@@ -286,7 +286,7 @@ class InvitationService:
             token=token,
             user=user,
             owner_id=str(requested_by.id) if requested_by else None,
-            label=f"Invitation email to {user.email}",
+            label=f"Invitation email to {user.email or user.full_name}",
         )
 
         log_auth_event(
@@ -401,7 +401,7 @@ class InvitationService:
                         str(invitation.invited_by_id)
                         if invitation.invited_by_id else None
                     ),
-                    label=f'Invitation email to {invitation.user.email}',
+                    label=f'Invitation email to {invitation.user.email or invitation.user.full_name}',
                 )
             return True
         except Exception:
