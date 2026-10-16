@@ -14,8 +14,9 @@ app shows the detail to whoever is signed in.
 **A shared device.** A subscription made from a device session
 (:mod:`vs_user.services.device_sessions`) carries that session's key. Two
 children on one parent's phone are two subscriptions; each push starts with
-the recipient's first name so the family can tell whose it is, and signing
-one child out deletes that child's subscription only (:func:`forget_device`).
+the recipient's first name so the family can tell whose it is, and carries that
+child's ``account`` so tapping it opens the app as them. Signing one child
+out deletes that child's subscription only (:func:`forget_device`).
 
 A push service that answers 404 or 410 has forgotten the device, so its
 subscription is deleted. Keys come from ``WEB_PUSH_VAPID_*`` settings; with
@@ -114,13 +115,17 @@ def deliver(notification) -> bool:
         title = notification.subject
         if subscription.device_key and user.first_name:
             title = f"{user.first_name}: {title}"
-        payload = json.dumps({
+        message = {
             "title": title,
             "body": notification.body,
             "tag": notification.event_type.key,
             "url": _app_path(user),
             "notification_id": str(notification.pk),
-        })
+        }
+        if subscription.device_key:
+            # Which person on a shared device it is for, so a tap opens theirs.
+            message["account"] = subscription.device_key
+        payload = json.dumps(message)
         try:
             webpush(
                 subscription_info={

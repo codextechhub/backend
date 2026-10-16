@@ -10,6 +10,7 @@ it carries no amount.
 """
 from __future__ import annotations
 
+import json
 from unittest import mock
 
 from django.test import override_settings
@@ -102,8 +103,16 @@ class PushTests(_NotifFixture):
         pushes = Notification.all_objects.filter(channel=ChannelChoices.PUSH)
         self.assertEqual([n.recipient_id for n in pushes], [self.tunde.pk])
         self.assertEqual(pushes.get().status, NotificationStatus.SENT)
-        payload = webpush.call_args.kwargs["data"]
-        self.assertIn('"title": "Tunde: New notice: Inter-house sports"', payload)
+        payload = json.loads(webpush.call_args.kwargs["data"])
+        self.assertEqual(payload["title"], "Tunde: New notice: Inter-house sports")
+        self.assertEqual(payload["account"], self.tunde_session.device_key)
+
+    def test_a_subscription_with_no_device_session_names_no_account(self):
+        self.subscribe()
+        webpush = self.notify_tunde()
+        payload = json.loads(webpush.call_args.kwargs["data"])
+        self.assertNotIn("account", payload)
+        self.assertEqual(payload["title"], "New notice: Inter-house sports")
 
     def test_a_device_the_push_service_has_forgotten_is_deleted(self):
         self.subscribe()
