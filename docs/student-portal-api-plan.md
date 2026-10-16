@@ -623,8 +623,9 @@ students app registers one for any account linked to a pupil, with
   browser sign-in answers `device_app: {path}` (null for staff).
 - `POST /v1/user/auth/device/refresh/` `{account}`: rotates that account's
   credential and starts its days again; 401 `TOKEN_EXPIRED` / `TOKEN_REVOKED`
-  / `TOKEN_INVALID` clears its cookie. Two refreshes racing with one
-  credential: the second is refused.
+  / `TOKEN_INVALID` clears its cookie. Two windows refreshing at once rotate
+  the credential once; the loser gets 409 `TOKEN_STALE`, its cookie is left
+  alone, and asking again succeeds.
 - `POST /v1/user/auth/device/sign-out/` `{account}`: ends that account on that
   device only; always 200.
 - `POST /v1/user/auth/device/hand-over/`: turns a browser session (after a
@@ -635,6 +636,18 @@ students app registers one for any account linked to a pupil, with
   row carries the credential's real expiry, so the blacklist is not flushed
   under a credential with weeks to run.
 - Staff set the days on `GET/PUT /v1/students/portal-rules/` (`session_days`).
+- The activation and password-reset previews answer `sign_in_as` (the email,
+  else the admission number) and `device_app`, so a pupil with no email is told
+  what to sign in with and sent on to the student app.
+
+### 13.9.1 Promotion opens at the year's end (owner decision of 16 October)
+
+A promotion run moves each pupil out of their class at once, so it is refused
+with 409 `PROMOTION_TOO_EARLY` (`detail.opens_on`) until the year being left
+has ended its last term; the preview is open at any time and answers
+`run_opens_on` and `can_run`. In the holiday after a run the portal shows the
+pupil's next-year class: `me/` answers `student.class_is_next_year` and names
+that year in `session`.
 
 ### 13.10 Still to build from this plan
 

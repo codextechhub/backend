@@ -11,6 +11,8 @@ test, built the way a roll-forward builds them: same codes, new rows.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from django.urls import reverse
 
 from schools.vs_academics.models import Level, SchoolClass
@@ -24,7 +26,7 @@ from vs_rbac.tests.helpers import (
 )
 
 from ..constants import EnrolmentOutcome, PromotionOutcome, StudentStatus
-from ..models import ClassEnrolment
+from ..models import ClassEnrolment, StudentPromotionBatch
 from ..services.promotion_rules import read_promotion_rules
 from .base import StudentsFixture
 
@@ -807,3 +809,54 @@ class PromotionCapacityRuleTests(_PromotionRulesFixture):
         response = self.run_promotion()
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["data"]["promoted"], 2)
+
+
+# ── when a run opens ────────────────────────────────────────────────────────
+
+class PromotionOpensAtYearEndTests(_PromotionRulesFixture):
+    """Brightfield's 2025/2026 third term ends on Friday 24 July 2026.
+
+    In March the registrar may preview the promotion but not run it, because a
+    run would take every promoted student out of their class for the rest of
+    the year. On 24 July it runs.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from schools.vs_academics.models import AcademicTerm
+
+        for order, (name, start, end) in enumerate((
+            ("First Term", dt.date(2025, 9, 8), dt.date(2025, 12, 12)),
+            ("Second Term", dt.date(2026, 1, 5), dt.date(2026, 4, 2)),
+            ("Third Term", dt.date(2026, 4, 20), dt.date(2026, 7, 24)),
+        ), start=1):
+            AcademicTerm.objects.create(
+                tenant=cls.tenant, session=cls.year, name=name,
+                order_index=order, start_date=start, end_date=end,
+            )
+
+    def at(self, day):
+        from schools.vs_attendance.tests.base import school_clock
+
+        return school_clock(dt.datetime.combine(day, dt.time(11, 0), tzinfo=dt.timezone.utc))
+
+    def test_a_run_before_the_last_term_ends_is_refused_and_moves_nobody(self):
+        with self.at(dt.date(2026, 3, 10)):
+            response = self.run_promotion()
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["error"]["code"], "PROMOTION_TOO_EARLY")
+        self.assertEqual(response.data["error"]["detail"]["opens_on"], "2026-07-24")
+        self.assertFalse(StudentPromotionBatch.all_objects.filter(tenant=self.tenant).exists())
+
+    def test_the_preview_is_open_early_and_says_when_the_run_opens(self):
+        with self.at(dt.date(2026, 3, 10)):
+            data = self.preview()
+        self.assertFalse(data["can_run"])
+        self.assertEqual(str(data["run_opens_on"]), "2026-07-24")
+
+    def test_the_run_opens_on_the_last_day_of_the_last_term(self):
+        with self.at(dt.date(2026, 7, 24)):
+            self.assertTrue(self.preview()["can_run"])
+            response = self.run_promotion()
+        self.assertEqual(response.status_code, 201, response.data)

@@ -59,6 +59,18 @@ def guardian_delivery_addresses(user):
     return [DeliveryAddress(email=link.guardian.email, name=link.guardian.full_name)]
 
 
+def admission_number_label(user):
+    """The admission number a pupil's account signs in with, or None."""
+    from .models import Student
+
+    return (
+        Student.all_objects.filter(user=user, tenant_id=user.tenant_id)
+        .exclude(student_number="")
+        .values_list("student_number", flat=True)
+        .first()
+    )
+
+
 def portal_session_days(tenant) -> int:
     """How many days this school's pupils stay signed in between uses."""
     from .constants import CFG_PORTAL_SESSION_DAYS, PORTAL_SESSION_DAYS_DEFAULT
@@ -99,9 +111,11 @@ def register():
     from vs_user.services.device_sessions import register_device_session_policy
     from vs_user.services.sign_in_identifiers import (
         register_delivery_address_provider,
+        register_identifier_label_provider,
         register_identifier_resolver,
     )
 
     register_identifier_resolver("admission_number", admission_number_resolver)
+    register_identifier_label_provider("admission_number", admission_number_label)
     register_delivery_address_provider("pupil_primary_guardian", guardian_delivery_addresses)
     register_device_session_policy("student_app", pupil_device_session)

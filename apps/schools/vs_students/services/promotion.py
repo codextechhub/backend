@@ -65,7 +65,7 @@ from ..constants import (
 from ..models import ClassEnrolment, Student, StudentPromotionBatch
 from .placement import write_enrolment
 from .scoping import scope_classes, scope_students
-from .years import assert_year_is_open
+from .years import assert_promotion_may_run, assert_year_is_open
 
 #: The sentences the exception list prints. Written for the person reading
 #: them, because the screen shows them verbatim under the student's name.
@@ -747,7 +747,13 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None,
     (``allow_over_capacity``); under HARD it is refused with ``CLASS_FULL``
     whatever the caller sends, before anybody is moved; under OFF nothing is
     counted. The preview lists those classes first.
+
+    It runs only once the year being left has ended its last term
+    (``PROMOTION_TOO_EARLY`` before then, :func:`.years.assert_promotion_may_run`),
+    because each promoted pupil leaves their class at once. The preview is
+    open at any time.
     """
+    assert_promotion_may_run(from_session, branch_today(tenant, None))
     # The branch travels INTO the classification, not just onto the batch row.
     # Stamped on the record alone, a run labelled "Main Branch" promotes every
     # branch's students and the label is the only thing that says otherwise.

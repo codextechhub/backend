@@ -137,6 +137,24 @@ class PromotionOverCapacity(StudentsError):
     http_status = 422
 
 
+class PromotionTooEarly(StudentsError):
+    """A promotion run before the year being left has ended.
+
+    A run ends every promoted pupil's placement in the year being left, so run
+    in March it takes JSS1 off JSS1's registers, timetables and portal for the
+    rest of the year. It opens on the day the year's last term ends;
+    ``opens_on`` carries that day, and the preview stays open throughout so
+    staff can plan.
+    """
+
+    error_code = "PROMOTION_TOO_EARLY"
+    default_message = (
+        "This year's last term has not ended yet, so the promotion cannot run. "
+        "You can preview it now."
+    )
+    http_status = 409
+
+
 class GuardianRequired(StudentsError):
     error_code = "GUARDIAN_REQUIRED"
     default_message = "Every student needs at least one guardian."

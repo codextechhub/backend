@@ -398,3 +398,44 @@ class StudentAppSessionTests(PortalFixture):
             with self.subTest(days=days):
                 response = self.put(self.admin, "student-portal-rules", {"session_days": days})
                 self.assertEqual(response.status_code, 400)
+
+
+class LinkPreviewTests(PortalFixture):
+    """What the activation and reset pages tell a pupil to sign in with.
+
+    Tunde has no email, so his pages say his admission number; Chiamaka's say
+    her email. Both are sent on to the student app; the school's admin is not.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        portal_access.issue(cls.chiamaka, actor=cls.admin)
+        portal_access.issue(cls.tunde, actor=cls.admin)
+
+    def preview(self, user):
+        from vs_user.serializers import ActivationPreviewSerializer, PasswordResetPreviewSerializer
+
+        user.refresh_from_db()
+        activation = ActivationPreviewSerializer(user).data
+        reset = PasswordResetPreviewSerializer(user).data
+        self.assertEqual(
+            (activation["sign_in_as"], activation["device_app"]),
+            (reset["sign_in_as"], reset["device_app"]),
+        )
+        return activation
+
+    def test_a_pupil_with_no_email_is_told_their_admission_number(self):
+        self.tunde.refresh_from_db()
+        data = self.preview(self.tunde.user)
+        self.assertEqual(data["sign_in_as"], "BFS/2025/0143")
+        self.assertEqual(data["device_app"], {"path": "/student/"})
+
+    def test_a_pupil_with_an_email_is_told_their_email(self):
+        self.chiamaka.refresh_from_db()
+        self.assertEqual(self.preview(self.chiamaka.user)["sign_in_as"], "chiamaka.n@example.ng")
+
+    def test_staff_are_told_their_email_and_sent_nowhere_new(self):
+        data = self.preview(self.admin)
+        self.assertEqual(data["sign_in_as"], self.admin.email)
+        self.assertIsNone(data["device_app"])

@@ -650,12 +650,39 @@ class ActivationSerializer(serializers.Serializer):
         return attrs
 
 
-class ActivationPreviewSerializer(serializers.ModelSerializer):
+class _LinkPreviewFields:
+    """What an activation or reset page tells the person once the password is set.
+
+    ``sign_in_as`` is what the account signs in with: its email, or for an
+    account with none the identifier its tenant issued (a pupil's admission
+    number). ``device_app`` is ``{path}`` of the app the account is offered a
+    device session in, as the sign-in answers it, else null.
+
+    Both reach only the holder of the link, which goes to the account's own
+    address and its product's extra addresses; neither says more than the
+    email the preview always showed.
+    """
+
+    def get_sign_in_as(self, obj) -> str:
+        from .services.sign_in_identifiers import sign_in_label
+
+        return sign_in_label(obj)
+
+    def get_device_app(self, obj):
+        from .services.device_sessions import device_session_policy
+
+        policy = device_session_policy(obj)
+        return {'path': policy.app_path} if policy else None
+
+
+class ActivationPreviewSerializer(_LinkPreviewFields, serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
+    sign_in_as       = serializers.SerializerMethodField()
+    device_app       = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
-        fields = ('email', 'first_name', 'last_name', 'full_name')
+        fields = ('email', 'first_name', 'last_name', 'full_name', 'sign_in_as', 'device_app')
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:
@@ -805,12 +832,14 @@ class PasswordResetRequestSerializer(serializers.Serializer):
         return attrs
 
 
-class PasswordResetPreviewSerializer(serializers.Serializer):
+class PasswordResetPreviewSerializer(_LinkPreviewFields, serializers.Serializer):
     email       = serializers.EmailField(read_only=True)
     full_name   = serializers.CharField(read_only=True)
+    sign_in_as  = serializers.SerializerMethodField()
+    device_app  = serializers.SerializerMethodField()
 
     class Meta:
-        fields = ('email', 'full_name')
+        fields = ('email', 'full_name', 'sign_in_as', 'device_app')
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
     password         = serializers.CharField(write_only=True, trim_whitespace=False)

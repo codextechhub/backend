@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from django.db.models import Q
 
-from ..exceptions import YearIsClosed
+from ..exceptions import PromotionTooEarly, YearIsClosed
 
 
 def assert_year_is_open(session, *, what="change"):
@@ -33,6 +33,32 @@ def assert_year_is_open(session, *, what="change"):
         f"{session.name} is closed, so you cannot {what} a student in it. It "
         f"is the record of a year that has finished. Switch to the year the "
         f"school is running.",
+        session=session.pk,
+        session_name=session.name,
+    )
+
+
+def promotion_opens_on(session):
+    """The day a promotion out of *session* may first run.
+
+    The end of the year's last term by its order, or the year's own end when
+    it has no terms.
+    """
+    last = session.terms.order_by("-order_index", "-end_date").first()
+    return last.end_date if last is not None else session.end_date
+
+
+def assert_promotion_may_run(session, today):
+    """Raise ``PROMOTION_TOO_EARLY`` before *session*'s last term has ended."""
+    opens_on = promotion_opens_on(session)
+    if today >= opens_on:
+        return
+    raise PromotionTooEarly(
+        f"The promotion out of {session.name} opens on "
+        f"{opens_on.day} {opens_on:%B %Y}, when its last term ends. Running it "
+        f"sooner would take every promoted student out of their class for the "
+        f"rest of the year. You can preview it now.",
+        opens_on=opens_on.isoformat(),
         session=session.pk,
         session_name=session.name,
     )

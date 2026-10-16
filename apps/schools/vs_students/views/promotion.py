@@ -204,7 +204,9 @@ class PromotionPreviewView(_PromotionBase):
 
     Writes nothing, and runs the *same* classification the run does. A preview
     computed by different code is not a preview, it is a second opinion, and
-    the two drift the first time either is fixed.
+    the two drift the first time either is fixed. Open at any time;
+    ``run_opens_on`` is the day the run opens (the year's last term's end)
+    and ``can_run`` says whether that day has come.
 
     docstring-name: Preview a promotion
     """
@@ -221,14 +223,24 @@ class PromotionPreviewView(_PromotionBase):
             from_session=from_session, to_session=to_session,
             overrides=data.get("overrides"), branch=self.branch_filter,
         )
+        from vs_config.clock import branch_today
+
+        from ..services.years import promotion_opens_on
+
+        opens_on = promotion_opens_on(from_session)
         return success_response(data={
             "from_session": str(from_session), "to_session": str(to_session),
+            "run_opens_on": opens_on,
+            "can_run": branch_today(self.tenant, None) >= opens_on,
             **_plan_payload(plan, request),
         })
 
 
 class PromotionRunView(_PromotionBase):
     """POST /v1/students/promotions/
+
+    Refused with 409 ``PROMOTION_TOO_EARLY`` (and ``opens_on``) before the
+    year being left has ended its last term.
 
     docstring-name: Run a promotion
     """

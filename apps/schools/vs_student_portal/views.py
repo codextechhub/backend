@@ -35,7 +35,9 @@ class MeView(PortalView):
 
     Who the signed-in pupil is, for the portal's shell: their name and face,
     class and admission number, their school, their branch where the school
-    has more than one, and the year and term the school is in. A school app
+    has more than one, and the year and term the school is in. In the holiday
+    after a promotion the class is next year's, ``class_is_next_year`` is true
+    and ``session`` names that year. A school app
     asks this after sign-in: 200 means a pupil, 404 means anybody else.
 
     docstring-name: The signed-in pupil
@@ -48,13 +50,11 @@ class MeView(PortalView):
         from vs_config.clock import branch_today
         from vs_user.serializers import school_public_info
 
+        from .services import active_enrolment
+
         student = self.student
         tenant = student.tenant
-        enrolment = (
-            student.enrolments.filter(is_active=True, session__status="ACTIVE")
-            .select_related("school_class__level", "session")
-            .first()
-        )
+        enrolment = active_enrolment(student)
         term = current_term(tenant, branch_today(tenant, student.branch_id))
         show_branch = branch_dimension_applies(tenant)
         school = school_public_info(
@@ -73,6 +73,10 @@ class MeView(PortalView):
                 "level_name": (
                     enrolment.school_class.level.name
                     if enrolment and enrolment.school_class.level_id else ""
+                ),
+                # The class is next year's in the holiday after a promotion.
+                "class_is_next_year": bool(
+                    enrolment and enrolment.session.status != "ACTIVE"
                 ),
             },
             "school": {"name": school.get("name", ""), "logo_url": school.get("logo") or ""},

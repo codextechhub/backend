@@ -29,11 +29,19 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def active_enrolment(student):
-    """The pupil's placement in the active year, or None."""
+    """The pupil's class: in the running year, else in the year being set up.
+
+    A promotion runs once the running year's last term has ended, and moves
+    the pupil into next year's class at once, while next year is still a
+    draft. In the holiday between the two the pupil's class is next year's,
+    and the portal shows it with that year's name rather than no class at all.
+    """
+    rows = student.enrolments.filter(is_active=True).select_related(
+        "school_class__level", "school_class__branch", "session",
+    )
     return (
-        student.enrolments.filter(is_active=True, session__status="ACTIVE")
-        .select_related("school_class__level", "school_class__branch", "session")
-        .first()
+        rows.filter(session__status="ACTIVE").first()
+        or rows.filter(session__status="DRAFT").order_by("session__start_date").first()
     )
 
 

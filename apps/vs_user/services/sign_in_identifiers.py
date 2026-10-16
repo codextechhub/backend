@@ -23,7 +23,13 @@ Delivery-address providers
     here, and an account with no address of its own is reachable only through
     what its providers return.
 
-Both registries are keyed by a name, so registering twice (a test that
+Identifier labels
+    ``provider(user) -> str | None``. The identifier an account signs in with
+    when it has no email address (a pupil's admission number), so an
+    activation or reset page can say "Sign in with BFS/2025/0143" rather than
+    show an empty email box.
+
+Every registry is keyed by a name, so registering twice (a test that
 reloads an app) replaces rather than duplicates.
 """
 from __future__ import annotations
@@ -51,6 +57,7 @@ DeliveryAddressProvider = Callable[[User], Iterable[DeliveryAddress]]
 
 _resolvers: dict[str, IdentifierResolver] = {}
 _address_providers: dict[str, DeliveryAddressProvider] = {}
+_label_providers: dict[str, Callable[[User], "str | None"]] = {}
 
 
 def register_identifier_resolver(name: str, resolver: IdentifierResolver) -> None:
@@ -106,3 +113,27 @@ def extra_delivery_addresses(user: User) -> list[DeliveryAddress]:
         except Exception:
             logger.exception("Delivery address provider %r failed.", name)
     return out
+
+
+def register_identifier_label_provider(name: str, provider) -> None:
+    """Make *provider* name the identifier its product issued to an account."""
+    _label_providers[name] = provider
+
+
+def sign_in_label(user: User) -> str:
+    """What *user* signs in with: their email, else the identifier issued to them.
+
+    Empty when the account has neither, which only an account still being set
+    up can be.
+    """
+    if user.email:
+        return user.email
+    for name, provider in list(_label_providers.items()):
+        try:
+            label = provider(user)
+        except Exception:
+            logger.exception("Identifier label provider %r failed.", name)
+            continue
+        if label:
+            return str(label)
+    return ""

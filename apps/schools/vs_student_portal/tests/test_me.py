@@ -7,6 +7,8 @@ away.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from schools.vs_students.constants import Relationship
 from schools.vs_students.services import portal_access
 from schools.vs_students.tests.base import StudentsFixture
@@ -52,6 +54,30 @@ class MeTests(StudentsFixture):
         self.assertEqual(data["student"]["admission_number"], "BFS/2025/0142")
         self.assertEqual(data["student"]["class_name"], "JSS1 A")
         self.assertEqual(data["session"]["name"], "2025/2026")
+        self.assertFalse(data["student"]["class_is_next_year"])
+
+    def test_after_a_year_end_promotion_the_class_is_next_years(self):
+        from schools.vs_academics.models import Level, SchoolClass
+        from schools.vs_students.models import ClassEnrolment
+
+        jss2 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=self.next_year,
+            name="JSS2", code="JSS2", order_index=2,
+        )
+        jss2_a = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=jss2, session=self.next_year,
+            name="JSS2 A", code="N-JSS2A", arm="A",
+        )
+        ClassEnrolment.all_objects.filter(student=self.chiamaka).update(is_active=False)
+        ClassEnrolment.all_objects.create(
+            tenant=self.tenant, student=self.chiamaka, school_class=jss2_a,
+            session=self.next_year, is_active=True, effective_date=dt.date(2026, 7, 27),
+        )
+
+        data = self.get(self.chiamaka.user, ME).data["data"]
+        self.assertEqual(data["student"]["class_name"], "JSS2 A")
+        self.assertTrue(data["student"]["class_is_next_year"])
+        self.assertEqual(data["session"]["name"], "2026/2027")
 
     def test_a_two_branch_school_shows_the_branch(self):
         data = self.get(self.chiamaka.user, ME).data["data"]
