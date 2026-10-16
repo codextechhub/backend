@@ -22,6 +22,7 @@ Route summary:
 """
 from django.urls import path
 
+from .views_push import PushKeyView, PushSubscriptionView
 from .views import (
     NotificationEventTypeViewSet,
     NotificationHistoryViewSet,
@@ -55,6 +56,11 @@ event_type_list   = NotificationEventTypeViewSet.as_view({"get": "list"})
 event_type_detail = NotificationEventTypeViewSet.as_view({"get": "retrieve"})
 
 urlpatterns = [
+
+    # Web Push devices of the signed-in person.
+    path("push/key/", PushKeyView.as_view(), name="notification-push-key"),
+    path("push/subscriptions/", PushSubscriptionView.as_view(),
+         name="notification-push-subscriptions"),
 
     # Feed
     path("",                   feed_list,   name="notification-list"),

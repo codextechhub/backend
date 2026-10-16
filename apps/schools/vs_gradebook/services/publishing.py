@@ -16,6 +16,10 @@ afterwards:
 3. every student without an open fee hold is **released**; a held student is
    marked HELD and is not released, printed or emailed.
 
+**The pupil** (``gradebook.result_released``), where they have a portal
+account, is told in their app and by push that the term's result is ready to
+read, and nothing from it.
+
 **The guardian's email** (``gradebook.report_card_ready``) goes to the primary
 guardian of each released child, one per child, so a family with two children
 at the school gets two. A guardian who has an account is written to through it
@@ -63,6 +67,7 @@ from vs_rbac.scoping import only_branch_id_or_several
 
 from ..constants import (
     EVENT_REPORT_CARD_READY,
+    EVENT_RESULT_RELEASED,
     EVENT_REPORT_CARD_UPDATED,
     EmailState,
     StoredStage,
@@ -128,6 +133,32 @@ def _send_one(tenant, class_term, student, reach, event_key=EVENT_REPORT_CARD_RE
     return bool(sent)
 
 
+def _tell_the_pupil(tenant, class_term, student) -> None:
+    """Tell a released pupil with a portal account that their result is ready.
+
+    In their app and as a push to their own devices, saying only which term:
+    never a figure. Best effort: a notice that cannot go never undoes a release.
+    """
+    user = student.user if student.user_id else None
+    if user is None or not user.may_sign_in:
+        return
+    try:
+        send_notification(
+            event_key=EVENT_RESULT_RELEASED,
+            context={
+                "student_first_name": student.first_name,
+                "term_name": class_term.term.name,
+                "session_name": class_term.term.session.name,
+                "tenant_name": tenant.name,
+            },
+            recipients=[user],
+            tenant=tenant,
+            branch=class_term.branch,
+        )
+    except Exception:
+        logger.exception("The pupil's result notice for %s could not be sent.", student.pk)
+
+
 def send_ready_notices(tenant, class_term_id, student_ids) -> int:
     """Email the primary guardians of *student_ids*, one email per child; returns how many went.
 
@@ -141,11 +172,12 @@ def send_ready_notices(tenant, class_term_id, student_ids) -> int:
         row.student_id: row
         for row in StudentTermResult.objects.filter(
             tenant=tenant, class_term=class_term, student_id__in=list(student_ids),
-        ).select_related("student")
+        ).select_related("student__user")
     }
     reach = primary_guardians(tenant, list(results))
     delivered = 0
     for student_id, result in results.items():
+        _tell_the_pupil(tenant, class_term, result.student)
         found = reach.get(student_id)
         if found is None or not found.has_email:
             continue

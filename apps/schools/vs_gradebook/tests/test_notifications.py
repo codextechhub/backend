@@ -17,6 +17,7 @@ KEYS = {
     constants.EVENT_CLASS_RETURNED: {ChannelChoices.IN_APP},
     constants.EVENT_REPORT_CARD_READY: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
     constants.EVENT_REPORT_CARD_UPDATED: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
+    constants.EVENT_RESULT_RELEASED: {ChannelChoices.IN_APP, ChannelChoices.PUSH},
 }
 GUARDIAN_EVENTS = (constants.EVENT_REPORT_CARD_READY, constants.EVENT_REPORT_CARD_UPDATED)
 
@@ -57,6 +58,16 @@ class RegistryTests(SimpleTestCase):
                     used = {a or b for a, b in _VARIABLE.findall(text)}
                     self.assertLessEqual(used, ALLOWED_GUARDIAN_VARIABLES)
                     self.assertNotRegex(text.lower(), r"https?://|attach|score|grade|position|comment")
+
+    def test_the_pupils_notice_names_the_term_and_nothing_from_the_result(self):
+        templates = _build_default_templates()
+        for channel in KEYS[constants.EVENT_RESULT_RELEASED]:
+            with self.subTest(channel=channel):
+                entry = templates[(constants.EVENT_RESULT_RELEASED, channel)]
+                text = entry["subject"] + entry["body"]
+                used = {a or b for a, b in _VARIABLE.findall(text)}
+                self.assertLessEqual(used, {"term_name", "session_name", "tenant_name"})
+                self.assertNotRegex(text.lower(), r"score|grade|position|average|%")
 
     def test_the_guardian_email_says_the_card_is_ready_to_collect_from_the_school(self):
         body = _build_default_templates()[(constants.EVENT_REPORT_CARD_READY, ChannelChoices.EMAIL)]["body"]

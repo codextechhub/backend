@@ -29,7 +29,7 @@ Responsibilities:
     → platform row → default_enabled; transactional events bypass settings)
   - Render templates (subject, plain body, optional HTML body)
   - Create Notification records (storing metadata + html_body)
-  - Enqueue Celery tasks via transaction.on_commit (email only)
+  - Enqueue Celery tasks via transaction.on_commit (email and push)
   - Fire notification_failed for pre-flight FAILED email records after commit
 """
 import logging
@@ -203,6 +203,16 @@ class NotificationService:
         if not plans:
             return []
 
+        # Push goes only to recipients with a device to push to.
+        push_ready = set()
+        if any(ChannelChoices.PUSH in channels for _, _, channels in plans):
+            from .push import subscribed_user_ids
+
+            push_ready = subscribed_user_ids(
+                target.pk for _, targets, _ in plans for target in targets
+                if not isinstance(target, UnregisteredRecipient)
+            )
+
         # One template query for the union of channels any group enabled.
         templates = _fetch_templates(
             event_type,
@@ -244,6 +254,11 @@ class NotificationService:
                     # FAILED row would be exactly as unreadable as the SENT one it
                     # replaces. Registered recipients are unaffected, so an event stays
                     # ready for a customer portal without needing its channels changed.
+                    if channel == ChannelChoices.PUSH and (
+                        isinstance(target, UnregisteredRecipient) or target.pk not in push_ready
+                    ):
+                        continue
+
                     if channel == ChannelChoices.IN_APP and isinstance(target, UnregisteredRecipient):
                         logger.debug(
                             "Skipping in-app notification for unregistered recipient on "
@@ -336,8 +351,17 @@ class NotificationService:
             and n.status == NotificationStatus.FAILED
         ]
 
-        if email_ids or preflight_failed:
+        push_ids = [
+            str(n.id) for n in created
+            if n.channel == ChannelChoices.PUSH and n.status == NotificationStatus.PENDING
+        ]
+
+        if email_ids or preflight_failed or push_ids:
             def _after_commit():
+                if push_ids:
+                    from ..tasks import deliver_push_notification
+                    for notif_id in push_ids:
+                        deliver_push_notification.delay(notif_id)
                 if email_ids:
                     from ..tasks import deliver_email_notification
                     for notif_id in email_ids:

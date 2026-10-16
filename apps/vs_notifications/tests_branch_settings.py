@@ -45,6 +45,7 @@ RESET_EMAIL = "user.password_reset"
 
 EMAIL = ChannelChoices.EMAIL
 IN_APP = ChannelChoices.IN_APP
+PUSH = ChannelChoices.PUSH
 
 
 class _BranchSettingsFixture(TestCase):
@@ -172,14 +173,14 @@ class BranchAdminAccessTests(_BranchSettingsFixture):
         self.assertTrue(response.data["data"])
         self.assertFalse(any(r["can_edit"] for r in response.data["data"]))
 
-    def test_their_own_branch_view_marks_exactly_the_branch_emails_editable(self):
+    def test_their_own_branch_view_marks_exactly_the_branch_choices_editable(self):
         response = self.get(self.ikeja_admin, branch=self.ikeja.pk)
         self.assertEqual(response.status_code, 200, response.data)
         rows = response.data["data"]
         editable = {(r["event_type_key"], r["channel"]) for r in rows if r["can_edit"]}
         expected = {
             (r["event_type_key"], r["channel"]) for r in rows
-            if r["branch_scoped"] and not r["is_transactional"] and r["channel"] == EMAIL
+            if r["branch_scoped"] and not r["is_transactional"] and r["channel"] in (EMAIL, PUSH)
         }
         self.assertTrue(editable)
         self.assertEqual(editable, expected)

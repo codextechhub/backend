@@ -47,13 +47,18 @@ Each registry entry defines one ``NotificationEventType`` row:
 class ChannelChoices:
     IN_APP = "in_app"
     EMAIL  = "email"
+    # Web Push to a phone or tablet the recipient installed an app on and
+    # allowed notifications for (services/push.py). Text that may show on a
+    # locked screen, so a push template says what happened and never a figure.
+    PUSH   = "push"
 
     CHOICES = [
         (IN_APP, "In-App"),
         (EMAIL,  "Email"),
+        (PUSH,   "Push"),
     ]
 
-    ALL = [IN_APP, EMAIL]
+    ALL = [IN_APP, EMAIL, PUSH]
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +452,20 @@ EVENT_TYPE_REGISTRY = [
         "branch_scoped": True,
     },
     {
+        "key": "gradebook.result_released",
+        "label": "Your result is ready",
+        "description": (
+            "Fires when a class's results are published and a pupil's own result "
+            "is released, and is sent to the pupil when they have a portal "
+            "account. It says only that the result for the term is ready to read: "
+            "no score, grade or position."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.PUSH],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
         "key": "gradebook.report_card_updated",
         "label": "Updated report card ready to collect",
         "description": (
@@ -469,7 +488,7 @@ EVENT_TYPE_REGISTRY = [
             "in its audience who has a portal account."
         ),
         "source_module": "vs_notices",
-        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
         "default_enabled": True,
     },
 
@@ -599,7 +618,7 @@ EVENT_TYPE_REGISTRY = [
         "label": "Payment received",
         "description": "Fires when a payment is confirmed against a student invoice.",
         "source_module": "vs_billing",
-        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
         "default_enabled": True,
         "branch_scoped": True,
     },

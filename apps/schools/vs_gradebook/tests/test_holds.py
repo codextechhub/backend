@@ -555,6 +555,30 @@ class LiftHoldTests(ClassFixture):
         self.assertEqual(call["unregistered_recipients"][0].email, "ngozi.nwosu@example.ng")
         self.assertEqual(self.send.call_count, 1)
 
+    def test_a_released_pupil_with_a_portal_account_is_told_too(self):
+        from schools.vs_students.services import portal_access
+        from vs_user.models import User
+
+        self.chiamaka.email = "chiamaka.n@example.ng"
+        self.chiamaka.save(update_fields=["email"])
+        portal_access.issue(self.chiamaka, actor=self.admin)
+        self.chiamaka.refresh_from_db()
+        User.objects.filter(pk=self.chiamaka.user_id).update(status="ACTIVE", is_active=True)
+
+        self.drive_to_awaiting()
+        hold_id = self.placed(self.chiamaka)
+        self.publish(self.principal)
+        self.send.reset_mock()
+        self.lift(self.bursar, hold_id)
+
+        pupil = [c.kwargs for c in self.send.call_args_list
+                 if c.kwargs["event_key"] == "gradebook.result_released"]
+        self.assertEqual(len(pupil), 1)
+        self.assertEqual(pupil[0]["recipients"], [User.objects.get(pk=self.chiamaka.user_id)])
+        self.assertEqual(set(pupil[0]["context"]), {
+            "student_first_name", "term_name", "session_name", "tenant_name",
+        })
+
     def test_lifting_after_publication_for_a_guardian_with_no_email_records_it_and_sends_nothing(self):
         self.drive_to_awaiting()
         hold_id = self.placed(self.tunde)

@@ -617,6 +617,15 @@ SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="http://localhost:51
 # environment; development serves it from a second dev server.
 STUDENT_APP_BASE_URL = config("STUDENT_APP_BASE_URL", default="")
 
+# Web Push (vs_notifications push channel). A key pair per environment, made
+# once with py_vapid and kept: a new pair orphans every phone's subscription.
+# The public key is handed to apps; the contact is who a push service may
+# write to about this sender. Empty keys turn push off: nobody can subscribe
+# and the push channel sends nothing.
+WEB_PUSH_VAPID_PUBLIC_KEY = config("WEB_PUSH_VAPID_PUBLIC_KEY", default="")
+WEB_PUSH_VAPID_PRIVATE_KEY = config("WEB_PUSH_VAPID_PRIVATE_KEY", default="")
+WEB_PUSH_CONTACT = config("WEB_PUSH_CONTACT", default="mailto:support@codexng.com")
+
 # Product-specific notification branding resolves through the schools FAL, so
 # the domain-neutral notification engine never imports a school application.
 NOTIFICATION_EMAIL_BRAND_PROVIDER = (

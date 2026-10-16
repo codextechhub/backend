@@ -776,6 +776,11 @@ def _build_default_templates() -> dict:
             "subject": "New notice: {{ notice_title }}",
             "body": "{{ notice_excerpt }}",
         },
+        # A push can show on a locked screen, so it names what happened.
+        ("notices.published", C.PUSH): {
+            "subject": "New notice: {{ notice_title }}",
+            "body": "Open the app to read it.",
+        },
         ("notices.published", C.EMAIL): {
             "subject": "{{ notice_title }}",
             "body": (
@@ -786,6 +791,25 @@ def _build_default_templates() -> dict:
                 "You can read it any time in your student portal.\n\n"
                 "{{ tenant_name }} via {{ email_brand }}"
             ),
+        },
+
+        # ── gradebook.result_released ───────────────────────────────────────
+        # To the pupil, in the app and as a push: that the term's result is
+        # there, never a figure from it.
+        ("gradebook.result_released", C.IN_APP): {
+            "subject": "Your {{ term_name }} result is ready",
+            "body": "Your {{ term_name }} result for {{ session_name }} is ready to read.",
+        },
+        ("gradebook.result_released", C.PUSH): {
+            "subject": "Your {{ term_name }} result is ready",
+            "body": "Open the app to read it.",
+        },
+
+        # ── billing.payment_received (push) ─────────────────────────────────
+        # No amount: a confirmed payment, and where to find the receipt.
+        ("billing.payment_received", C.PUSH): {
+            "subject": "Payment confirmed",
+            "body": "Your payment was confirmed. Open the app for your receipt.",
         },
 
         # ── student.deactivated ─────────────────────────────────────────────

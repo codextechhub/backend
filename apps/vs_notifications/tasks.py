@@ -243,3 +243,29 @@ def _read_retry_config() -> tuple[int, int]:
         retry_backoff = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC]
 
     return max_retries, retry_backoff
+
+
+@shared_task(name="vs_notifications.deliver_push_notification")
+def deliver_push_notification(notification_id: str):
+    """Send one push Notification record to its recipient's devices.
+
+    SENT when at least one device's push service took it, FAILED when none
+    did (no device left, or every service refused). A push is not retried:
+    it is a nudge to open the app, and the same notice waits there in-app.
+    """
+    from .constants import NotificationStatus
+    from .models import Notification
+    from .services.push import deliver
+
+    notification = (
+        Notification.all_objects.select_related("recipient", "event_type")
+        .filter(pk=notification_id).first()
+    )
+    if notification is None or notification.status != NotificationStatus.PENDING:
+        return
+    sent = deliver(notification)
+    Notification.all_objects.filter(pk=notification.pk).update(
+        status=NotificationStatus.SENT if sent else NotificationStatus.FAILED,
+        dispatched_at=timezone.now(),
+        failure_reason="" if sent else "NO_DEVICE_ACCEPTED",
+    )

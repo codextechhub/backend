@@ -121,6 +121,8 @@ EVENT_SHEET_REMINDER = "gradebook.sheet_reminder"
 EVENT_SHEET_RETURNED = "gradebook.sheet_returned"
 EVENT_CLASS_RETURNED = "gradebook.class_returned"
 EVENT_REPORT_CARD_READY = "gradebook.report_card_ready"
+#: To the pupil, when their own result is released: that it is ready to read.
+EVENT_RESULT_RELEASED = "gradebook.result_released"
 EVENT_REPORT_CARD_UPDATED = "gradebook.report_card_updated"
 
 

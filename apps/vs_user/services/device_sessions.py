@@ -251,9 +251,14 @@ def refresh(account: str, raw: str):
 
 
 def _end(session, *, reason: str) -> None:
+    from ..signals import device_session_ended
+
     blacklist_token_by_jti(session.refresh_jti)
     LoginSession.all_objects.filter(pk=session.pk).update(
         is_active=False, ended_at=timezone.now(), end_reason=reason,
+    )
+    device_session_ended.send(
+        sender=LoginSession, user=session.user, device_key=session.device_key,
     )
 
 

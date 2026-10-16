@@ -656,3 +656,46 @@ class Notification(models.Model):
         if self.recipient_id and self.recipient.email:
             return self.recipient.email
         return self.unregistered_email
+
+
+class PushSubscription(models.Model):
+    """One device a person allowed push notifications on, for one account.
+
+    The browser's push service names the device by ``endpoint`` and gives the
+    two keys a message is encrypted with. A phone shared by two people holds
+    one subscription per account, each tied to that account's device session
+    (``device_key``, :mod:`vs_user.services.device_sessions`), so signing one
+    of them out stops that person's pushes on that phone and nobody else's.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE, related_name="push_subscriptions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="push_subscriptions",
+    )
+    endpoint = models.TextField()
+    #: A digest of ``endpoint``: endpoints are long URLs, too long to index.
+    endpoint_hash = models.CharField(max_length=64)
+    p256dh = models.CharField(max_length=255)
+    auth = models.CharField(max_length=255)
+    device_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    user_agent = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "endpoint_hash"], name="uq_push_subscription_user_endpoint",
+            ),
+        ]
+        indexes = [models.Index(fields=["user"])]
+
+    def __str__(self):
+        return f"Push subscription {self.pk} for user {self.user_id}"

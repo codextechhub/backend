@@ -21,6 +21,15 @@ than being imported from here.
     activation should catch its own errors, and a receiver whose write must not
     be lost if activation rolls back should let them propagate.
 
+``device_session_ended``
+    Fires when one device session (:mod:`vs_user.services.device_sessions`)
+    ends: signed out, or no longer allowed. A module that tied something to
+    that device for that person (push notifications) lets it go here.
+
+    Fires with two keyword arguments:
+      user       - the :class:`~vs_user.models.User` the session belonged to.
+      device_key - the session's random key.
+
 ``invitation_dispatch_settled``
     Fires once the invitation email has either been handed to the broker or
     refused by it, from inside the ``on_commit`` callback that does the handing
@@ -55,3 +64,5 @@ account_activated = django.dispatch.Signal()
 
 # Sender is always the UserInvitation model.
 invitation_dispatch_settled = django.dispatch.Signal()
+
+device_session_ended = django.dispatch.Signal()

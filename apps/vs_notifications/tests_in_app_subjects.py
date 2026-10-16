@@ -57,6 +57,7 @@ _ALREADY_TITLED = {
     "attendance.correction_notice",
     "attendance.register_reminder",
     "gradebook.sheet_reminder",
+    "gradebook.result_released",
     "gradebook.sheet_returned",
     "gradebook.class_returned",
     "gradebook.report_card_ready",

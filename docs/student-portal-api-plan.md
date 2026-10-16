@@ -687,5 +687,19 @@ from its crest at `.../app/<slug>/icons/<name>` (192, 512, maskable 512 and
 the 180 Apple icon, the crest on white). A school with no crest keeps the
 app's own XVS icons at `/student/icons/`.
 
+Push (owner decisions of 16 October: pywebpush, no figures on a locked
+screen). `push` is a third notification channel beside in-app and email, with
+its own per-event switch (school, then branch) and its own templates that say
+what happened and never a figure. A device subscribes with
+`POST /v1/notify/push/subscriptions/` (`{endpoint, keys, account?}`, the key
+from `GET /v1/notify/push/key/`); one made with a device-session `account` is
+deleted when that session signs out, and each push to it starts with the
+recipient's first name. A recipient with no device gets no push record. Push
+templates: a new notice ("New notice: <title>"), a confirmed payment
+("Payment confirmed", no amount) and the new `gradebook.result_released`, which
+tells a pupil with an account that their term's result is ready (in-app and
+push). Keys: `WEB_PUSH_VAPID_PUBLIC_KEY` / `_PRIVATE_KEY` / `WEB_PUSH_CONTACT`
+per environment; without them push is off.
+
 Messages and Assignments when their turn comes. For the installable app: applying transfers to open bills
 (per-school switch, default on), and push.
