@@ -88,6 +88,25 @@ class MeView(PortalView):
         return success_response(data=data)
 
 
+class HomeView(PortalView):
+    """GET /v1/portal/student/home/
+
+    The pupil's home in one read: today's classes with now / next / done,
+    today's attendance mark and the term's rate, the fee balance and the
+    invoice falling due first, the newest notice with the unread count, and
+    the unread notification count. Each block carries ``available``; one that
+    cannot be read answers ``false`` with a sentence to show, never a zero,
+    and the rest still arrive.
+
+    docstring-name: My home
+    """
+
+    def get(self, request):
+        from .home import home
+
+        return success_response(data=home(self.student, user=request.user))
+
+
 def _read_ids(user, notices) -> set:
     from schools.vs_notices.models import NoticeRead
 

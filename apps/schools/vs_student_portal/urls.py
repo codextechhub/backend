@@ -8,6 +8,7 @@ from django.urls import path
 from .views import (
     AttendanceView,
     FeesView,
+    HomeView,
     PayInvoiceView,
     PaymentHistoryView,
     ReceiptView,
@@ -26,6 +27,7 @@ from .views import (
 
 urlpatterns = [
     path("me/", MeView.as_view(), name="student-portal-me"),
+    path("home/", HomeView.as_view(), name="student-portal-home"),
     path("profile/", ProfileView.as_view(), name="student-portal-profile"),
     path(
         "profile/photo/", ProfilePhotoView.as_view(),

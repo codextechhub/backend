@@ -563,7 +563,29 @@ Engine changes the flow needed, which also fix staff receipts:
   confirmed (`billing.payment_received`, in-app and by email, once the booking
   commits). A collection staff started tells them nothing.
 
-### 13.8 Still to build from this plan
+### 13.8 Home (composed, R6)
 
-Home (composed, section 3.1 R6), and Messages and Assignments when their turn
-comes.
+`GET /v1/portal/student/home/` (not `me/home/`: the portal routes sit directly
+under `/v1/portal/student/`). One read with the school date and five blocks,
+each read through the same function its own portal route uses, inside a
+savepoint of its own:
+
+- `today`: `published` and today's periods with `done` / `now` / `next` /
+  `later`, from the timetable read (13.6).
+- `attendance`: the term, today's cell (`state` is `NOT_TAKEN` until the
+  register is in, R15) with `mark_label`, and the term's `rate`.
+- `fees`: `balance` (kobo), `status` (`OWING`, `CLEAR` or `IN_CREDIT`), the
+  open invoice falling due first and how many are open, and `can_pay`.
+- `notices`: the newest notice addressed to the pupil, with `unread`, and the
+  unread count.
+- `notifications`: the pupil's unread in-app notification count, from the same
+  helper as the bell (`vs_notifications.services.inbox.unread_in_app_count`).
+
+Every block carries `available`. A block whose read raises is logged and
+answered `{"available": false, "message": ...}` with a sentence to show, never
+a zero, and the others still arrive. Assignments and messages have no block,
+because neither is built.
+
+### 13.9 Still to build from this plan
+
+Messages and Assignments when their turn comes.

@@ -71,6 +71,7 @@ from .services.audit import (
     template_snapshot,
 )
 from .services.settings import SOURCE_DEFAULT, resolve_settings_bulk, settings_rows
+from .services.inbox import unread_in_app_count
 from .services.routing import notification_route_q
 
 
@@ -94,19 +95,6 @@ def _feed_search_q(term: str) -> Q:
         | Q(body__icontains=term)
         | Q(event_type__label__icontains=term)
     )
-
-
-def _unread_in_app_count(user) -> int:
-    """The bell badge number for *user*.
-
-    Shared by the count endpoint and by every response that reports the badge,
-    so the two can never describe the same inbox differently.
-    """
-    return Notification.objects.filter(
-        recipient=user,
-        channel=ChannelChoices.IN_APP,
-        is_read=False,
-    ).count()
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +235,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         """
         return success_response(
             "Unread count retrieved.",
-            data={"unread_count": _unread_in_app_count(request.user)},
+            data={"unread_count": unread_in_app_count(request.user)},
         )
 
     @action(detail=False, methods=["post"], url_path="mark-read")
@@ -336,7 +324,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
             f"{updated} notification(s) acknowledged.",
             data={
                 "updated_count": updated,
-                "unread_count": _unread_in_app_count(request.user),
+                "unread_count": unread_in_app_count(request.user),
             },
         )
 
