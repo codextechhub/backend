@@ -672,6 +672,13 @@ account (one, under a lock on the customer; 10 an hour), or returns it.
 `PENDING` as soon as the provider reports one and `CONFIRMED` with its receipt
 once booked. Both need the school to let pupils pay. No minimum applies.
 
+A transfer into any customer's virtual account names no bill. Under Finance
+settings > Banking and cash, `apply_transfers_automatically` (default on,
+owner decision of 16 October) settles the customer's open bills as it is
+booked, in the `default_receipt_allocation_strategy` order, its own branch's
+bills only; any excess waits as credit. Off, every transfer waits as credit
+for somebody to allocate, as before.
+
 Messages and Assignments when their turn comes. For the installable app: the
 per-school app file and icons, applying transfers to open bills
 (per-school switch, default on), and push.

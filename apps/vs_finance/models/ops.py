@@ -315,6 +315,10 @@ class FinanceBankingSettings(TimeStampedModel):
         max_length=8, choices=ReceiptAllocationStrategy.choices,
         default=ReceiptAllocationStrategy.OLDEST,
     )
+    # A bank transfer into a customer's virtual account names no bill. On, it
+    # settles the customer's open bills in the order above as it is booked;
+    # off, it waits as credit for somebody to allocate.
+    apply_transfers_automatically = models.BooleanField(default=True)
     petty_cash_low_balance_threshold_bps = models.PositiveSmallIntegerField(
         default=2500, validators=[MaxValueValidator(10000)],
         help_text="Petty-cash balance percentage that triggers a replenishment alert.",

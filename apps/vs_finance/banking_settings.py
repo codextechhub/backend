@@ -15,6 +15,7 @@ SETTING_FIELDS = (
     "default_bank_reconciliation_tolerance_days",
     "default_group_reconciliation_matches",
     "default_receipt_allocation_strategy",
+    "apply_transfers_automatically",
     "petty_cash_low_balance_threshold_bps",
 )
 
@@ -44,6 +45,7 @@ def serialize_finance_banking_settings(settings):
         "default_receipt_allocation_strategy_options": choice_options(
             FinanceBankingSettings.ReceiptAllocationStrategy,
         ),
+        "apply_transfers_automatically": settings.apply_transfers_automatically,
         "petty_cash_low_balance_threshold_bps": (
             settings.petty_cash_low_balance_threshold_bps
         ),
@@ -85,6 +87,12 @@ def _validated_values(data):
         if value not in FinanceBankingSettings.ReceiptAllocationStrategy.values:
             raise ValidationError({field: choose_one_of(FinanceBankingSettings.ReceiptAllocationStrategy)})
         values[field] = value
+
+    field = "apply_transfers_automatically"
+    if field in data:
+        if not isinstance(data[field], bool):
+            raise ValidationError({field: "Use true or false."})
+        values[field] = data[field]
 
     field = "petty_cash_low_balance_threshold_bps"
     if field in data:

@@ -935,6 +935,25 @@ def _unsettlable_reason(intent):
     return None
 
 
+def _applies_itself(intent) -> bool:
+    """Whether this receipt settles its customer's open bills as it is booked.
+
+    A transfer into a customer's virtual account names no bill: the payer
+    simply sent money. Where the books' ``apply_transfers_automatically`` is on
+    (the default), it settles their open bills in the receipt allocation
+    order, its own branch's only, and any excess waits as credit; off, all of
+    it waits as credit for somebody to allocate. A collection naming a bill,
+    or one started without one at a checkout, is never applied here.
+    """
+    from vs_finance.banking_settings import resolve_finance_banking_settings
+
+    return (
+        intent.channel == CollectionChannel.VIRTUAL_ACCOUNT
+        and not intent.invoice_id
+        and resolve_finance_banking_settings(intent.entity).apply_transfers_automatically
+    )
+
+
 def _book_receipt(intent, *, actor_user=None, paid_at=None):
     """Create + post the ``vs_finance.Payment`` for a succeeded collection.
 
@@ -999,6 +1018,13 @@ def _book_receipt(intent, *, actor_user=None, paid_at=None):
     if settles_now:  # Settle the invoice the payer chose.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
+    elif _applies_itself(intent):  # A bank transfer naming no bill, at a school that applies them.
+        from vs_finance.banking_settings import resolve_finance_banking_settings
+
+        post_payment(
+            payment, actor_user=actor_user, auto_allocate=True,
+            strategy=resolve_finance_banking_settings(intent.entity).default_receipt_allocation_strategy,
+        )
     else:  # Standalone, or an invoice it may not settle: never guess.
         # Leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.

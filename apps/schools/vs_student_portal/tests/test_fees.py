@@ -243,6 +243,9 @@ class PortalTransferTests(_FeesFixture):
         row = self.deposits(as_of).data["data"]["deposits"][0]
         self.assertEqual(row["status"], "CONFIRMED")
         self.assertTrue(row["has_receipt"])
+        # The school applies transfers to open bills, so the invoice moved.
+        fees = self.as_pupil().get(reverse("student-portal-fees")).data["data"]
+        self.assertEqual(fees["balance"], 50_000)
 
     def test_a_deposit_before_the_page_opened_is_not_listed(self):
         self.transfer_account("post")

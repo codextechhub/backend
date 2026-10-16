@@ -189,6 +189,10 @@ BANKING_SETTING_CONSUMERS = {
         "Receipt allocation",
         "Orders invoices when a receipt is allocated without an explicit user choice.",
     ),
+    "apply_transfers_automatically": _consumer(
+        "Bank transfers into virtual accounts",
+        "Settles the customer's open bills, in the receipt allocation order, as a transfer is booked; off, the transfer waits as credit.",
+    ),
     "petty_cash_low_balance_threshold_bps": _consumer(
         "Petty cash monitoring",
         "Determines when a live petty-cash balance is flagged for replenishment.",

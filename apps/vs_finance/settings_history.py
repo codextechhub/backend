@@ -344,6 +344,8 @@ def _banking_fields():
         "default_receipt_allocation_strategy": SettingField(
             "Receipt allocation order", "choice",
             choices=FinanceBankingSettings.ReceiptAllocationStrategy),
+        "apply_transfers_automatically": SettingField(
+            "Apply bank transfers to open bills automatically", "bool"),
         "petty_cash_low_balance_threshold_bps": SettingField(
             "Petty cash low-balance alert", "bps"),
     }
