@@ -131,6 +131,11 @@ CFG_PROMOTION_CAPACITY_MODE = "students.promotion.capacity_mode"
 CFG_PROMOTION_PASS_MARK = "students.promotion.pass_mark"
 #: Whether a pupil may change their own photograph in the student portal.
 CFG_PORTAL_PHOTO_SELF_EDIT = "students.portal.photo_self_edit"
+#: Days a pupil stays signed in to the student app between uses (1 to 90).
+CFG_PORTAL_SESSION_DAYS = "students.portal.session_days"
+PORTAL_SESSION_DAYS_DEFAULT = 30
+#: Where the student app is served on the school's own address.
+STUDENT_APP_PATH = "/student/"
 
 
 class PromotionSuspended(models.TextChoices):

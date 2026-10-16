@@ -9,7 +9,11 @@ tells it two things from ``AppConfig.ready()`` through
   the forgot-password page, exactly as a staff number names an employee's;
 * an invitation or password-reset link for a pupil's account also goes to the
   pupil's **primary guardian**, because a pupil may have no email of their own,
-  and a parent is who helps a child through activation either way.
+  and a parent is who helps a child through activation either way;
+* a pupil's account is offered a **device session** in the student app
+  (:mod:`vs_user.services.device_sessions`): signed in for the school's
+  ``students.portal.session_days`` between uses, several pupils side by side
+  on one family phone.
 """
 from __future__ import annotations
 
@@ -55,8 +59,44 @@ def guardian_delivery_addresses(user):
     return [DeliveryAddress(email=link.guardian.email, name=link.guardian.full_name)]
 
 
+def portal_session_days(tenant) -> int:
+    """How many days this school's pupils stay signed in between uses."""
+    from .constants import CFG_PORTAL_SESSION_DAYS, PORTAL_SESSION_DAYS_DEFAULT
+    from .services.rules import resolve_many
+
+    value, _ = resolve_many((CFG_PORTAL_SESSION_DAYS,), tenant=tenant).get(
+        CFG_PORTAL_SESSION_DAYS, (PORTAL_SESSION_DAYS_DEFAULT, None),
+    )
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 90:
+        return PORTAL_SESSION_DAYS_DEFAULT
+    return value
+
+
+def pupil_device_session(user):
+    """The student app's device session, for an account linked to a pupil.
+
+    A pupil stays signed in to the student app for the school's
+    ``students.portal.session_days`` between uses; any other account is
+    answered by nobody here and keeps the browser session.
+    """
+    import datetime as dt
+
+    from vs_user.services.device_sessions import DeviceSessionPolicy
+
+    from .constants import STUDENT_APP_PATH
+    from .models import Student
+
+    if not Student.all_objects.filter(user=user, tenant_id=user.tenant_id).exists():
+        return None
+    return DeviceSessionPolicy(
+        lifetime=dt.timedelta(days=portal_session_days(user.tenant)),
+        app_path=STUDENT_APP_PATH,
+    )
+
+
 def register():
-    """Tell the account engine this app issues admission numbers."""
+    """Tell the account engine this app issues admission numbers and keeps pupils signed in."""
+    from vs_user.services.device_sessions import register_device_session_policy
     from vs_user.services.sign_in_identifiers import (
         register_delivery_address_provider,
         register_identifier_resolver,
@@ -64,3 +104,4 @@ def register():
 
     register_identifier_resolver("admission_number", admission_number_resolver)
     register_delivery_address_provider("pupil_primary_guardian", guardian_delivery_addresses)
+    register_device_session_policy("student_app", pupil_device_session)

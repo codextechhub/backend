@@ -38,11 +38,13 @@ from ..serializers import (
     ActivationSerializer, ActivationPreviewSerializer, LoginRequestSerializer, TokenRefreshSerializer,
 )
 from ..services.auth       import LoginService
+from ..services.device_sessions import cookie_max_age as device_cookie_max_age
 from ..services.invitation import InvitationService
 from ..services.audit      import log_auth_event
 from ..throttles import CardIdentifierThrottle, CardPreviewIdentifierThrottle
 from ..browser_session import (
     clear_refresh_cookie,
+    set_device_cookie,
     enforce_browser_origin,
     enforce_csrf,
     refresh_cookie_value,
@@ -88,6 +90,12 @@ class LoginView(APIView):
     Note this is a body key, not the ``?tenant=`` query assertion the
     authenticated endpoints require: there is no token yet to check against.
 
+    ``session: "device"`` asks for a device session instead
+    (services.device_sessions): the credential goes into a cookie of its own,
+    named for the ``account`` key the response carries, and lives as long as
+    the account's product allows. A browser sign-in by an account offered a
+    device session answers ``device_app`` with the path of its app.
+
     Permission: AllowAny (public endpoint).
 
     docstring-name: Log in
@@ -112,12 +120,14 @@ class LoginView(APIView):
                 request=request,
                 card_id=ser.validated_data.get('card_id', ''),
                 identifier=ser.validated_data.get('identifier', ''),
+                device=ser.validated_data.get('session') == 'device',
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}
             blocked_codes = {
                 'ACCOUNT_LOCKED', 'ACCOUNT_SUSPENDED',
                 'ACCOUNT_DEACTIVATED', 'ACCOUNT_NOT_ACTIVATED',
+                'DEVICE_SESSION_NOT_OFFERED',
             }
             http_status = (
                 status.HTTP_403_FORBIDDEN
@@ -132,7 +142,13 @@ class LoginView(APIView):
         # The readable CSRF token is shared with first-party app hosts. The
         # rotating refresh credential remains host-only and outside JavaScript.
         get_token(request)
-        set_refresh_cookie(response, refresh_token)
+        if 'account' in result:
+            set_device_cookie(
+                response, result['account'], refresh_token,
+                max_age=device_cookie_max_age(refresh_token),
+            )
+        else:
+            set_refresh_cookie(response, refresh_token)
         return response
 
 

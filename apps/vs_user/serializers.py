@@ -699,6 +699,11 @@ class LoginRequestSerializer(serializers.Serializer):
     # An unknown slug is not rejected as a field error either: that would tell
     # an anonymous caller which tenants exist. It is refused as bad credentials.
     tenant           = serializers.CharField(required=False, allow_blank=True, default='')
+    # "device" asks for a device session (services.device_sessions) instead of
+    # the browser one: weeks long, one per account on the device.
+    session          = serializers.ChoiceField(
+        choices=['browser', 'device'], required=False, default='browser',
+    )
 
     def validate(self, attrs):
         email = normalize_email(attrs.get('email'))

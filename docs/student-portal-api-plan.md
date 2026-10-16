@@ -603,6 +603,42 @@ answered `{"available": false, "message": ...}` with a sentence to show, never
 a zero, and the others still arrive. Assignments and messages have no block,
 because neither is built.
 
-### 13.9 Still to build from this plan
+### 13.9 Student app sessions (installable app, owner decisions of 16 October)
 
-Messages and Assignments when their turn comes.
+The student app is its own project (`student-fe`) served at `/student/` on the
+school's address, installable on a phone. A pupil stays signed in for the
+school's `students.portal.session_days` (1 to 90, default 30) between uses, and
+one phone holds several pupils side by side.
+
+The account engine has **device sessions** (`vs_user.services.device_sessions`),
+offered only to accounts a product's registered policy answers for; the
+students app registers one for any account linked to a pupil, with
+`app_path` `/student/`. Staff keep the one-day browser session.
+
+- `POST /v1/user/auth/login/` with `session: "device"`: answers `account` (a
+  random key) and sets the credential in its own HttpOnly cookie
+  `device_session_<account>` (Secure, SameSite Strict, path `/v1/user/auth/`,
+  lives the policy's days). 403 `DEVICE_SESSION_NOT_OFFERED` for an account
+  with no app, once its password is proven, before anything is issued. A
+  browser sign-in answers `device_app: {path}` (null for staff).
+- `POST /v1/user/auth/device/refresh/` `{account}`: rotates that account's
+  credential and starts its days again; 401 `TOKEN_EXPIRED` / `TOKEN_REVOKED`
+  / `TOKEN_INVALID` clears its cookie. Two refreshes racing with one
+  credential: the second is refused.
+- `POST /v1/user/auth/device/sign-out/` `{account}`: ends that account on that
+  device only; always 200.
+- `POST /v1/user/auth/device/hand-over/`: turns a browser session (after a
+  sign-in on the ordinary page answered `device_app`) into a device session;
+  answers `{account, access, app_path}` and clears the browser cookie.
+- Taking away portal access, leaving the roll, suspension of the account and
+  force logout end device sessions as they end any other. The outstanding-token
+  row carries the credential's real expiry, so the blacklist is not flushed
+  under a credential with weeks to run.
+- Staff set the days on `GET/PUT /v1/students/portal-rules/` (`session_days`).
+
+### 13.10 Still to build from this plan
+
+Messages and Assignments when their turn comes. For the installable app: the
+per-school app file and icons, the card return to `/student/fees/paid`, the
+bank-transfer account and deposit reads, applying transfers to open bills
+(per-school switch, default on), and push.

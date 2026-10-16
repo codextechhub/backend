@@ -309,6 +309,13 @@ AUTH_REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_sec
 AUTH_REFRESH_COOKIE_SECURE = config("AUTH_REFRESH_COOKIE_SECURE", default=True, cast=bool)
 AUTH_REFRESH_COOKIE_SAMESITE = "Strict"
 
+# Device sessions (vs_user.services.device_sessions) keep one cookie per
+# account on the device, named by this prefix and the session's random key.
+# They are sent only to the sign-in routes; Secure and SameSite follow the
+# browser refresh cookie, so a development override reaches both.
+AUTH_DEVICE_COOKIE_PREFIX = "device_session_"
+AUTH_DEVICE_COOKIE_PATH = "/v1/user/auth/"
+
 # Application definition
 
 INSTALLED_APPS = [

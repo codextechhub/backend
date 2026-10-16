@@ -341,3 +341,60 @@ class PortalRulesTests(PortalFixture):
         self.put(self.admin, "student-portal-rules", {"photo_self_edit": False})
         theirs = self.get(self.solo_admin, "student-portal-rules").data["data"]
         self.assertTrue(theirs["photo_self_edit"])
+
+
+class StudentAppSessionTests(PortalFixture):
+    """Chiamaka stays signed in to the student app; Brightfield's staff do not.
+
+    Brightfield shortens the sign-in to 7 days, and Sunrise keeps the default
+    30, so one school's choice never reaches another's pupils.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from django.core.management import call_command
+
+        call_command("seed_config_catalogue", verbosity=0)
+        settings_key = make_permission("school.settings.update", scope=PermissionScope.TENANT)
+        make_role_permission(cls.role, settings_key)
+        make_role_permission(cls.solo_role, settings_key)
+        portal_access.issue(cls.chiamaka, actor=cls.admin)
+
+    def setUp(self):
+        self.activate(self.chiamaka)
+
+    def test_a_pupil_is_offered_the_student_app_for_the_schools_days(self):
+        from schools.vs_students.sign_in import pupil_device_session
+
+        policy = pupil_device_session(self.chiamaka.user)
+        self.assertEqual(policy.app_path, "/student/")
+        self.assertEqual(policy.lifetime.days, 30)
+
+        self.put(self.admin, "student-portal-rules", {"session_days": 7})
+        self.assertEqual(pupil_device_session(self.chiamaka.user).lifetime.days, 7)
+
+    def test_staff_are_offered_no_student_app(self):
+        from schools.vs_students.sign_in import pupil_device_session
+
+        self.assertIsNone(pupil_device_session(self.admin))
+
+    def test_a_pupils_browser_sign_in_points_to_the_student_app(self):
+        response = self.sign_in("BFS/2025/0142")
+        self.assertEqual(response.data["data"]["device_app"], {"path": "/student/"})
+
+    def test_the_rules_route_reads_and_saves_the_days(self):
+        self.assertEqual(self.get(self.admin, "student-portal-rules").data["data"]["session_days"], 30)
+        response = self.put(self.admin, "student-portal-rules", {"session_days": 7})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["session_days"], 7)
+        self.assertTrue(response.data["data"]["photo_self_edit"])
+        self.assertEqual(
+            self.get(self.solo_admin, "student-portal-rules").data["data"]["session_days"], 30,
+        )
+
+    def test_days_outside_one_to_ninety_are_refused(self):
+        for days in (0, 91):
+            with self.subTest(days=days):
+                response = self.put(self.admin, "student-portal-rules", {"session_days": days})
+                self.assertEqual(response.status_code, 400)

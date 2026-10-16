@@ -58,3 +58,38 @@ def clear_refresh_cookie(response) -> None:
         path=settings.AUTH_REFRESH_COOKIE_PATH,
         samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
     )
+
+
+def device_cookie_value(request, account: str) -> str:
+    from .services.device_sessions import cookie_name
+
+    return request.COOKIES.get(cookie_name(account), "")
+
+
+def set_device_cookie(response, account: str, refresh_token: str, *, max_age: int) -> None:
+    """Store one device session's credential in a cookie of its own.
+
+    Sent only to the sign-in routes, and as tightly as the browser refresh
+    cookie otherwise.
+    """
+    from .services.device_sessions import cookie_name
+
+    response.set_cookie(
+        key=cookie_name(account),
+        value=refresh_token,
+        max_age=max_age,
+        secure=settings.AUTH_REFRESH_COOKIE_SECURE,
+        httponly=True,
+        samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
+        path=settings.AUTH_DEVICE_COOKIE_PATH,
+    )
+
+
+def clear_device_cookie(response, account: str) -> None:
+    from .services.device_sessions import cookie_name
+
+    response.delete_cookie(
+        key=cookie_name(account),
+        path=settings.AUTH_DEVICE_COOKIE_PATH,
+        samesite=settings.AUTH_REFRESH_COOKIE_SAMESITE,
+    )

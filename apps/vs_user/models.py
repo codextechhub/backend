@@ -943,6 +943,10 @@ class LoginSession(TimeStampedModel):
         max_length=64, blank=True, default='',
         help_text='LOGOUT / FORCE_LOGOUT / EXPIRED',
     )
+
+    # Set only on a device session (services.device_sessions): the random key
+    # naming its cookie. Null for a browser session.
+    device_key = models.CharField(max_length=64, null=True, blank=True, unique=True)
     objects = TenantAwareManager()
     all_objects = models.Manager()
 

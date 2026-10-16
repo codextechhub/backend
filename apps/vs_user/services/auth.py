@@ -28,6 +28,7 @@ class LoginService:
         request=None,
         card_id: str = "",
         identifier: str = "",
+        device: bool = False,
     ) -> dict:
         """
         Authenticates a user and returns tokens + user data.
@@ -56,6 +57,14 @@ class LoginService:
         products registered (``sign_in_identifiers``), and the attempt log
         records it as typed, so support reading a failed attempt sees what the
         person actually entered.
+
+        ``device`` asks for a device session (``services.device_sessions``):
+        weeks long, one per account on the device, for the app the account's
+        product offers it. An account no product offers one is refused with
+        DEVICE_SESSION_NOT_OFFERED once its password is proven, before anything
+        is issued. A browser sign-in by an account that IS offered one answers
+        ``device_app`` with the app's path, so the sign-in page can hand the
+        person over to it.
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -138,6 +147,9 @@ class LoginService:
                 })
 
         authed = user
+        from .device_sessions import device_session_policy
+
+        policy = device_session_policy(authed)
 
         # 5. Check account status
         status_error = LoginService._check_status(authed)
@@ -150,6 +162,18 @@ class LoginService:
             )
             raise ValueError(status_error)
 
+        if device and policy is None:
+            record_attempt(
+                email_entered=email,
+                user=authed, tenant=authed.tenant,
+                result=AuthAttempt.Result.BLOCKED, failure_code='DEVICE_SESSION_NOT_OFFERED',
+                request=request,
+            )
+            raise ValueError({
+                'code':   'DEVICE_SESSION_NOT_OFFERED',
+                'detail': 'This app is not available for your account. Use the main sign-in page.',
+            })
+
         # 6. Success path - atomic: session + token + user update must all commit or all roll back.
         with transaction.atomic():
             lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
@@ -157,20 +181,28 @@ class LoginService:
                 lockout.clear()
                 lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
 
-            refresh = CodeXRefreshToken.for_user(authed)
-            tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
+            if device:
+                from .device_sessions import issue as issue_device_session
 
-            ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
-            session = LoginSession.objects.create(
-                user=authed,
-                tenant=authed.tenant,
-                ip_address=get_client_ip(request),
-                user_agent=ua_string,
-                device_label=get_device_label(ua_string, request),
-                refresh_jti=str(refresh['jti']),
-                last_seen_at=timezone.now(),
-                is_active=True,
-            )
+                session, refresh_str, access_str = issue_device_session(
+                    authed, policy=policy, request=request,
+                )
+                tokens = {'access': access_str, 'refresh': refresh_str}
+            else:
+                refresh = CodeXRefreshToken.for_user(authed)
+                tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
+
+                ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
+                session = LoginSession.objects.create(
+                    user=authed,
+                    tenant=authed.tenant,
+                    ip_address=get_client_ip(request),
+                    user_agent=ua_string,
+                    device_label=get_device_label(ua_string, request),
+                    refresh_jti=str(refresh['jti']),
+                    last_seen_at=timezone.now(),
+                    is_active=True,
+                )
 
             authed.last_login_at = timezone.now()
             authed.save(update_fields=['last_login_at', 'updated_at'])
@@ -195,7 +227,13 @@ class LoginService:
         from vs_tenants.context import tenant_context_block
         permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
+        device_fields = (
+            {'account': session.device_key}
+            if device else
+            {'device_app': {'path': policy.app_path} if policy else None}
+        )
         return {
+            **device_fields,
             'access':      tokens['access'],
             'refresh':     tokens['refresh'],
             'session_id':  session.id,

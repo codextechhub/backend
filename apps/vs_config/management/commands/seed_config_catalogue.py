@@ -296,6 +296,13 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "students.portal.session_days", "Student App Sign-In Length",
+        "How many days a student stays signed in to the student app on their "
+        "phone or tablet without opening it. Each use starts the count again, "
+        "so a student who opens the app every week never has to sign in.",
+        "INTEGER", 30, {"min": 1, "max": 90},
+    ),
+    (
         "fees.student_payment_enabled", "Students Pay Their Own Fees",
         "Whether a student may pay their own fees in the student portal, as a "
         "fallback when their family cannot pay through their own app. Off "
