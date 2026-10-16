@@ -651,6 +651,13 @@ that year in `session`.
 
 ### 13.10 Still to build from this plan
 
+`results/session/` also answers `terms_total` (the year's terms) and each
+released term's `released_at`; in the cumulative block each subject's
+`annual_grade` (its annual average on the class's scale in force, null where
+the programme has none) and the class's `class_average` for the year (the
+mean of its released terms' class averages, only where the school shows
+class figures).
+
 A card checkout started in the portal returns the pupil to
 `<school host>/student/fees/paid?reference=...` (`STUDENT_APP_BASE_URL` names
 another host only for a separate dev server); the page polls the public

@@ -35,7 +35,9 @@ def _results(student):
             tenant=student.tenant, student=student, snapshot__isnull=False,
             class_term__stage=StoredStage.PUBLISHED,
         )
-        .select_related("class_term__term__session", "class_term__branch")
+        .select_related(
+            "class_term__term__session", "class_term__branch", "class_term__school_class",
+        )
         .order_by("class_term__term__start_date", "class_term__term__pk")
     )
 
@@ -147,7 +149,11 @@ def session_results(student, session_id=None) -> dict:
     Read from the latest released term of the year. Where that term is the
     year's last (it carries the cumulative block), the block gives each
     subject's three terms and annual average, the annual average and, where the
-    school ranks, the annual position; the promotion decision is read live from
+    school ranks, the annual position. Each subject's ``annual_grade`` is its
+    annual average graded on the class's scale in force (null where the
+    programme has none), and the class's ``class_average`` for the year is the
+    mean of its released terms' class averages, the same arithmetic as the
+    pupil's own, present only where the school shows class figures; the promotion decision is read live from
     Student Management. Before the last term is released, the terms released so
     far are listed and ``cumulative`` is null. The class teacher's remark on the
     year's last card is the session's remark; the gradebook keeps one remark
@@ -174,6 +180,7 @@ def session_results(student, session_id=None) -> dict:
         entry = {**_term_ref(r.class_term.term), "state": _state(r)}
         if r.released_at is not None:
             snap = r.snapshot
+            entry["released_at"] = r.released_at
             entry["average"] = snap.get("overall_average")
             if snap.get("position") is not None:
                 entry["position_label"] = _position_label(snap["position"], snap.get("roll_size"))
@@ -187,6 +194,7 @@ def session_results(student, session_id=None) -> dict:
     cumulative = None
     if block:
         names = {t["id"]: t["name"] for t in block.get("terms") or []}
+        bands = _bands(student.tenant, last)
         cumulative = {
             "terms": [{"id": t["id"], "name": t["name"]} for t in block.get("terms") or []],
             "subjects": [
@@ -197,6 +205,7 @@ def session_results(student, session_id=None) -> dict:
                         for t in row.get("terms") or []
                     ],
                     "annual_average": row.get("annual_average"),
+                    "annual_grade": _grade(row.get("annual_average"), bands),
                 }
                 for row in block.get("subjects") or []
             ],
@@ -205,6 +214,9 @@ def session_results(student, session_id=None) -> dict:
             "remark": (last.snapshot or {}).get("teacher_comment") or "",
             "class_teacher": (last.snapshot or {}).get("class_teacher"),
         }
+        class_annual = _class_annual_average(terms)
+        if class_annual is not None:
+            cumulative["class_average"] = class_annual
         if block.get("annual_position") is not None:
             cumulative["annual_position_label"] = _position_label(
                 block["annual_position"], block.get("annual_position_of"),
@@ -214,9 +226,51 @@ def session_results(student, session_id=None) -> dict:
         "session": {"id": session.pk, "name": session.name},
         "terms": terms,
         "terms_released": len(released),
+        "terms_total": session.terms.count(),
         "cumulative": cumulative,
         "next_term_begins": (last.snapshot or {}).get("next_term_begins") if last else None,
     }
+
+
+def _bands(tenant, result):
+    """The grade bands in force for the result's class, or none."""
+    from schools.vs_gradebook.exceptions import NoScale
+    from schools.vs_gradebook.services.resolve import scale_for
+
+    try:
+        return list(scale_for(tenant, result.class_term.school_class).bands.all())
+    except NoScale:
+        return []
+
+
+def _grade(figure, bands):
+    """The grade *figure* (a percentage as stored) falls in, or None."""
+    from decimal import Decimal, InvalidOperation
+
+    from schools.vs_gradebook.services.compute import band_for
+
+    if figure is None or not bands:
+        return None
+    try:
+        band = band_for(Decimal(str(figure)), bands)
+    except InvalidOperation:
+        return None
+    return band.grade if band is not None else None
+
+
+def _class_annual_average(terms):
+    """The mean of the released terms' class averages, to two places, or None."""
+    from decimal import Decimal
+
+    from schools.vs_gradebook.services.compute import round2
+
+    figures = [
+        Decimal(str(t["class_average"])) for t in terms
+        if t.get("class_average") is not None
+    ]
+    if not figures:
+        return None
+    return str(round2(sum(figures) / len(figures)))
 
 
 def report_card(student, term_id, *, user=None) -> dict:

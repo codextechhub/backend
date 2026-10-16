@@ -114,6 +114,35 @@ class SessionResultsTests(CumulativeFixture):
         self.assertIn("annual_average", cumulative)
         self.assertIn("remark", cumulative)
 
+    def test_the_year_says_how_many_terms_it_has_and_when_each_was_released(self):
+        data = read(self.chiamaka_user, "student-portal-results-session").data["data"]
+        self.assertEqual(data["terms_total"], 3)
+        for term in data["terms"]:
+            self.assertIsNotNone(term["released_at"])
+
+    def test_each_subject_carries_its_annual_grade(self):
+        cumulative = read(self.chiamaka_user, "student-portal-results-session").data["data"]["cumulative"]
+        graded = [row for row in cumulative["subjects"] if row["annual_average"] is not None]
+        self.assertTrue(graded)
+        for row in graded:
+            self.assertTrue(row["annual_grade"], row)
+
+    def test_the_class_average_for_the_year_is_the_mean_of_its_terms(self):
+        from decimal import Decimal
+
+        data = read(self.chiamaka_user, "student-portal-results-session").data["data"]
+        figures = [Decimal(str(t["class_average"])) for t in data["terms"]]
+        expected = (sum(figures) / len(figures)).quantize(Decimal("0.01"))
+        self.assertEqual(data["cumulative"]["class_average"], str(expected))
+
+    def test_a_school_that_shows_no_class_figures_shows_no_class_average(self):
+        for result in StudentTermResult.objects.filter(student=self.chiamaka):
+            snapshot = dict(result.snapshot)
+            snapshot.pop("class_average", None)
+            StudentTermResult.objects.filter(pk=result.pk).update(snapshot=snapshot)
+        data = read(self.chiamaka_user, "student-portal-results-session").data["data"]
+        self.assertNotIn("class_average", data["cumulative"])
+
     def test_a_pupil_with_nothing_published_reads_an_empty_year(self):
         give = give_access(self.kelechi, self.principal)
         StudentTermResult.objects.filter(student=self.kelechi).update(snapshot=None)
