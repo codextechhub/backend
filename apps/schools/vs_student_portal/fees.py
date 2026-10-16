@@ -16,6 +16,7 @@ Money crosses this boundary as integer kobo; the portal formats it.
 from __future__ import annotations
 
 from schools.core.fal import registry
+from vs_finance.money import format_naira
 from schools.core.fal.exceptions import CrossTenantError, PaymentGatewayError
 from schools.core.fal.student_payments import read_student_payment_rules
 from rest_framework.exceptions import NotFound
@@ -53,10 +54,6 @@ METHOD_LABEL = {
 
 def _ref(student) -> str:
     return str(student.pk)
-
-
-def _naira(kobo: int) -> str:
-    return f"₦{kobo / 100:,.2f}"
 
 
 def _status(invoice) -> str:
@@ -150,13 +147,13 @@ def start_payment(student, *, actor, invoice_ref, amount) -> dict:
         raise PaymentAmountInvalid("Enter an amount of more than ₦0.00.", field="amount")
     if amount > balance:
         raise AmountAboveBalance(
-            f"You can pay at most the balance on this invoice, {_naira(balance)}.",
+            f"You can pay at most the balance on this invoice, {format_naira(balance)}.",
             field="amount", balance=balance,
         )
     if amount < balance and amount < rules.min_part_payment:
         raise AmountBelowMinimum(
             f"The smallest part payment your school accepts is "
-            f"{_naira(rules.min_part_payment)}. Enter {_naira(rules.min_part_payment)} "
+            f"{format_naira(rules.min_part_payment)}. Enter {format_naira(rules.min_part_payment)} "
             f"or more, or pay the full balance.",
             field="amount", minimum=rules.min_part_payment,
         )

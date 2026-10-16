@@ -71,7 +71,7 @@ class StudentPaymentRulesSerializer(serializers.Serializer):
     min_part_payment = serializers.IntegerField(
         required=False, min_value=0, max_value=100_000_000,
         error_messages={
-            "invalid": "Give the smallest part payment in kobo, as a whole number.",
+            "invalid": "Enter the smallest part payment as a whole number of naira, such as ₦1,000.00.",
             "min_value": "The smallest part payment cannot be below zero.",
             "max_value": "The smallest part payment cannot be above ₦1,000,000.00.",
         },
