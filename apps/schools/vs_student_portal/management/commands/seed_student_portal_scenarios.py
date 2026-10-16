@@ -164,6 +164,7 @@ class Command(BaseCommand):
                 self._give_access(pupil, admin)
             cast.update(full=full, sibling=sibling)
             cast["invoice"] = self._bill_and_part_pay(slug, tenant, admin, full)
+            self._days_to_note(slug, tenant, admin, full)
         held = self._held(tenant, taken=set(p.pk for p in roles.values()) | set(
             p.pk for p in family or ()
         ))
@@ -303,6 +304,54 @@ class Command(BaseCommand):
             )
             post_payment(payment, actor_user=admin, allocations=[(invoice, amount)])
         return invoice
+
+    def _days_to_note(self, slug, tenant, admin, pupil):
+        """Give the full pupil an absent, a late and an excused day this term.
+
+        Taken as a school takes a register: on three of the term's past school
+        days that have no register yet, the class is marked present with the
+        pupil absent (with a note), late (with an arrival time and a note) and
+        excused (with a reason and a note), and each register is submitted. A
+        pupil who already has a day worth a note is left alone, so a rerun
+        takes no register; a term without three such days is skipped.
+        """
+        import datetime as dt
+
+        from schools.vs_attendance.constants import Mark
+        from schools.vs_attendance.models import ReasonCode
+        from schools.vs_attendance.services import marks
+        from schools.vs_attendance.services.reasons import ensure_default_reason_codes
+        from schools.vs_attendance.services.registers import load_context
+        from schools.vs_attendance.services.student_tab import pupil_attendance
+
+        body = pupil_attendance(tenant, pupil)
+        if body["notes"]:
+            return
+        today = body["today"]["date"] if body["today"] else None
+        open_days = [
+            row["date"] for row in body["days"]
+            if row["state"] == "NOT_TAKEN" and (today is None or row["date"] < today)
+        ]
+        enrolment = pupil.enrolments.filter(is_active=True, session__status="ACTIVE").first()
+        if len(open_days) < 3 or enrolment is None:
+            self._skipped(slug, f"{pupil.full_name} has no three untaken school days this term")
+            return
+        ensure_default_reason_codes(tenant)
+        # The first live reason that needs no note of its own ("Sick" by default).
+        reason = (
+            ReasonCode.objects.filter(tenant=tenant, retired_at__isnull=True, requires_note=False)
+            .order_by("order_index", "pk").first()
+        )
+        plan = [
+            (open_days[-3], {"mark": Mark.ABSENT, "note": "Unwell. A parent phoned the school."}),
+            (open_days[-2], {"mark": Mark.LATE, "arrived_at": dt.time(8, 20), "note": "The school bus was late."}),
+            (open_days[-1], {"mark": Mark.EXCUSED, "reason_code_id": reason.pk, "note": "Sent home with a fever."}),
+        ]
+        class_id = enrolment.school_class_id
+        for day, spec in plan:
+            marks.set_mark(load_context(tenant, admin, class_id, day), admin, pupil.pk, **spec)
+            marks.fill_present(load_context(tenant, admin, class_id, day), admin)
+            marks.submit(load_context(tenant, admin, class_id, day), admin)
 
     def _pending_card(self, cast):
         """Start a card payment in the portal for the full pupil and leave it unconfirmed.
