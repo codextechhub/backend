@@ -40,6 +40,8 @@ Student app card return, full-session figures and bank transfer (commits bbcab4a
 
 Bank transfers applied to open bills (commit 80ca6151, 2026-10-16): REVISE M18 (minor) and M17/M19 (minor): a transfer into a customer's virtual account, which names no bill, now settles the customer's open bills as it is booked, in the books' receipt allocation order and the receipt's own branch only, with any excess kept as credit; a per-books switch "Apply bank transfers to open bills automatically" (`apply_transfers_automatically`, Finance settings > Banking and cash, default ON) turns it off, keeping every transfer as credit as before. MUST SAY: owner decision of 16 October 2026; this changes every school's transfers from the release, not only the student portal's; checkout and desk receipts are unchanged. REVISE M27 (fold into v1.0): a pupil's transfer brings their balance down at once. MRD: Module 18 Needs Attention item on unallocated transfer credit (if recorded) resolved.
 
+Student app home-screen identity (commit MANIFEST_COMMIT, 2026-10-16): REVISE M27 (fold into v1.0; plan 13.10): the installable student app takes each school's name and crest on the home screen (a public web app manifest per school, icons drawn from the uploaded crest; the XVS icons where there is none; never the CodeX mark). MUST SAY: the manifest and icons are public, like the sign-in crest, and say nothing a sign-in page does not. No other module changes. MRD: Module 27 gains "installable app" (backend part).
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

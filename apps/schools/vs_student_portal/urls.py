@@ -22,6 +22,8 @@ from .views import (
     ReportCardView,
     ResultsView,
     SessionResultsView,
+    StudentAppIconView,
+    StudentAppManifestView,
     TimetableView,
     TransferAccountView,
     TransferDepositsView,
@@ -29,6 +31,15 @@ from .views import (
 
 urlpatterns = [
     path("me/", MeView.as_view(), name="student-portal-me"),
+    # Read with no session, by the phone installing the app.
+    path(
+        "app/<slug:slug>/manifest.webmanifest", StudentAppManifestView.as_view(),
+        name="student-app-manifest",
+    ),
+    path(
+        "app/<slug:slug>/icons/<str:name>", StudentAppIconView.as_view(),
+        name="student-app-icon",
+    ),
     path("home/", HomeView.as_view(), name="student-portal-home"),
     path("profile/", ProfileView.as_view(), name="student-portal-profile"),
     path(

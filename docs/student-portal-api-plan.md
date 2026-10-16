@@ -679,6 +679,13 @@ booked, in the `default_receipt_allocation_strategy` order, its own branch's
 bills only; any excess waits as credit. Off, every transfer waits as credit
 for somebody to allocate, as before.
 
-Messages and Assignments when their turn comes. For the installable app: the
-per-school app file and icons, applying transfers to open bills
+The home screen shows the school's own name and crest. The school's host
+passes `/student/manifest.webmanifest` through to
+`GET /v1/portal/student/app/<slug>/manifest.webmanifest` (public, cached an
+hour): the school's name, a short name that fits under an icon, and icons cut
+from its crest at `.../app/<slug>/icons/<name>` (192, 512, maskable 512 and
+the 180 Apple icon, the crest on white). A school with no crest keeps the
+app's own XVS icons at `/student/icons/`.
+
+Messages and Assignments when their turn comes. For the installable app: applying transfers to open bills
 (per-school switch, default on), and push.

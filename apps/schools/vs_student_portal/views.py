@@ -516,3 +516,78 @@ class ReceiptView(PortalView):
             response["Content-Disposition"] = f'attachment; filename="receipt-{payment_ref}.pdf"'
             return response
         return success_response(data=receipt(self.student, payment_ref))
+
+
+class _PublicAppView(APIView):
+    """Read before anyone signs in: a phone fetches these to install the app."""
+
+    from rest_framework.permissions import AllowAny
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    tenant_param_required = False
+    throttle_scope = "school_brand"
+
+    def school(self, slug):
+        from rest_framework.exceptions import NotFound
+
+        from .app_manifest import school_for
+
+        found = school_for(slug)
+        if found is None:
+            raise NotFound("No school for this address.")
+        return found
+
+
+class StudentAppManifestView(_PublicAppView):
+    """GET /v1/portal/student/app/<slug>/manifest.webmanifest
+
+    The web app manifest a phone installs the student app from: the school's
+    name, and icons cut from its crest, or the app's own XVS icons where it
+    has none. The school's host serves it at ``/student/manifest.webmanifest``
+    by passing that address through here. 404 for a slug that names no school
+    able to sign in.
+
+    docstring-name: Student app manifest
+    """
+
+    def get(self, request, slug):
+        import json
+
+        from django.http import HttpResponse
+        from django.urls import reverse
+
+        from .app_manifest import manifest
+
+        school = self.school(slug)
+        body = manifest(school, icon_url=lambda name: request.build_absolute_uri(
+            reverse("student-app-icon", args=[school.slug, name]),
+        ))
+        response = HttpResponse(json.dumps(body), content_type="application/manifest+json")
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
+
+
+class StudentAppIconView(_PublicAppView):
+    """GET /v1/portal/student/app/<slug>/icons/<name>
+
+    One home-screen icon cut from the school's crest: ``icon-192.png``,
+    ``icon-512.png``, ``maskable-512.png`` or ``apple-touch-icon.png``. 404
+    where the school has no crest, which the manifest never points at.
+
+    docstring-name: Student app icon
+    """
+
+    def get(self, request, slug, name):
+        from django.http import HttpResponse
+        from rest_framework.exceptions import NotFound
+
+        from .app_manifest import icon
+
+        found = icon(self.school(slug), name)
+        if found is None:
+            raise NotFound("No such icon for this school.")
+        response = HttpResponse(found, content_type="image/png")
+        response["Cache-Control"] = "public, max-age=86400"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
