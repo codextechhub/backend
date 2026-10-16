@@ -143,6 +143,70 @@ def student_tab(tenant, user, student_id, term_id=None) -> dict:
     return body
 
 
+def pupil_attendance(tenant, student, term_id=None) -> dict:
+    """A pupil's own attendance for a term, as the pupil portal shows it.
+
+    The same days and counts the staff tab reads, for a pupil already known to
+    be the caller (the portal resolves them from their account, never from an
+    id in the request). It carries nothing a pupil should not read about their
+    own record: no guardian, no notice state, no correction history and no
+    staff names.
+
+    ``notes`` lists the days worth a word: absent and excused days, with the
+    reason and the note the register carries, and late days, with the note and
+    the time the pupil arrived. ``today`` is today's cell when today falls in
+    the term, so the portal's home can say whether the pupil was marked present.
+    """
+    today = branch_today(tenant, student.branch)
+    terms = terms_to_show(tenant, today)
+    term = chosen_term(tenant, terms, term_id, today)
+    body = {
+        "term": term_block(term, today) if term is not None else None,
+        "terms": [term_block(t, today) for t in terms],
+        "counts": _empty_counts(),
+        "days": [],
+        "notes": [],
+        "today": None,
+    }
+    if term is None:
+        return body
+    end = min(term.end_date, today)
+    if end < term.start_date:
+        return body
+    enrolments = list(
+        ClassEnrolment.objects.filter(tenant=tenant, student=student, session=term.session)
+        .select_related("school_class", "school_class__branch", "school_class__level"),
+    )
+    cells, marks = _cells(tenant, student, term, enrolments, end)
+    body["days"] = [
+        {key: cell[key] for key in ("date", "state", "mark", "arrived_at", "closed_reason")}
+        for cell in cells
+    ]
+    body["counts"] = _counts(cells)
+    body["notes"] = _notes(cells, marks)
+    if cells and cells[-1]["date"] == today:
+        body["today"] = body["days"][-1]
+    return body
+
+
+def _notes(cells, marks) -> list:
+    """Absent, excused and late days, newest first, as a pupil reads them."""
+    rows = []
+    for cell in reversed(cells):
+        if cell["state"] != MARKED or cell["mark"] not in (Mark.ABSENT, Mark.EXCUSED, Mark.LATE):
+            continue
+        mark, _school_class = marks[cell["date"]]
+        rows.append({
+            "date": cell["date"],
+            "mark": mark.mark,
+            "mark_label": Mark(mark.mark).label,
+            "reason_label": mark.reason_code.name if mark.reason_code_id else None,
+            "note": mark.note,
+            "arrived_at": mark.arrived_at,
+        })
+    return rows
+
+
 def _current_class(enrolments, as_at: dt.date):
     """The class the pupil was placed in on *as_at*, or None."""
     current = placement_in_force(enrolments, as_at)

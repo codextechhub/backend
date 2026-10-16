@@ -479,8 +479,50 @@ clears it) under `school.settings.update` by a whole-school caller. It decides
 no promotion. No portal route carries it, and the pupil's promotion tile will
 show the decision alone.
 
-### 13.6 Still to build from this plan
+### 13.6 The pupil's reads: profile, timetable, attendance, results
 
-Home, timetable, attendance, results and report cards, profile and self-edit,
-fees, receipts and the pay flow (sections 3.1 R6 to R23), and Messages and
-Assignments when their turn comes.
+All under `/v1/portal/student/`, behind `IsLinkedStudent`, each reading the
+owning module's service for the admitted pupil (never an id from the request).
+
+- `profile/` GET: `managed_by_school` (name, admission number, class, year,
+  date of birth, school email = the sign-in address, primary guardian's name,
+  relationship and phone) and `editable` (`phone`, `email`), plus `photo_url`
+  and `photo_editable`. PATCH `phone` and/or `email`: a phone of 7 to 15 digits
+  in any country's writing (no national format is assumed), a valid email;
+  refusals are `PROFILE_FIELD_INVALID` keyed by `field`. Changing the record's
+  email leaves the sign-in address alone. Each change is audited with the pupil
+  as actor. Nothing else on the record can be written.
+- `profile/photo/` POST (multipart `file`) and DELETE, behind the school
+  setting `students.portal.photo_self_edit` (default on), else 403
+  `PHOTO_SELF_EDIT_OFF`. Staff read and set it on
+  `GET/PUT /v1/students/portal-rules/` (`school.settings.update`, whole-school
+  reach).
+- `timetable/`: the class's grid only when published (`published: false`
+  otherwise, including while a published grid is being edited); lessons carry
+  subject, teacher's name and room; `today` marks each period done, now, next
+  or later in the branch's time zone.
+- `attendance/?term=`: counts and rate, a cell per school day, `notes` for
+  absent, excused and late days (reason, the register's note, arrival time),
+  and `today`. No guardian, notice state or correction history. The note staff
+  type on a register is shown to the pupil, as the design shows it.
+- `results/?term=`: the released term (latest by default) with each subject's
+  teacher, component marks, total, grade and remark; overall average; position
+  only where the school ranks; class average only where it shows class
+  figures. `state` is `released`, `withheld` (a sentence, no figures, no
+  reason) or `not_published`.
+- `results/session/?session=`: each term's average, position and class
+  average, and, from the year's last released card, every subject across the
+  year, the annual average and position, the promotion decision (read live)
+  and the session remark (the last term's class teacher remark).
+- `results/report-card/?term=`: the gradebook's own card for a released term;
+  404 for a held or unpublished one. The last term's card is the annual card.
+
+The gradebook snapshot now records each subject's main teacher (inside
+`subject`, so an amendment keeps it) and, where the school shows class figures,
+the class's overall average (`class_average`). Cards published before this
+carry neither, and the portal omits them rather than inventing them.
+
+### 13.7 Still to build from this plan
+
+Home (composed), fees, receipts and the pay flow (sections 3.1 R6 and R16 to
+R22), and Messages and Assignments when their turn comes.

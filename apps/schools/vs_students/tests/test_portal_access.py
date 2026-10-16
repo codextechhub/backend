@@ -310,3 +310,34 @@ class BulkTests(PortalFixture):
             self.nobody, "student-portal-access-bulk", {"student_ids": [self.tunde.pk]},
         )
         self.assertEqual(response.status_code, 403)
+
+
+class PortalRulesTests(PortalFixture):
+    """Whether students may change their own photograph, set by the school."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        settings_key = make_permission("school.settings.update", scope=PermissionScope.TENANT)
+        make_role_permission(cls.role, settings_key)
+
+    def test_reading_needs_only_the_student_view_key(self):
+        response = self.get(self.admin, "student-portal-rules")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["data"]["photo_self_edit"])
+        self.assertEqual(self.get(self.nobody, "student-portal-rules").status_code, 403)
+
+    def test_a_whole_school_admin_turns_photo_self_edit_off(self):
+        response = self.put(self.admin, "student-portal-rules", {"photo_self_edit": False})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(self.get(self.admin, "student-portal-rules").data["data"]["photo_self_edit"])
+
+    def test_a_branch_bound_admin_cannot_change_it(self):
+        response = self.put(self.lekki_head, "student-portal-rules", {"photo_self_edit": False})
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(self.get(self.admin, "student-portal-rules").data["data"]["photo_self_edit"])
+
+    def test_one_schools_choice_never_reaches_another(self):
+        self.put(self.admin, "student-portal-rules", {"photo_self_edit": False})
+        theirs = self.get(self.solo_admin, "student-portal-rules").data["data"]
+        self.assertTrue(theirs["photo_self_edit"])

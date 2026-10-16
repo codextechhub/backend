@@ -193,3 +193,164 @@ class NoticeReadAllView(PortalView):
         return success_response(
             "All notices marked as read.", data={"marked": marked, "unread_count": 0},
         )
+
+
+class ProfileView(PortalView):
+    """GET, PATCH /v1/portal/student/profile/
+
+    GET is the pupil's own record: what the school manages (name, admission
+    number, class, date of birth, school email, primary guardian) and what
+    they may change. PATCH takes ``phone`` and ``email``, either or both, and
+    answers with the profile as it now stands. A value that cannot be stored
+    is refused with a sentence keyed on its field.
+
+    docstring-name: My profile
+    """
+
+    def get(self, request):
+        from .services import profile
+
+        return success_response(data=profile(self.student, request=request))
+
+    def patch(self, request):
+        from .services import profile, update_contact
+
+        student = update_contact(
+            self.student, actor=request.user,
+            phone=request.data.get("phone"), email=request.data.get("email"),
+        )
+        return success_response("Profile updated.", data=profile(student, request=request))
+
+
+class ProfilePhotoView(PortalView):
+    """POST, DELETE /v1/portal/student/profile/photo/
+
+    Replaces or removes the pupil's photograph, where the school lets pupils
+    do that (``students.portal.photo_self_edit``); otherwise 403
+    ``PHOTO_SELF_EDIT_OFF``. POST is ``multipart/form-data`` with one image in
+    ``file``, checked as a staff upload of a passport photograph is.
+
+    docstring-name: My photograph
+    """
+
+    def post(self, request):
+        from rest_framework.exceptions import ValidationError
+        from schools.vs_students.serializers import check_upload
+
+        from .services import profile, set_photo
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "Choose a photograph to upload."})
+        check_upload(upload, field="file", must_be_image=True, subject="A photograph")
+        set_photo(self.student, actor=request.user, upload=upload)
+        return success_response(
+            "Photograph updated.", data=profile(self.student, request=request), status=201,
+        )
+
+    def delete(self, request):
+        from .services import profile, remove_photo
+
+        remove_photo(self.student, actor=request.user)
+        return success_response("Photograph removed.", data=profile(self.student, request=request))
+
+
+class TimetableView(PortalView):
+    """GET /v1/portal/student/timetable/
+
+    The pupil's class timetable for the active year, with today's periods
+    marked done, now, next or later. ``published: false`` with no days when
+    the school has not published it.
+
+    docstring-name: My timetable
+    """
+
+    def get(self, request):
+        from .services import timetable
+
+        return success_response(data=timetable(self.student))
+
+
+class AttendanceView(PortalView):
+    """GET /v1/portal/student/attendance/?term=<id>
+
+    The pupil's attendance for a term (the current one by default): counts and
+    rate, one cell per school day up to today, the days worth a note (absent,
+    excused and late, with the reason, note and arrival time), and today's
+    cell. A term that is not this school's answers 404.
+
+    docstring-name: My attendance
+    """
+
+    def get(self, request):
+        from schools.vs_attendance.services.student_tab import pupil_attendance
+
+        from rest_framework.exceptions import NotFound
+
+        term = request.query_params.get("term") or None
+        if term is not None and not str(term).isdigit():
+            raise NotFound("No such term at this school.")
+        return success_response(
+            data=pupil_attendance(self.student.tenant, self.student, term_id=term),
+        )
+
+
+class ResultsView(PortalView):
+    """GET /v1/portal/student/results/?term=<id>
+
+    One term's released result (the latest released term by default): each
+    subject with its teacher, component marks, total, grade and remark; the
+    overall average; position and class average where the school shows them;
+    the class teacher's remark. ``state`` is ``released``, ``withheld`` (with
+    a sentence and no figures) or ``not_published``. ``terms`` lists every
+    published term with its state, for the term picker.
+
+    docstring-name: My results
+    """
+
+    def get(self, request):
+        from .results import term_result
+
+        return success_response(
+            data=term_result(self.student, request.query_params.get("term") or None),
+        )
+
+
+class SessionResultsView(PortalView):
+    """GET /v1/portal/student/results/session/?session=<id>
+
+    The school year (the latest with a published result by default): each
+    term's average, position and class average, and, once the year's last term
+    is released, every subject across the year with its annual average, the
+    annual average and position, the promotion decision and the session remark.
+
+    docstring-name: My results for the year
+    """
+
+    def get(self, request):
+        from .results import session_results
+
+        return success_response(
+            data=session_results(self.student, request.query_params.get("session") or None),
+        )
+
+
+class ReportCardView(PortalView):
+    """GET /v1/portal/student/results/report-card/?term=<id>
+
+    The released report card for a term, exactly as the gradebook prints it,
+    for the portal to show and print. A held or unpublished term answers 404.
+    The card of a year's last term carries the cumulative block, so it is also
+    the annual card.
+
+    docstring-name: My report card
+    """
+
+    def get(self, request):
+        from .results import report_card
+
+        return success_response(
+            data=report_card(
+                self.student, request.query_params.get("term") or None, user=request.user,
+            ),
+        )

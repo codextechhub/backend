@@ -275,7 +275,14 @@ def snapshot_totals(rows) -> tuple[int, int]:
 
 
 def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
-    """``{student_id: snapshot}`` for every student on the roll, as plain JSON values."""
+    """``{student_id: snapshot}`` for every student on the roll, as plain JSON values.
+
+    Each subject row names its main teacher inside ``subject`` (an amendment
+    copies that block, so a corrected card keeps the teacher the original
+    named). Where the school shows class figures, ``class_average`` is the
+    class's overall average beside the student's own; it is absent otherwise,
+    and absent from cards published before it was recorded.
+    """
     tenant, school_class, term = bk.tenant, bk.school_class, bk.term
     scale = resolve.scale_for(tenant, school_class)
     key = _grading_key(bk.bands)
@@ -298,6 +305,13 @@ def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
         for c in bk.components
     ]
     rules = bk.rules
+    # The class's own overall average, frozen with each card beside the
+    # student's, as the per-subject class averages are.
+    published_averages = [a for a in bk.averages.values() if a is not None]
+    class_average = (
+        percentage_of(sum(published_averages) / len(published_averages))
+        if published_averages else None
+    )
     out = {}
     for student in bk.students:
         subjects = []
@@ -305,9 +319,13 @@ def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
             line = column.lines.get(student.pk)
             if line is None:
                 continue
+            teacher = column.item.teacher
             subjects.append(subject_row(
-                {"id": column.subject.pk, "name": column.subject.name}, bk.components,
-                line.cells, line.result, stats[column.subject.pk],
+                {
+                    "id": column.subject.pk, "name": column.subject.name,
+                    "teacher": teacher.user.full_name if teacher is not None else None,
+                },
+                bk.components, line.cells, line.result, stats[column.subject.pk],
             ))
         obtained, obtainable = snapshot_totals(subjects)
         average = bk.averages.get(student.pk)
@@ -349,6 +367,8 @@ def build_snapshots(bk: ClassBook, class_term, publisher, now) -> dict:
                 "show_class_stats": rules.show_class_stats, "rating_key": rules.rating_key,
             },
         }
+        if rules.show_class_stats:
+            snapshot["class_average"] = class_average
         if rules.rank_in_class:
             snapshot["position"] = bk.positions.get(student.pk)
             snapshot["roll_size"] = len(bk.roll)

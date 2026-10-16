@@ -170,13 +170,15 @@ class PublishTests(ClassFixture):
             "components": components,
             "subjects": [
                 {
-                    "subject": {"id": self.french.pk, "name": "French"}, "cells": cells,
+                    "subject": {"id": self.french.pk, "name": "French", "teacher": None},
+                    "cells": cells,
                     "total": 75, "obtainable": 100, "percentage": "75.00", "grade": "A",
                     "remark": "Excellent", "is_fail": False,
                     "class_average": "62.5", "highest": 75, "lowest": 50,
                 },
                 {
-                    "subject": {"id": self.maths.pk, "name": "Mathematics"}, "cells": cells,
+                    "subject": {"id": self.maths.pk, "name": "Mathematics", "teacher": "Chidi Eze"},
+                    "cells": cells,
                     "total": 75, "obtainable": 100, "percentage": "75.00", "grade": "A",
                     "remark": "Excellent", "is_fail": False,
                     "class_average": "63.5", "highest": 79, "lowest": 40,
@@ -198,6 +200,7 @@ class PublishTests(ClassFixture):
             ],
             "next_term_begins": "2026-01-12",
             "options": {"show_class_stats": True, "rating_key": True},
+            "class_average": "59.88",
             "position": 1, "roll_size": 4,
             "ratings": {},
             "traits": [

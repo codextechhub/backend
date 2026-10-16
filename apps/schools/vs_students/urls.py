@@ -10,6 +10,7 @@ rather than being matched as a student id.
 """
 from django.urls import path
 
+from .views.portal_rules import PortalRulesView
 from .views import (
     AdmissionPolicyView,
     AdmissionRulesView,
@@ -81,6 +82,10 @@ student_patterns = [
     path(
         "promotion-rules/", PromotionRulesView.as_view(),
         name="student-promotion-rules",
+    ),
+    path(
+        "portal-rules/", PortalRulesView.as_view(),
+        name="student-portal-rules",
     ),
     # Before the <int:class_id> route, so "seats" resolves as itself rather
     # than being matched as a class id.

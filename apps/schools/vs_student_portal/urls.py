@@ -6,15 +6,38 @@ as itself.
 from django.urls import path
 
 from .views import (
+    AttendanceView,
     MeView,
     NoticeDetailView,
     NoticeFeedView,
     NoticeReadAllView,
     NoticeReadView,
+    ProfilePhotoView,
+    ProfileView,
+    ReportCardView,
+    ResultsView,
+    SessionResultsView,
+    TimetableView,
 )
 
 urlpatterns = [
     path("me/", MeView.as_view(), name="student-portal-me"),
+    path("profile/", ProfileView.as_view(), name="student-portal-profile"),
+    path(
+        "profile/photo/", ProfilePhotoView.as_view(),
+        name="student-portal-profile-photo",
+    ),
+    path("timetable/", TimetableView.as_view(), name="student-portal-timetable"),
+    path("attendance/", AttendanceView.as_view(), name="student-portal-attendance"),
+    path("results/", ResultsView.as_view(), name="student-portal-results"),
+    path(
+        "results/session/", SessionResultsView.as_view(),
+        name="student-portal-results-session",
+    ),
+    path(
+        "results/report-card/", ReportCardView.as_view(),
+        name="student-portal-report-card",
+    ),
     path("notices/", NoticeFeedView.as_view(), name="student-portal-notices"),
     path(
         "notices/read-all/", NoticeReadAllView.as_view(),

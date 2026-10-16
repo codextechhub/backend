@@ -113,7 +113,9 @@ def block_for(terms, term, subjects, overall_average, earlier) -> dict:
                 )
             entries.append({"term_id": each.pk, "total": total, "percentage": percentage})
         rows.append({
-            "subject": dict(row["subject"]),
+            # The year's row names the subject only: who taught it can differ
+            # between terms, and each term's own card says who did.
+            "subject": {"id": row["subject"]["id"], "name": row["subject"]["name"]},
             "terms": entries,
             "annual_average": mean(entry["percentage"] for entry in entries),
         })

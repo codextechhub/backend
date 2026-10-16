@@ -288,6 +288,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "INTEGER", None, {"min": 1, "max": 100},
     ),
     (
+        "students.portal.photo_self_edit", "Students Change Their Own Photograph",
+        "Whether a student may change or remove their own photograph in the "
+        "student portal. The photograph is the one on the student's record, "
+        "printed on report cards and ID cards, so a school that wants it fixed "
+        "turns this off and changes photographs itself.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "students.suspension.notice", "Who Is Told When A Pupil Is Suspended",
         "Who the school writes to when a pupil is suspended. "
         "PRIMARY_GUARDIAN tells the one guardian marked as the pupil's main "

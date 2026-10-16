@@ -129,6 +129,8 @@ CFG_PROMOTION_CAPACITY_MODE = "students.promotion.capacity_mode"
 #: the promotion for guidance. It decides nothing: promotion is the outcome a
 #: member of staff records, and pupils never see the figure.
 CFG_PROMOTION_PASS_MARK = "students.promotion.pass_mark"
+#: Whether a pupil may change their own photograph in the student portal.
+CFG_PORTAL_PHOTO_SELF_EDIT = "students.portal.photo_self_edit"
 
 
 class PromotionSuspended(models.TextChoices):
