@@ -133,8 +133,8 @@ CONDITION_REASONS = {
         "carries its permissions."
     ),
     TaskKey.SCHOOL_METADATA: (
-        "Complete the school profile first: name, code, ownership type, term "
-        "structure and currency are all required."
+        "Complete the school profile first: every required field must be "
+        "filled in."
     ),
     # Says "fully" out loud, because the school may be looking at an import
     # that finished with some rows rejected and wondering why this step will
@@ -172,11 +172,21 @@ def condition_reason(key: str, tenant=None, school=None) -> str:
 
     ``tenant``/``school`` are optional so existing callers keep working, but
     passing them is what lets the merged roles card name the half that failed
-    rather than describing both.
+    rather than describing both, and the profile card name the fields still
+    empty. Those names come from ``School.missing_profile_fields``, the same
+    source the gate reads, so the sentence cannot list a different set of
+    fields from the one the gate checks.
     """
     if key == TaskKey.DEFAULT_ROLES and tenant is not None:
         if not _has_first_admin(tenant, school):
             return DEFAULT_ROLES_REASONS["no_admin"]
         if not _has_role_baseline(tenant, school):
             return DEFAULT_ROLES_REASONS["no_permissions"]
+    if key == TaskKey.SCHOOL_METADATA and school is not None:
+        missing = school.missing_profile_fields()
+        if missing:
+            labels = [
+                str(school._meta.get_field(name).verbose_name) for name in missing
+            ]
+            return f"Complete the school profile first. Still empty: {', '.join(labels)}."
     return CONDITION_REASONS.get(key, "This onboarding step is not complete yet.")

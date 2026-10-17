@@ -82,6 +82,12 @@ def build_school(
     developer signs in as, and without them every finance and procurement screen
     answers "You do not have permission" to the person demonstrating it.
 
+    The school profile is filled to ``REQUIRED_PROFILE_FIELDS`` on creation,
+    and an existing school has only its blank fields topped up. The builder
+    refuses to return a school the profile step would reject: every scenario
+    past "not ready" has to close that step, and a required field added later
+    would otherwise surface as a go-live refusal three calls away.
+
     Branches that older runs of this seed stored under a retired main-branch
     name are renamed before the main branch is fetched. The fetch keys on the
     name, so without the rename a re-seed would try to create a second main
@@ -112,26 +118,44 @@ def build_school(
     say = log or (lambda *_: None)
     notes: list[str] = []
 
+    # Every field the profile step requires, so the scenarios that need the
+    # step closed can close it.
+    profile = dict(
+        ownership_type=OwnershipType.PRIVATE,
+        term_structure=TermStructure.THREE_TERMS,
+        currency=Currency.NGN,
+        address=f"1 {name} Road, Lagos",
+        email=f"info@{slug}.example.com",
+        phone="+2348000000000",
+    )
+
     school = School.objects.filter(slug=slug).first()
     created = school is None
     if created:
         school = School(
             name=name,
             slug=slug,
-            # Left at their defaults rather than blanked: ownership type, term
-            # structure and currency are what the profile step asks the school
-            # to confirm, and a school seeded with nothing set cannot reach the
-            # states that need the step closed.
-            ownership_type=OwnershipType.PRIVATE,
-            term_structure=TermStructure.THREE_TERMS,
-            currency=Currency.NGN,
-            address=f"1 {name} Road, Lagos",
             status=SchoolStatus.ACTIVE if live else SchoolStatus.PENDING,
+            **profile,
         )
         school.save()
         say(f"  + school {slug} ({school.code})")
     else:
         say(f"    school {slug} exists ({school.code})")
+        blank = {
+            key: value for key, value in profile.items()
+            if not str(getattr(school, key) or "").strip()
+        }
+        if blank:
+            School.objects.filter(pk=school.pk).update(**blank)
+            school.refresh_from_db()
+
+    missing = school.missing_profile_fields()
+    if missing:
+        raise RuntimeError(
+            f"build_school leaves {slug} without {', '.join(missing)}: "
+            f"give each a value in its profile."
+        )
 
     tenant = school.tenant
     SchoolBranding.objects.get_or_create(school=school)

@@ -350,6 +350,7 @@ class Command(BaseCommand):
                     school=school,
                     defaults=dict(
                         package_plan=plan,
+                        subscription_starts_at=self.now.date(),
                         subscription_expires_at=self.now + timedelta(days=365),
                     ),
                 )
@@ -383,6 +384,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ #
     def _school_users(self, schools):
         from vs_tenants.models import Branch
+        from vs_user.email_normalization import normalize_email
         from vs_user.models import User
 
         self.stdout.write(self.style.MIGRATE_HEADING("School users..."))
@@ -454,13 +456,14 @@ class Command(BaseCommand):
         from django.utils.text import slugify
 
         from vs_rbac.models import (
-            Permission, TenantRoleChangeRequest, TenantRolePermission,
-            TenantRoleTemplate, TenantUserRoleAssignment,
+            Permission, PermissionScope, TenantRoleChangeRequest,
+            TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
         )
 
         self.stdout.write(self.style.MIGRATE_HEADING("RBAC roles and assignments..."))
+        # A school role may hold only tenant-scoped keys.
         perm_keys = list(
-            Permission.objects.filter(is_active=True)
+            Permission.objects.filter(is_active=True, scope=PermissionScope.TENANT)
             .order_by("key").values_list("key", flat=True)
         )
 
@@ -540,7 +543,7 @@ class Command(BaseCommand):
             users = users_by_school[school.pk]
             for user in users["admins"] + users["staff"][:1]:
                 _, created = Notification.objects.get_or_create(
-                    school=school, recipient=user, event_type=event, channel=in_app,
+                    tenant=school.tenant, recipient=user, event_type=event, channel=in_app,
                     subject="Welcome to XVision",
                     defaults=dict(
                         body="Your dev environment is seeded and ready.",

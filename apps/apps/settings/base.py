@@ -179,6 +179,27 @@ def _required_env(name: str) -> str:
     return value
 
 
+def local_database_user() -> str:
+    """``DB_USER`` for a development or test database, defaulting as psql does.
+
+    With no ``DB_USER`` set, the user is the operating-system account the
+    process runs as, which is who ``psql`` and ``createdb`` connect as by
+    default, so a database a developer made from the shell is one Django can
+    open. ``$USER`` alone does not name that account: a container or a cron
+    job commonly runs with it unset, while ``psql`` still connects as the
+    account. ``getpass.getuser()`` reads the environment first and the password
+    database after, and ``postgres`` stands in only for an account with no name
+    at all (a container running as a bare uid).
+    """
+    import getpass
+
+    try:
+        account = getpass.getuser()
+    except (KeyError, OSError):
+        account = "postgres"
+    return config("DB_USER", default=account)
+
+
 def deployment_url(name: str) -> str:
     """The absolute base URL this deployment serves ``name`` from.
 

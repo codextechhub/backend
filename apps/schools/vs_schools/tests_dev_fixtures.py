@@ -3,9 +3,9 @@
 ``build_school`` stands in for school creation in every seeder, so where it
 builds a thinner school than the product does, every seeded school is wrong in
 the same way and nobody can tell from the screens which gaps are the product's.
-These tests pin the three places it once differed: the role catalogue, the
-administrators' staff records, and the administrator's reach into finance and
-procurement.
+These tests pin the four places it once differed: the role catalogue, the
+administrators' staff records, the administrator's reach into finance and
+procurement, and a school profile complete enough to close its onboarding step.
 """
 from django.test import TestCase
 
@@ -18,6 +18,7 @@ from vs_rbac.models import (
 from schools.vs_staff.models import StaffProfile
 
 from .dev.fixtures import build_school
+from .models import School
 from .services.admin_provisioning import REQUIRED_ROLE_KEYS
 
 
@@ -93,3 +94,27 @@ class BuildSchoolMatchesARealSchoolTests(TestCase):
             TenantUserRoleAssignment.objects.filter(tenant=tenant).count(),
         )
         self.assertEqual(before, after)
+
+
+class BuildSchoolProfileTests(TestCase):
+    """The profile step can always be closed at a school the builder returns."""
+
+    @classmethod
+    def setUpTestData(cls):
+        _seed_prebuilt_roles()
+        cls.built = _build()
+
+    def test_every_required_profile_field_is_filled(self):
+        self.assertEqual(self.built.school.missing_profile_fields(), [])
+
+    def test_a_rebuild_fills_a_blank_field_and_keeps_a_filled_one(self):
+        """A school seeded before a field became required is topped up, not reset."""
+        School.objects.filter(pk=self.built.school.pk).update(
+            phone="", email="office@bright-star.example.com",
+        )
+
+        school = _build().school
+
+        self.assertEqual(school.missing_profile_fields(), [])
+        self.assertEqual(school.phone, "+2348000000000")
+        self.assertEqual(school.email, "office@bright-star.example.com")

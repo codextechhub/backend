@@ -26,7 +26,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -2231,4 +2231,37 @@ class SeederTests(TestCase):
         self.assertIn("rolled back", output)
         self.assertFalse(
             Permission.objects.filter(key__startswith="onboarding.").exists(),
+        )
+
+
+class SchoolMetadataReasonTests(SimpleTestCase):
+    """The refusal names the profile fields still empty, read from the gate's own list."""
+
+    def _school(self, **blank):
+        fields = dict(
+            name="Bright Star Schools", slug="bright-star", code="BSS",
+            email="info@bright-star.example.com", phone="+2348000000000",
+            address="12 Awolowo Road, Ikoyi", ownership_type="PRIVATE",
+            term_structure="3_TERMS", currency="NGN",
+        )
+        fields.update(blank)
+        return School(**fields)
+
+    def test_the_reason_names_every_empty_field(self):
+        from .services.conditions import condition_reason
+
+        school = self._school(email="", phone="  ")
+
+        reason = condition_reason(TaskKey.SCHOOL_METADATA, None, school)
+
+        self.assertEqual(
+            reason, "Complete the school profile first. Still empty: email, phone.",
+        )
+
+    def test_without_a_school_the_reason_is_the_general_one(self):
+        from .services.conditions import CONDITION_REASONS, condition_reason
+
+        self.assertEqual(
+            condition_reason(TaskKey.SCHOOL_METADATA),
+            CONDITION_REASONS[TaskKey.SCHOOL_METADATA],
         )

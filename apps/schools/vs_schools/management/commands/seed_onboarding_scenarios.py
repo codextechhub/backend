@@ -255,7 +255,10 @@ class Command(BaseCommand):
 
         ``transition_task`` refuses a no-op with 409 and refuses DONE when the
         platform can see the thing is not done, so a scenario that cannot be
-        reached honestly fails loudly here rather than being faked.
+        reached honestly fails loudly here rather than being faked. A refusal
+        stops the command: carried on past, it parked the school short of its
+        state, reported the state anyway, and surfaced only later as a go-live
+        refusal that named none of the steps behind it.
         """
         from schools.vs_onboarding.exceptions import OnboardingError
         from schools.vs_onboarding.models import OnboardingTask
@@ -271,9 +274,9 @@ class Command(BaseCommand):
             try:
                 transition_task(built.tenant, key, status, actor=built.admin)
             except OnboardingError as error:
-                self.stdout.write(self.style.WARNING(
-                    f"    !  {key} -> {status}: {error}"
-                ))
+                raise RuntimeError(
+                    f"{built.school.slug}: {key} -> {status} refused: {error}"
+                ) from error
 
     def _close_required(self, built):
         from schools.vs_onboarding.constants import TaskStatus

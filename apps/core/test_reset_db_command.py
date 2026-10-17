@@ -196,3 +196,7 @@ class ResetDatabaseSafetyTests(SimpleTestCase):
             "rm -f core/management/commands/reset_db.py",
             content,
         )
+        self.assertIn(
+            "rm -f core/management/commands/recreate_dev_db.py",
+            content,
+        )
