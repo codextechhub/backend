@@ -96,6 +96,9 @@ def manifest(school, *, icon_url) -> dict:
             }
             for file_name, sizes, purpose in MANIFEST_ICONS
         ],
+        # Itself, relative to its own address, so Chrome's
+        # getInstalledRelatedApps() can tell the app it is installed.
+        "related_applications": [{"platform": "webapp", "url": "manifest.webmanifest"}],
     }
 
 

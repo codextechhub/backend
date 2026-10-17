@@ -66,6 +66,8 @@ class StudentAppManifestTests(TestCase):
             manifest_url.rsplit("/", 1)[0] + "/" + icon["src"],
             reverse("student-app-icon", args=["corona", "maskable-512.png"]),
         )
+        # The app names itself, so the browser can say it is installed.
+        self.assertEqual(body["related_applications"], [{"platform": "webapp", "url": "manifest.webmanifest"}])
 
     def test_icons_are_drawn_from_the_crest_at_the_size_asked(self):
         for name, size in (("icon-192.png", 192), ("maskable-512.png", 512), ("apple-touch-icon.png", 180)):
