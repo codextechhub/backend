@@ -432,6 +432,9 @@ class Command(BaseCommand):
         from vs_payments.models import CollectionIntent
         from vs_payments.services import initiate_collection
 
+        if not fake_provider_enabled():
+            self._skipped(cast["tenant"].slug, "no card payment being confirmed: the fake payment provider is off here")
+            return
         invoice, pupil = cast["invoice"], cast.get("full")
         if invoice is None or pupil is None:
             return
@@ -460,9 +463,6 @@ class Command(BaseCommand):
         from vs_payments.models import VirtualAccount
         from vs_payments.services import create_virtual_account
 
-        if not fake_provider_enabled():
-            self._skipped(cast["tenant"].slug, "no card payment being confirmed: the fake payment provider is off here")
-            return
         if not fake_provider_enabled():
             self._skipped(cast["tenant"].slug, "no transfer account: the fake payment provider is off here")
             return
