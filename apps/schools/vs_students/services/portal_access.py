@@ -23,7 +23,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from django.db import transaction
-from django.utils import timezone
 
 from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
@@ -246,16 +245,13 @@ def issue_for_students(students, *, actor) -> list[BulkOutcome]:
 
 def _close_account(user):
     """Deactivate *user* and end its sessions, as the account engine does for staff."""
-    from vs_user.models import LoginSession, User
+    from vs_user.models import User
     from vs_user.services.audit import blacklist_all_user_tokens
 
     user.status = User.Status.DEACTIVATED
     user.is_active = False
     user.save(update_fields=["status", "is_active", "updated_at"])
-    blacklist_all_user_tokens(user)
-    LoginSession.all_objects.filter(user=user, is_active=True).update(
-        is_active=False, ended_at=timezone.now(), end_reason="DEACTIVATED",
-    )
+    blacklist_all_user_tokens(user, reason="DEACTIVATED")
 
 
 def _queue_invitation(invitation, token, user, actor):

@@ -154,14 +154,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=['post'], url_path='end-all-mine')
     def end_all_mine(self, request):
         """End all active sessions belonging to the signed-in user."""
-        ended = LoginSession.all_objects.filter(
-            user=request.user, is_active=True,
-        ).update(
-            is_active=False,
-            ended_at=timezone.now(),
-            end_reason='FORCE_LOGOUT',
-        )
-        blacklist_all_user_tokens(request.user)
+        ended = blacklist_all_user_tokens(request.user, reason='FORCE_LOGOUT')
         log_auth_event(
             actor=request.user,
             subject=request.user,
@@ -246,15 +239,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             ended = 1
 
         if target_user:
-            # all_objects: the target is explicitly authorized via RBAC and may
-            # live outside the ambient tenant (platform actor acting on a
-            # school user) - every one of their sessions must end.
-            ended = LoginSession.all_objects.filter(user=target_user, is_active=True).update(
-                is_active=False,
-                ended_at=timezone.now(),
-                end_reason='FORCE_LOGOUT',
-            )
-            blacklist_all_user_tokens(target_user)
+            ended = blacklist_all_user_tokens(target_user, reason='FORCE_LOGOUT')
 
         log_auth_event(
             actor=request.user,

@@ -70,7 +70,7 @@ class PasswordService:
         user.set_password(new_password)
         user.password_changed_at = timezone.now()
         user.save(update_fields=["password", "password_changed_at", "updated_at"])
-        blacklist_all_user_tokens(user)
+        blacklist_all_user_tokens(user, reason="PASSWORD_CHANGE")
 
         log_auth_event(
             actor=user, subject=user, tenant=user.tenant,
@@ -264,7 +264,7 @@ class PasswordService:
         user.save(update_fields=["password", "password_changed_at", "status", "is_active", "updated_at"])
         pr.mark_used()
         pr.save(update_fields=["used_at", "updated_at"])
-        blacklist_all_user_tokens(user)
+        blacklist_all_user_tokens(user, reason="PASSWORD_RESET")
 
         log_auth_event(
             actor=None, subject=user, tenant=user.tenant,

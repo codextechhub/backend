@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
+from django.utils import timezone
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 logger = logging.getLogger('vs_user.audit')
@@ -113,17 +115,50 @@ def record_attempt(*, email_entered, user=None,
         logger.critical('record_attempt failed - auth attempt not recorded: %s', exc, exc_info=True)
 
 
-def blacklist_all_user_tokens(user):
+def blacklist_all_user_tokens(user, *, reason: str) -> int:
     """
-    Blacklists all outstanding SimpleJWT refresh tokens for the given user.
-    Ends all active sessions cryptographically.
-    Called on: suspend, deactivate, force logout, password reset, email change.
+    End every session the user holds, on every device, and return how many
+    LoginSession rows were ended.
+
+    Three records say a session is live, and all three are closed here in one
+    transaction: the refresh tokens are blacklisted (no device can renew), the
+    user's active LoginSession rows end with ``reason`` as their
+    ``end_reason`` (no session list shows them as live), and any impersonation
+    of the user ends. ``reason`` is required so every caller names why:
+    ``PASSWORD_CHANGE``, ``PASSWORD_RESET``, ``SUSPENDED``, ``DEACTIVATED``,
+    ``EMAIL_CHANGE`` or ``FORCE_LOGOUT``.
+
+    Rows are read through ``all_objects``: the caller may be a platform actor
+    acting on a school user outside the ambient tenant, and every session of
+    the account ends regardless.
+
+    A device session (``services.device_sessions``) ended here fires
+    ``device_session_ended`` exactly as one signed out on the device does, so
+    the push subscription tied to that phone is released with it.
     """
     from vs_admin_console.services import end_impersonations_for_user
-    end_impersonations_for_user(user)
-    tokens = OutstandingToken.objects.filter(user=user)
-    for token in tokens:
-        BlacklistedToken.objects.get_or_create(token=token)
+    from ..models import LoginSession
+    from ..signals import device_session_ended
+
+    with transaction.atomic():
+        end_impersonations_for_user(user)
+
+        active = LoginSession.all_objects.select_for_update().filter(
+            user=user, is_active=True,
+        )
+        device_keys = [key for key in active.values_list('device_key', flat=True) if key]
+        ended = active.update(
+            is_active=False, ended_at=timezone.now(), end_reason=reason,
+        )
+
+        BlacklistedToken.objects.bulk_create(
+            [BlacklistedToken(token=token) for token in OutstandingToken.objects.filter(user=user)],
+            ignore_conflicts=True,
+        )
+
+        for device_key in device_keys:
+            device_session_ended.send(sender=LoginSession, user=user, device_key=device_key)
+    return ended
 
 
 def blacklist_token_by_jti(jti: str) -> bool:

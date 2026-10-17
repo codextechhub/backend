@@ -1206,6 +1206,96 @@ class SelfServiceSecurityScopeTests(TestCase):
         )
 
 
+class EndingEverySessionTests(TestCase):
+    """Every flow that ends all of an account's sessions ends its LoginSession rows.
+
+    Blacklisting the refresh tokens stops a device renewing, but the session
+    lists (My Security, the console's session screens) read LoginSession. Each
+    flow that signs an account out everywhere must leave no row showing live,
+    and must leave every other account's sessions alone.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.password = "Str0ng!pass123"
+        cls.user = make_cx_user(email="ends-all@codex.test", password=cls.password)
+        cls.admin = make_cx_user(email="ends-all-admin@codex.test", password=cls.password)
+        cls.other = make_cx_user(email="ends-all-other@codex.test", password=cls.password)
+        cls.laptop = LoginService.login(
+            cls.user.email, cls.password, tenant=cls.user.tenant.slug,
+        )
+        cls.phone = LoginService.login(
+            cls.user.email, cls.password, tenant=cls.user.tenant.slug,
+        )
+        cls.other_login = LoginService.login(
+            cls.other.email, cls.password, tenant=cls.other.tenant.slug,
+        )
+
+    def _client(self, login_result):
+        client = APIClient(enforce_csrf_checks=True)
+        client.cookies["refresh_token"] = login_result["refresh"]
+        client.get("/v1/user/auth/csrf/")
+        client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login_result['access']}",
+            HTTP_X_CSRFTOKEN=client.cookies["csrftoken"].value,
+        )
+        return client
+
+    def assert_all_ended(self, reason):
+        sessions = LoginSession.all_objects.filter(
+            pk__in=[self.laptop["session_id"], self.phone["session_id"]],
+        )
+        self.assertEqual(
+            {(s.is_active, s.end_reason, s.ended_at is not None) for s in sessions},
+            {(False, reason, True)},
+        )
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active,
+        )
+
+    def test_changing_the_password_ends_every_session_including_this_one(self):
+        laptop = self._client(self.laptop)
+        response = laptop.post(
+            "/v1/user/auth/password/change/",
+            {
+                "current_password": self.password,
+                "password": "N3w!Str0ngpass",
+                "confirm_password": "N3w!Str0ngpass",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assert_all_ended("PASSWORD_CHANGE")
+
+    def test_signing_out_after_a_password_change_keeps_the_reason(self):
+        laptop = self._client(self.laptop)
+        laptop.post(
+            "/v1/user/auth/password/change/",
+            {
+                "current_password": self.password,
+                "password": "N3w!Str0ngpass",
+                "confirm_password": "N3w!Str0ngpass",
+            },
+            format="json",
+        )
+
+        response = laptop.post("/v1/user/auth/logout/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assert_all_ended("PASSWORD_CHANGE")
+
+    def test_deactivating_the_account_ends_every_session(self):
+        from vs_user.services.user import UserStatusService
+
+        UserStatusService.deactivate(self.user, self.admin)
+
+        self.assert_all_ended("DEACTIVATED")
+        for login in (self.laptop, self.phone):
+            jti = LoginSession.all_objects.get(pk=login["session_id"]).refresh_jti
+            self.assertTrue(BlacklistedToken.objects.filter(token__jti=jti).exists())
+
+
 # =============================================================================
 # WP-B1 - school branding in auth payloads (A.1)
 # =============================================================================

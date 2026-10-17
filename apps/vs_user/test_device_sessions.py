@@ -20,6 +20,7 @@ from .models import LoginSession
 from .services import device_sessions
 from .services.audit import blacklist_all_user_tokens
 from .services.device_sessions import DeviceSessionPolicy, register_device_session_policy
+from .signals import device_session_ended
 from .test_browser_session import BROWSER_ORIGIN_REGEXES, BROWSER_ORIGINS, HARDENED_COOKIE
 from .tests import make_cx_user
 
@@ -154,11 +155,24 @@ class DeviceSessionTests(TestCase):
 
     def test_ending_every_session_of_an_account_reaches_its_device_session(self):
         account = self.sign_in(self.ada).json()["data"]["account"]
-        blacklist_all_user_tokens(self.ada)
+        ended_devices = []
+        device_session_ended.connect(
+            lambda sender, device_key, **kwargs: ended_devices.append(device_key),
+            weak=False, dispatch_uid="test.ended_devices",
+        )
+        self.addCleanup(device_session_ended.disconnect, dispatch_uid="test.ended_devices")
+
+        blacklist_all_user_tokens(self.ada, reason="PASSWORD_CHANGE")
+
+        # Ended at once, with its reason, and the phone's push released.
+        session = LoginSession.all_objects.get(device_key=account)
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "PASSWORD_CHANGE")
+        self.assertEqual(ended_devices, [account])
+
         response = self.call("refresh", {"account": account})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
-        self.assertFalse(LoginSession.all_objects.get(device_key=account).is_active)
 
     def test_an_account_no_longer_offered_the_app_is_signed_out_for_good(self):
         account = self.sign_in(self.ada).json()["data"]["account"]

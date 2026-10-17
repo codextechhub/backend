@@ -6,14 +6,13 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 logger = logging.getLogger(__name__)
 
 from ..email_normalization import normalize_email
 from ..auth_events import AuthEvent
-from ..models import LoginSession, User
+from ..models import User
 from .audit import log_auth_event, blacklist_all_user_tokens
 from .email_availability import email_refusal
 from vs_rbac.models import TenantUserRoleAssignment
@@ -332,13 +331,7 @@ class EmailChangeService:
         target_user.save(update_fields=['email', 'updated_at'])
 
         # End all sessions - user logs in again with the new email.
-        # all_objects: the RBAC-authorized target may live outside the ambient
-        # tenant (platform actor acting on a school user); every session ends.
-        blacklist_all_user_tokens(target_user)
-
-        LoginSession.all_objects.filter(user=target_user, is_active=True).update(
-            is_active=False, ended_at=timezone.now(), end_reason='EMAIL_CHANGE',
-        )
+        blacklist_all_user_tokens(target_user, reason='EMAIL_CHANGE')
 
         log_auth_event(
             actor=requesting_user,
@@ -377,12 +370,7 @@ class  UserStatusService:
         target_user.status    = User.Status.SUSPENDED
         target_user.is_active = False
         target_user.save(update_fields=['status', 'is_active', 'updated_at'])
-        blacklist_all_user_tokens(target_user)
-
-        # all_objects - see EmailChangeService: cross-tenant target sessions.
-        LoginSession.all_objects.filter(user=target_user, is_active=True).update(
-            is_active=False, ended_at=timezone.now(), end_reason='SUSPENDED',
-        )
+        blacklist_all_user_tokens(target_user, reason='SUSPENDED')
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
@@ -420,7 +408,7 @@ class  UserStatusService:
         target_user.status    = User.Status.DEACTIVATED
         target_user.is_active = False
         target_user.save(update_fields=['status', 'is_active', 'updated_at'])
-        blacklist_all_user_tokens(target_user)
+        blacklist_all_user_tokens(target_user, reason='DEACTIVATED')
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
