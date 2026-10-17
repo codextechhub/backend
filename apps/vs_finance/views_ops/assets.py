@@ -105,6 +105,10 @@ class FixedAssetListCreateView(_FinanceBase):
 class FixedAssetSummaryView(_FinanceBase):
     """GET - register KPIs over **all** assets (accurate under pagination).
 
+    A ``?branch=`` or a period (by acquisition date) narrows every figure as it
+    narrows the register (:mod:`vs_finance.list_scope`); with neither, the
+    figures cover every asset, archived years included.
+
     docstring-name: Fixed assets
     """
 
@@ -117,8 +121,13 @@ class FixedAssetSummaryView(_FinanceBase):
 
         from ..constants import AssetStatus
 
+        from ..list_scope import narrow_finance_document_list
+
         entity = resolve_entity(request)
-        assets = FixedAsset.objects.filter(transaction_branch_q(request), entity=entity)
+        assets = narrow_finance_document_list(
+            FixedAsset.objects.filter(transaction_branch_q(request), entity=entity),
+            request, entity=entity, archived=False,
+        )
         live = assets.exclude(asset_status=AssetStatus.DISPOSED).aggregate(
             cost=Coalesce(Sum("cost"), 0),
             accum=Coalesce(Sum("accumulated_depreciation"), 0),

@@ -582,6 +582,9 @@ class DoubtfulDebtProvisionListCreateView(_WholeTenantRun):
     docstring-name: Doubtful-debt provisions
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     @property
     def rbac_permission(self):
         return ("finance.provision.view" if self.request.method in SAFE_METHODS
@@ -805,6 +808,9 @@ class CustomerDepositListView(_FinanceBase):
 
     docstring-name: Customer deposits
     """
+
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
 
     rbac_permission = "finance.deposit.view"
 

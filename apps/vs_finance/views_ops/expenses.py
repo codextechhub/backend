@@ -373,7 +373,9 @@ class ExpenseClaimSummaryView(_FinanceBase):
     each read as its word lists it, so a claim an approver sent back is not
     among them; ``sent_back`` counts those. ``awaiting`` is what is still owed
     on the Approved and Part-paid claims. ``month_total`` and ``avg`` are over
-    every claim not rejected, by claim date.
+    every claim not rejected, by claim date. The claims counted are the ones the
+    list shows: the same branch and period (:mod:`vs_finance.list_scope`), and
+    archived years left out unless asked for.
 
     docstring-name: Expense claims
     """
@@ -400,9 +402,11 @@ class ExpenseClaimSummaryView(_FinanceBase):
         for word in ("DRAFT", "PENDING", "APPROVED", "PART_PAID"):
             open_q |= words[word]
 
-        agg = ExpenseClaim.objects.filter(
+        from ..list_scope import narrow_finance_document_list
+
+        agg = narrow_finance_document_list(ExpenseClaim.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ).aggregate(
+        ), request, entity=entity).aggregate(
             open=Count("id", filter=word_condition(ExpenseClaim, open_q)),
             month_total=Coalesce(Sum("total", filter=live & Q(
                 claim_date__year=today.year, claim_date__month=today.month)), 0),

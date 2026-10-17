@@ -22,6 +22,10 @@ A period the caller names replaces the default that leaves archived years out
 as "nothing happened that year". The period itself bounds the list, so nothing
 outside it comes back.
 
+A period on documents whose own date the caller may not read is refused with
+the Field Access refusal (:func:`refuse_hidden_period`), since the rows a year
+keeps would give that date away.
+
 Only finance documents are narrowed. A list of anything else (vendors,
 contracts, stock) passes through unchanged, because the first date such a row
 carries is not the date that places it in a year.
@@ -29,6 +33,7 @@ carries is not the date that places it in a year.
 from __future__ import annotations
 
 import datetime
+import functools
 from dataclasses import dataclass
 
 from django.db.models import Q
@@ -78,7 +83,11 @@ def requested_period(request, entity) -> DocumentPeriod | None:
     ``entity``, which the caller has already been authorised for, so the
     parameter cannot be used to learn about another entity's years.
     """
-    params = _params(request)
+    return period_from_params(_params(request), entity)
+
+
+def period_from_params(params, entity) -> DocumentPeriod | None:
+    """:func:`requested_period` read from a plain mapping of query parameters."""
     year_ref = str(params.get(FISCAL_YEAR_PARAM) or "").strip()
     start = _iso_date(params.get(DATE_FROM_PARAM), DATE_FROM_PARAM)
     end = _iso_date(params.get(DATE_TO_PARAM), DATE_TO_PARAM)
@@ -103,6 +112,67 @@ def requested_period(request, entity) -> DocumentPeriod | None:
     return None
 
 
+#: A document whose own date is a Field Access field emitted by a serializer
+#: built by hand, which names no model the registry could match it through.
+_DATE_ACCESS_BY_HAND = {"vs_finance.PayerPayment": ("finance", "payer_payment")}
+
+
+@functools.lru_cache(maxsize=None)
+def date_access_keys(model) -> tuple[tuple[str, str], ...]:
+    """``(key, label)`` of each Field Access field that is ``model``'s own date.
+
+    Found through the registry: a resource whose serializer renders ``model``
+    and declares the field that places it in a year
+    (:func:`vs_finance.retention.document_date_field`) under any of its client
+    names. An inter-branch transfer's ``transfer_date`` is the interbranch
+    resource's Transaction date, and a provision run's ``as_of`` its Provision
+    date. Empty where the date is not a field anyone can hide.
+    """
+    from django.utils.module_loading import import_string
+
+    from vs_rbac.field_registry import all_declarations
+
+    from .retention import document_date_field
+
+    date_field = document_date_field(model)
+    if date_field is None:
+        return ()
+    by_hand = _DATE_ACCESS_BY_HAND.get(model._meta.label)
+    found = {}
+    for declaration in all_declarations():
+        renders = (declaration.module, declaration.resource) == by_hand or any(
+            getattr(getattr(import_string(surface), "Meta", None), "model", None) is model
+            for surface in declaration.surfaces
+        )
+        if not renders:
+            continue
+        for spec in declaration.fields:
+            if date_field in spec.resolved_api_names:
+                found[declaration.key_for(spec)] = spec.label
+    return tuple(sorted(found.items()))
+
+
+def refuse_hidden_period(request, model) -> None:
+    """Refuse a period on documents whose own date the caller may not read.
+
+    A year picked on a list whose date column is hidden says which documents
+    fall in it, which is the date the hidden column exists to keep back: at
+    Bright Star, a bursar who cannot see a provision run's date would learn it
+    by picking FY2015 and seeing which runs stay. The refusal is the Field
+    Access one, naming the field, and is asked before the period is read.
+    """
+    from vs_rbac.field_enforcement import FieldReadDenied, can_read
+
+    if not asks_for_period(request):
+        return
+    hidden = [label for key, label in date_access_keys(model) if not can_read(request, key)]
+    if hidden:
+        params = _params(request)
+        named = [name for name in (FISCAL_YEAR_PARAM, DATE_FROM_PARAM, DATE_TO_PARAM)
+                 if params.get(name)]
+        raise FieldReadDenied(named, labels={name: hidden[0] for name in named})
+
+
 def asks_for_period(request) -> bool:
     """Whether the request names a period at all, without resolving it."""
     params = _params(request)
@@ -120,9 +190,35 @@ def period_q(request, entity, model, prefix: str = "") -> Q:
 
     if not issubclass(model, FinanceDocument):
         return Q()
+    refuse_hidden_period(request, model)
     date_field = document_date_field(model)
     period = requested_period(request, entity) if date_field else None
     return period.q(date_field, prefix) if period else Q()
+
+
+def export_period(filter_id: str):
+    """The period of a list screen carried into an export, as the ``filter_id`` date range.
+
+    For :attr:`vs_exports.catalogue.Dataset.screen_period`: ``(params, scope)
+    -> spec | None``. The year is looked up in the export's own books
+    (``scope.entity``) and refused in the list's words, so Mrs Bello exporting
+    Ikeja's FY2015 invoices gets the file of 1 September 2014 to 31 August 2015
+    and nothing either side of it. ``filter_id`` is the dataset's filter on the
+    same date :func:`vs_finance.retention.document_date_field` places the
+    document by, so the file and the list cut the year on the same day.
+    """
+    def screen_period(params, scope):
+        period = period_from_params(params, getattr(scope, "entity", None))
+        if period is None:
+            return None
+        spec = {"id": filter_id}
+        if period.start is not None:
+            spec["start"] = period.start.isoformat()
+        if period.end is not None:
+            spec["end"] = period.end.isoformat()
+        return spec
+
+    return screen_period
 
 
 def narrow_document_list(queryset, request):
@@ -149,6 +245,7 @@ def narrow_document_list(queryset, request):
     date_field = document_date_field(queryset.model)
     if date_field is None:
         return hide_archived(queryset, request)
+    refuse_hidden_period(request, queryset.model)
     period = requested_period(request, resolve_entity(request))
     if period is None:
         return hide_archived(queryset, request)

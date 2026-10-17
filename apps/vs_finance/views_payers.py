@@ -47,6 +47,7 @@ from vs_rbac.scoping import caller_branch_ids, inherited_branch_id, transaction_
 
 from .constants import DocumentStatus, PaymentMethod
 from .field_guards import readable, refuse_hidden_filters, submitted
+from .list_scope import narrow_finance_document_list
 from .models import CreditNote, PayerLink, PayerPayment
 from .payer_payments import split_choices, split_label
 from .views import resolve_entity
@@ -546,6 +547,9 @@ class PayerPaymentListCreateView(_FinanceBase):
     docstring-name: Payments from a payer
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     @property
     def rbac_permission(self):
         return "finance.payment.create" if self.request.method == "POST" else "finance.payment.view"
@@ -561,6 +565,7 @@ class PayerPaymentListCreateView(_FinanceBase):
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         qs = _filter_by_branch(qs, request, entity, also="shares__branch")
+        qs = narrow_finance_document_list(qs, request, self, entity=entity)
         from core.pagination import XVSPagination
 
         paginator = XVSPagination()

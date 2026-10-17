@@ -253,7 +253,10 @@ class CatalogueView(_ExportBase):
         by_module = {m: [] for m in modules()}
         for dataset in allowed:
             by_module.setdefault(dataset.module, []).append(
-                dataset.describe(include_sensitive=include_sensitive, readable=readable)
+                dataset.describe(
+                    include_sensitive=include_sensitive, readable=readable,
+                    tenant=tenant, user=request.user,
+                )
             )
         return success_response(
             "Dataset catalogue retrieved successfully.",
@@ -286,6 +289,7 @@ class CatalogueDetailView(_ExportBase):
             dataset.describe(
                 include_sensitive=include_sensitive,
                 readable=readable_fields(request.user, self.tenant),
+                tenant=self.tenant, user=request.user,
             ),
         )
 
