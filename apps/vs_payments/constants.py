@@ -222,6 +222,7 @@ class PaymentAuditAction(models.TextChoices):
     HELD_FUNDS_REFUSED = "HELD_FUNDS_REFUSED", "Payout refused: held funds"  # Above the branch's held balance.
     HELD_OPENING_BALANCE = "HELD_OPENING_BALANCE", "Held opening balance"  # Platform recorded money it already held.
     VIRTUAL_ACCOUNT_REISSUED = "VIRTUAL_ACCOUNT_REISSUED", "Virtual account reissued"  # Old number retired.
+    VIRTUAL_ACCOUNT_NOT_ISSUED = "VIRTUAL_ACCOUNT_NOT_ISSUED", "Virtual account not issued"  # Says why, never a value.
     PROVIDER_DISPUTE_RECEIVED = "PROVIDER_DISPUTE_RECEIVED", "Chargeback or refund received"  # Raised, not booked.
     PROVIDER_DISPUTE_RESOLVED = "PROVIDER_DISPUTE_RESOLVED", "Chargeback resolved"  # Won or lost.
     PROVIDER_REFUND_LINKED = "PROVIDER_REFUND_LINKED", "Refund tied to a payment"  # A refund names the payment it returns.

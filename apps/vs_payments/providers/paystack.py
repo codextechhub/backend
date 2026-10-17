@@ -136,6 +136,12 @@ def _paid_via(channel) -> str:
 class PaystackProvider(Provider):
     name = "PAYSTACK"  # Provider lookup key used by the registry.
 
+    #: Paystack opens a dedicated account against a Paystack customer, and
+    #: ``POST /customer`` requires an email. The name and email are what this
+    #: adapter sends; Paystack's guidance also lists a phone number, which this
+    #: adapter does not send.
+    virtual_account_requires = ("name", "email")
+
     #: The dedicated-account bank used when nothing names one. Paystack's reference
     #: (``POST /dedicated_account``) gives ``wema-bank`` and ``titan-paystack`` as
     #: example slugs and states no default; a test key can use only ``test-bank``.

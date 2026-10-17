@@ -408,6 +408,27 @@ def _preferred_bank_slug(value) -> str:
     return slug
 
 
+def virtual_account_missing_details(customer, provider=None) -> tuple[str, ...]:
+    """The details the provider needs for a dedicated account that ``customer`` lacks.
+
+    Answers names from the provider's ``virtual_account_requires`` (``name``,
+    ``email``, ``phone``), in its order; empty when nothing is missing. An
+    account issued because the customer asked may go ahead without them, the
+    adapter supplying what the provider insists on; one issued without being
+    asked waits for the customer's own. Raises
+    :class:`~vs_payments.exceptions.ProviderNotConfiguredError` where the
+    provider is not offered or not configured.
+    """
+    client = get_provider(resolve_provider_name(provider))
+    held_details = {
+        "name": customer.name, "email": customer.billing_email, "phone": customer.billing_phone,
+    }
+    return tuple(
+        detail for detail in client.virtual_account_requires
+        if not str(held_details.get(detail) or "").strip()
+    )
+
+
 # Handle the create virtual account workflow.
 def create_virtual_account(*, entity, customer, provider=None, deposit_account=None,
                            preferred_bank="", actor_user=None):
