@@ -71,3 +71,50 @@ jobs:
       - name: Run test suite
         working-directory: apps
         run: python manage.py test --noinput --parallel auto
+
+  # The whole development seed chain, run exactly as a developer runs it, against
+  # an empty server. Nothing in the test suite runs reseed-dev.sh end to end, so
+  # a model, a required field or a renamed command that one seeder still uses
+  # otherwise breaks the reseed silently, and is found by the next developer to
+  # rebuild their database. Local settings, as a developer's machine has them;
+  # the connection comes from DB_*, and recreate_dev_db makes the database.
+  reseed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      SECRET_KEY: ci-only-not-a-real-secret
+      PYTHON: python
+      DB_NAME: cx_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Reseed the development database from empty
+        run: ./reseed-dev.sh

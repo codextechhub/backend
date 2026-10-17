@@ -14,9 +14,12 @@ states this module has to render cannot all exist in one tenant:
                         whole branch dimension must recede from the responses.
                         No exam period, so the exam screen's empty state is
                         reachable.
-    holy-cross          Two branches AND LIVE. The other two are still
-                        onboarding, so neither can reach anything gated on a
-                        live tenant - the Export Centre most of all.
+    holy-cross          Two branches, parked at "pending approval" by the
+                        onboarding cast, with the teachers
+                        ``seed_staff_scenarios`` gives it, so its grids can
+                        name somebody. None of the three is live, so anything
+                        gated on a live tenant is reached at lagoon-view, whose
+                        timetable ``seed_attendance_scenarios`` publishes.
 
 Everything is driven through the real services - the clash rules, the branch
 containment, the publish gate - rather than by writing rows that look right. A
@@ -32,7 +35,9 @@ it twice - a seeder that is not idempotent invents data.
     python manage.py seed_timetable_scenarios --only st-monicas
 
 Run ``seed_academic_scenarios`` first, which builds the years, classes and
-subjects this hangs off. Never run against production.
+subjects this hangs off, and ``seed_staff_scenarios``, which gives the schools
+their teachers: a school with nobody holding the teacher role gets its calendar
+and no timetable. Never run against production.
 """
 from __future__ import annotations
 

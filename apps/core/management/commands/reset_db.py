@@ -30,6 +30,54 @@ TEST_SETTINGS_MODULES = frozenset(
 )
 
 
+def resolve_safe_target(database_alias):
+    """The connection, name and host a destructive command may act on, or a refusal.
+
+    Refuses outside the development and test settings modules, with
+    ``DEBUG=False`` outside the test ones, and for any database name not in
+    ``RESET_DB_ALLOWED_DATABASES``. Shared with ``recreate_dev_db`` so the two
+    commands that destroy a database cannot disagree about which ones they may.
+    """
+    settings_module = os.environ.get("DJANGO_SETTINGS_MODULE", "")
+    if settings_module not in SAFE_SETTINGS_MODULES:
+        raise CommandError(
+            "Refusing to run outside the development and test settings "
+            f"modules. Active settings: {settings_module or '<unknown>'}."
+        )
+
+    if not settings.DEBUG and settings_module not in TEST_SETTINGS_MODULES:
+        raise CommandError(
+            "Refusing to run with DEBUG=False outside an approved test "
+            "settings module."
+        )
+
+    try:
+        connection = connections[database_alias]
+    except ConnectionDoesNotExist as exc:
+        raise CommandError(
+            f"Unknown database alias: {database_alias}."
+        ) from exc
+
+    database_name = str(connection.settings_dict.get("NAME") or "").strip()
+    database_host = str(connection.settings_dict.get("HOST") or "localhost")
+    allowed_names = {
+        str(name).strip()
+        for name in getattr(settings, "RESET_DB_ALLOWED_DATABASES", ())
+        if str(name).strip()
+    }
+
+    if not database_name:
+        raise CommandError("Refusing to run without a resolved database name.")
+    if database_name not in allowed_names:
+        allowed_label = ", ".join(sorted(allowed_names)) or "<none configured>"
+        raise CommandError(
+            f"Database {database_name!r} is not allowlisted for reset. "
+            f"Allowed names: {allowed_label}."
+        )
+
+    return connection, database_name, database_host
+
+
 class Command(BaseCommand):
     help = (
         "DESTRUCTIVE: reset an explicitly allowlisted development or test "
@@ -100,44 +148,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("=" * 60))
 
     def _resolve_safe_target(self):
-        settings_module = os.environ.get("DJANGO_SETTINGS_MODULE", "")
-        if settings_module not in SAFE_SETTINGS_MODULES:
-            raise CommandError(
-                "Refusing to run outside the development and test settings "
-                f"modules. Active settings: {settings_module or '<unknown>'}."
-            )
-
-        if not settings.DEBUG and settings_module not in TEST_SETTINGS_MODULES:
-            raise CommandError(
-                "Refusing to run with DEBUG=False outside an approved test "
-                "settings module."
-            )
-
-        try:
-            connection = connections[self.database_alias]
-        except ConnectionDoesNotExist as exc:
-            raise CommandError(
-                f"Unknown database alias: {self.database_alias}."
-            ) from exc
-
-        database_name = str(connection.settings_dict.get("NAME") or "").strip()
-        database_host = str(connection.settings_dict.get("HOST") or "localhost")
-        allowed_names = {
-            str(name).strip()
-            for name in getattr(settings, "RESET_DB_ALLOWED_DATABASES", ())
-            if str(name).strip()
-        }
-
-        if not database_name:
-            raise CommandError("Refusing to run without a resolved database name.")
-        if database_name not in allowed_names:
-            allowed_label = ", ".join(sorted(allowed_names)) or "<none configured>"
-            raise CommandError(
-                f"Database {database_name!r} is not allowlisted for reset. "
-                f"Allowed names: {allowed_label}."
-            )
-
-        return connection, database_name, database_host
+        return resolve_safe_target(self.database_alias)
 
     def _display_warning(self):
         self.stdout.write(self.style.WARNING("\n" + "=" * 60))

@@ -68,7 +68,7 @@ Useful seed / bootstrap commands (in `core/management/commands/`):
 
 ```bash
 ../cx/bin/python manage.py seed_all_permissions   # RBAC permission catalogue
-../cx/bin/python manage.py seed_xvs_modules       # module registry
+../cx/bin/python manage.py seed_config_catalogue  # capability catalogue (modules and bands)
 ../cx/bin/python manage.py seed_notification_event_types  # notification event catalogue
 ../cx/bin/python manage.py create_superuser --assign-role --email you@codexng.com
 ../cx/bin/python manage.py seed_finance --all     # chart of accounts + currencies

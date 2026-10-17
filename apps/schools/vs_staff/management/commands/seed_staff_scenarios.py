@@ -4,13 +4,16 @@ A screen cannot be checked against an endpoint that returns nothing, and the
 states this module has to show cannot all exist in one person, let alone one
 school:
 
-    holy-cross          Two branches and live, with the deepest academic
-                        structure of the four. **This is the school to drive
-                        the module against.** It is the only live multi-branch school in
-                        the cast, which is the shape the module is designed for:
-                        a posting that means something, a reach that can be
-                        wider than it, and enough classes and offerings for the
-                        coverage grid to be more than a handful of cells.
+    holy-cross          Two branches, with the deepest academic structure of
+                        the four, parked at "pending approval" by the
+                        onboarding cast. The multi-branch shape the module is
+                        designed for: a posting that means something, a reach
+                        that can be wider than it, and enough classes and
+                        offerings for the coverage grid to be more than a
+                        handful of cells. The live two-branch school is
+                        lagoon-view, whose staff are invited by the
+                        attendance, gradebook and student portal seeders
+                        rather than by this one.
     brightfield-lekki   Two branches, still onboarding. The full cast of
                         PEOPLE: every employment status, every account state
                         that disagrees with one, and a registrar posted
