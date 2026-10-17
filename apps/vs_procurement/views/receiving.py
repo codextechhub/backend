@@ -20,6 +20,7 @@ from django.db.models import Count, Q, Sum
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
+from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_config.clock import branch_day_q, tenant_today
@@ -755,7 +756,7 @@ class VendorInvoiceSummaryView(_ProcBase):
         qs = _branch_scoped(
             request, entity, VendorInvoice.objects.filter(entity=entity),
             request.query_params,
-        )
+        ).filter(period_q(request, entity, VendorInvoice))
         today = tenant_today(entity.tenant)
         rules = vendor_invoice_display_rules(entity.tenant)
 

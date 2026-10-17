@@ -630,12 +630,14 @@ class _ProcBase(APIView):
         pagination.
 
         Documents dated in an archived fiscal year are left out unless the caller
-        asks with ``?include_archived=true`` (:func:`vs_finance.archive.hide_archived`).
+        asks with ``?include_archived=true`` (:func:`vs_finance.archive.hide_archived`),
+        and a document list is narrowed to the fiscal year or date range the caller
+        names (:func:`vs_finance.period_filter.narrow_document_list`).
         """
         from core.pagination import XVSPagination
-        from vs_finance.archive import hide_archived
+        from vs_finance.period_filter import narrow_document_list
 
-        qs = hide_archived(qs, request)
+        qs = narrow_document_list(qs, request)
         paginator = XVSPagination()
         # Bound list reads before serialization; serializers may traverse
         # preloaded relations supplied by their endpoint-specific queryset.
