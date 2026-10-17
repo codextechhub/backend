@@ -50,6 +50,8 @@ Push notifications (commit e2240e67, 2026-10-16): REVISE M08 (minor): a third de
 
 Pupil payment history says where money came from (commit dbc8ab39, 2026-10-16): REVISE M27 (fold into v1.0): each payment row carries `source` (TRANSFER_ACCOUNT, ONLINE, SCHOOL) with a label; a transfer into the pupil's account reads as a bank transfer and is listed pending from the moment the provider reports it. REVISE M28 (patch): FAL contract 1.1.9, `PaymentHistoryRow.source`. MRD: no change.
 
+Onboarding profile step names the empty fields (commit 5998965, 2026-10-17, branch `claude/nice-bell-2ndprn`): REVISE M09 (minor). The SCHOOL_METADATA condition reads `REQUIRED_PROFILE_FIELDS` in `apps/schools/vs_schools/models.py`: name, slug, code, email, phone, address, ownership type, term structure and currency. M09 v2.18 lists only name, slug, code, ownership type, term structure and currency; that list was already behind the code before this commit, so correct it. MUST SAY: when the step is refused (422 `TASK_CONDITION_NOT_MET`), the reason names the fields still empty, from the same list the gate checks ("Complete the school profile first. Still empty: email, phone."), and whitespace counts as empty; with no school to read, it falls back to the general sentence. CHECK the MRD for the same stale field list and revise it (minor) only if it carries one. No new permission keys, no Field Access change (the reason names fields, never their values). The rest of the commit (reseed script, dev seeders, `recreate_dev_db`, the CI reseed job, the `DB_USER` default) is development tooling and needs no document.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
