@@ -61,18 +61,18 @@ def crest_file(school):
 
 
 def short_name(name: str) -> str:
-    """As many whole words of *name* as fit under an icon.
+    """The name under the home-screen icon: the whole name if it fits, else its first word.
 
-    "Corona Secondary School" becomes "Corona" and "Lagoon View Academy"
-    "Lagoon View". A first word longer than the space is cut.
+    "Bright Star" stays whole; "Meridian Crest Academy" becomes "Meridian".
+    A word is never cut, so "Ogbomosholand College" is "Ogbomosholand" even
+    though it runs past the space. student-fe applies the same rule to the
+    iPhone's ``apple-mobile-web-app-title``, counting characters as Python
+    does, so Android and iPhone show one label.
     """
-    words, out = (name or "").split(), ""
-    for word in words:
-        candidate = f"{out} {word}".strip()
-        if len(candidate) > SHORT_NAME_LENGTH:
-            break
-        out = candidate
-    return out or (name or "")[:SHORT_NAME_LENGTH]
+    whole = " ".join((name or "").split())
+    if len(whole) <= SHORT_NAME_LENGTH:
+        return whole
+    return whole.split(" ", 1)[0]
 
 
 def manifest(school, *, icon_url) -> dict:
