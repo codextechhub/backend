@@ -19,6 +19,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from core.response import success_response
 from vs_finance.constants import BudgetStatus, DocumentStatus
 from vs_finance.models import Budget, BudgetLine, FiscalPeriod
+from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
@@ -425,7 +426,7 @@ class RequisitionSummaryView(_ProcBase):
         qs = _branch_scoped(
             request, entity, PurchaseRequisition.objects.filter(entity=entity),
             request.query_params,
-        )
+        ).filter(period_q(request, entity, PurchaseRequisition))
 
         # Each tile counts exactly what its tab lists; one sent back has its own tile.
         rules = requisition_status_rules()

@@ -18,6 +18,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus
+from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
@@ -454,7 +455,10 @@ class PurchaseOrderSummaryView(_ProcBase):
         """Compute commitment KPIs over the caller's visible orders, not the page."""
         entity = resolve_entity(request)
         return success_response("Purchase order summary retrieved.", data=purchase_order_summary(
-            entity, branch_filter=_branch_q(request, entity, request.query_params),
+            entity, branch_filter=(
+                _branch_q(request, entity, request.query_params)
+                & period_q(request, entity, PurchaseOrder)
+            ),
         ))
 
 
@@ -1137,7 +1141,7 @@ class RfqSummaryView(_ProcBase):
         # One aggregate over the RFQ table for the three RFQ-status counts.
         rfqs = _buyer_rfq_queryset(
             request, RequestForQuotation.objects.filter(entity=entity),
-        ).filter(branch_filter).distinct()
+        ).filter(branch_filter, period_q(request, entity, RequestForQuotation)).distinct()
         counts = rfqs.aggregate(
             draft=Count("id", filter=Q(rfq_status=RfqStatus.DRAFT)),
             open=Count("id", filter=Q(rfq_status=RfqStatus.ISSUED)),
@@ -1156,6 +1160,7 @@ class RfqSummaryView(_ProcBase):
             ),
         ).filter(
             _quotation_branch_q(request, entity, request.query_params),
+            period_q(request, entity, RequestForQuotation, prefix="rfq__"),
         ).exclude(quotation_status=QuotationStatus.DRAFT).distinct().count()
         return success_response("RFQ summary retrieved.", data={
             "draft": counts["draft"] or 0,
