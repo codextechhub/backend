@@ -16,7 +16,9 @@ document dataset carries the shared Branch filter
 (:func:`vs_exports.catalogue.branch_filter`) and reads the list's period
 (:func:`vs_finance.period_filter.export_period`) into its date filter, so Mrs
 Bello exporting Ikeja's FY2015 invoices gets Ikeja's invoices dated inside that
-financial year, the rows the list showed her. The customer master is not a
+financial year, the rows the list showed her. With no year picked, the file
+leaves archived years out as the list does
+(:func:`vs_finance.archive.export_archive_filter`). The customer master is not a
 document and takes neither.
 
 
@@ -55,6 +57,7 @@ from vs_exports.catalogue import (
 )
 from vs_workflow.services.approval_filter import export_filter, not_returned_spec
 
+from .archive import export_archive_filter
 from .period_filter import export_period
 
 
@@ -263,6 +266,7 @@ def register_datasets():
             FilterDef("tab", "Tab", FILTER_CHOICE, source="screen_tab", choices=_INVOICE_TABS,
                       description="The invoice screen's tab, overdue judged at each branch."),
             branch_filter(),
+            export_archive_filter("vs_finance.Invoice"),
         ),
         screen_period=export_period("invoice_date"),
     ))
@@ -298,6 +302,7 @@ def register_datasets():
             FilterDef("status", "Invoice status", FILTER_CHOICE, source="invoice__status",
                       choices=_DOC_STATUS),
             branch_filter("invoice__"),
+            export_archive_filter("vs_finance.Invoice", prefix="invoice__"),
         ),
     ))
 
@@ -352,6 +357,7 @@ def register_datasets():
             # A line's journal is what an approver sends back.
             export_filter("vs_finance.JournalEntry", source="entry"),
             branch_filter("entry__"),
+            export_archive_filter("vs_finance.JournalEntry", prefix="entry__"),
         ),
         screen_period=export_period("entry_date"),
     ))
@@ -398,6 +404,7 @@ def register_datasets():
                 ("reference", "Reference"),
             ), description="Matches any one of these, the way the search box does."),
             branch_filter(),
+            export_archive_filter("vs_finance.Payment"),
         ),
         screen_period=export_period("payment_date"),
     ))
@@ -451,6 +458,7 @@ def register_datasets():
             FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
             export_filter("vs_finance.ExpenseClaim"),
             branch_filter(),
+            export_archive_filter("vs_finance.ExpenseClaim"),
         ),
         screen_period=export_period("claim_date"),
     ))

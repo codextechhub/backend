@@ -256,6 +256,10 @@ class FilterDef:
     #: For :data:`FILTER_SEARCH` only - ``{path: key}`` for a searched path
     #: whose column carries no key. A path not named reads it from the column.
     access_by_path: dict = dc_field(default_factory=dict)
+    #: The rows this filter keeps bound the date window a screen export is
+    #: given (:func:`resolve_screen`), so a window never opens on rows the file
+    #: leaves out.
+    narrows_window: bool = False
     #: ``(tenant, user) -> {value: label}`` for a choice whose values belong to
     #: the tenant (its branches) rather than to the code. ``user`` ``None``
     #: names every value the tenant has, for reading a stored value back.
@@ -479,11 +483,12 @@ class Dataset:
     scope: str = DatasetScope.ENTITY
     #: Tenant kinds whose consoles may offer or run this dataset.
     tenant_kinds: tuple = ALL_TENANT_KINDS
-    #: ``(params, scope) -> spec | None``: the period a list screen names with
-    #: :data:`PERIOD_SCREEN_PARAMS`, as this dataset's date filter. Set on a
-    #: dataset of documents whose list reads a year or a date range
-    #: (:func:`vs_finance.period_filter.export_period`); a value the list
-    #: refuses raises the list's own error.
+    #: ``(params, scope) -> [spec, ...]``: the period a list screen names with
+    #: :data:`PERIOD_SCREEN_PARAMS`, as this dataset's own filters, read
+    #: whether or not the screen names one (a list with no period still puts
+    #: archived years away). Set on a dataset of documents whose list reads a
+    #: year or a date range (:func:`vs_finance.period_filter.export_period`);
+    #: a value the list refuses raises the list's own error.
     screen_period: object = None
 
     @property
@@ -738,8 +743,9 @@ COMMON_SCREEN_PARAMS = frozenset({
 })
 
 #: The query parameters a document list names its period with
-#: (:mod:`vs_finance.period_filter`): one financial year, or a date range.
-PERIOD_SCREEN_PARAMS = ("fiscal_year", "date_from", "date_to")
+#: (:mod:`vs_finance.period_filter`): one financial year, or a date range, and
+#: whether its archived years show when it names none.
+PERIOD_SCREEN_PARAMS = ("fiscal_year", "date_from", "date_to", "include_archived")
 
 
 class Unmapped:
@@ -830,24 +836,27 @@ def all_screens() -> list[ScreenBinding]:
     return sorted(_SCREENS.values(), key=lambda s: s.key)
 
 
-def _earliest_day(dataset, spec, scope):
+def _earliest_day(dataset, spec, scope, within=None):
     """The first day any row in ``scope`` falls on by the date filter ``spec``, or None.
 
     Read from the dataset's own base queryset, so it is the earliest row the
-    caller could see on the list. An instant is taken by its UTC date, which is
-    never later than its local one, so the window still starts on or before it.
+    caller could see on the list, and only among the rows ``within`` keeps
+    (the filters marked :attr:`FilterDef.narrows_window`). An instant is taken
+    by its UTC date, which is never later than its local one, so the window
+    still starts on or before it.
     """
     from django.db.models import Min
 
     if scope is None:
         return None
-    earliest = dataset.base(scope).aggregate(first=Min(spec.path))["first"]
+    rows = dataset.base(scope) if within is None else dataset.base(scope).filter(within)
+    earliest = rows.aggregate(first=Min(spec.path))["first"]
     if isinstance(earliest, datetime.datetime):
         return earliest.astimezone(datetime.timezone.utc).date()
     return earliest
 
 
-def _latest_day(dataset, spec, scope):
+def _latest_day(dataset, spec, scope, within=None):
     """The last day any row in ``scope`` falls on by the date filter ``spec``, or None.
 
     The twin of :func:`_earliest_day`. An instant is taken by its UTC date.
@@ -856,13 +865,25 @@ def _latest_day(dataset, spec, scope):
 
     if scope is None:
         return None
-    latest = dataset.base(scope).aggregate(last=Max(spec.path))["last"]
+    rows = dataset.base(scope) if within is None else dataset.base(scope).filter(within)
+    latest = rows.aggregate(last=Max(spec.path))["last"]
     if isinstance(latest, datetime.datetime):
         return latest.astimezone(datetime.timezone.utc).date()
     return latest
 
 
-def _closed_period(dataset, period, scope, today) -> dict:
+def _window_rows(dataset, specs, scope):
+    """The rows a screen's default narrowing keeps, as a ``Q``, or None when nothing narrows."""
+    within = None
+    for spec in specs:
+        fdef = dataset.filter_def(str(spec.get("id") or ""))
+        if fdef is not None and fdef.narrows_window:
+            q = compile_filter(dataset, spec, scope)
+            within = q if within is None else within & q
+    return within
+
+
+def _closed_period(dataset, period, scope, today, within=None) -> dict:
     """A list's period with an open end closed on the rows that end leaves in.
 
     A required date range runs only when both ends are set, while a list asked
@@ -877,21 +898,21 @@ def _closed_period(dataset, period, scope, today) -> dict:
     end = period.get("end")
     if not end:
         day = today or tenant_today(getattr(scope, "tenant", None))
-        end = max(day, _latest_day(dataset, fdef, scope) or day).isoformat()
+        end = max(day, _latest_day(dataset, fdef, scope, within) or day).isoformat()
     start = period.get("start")
     if not start:
         closing = datetime.date.fromisoformat(end)
-        start = min(_earliest_day(dataset, fdef, scope) or closing, closing).isoformat()
+        start = min(_earliest_day(dataset, fdef, scope, within) or closing, closing).isoformat()
     return {**period, "start": start, "end": end}
 
 
-def _date_window(binding, dataset, spec, scope, end) -> dict:
+def _date_window(binding, dataset, spec, scope, end, within=None) -> dict:
     """The window a screen export covers when the screen sent no dates: see :func:`resolve_screen`."""
     tenant = getattr(scope, "tenant", None)
     name = dataset.name.lower()
     if binding.default_window_days is None:
-        end = max(end, _latest_day(dataset, spec, scope) or end)
-        start = min(_earliest_day(dataset, spec, scope) or end, end)
+        end = max(end, _latest_day(dataset, spec, scope, within) or end)
+        start = min(_earliest_day(dataset, spec, scope, within) or end, end)
         whole_list = True
         sentence = (
             f"Includes every one of the {name} the list shows, from "
@@ -944,7 +965,11 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
     (:data:`PERIOD_SCREEN_PARAMS`) on a dataset that reads one
     (:attr:`Dataset.screen_period`): it becomes the dataset's date filter, so
     a year picked on the list is the window of the file and no other window is
-    added. A value either refuses raises the list's own error.
+    added, and with no period the list's default narrowing (archived years put
+    away) is carried instead. A value either refuses raises the list's own
+    error. The window, closed or added, is measured among the rows the
+    filters marked :attr:`FilterDef.narrows_window` keep, so it never starts
+    in a year the file leaves out.
     """
     dataset = binding.dataset_for(params)
     if dataset is None:
@@ -967,12 +992,13 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
     for param, fdef in direct.items():
         if param in meaningful:
             filters.append(fdef.from_screen(meaningful[param]))
-    if period_params & set(meaningful):
-        period = dataset.screen_period(
+    within = None
+    if dataset.screen_period is not None:
+        specs = dataset.screen_period(
             {key: meaningful[key] for key in period_params if key in meaningful}, scope,
         )
-        if period is not None:
-            filters.append(_closed_period(dataset, period, scope, today))
+        within = _window_rows(dataset, specs, scope)
+        filters.extend(_closed_period(dataset, spec, scope, today, within) for spec in specs)
 
     # A parameter the translator never heard of is unmapped, not carried. Assuming
     # otherwise would report "we applied your filter" about a filter nobody applied.
@@ -998,7 +1024,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
         spec = dataset.filter_def(filter_id)
         if spec is not None and spec.kind == FILTER_DATE_RANGE:
             end = today or tenant_today(getattr(scope, "tenant", None))
-            date_window = _date_window(binding, dataset, spec, scope, end)
+            date_window = _date_window(binding, dataset, spec, scope, end, within)
             filters.append({
                 "id": filter_id, "start": date_window["start"], "end": date_window["end"],
             })

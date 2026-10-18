@@ -11,7 +11,8 @@ screen. See :mod:`vs_rbac.scoping` for the two readings.
 vendor bills and requisitions carry the shared Branch filter
 (:func:`vs_exports.catalogue.branch_filter`) and read the list's period
 (:func:`vs_finance.period_filter.export_period`) into the date that places each
-document in a year. The vendor master takes neither.
+document in a year, and with no year picked leave archived years out as the
+list does. The vendor master takes neither.
 
 
 Registered from :meth:`vs_procurement.apps.VsProcurementConfig.ready`. Entity-scoped
@@ -42,6 +43,7 @@ from vs_exports.catalogue import (
     narrow_to_caller_branches,
     register,
 )
+from vs_finance.archive import export_archive_filter
 from vs_finance.period_filter import export_period
 from vs_workflow.services.approval_filter import export_filter, not_returned_spec
 
@@ -208,6 +210,7 @@ def register_datasets():
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
             export_filter("vs_procurement.PurchaseOrder"),
             branch_filter(),
+            export_archive_filter("vs_procurement.PurchaseOrder"),
         ),
         screen_period=export_period("order_date"),
     ))
@@ -254,6 +257,7 @@ def register_datasets():
                       description="The bill screen's tab, overdue judged at each branch."),
             export_filter("vs_procurement.VendorInvoice"),
             branch_filter(),
+            export_archive_filter("vs_procurement.VendorInvoice"),
         ),
         screen_period=export_period("invoice_date"),
     ))
@@ -357,6 +361,7 @@ def register_datasets():
                       source="cost_center__code"),
             export_filter("vs_procurement.PurchaseRequisition"),
             branch_filter(),
+            export_archive_filter("vs_procurement.PurchaseRequisition"),
         ),
         screen_period=export_period("request_date"),
     ))

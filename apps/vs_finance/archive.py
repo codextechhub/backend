@@ -93,47 +93,101 @@ def include_archived(request) -> bool:
     return str(params.get("include_archived", "")).lower() == "true"
 
 
+def archived_condition(model, prefix: str = ""):
+    """The condition naming the documents an archived year puts away, or ``None``.
+
+    A document dated inside one of its books' archived years, unless it is
+    still owed (a posted bill whose payment status is unpaid or part paid):
+    archiving puts finished years away, and a customer's 2027 bill, still
+    unpaid in 2030, is not finished. ``prefix`` is the route to the document
+    for a row that is part of one (a ledger posting reaches its journal
+    through ``entry__``). ``None`` for a model with no date to place it by.
+
+    The one statement of the rule, read by every default list
+    (:func:`hide_archived`) and by the Export Centre's "Leave archived years
+    out" filter, so a file and the list it came from put away the same rows.
+    """
+    from django.db.models import Exists, OuterRef, Q
+
+    from .constants import DocumentStatus, InvoicePaymentStatus
+    from .models import FiscalYear
+    from .retention import document_date_field
+
+    date_field = document_date_field(model)
+    if date_field is None:
+        return None
+    archived = FiscalYear.objects.filter(
+        entity=OuterRef(f"{prefix}entity"), archived_at__isnull=False,
+        start_date__lte=OuterRef(f"{prefix}{date_field}"),
+        end_date__gte=OuterRef(f"{prefix}{date_field}"),
+    )
+    if not any(f.name == "payment_status" for f in model._meta.concrete_fields):
+        return Exists(archived)
+    keep = Q(**{
+        f"{prefix}status": DocumentStatus.POSTED,
+        f"{prefix}payment_status__in": (InvoicePaymentStatus.UNPAID, InvoicePaymentStatus.PARTIAL),
+    })
+    return Exists(archived) & ~keep
+
+
+#: The Export Centre filter id for "Leave archived years out".
+HIDE_ARCHIVED_FILTER = "hide_archived"
+
+
+def export_archive_filter(document: str, *, prefix: str = ""):
+    """The "Leave archived years out" filter of an Export Centre dataset of documents.
+
+    ``document`` is the ``app_label.ModelName`` of the document the rows are,
+    or belong to through ``prefix``. Set, it puts away exactly what the list
+    puts away by default (:func:`archived_condition`), so Bright Star, with
+    FY2015 archived, exports the invoices its list shows: 2015's paid ones
+    left out, the one still owed kept. A screen export sets it whenever its
+    list hides archived years (:func:`vs_finance.period_filter.export_period`).
+    It narrows only, and reads no field a list does not already read.
+    """
+    from django.apps import apps
+    from django.db.models import Q
+
+    from vs_exports.catalogue import FILTER_BOOLEAN, FilterDef
+
+    def compiles(spec, scope=None):
+        if not spec.get("value"):
+            return Q()
+        hidden = archived_condition(apps.get_model(document), prefix)
+        return Q() if hidden is None else ~Q(hidden)
+
+    return FilterDef(
+        HIDE_ARCHIVED_FILTER, "Leave archived years out", FILTER_BOOLEAN,
+        description=(
+            "As the list does by default: documents dated in an archived year are left "
+            "out, except bills still owed."
+        ),
+        compiles=compiles,
+        narrows_window=True,
+    )
+
+
 def hide_archived(queryset, request):
     """Leave documents dated in an archived year out of a default list.
 
     The one place every finance and procurement document list asks, through
     their shared pagination and list bases. A queryset of anything but a
     finance document passes through unchanged, as does every list where the
-    caller asked with ``?include_archived=true``.
-
-    A document still owed (a posted bill whose payment status is unpaid or part
-    paid) stays visible whatever its year: archiving puts finished years away,
-    and a customer's 2027 bill, still unpaid in 2030, is not finished.
+    caller asked with ``?include_archived=true``. Which documents an archived
+    year puts away is :func:`archived_condition`'s to say.
     """
-    from django.db.models import Exists, OuterRef, Q, QuerySet
+    from django.db.models import QuerySet
 
-    from .constants import DocumentStatus, InvoicePaymentStatus
-    from .models import FiscalYear
     from .models.core import FinanceDocument
-    from .retention import document_date_field
 
     if not isinstance(queryset, QuerySet) or include_archived(request):
         return queryset
     if queryset.query.combinator or queryset.query.is_sliced:  # Cannot be filtered further.
         return queryset
-    model = queryset.model
-    if not issubclass(model, FinanceDocument):
+    if not issubclass(queryset.model, FinanceDocument):
         return queryset
-    date_field = document_date_field(model)
-    if date_field is None:
-        return queryset
-    archived = FiscalYear.objects.filter(
-        entity=OuterRef("entity"), archived_at__isnull=False,
-        start_date__lte=OuterRef(date_field), end_date__gte=OuterRef(date_field),
-    )
-    keep = Q()
-    if any(f.name == "payment_status" for f in model._meta.concrete_fields):
-        keep = Q(
-            status=DocumentStatus.POSTED,
-            payment_status__in=(InvoicePaymentStatus.UNPAID, InvoicePaymentStatus.PARTIAL),
-        )
-    hidden = Exists(archived) & ~keep if keep else Exists(archived)
-    return queryset.exclude(hidden)
+    hidden = archived_condition(queryset.model)
+    return queryset if hidden is None else queryset.exclude(hidden)
 
 
 @transaction.atomic

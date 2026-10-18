@@ -197,26 +197,36 @@ def period_q(request, entity, model, prefix: str = "") -> Q:
 
 
 def export_period(filter_id: str):
-    """The period of a list screen carried into an export, as the ``filter_id`` date range.
+    """The period of a list screen carried into an export, as the dataset's own filters.
 
     For :attr:`vs_exports.catalogue.Dataset.screen_period`: ``(params, scope)
-    -> spec | None``. The year is looked up in the export's own books
-    (``scope.entity``) and refused in the list's words, so Mrs Bello exporting
-    Ikeja's FY2015 invoices gets the file of 1 September 2014 to 31 August 2015
-    and nothing either side of it. ``filter_id`` is the dataset's filter on the
-    same date :func:`vs_finance.retention.document_date_field` places the
-    document by, so the file and the list cut the year on the same day.
+    -> [spec, ...]``. A named year or range becomes the ``filter_id`` date
+    range, the year looked up in the export's own books (``scope.entity``) and
+    refused in the list's words, so Mrs Bello exporting Ikeja's FY2015
+    invoices gets the file of 1 September 2014 to 31 August 2015 and nothing
+    either side of it. ``filter_id`` is the dataset's filter on the date
+    :func:`vs_finance.retention.document_date_field` places the document by,
+    so the file and the list cut the year on the same day.
+
+    With no period, the file puts away what the list puts away: archived years
+    are left out (:func:`vs_finance.archive.export_archive_filter`) unless the
+    list shows them (``?include_archived=true``). A named period shows its own
+    years, archived or not, as the list does.
     """
+    from .archive import HIDE_ARCHIVED_FILTER
+
     def screen_period(params, scope):
         period = period_from_params(params, getattr(scope, "entity", None))
         if period is None:
-            return None
+            if str(params.get("include_archived", "")).lower() == "true":
+                return []
+            return [{"id": HIDE_ARCHIVED_FILTER, "value": True}]
         spec = {"id": filter_id}
         if period.start is not None:
             spec["start"] = period.start.isoformat()
         if period.end is not None:
             spec["end"] = period.end.isoformat()
-        return spec
+        return [spec]
 
     return screen_period
 

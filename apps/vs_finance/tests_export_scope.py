@@ -145,6 +145,73 @@ class ScreenExportScopeTests(TestCase):
         self.assertEqual(data["matching_rows"], 6)
 
 
+class ArchivedYearExportTests(TestCase):
+    """With no year picked, the file puts away the archived years the list puts away.
+
+    Harbour Primary archived FY2015 (the calendar year). Its 2015 paid invoice
+    is put away; the 2015 invoice still owed stays, as it does on the list.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
+
+        seed_currencies()
+        school = make_school(slug="harbour-exp-archive", name="Harbour Primary")
+        main = make_branch(school, name="Main Branch")
+        cls.books = _books(school, "HBEXA")
+        _year(cls.books, 2015, datetime.date(2015, 1, 1), datetime.date(2015, 12, 31), archived=True)
+        _year(cls.books, 2026, datetime.date(2026, 1, 1), datetime.date(2026, 12, 31))
+        cls.tolu = _reader(school, main, "tolu@harbour-exp-archive.example.com", *KEYS)
+        customer = _customer(cls.books)
+
+        def invoice(day, payment_status):
+            return Invoice.objects.create(
+                entity=cls.books, customer=customer, branch=main, invoice_date=day, due_date=day,
+                status=DocumentStatus.POSTED, payment_status=payment_status,
+            )
+
+        cls.paid_2015 = invoice(datetime.date(2015, 2, 1), InvoicePaymentStatus.PAID)
+        cls.owed_2015 = invoice(datetime.date(2015, 6, 1), InvoicePaymentStatus.UNPAID)
+        cls.paid_2026 = invoice(datetime.date(2026, 3, 1), InvoicePaymentStatus.PAID)
+
+    def exported(self, query):
+        response = TenantAPIClient(user=self.tolu).get(
+            f"/v1/exports/from-screen/?screen=finance.invoices&entity={self.books.code}{query}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def listed(self, query):
+        response = TenantAPIClient(user=self.tolu).get(
+            f"/v1/finance/invoices/?entity={self.books.code}{query}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["id"] for row in response.data["data"]}
+
+    def test_the_default_file_leaves_the_archived_year_out_as_the_list_does(self):
+        data = self.exported("")
+        self.assertIn({"id": "hide_archived", "value": True}, data["config"]["filters"])
+        self.assertTrue(data["exact"])
+        self.assertEqual(self.listed(""), {self.owed_2015.pk, self.paid_2026.pk})
+        self.assertEqual(data["matching_rows"], 2)
+
+    def test_the_window_opens_on_the_first_invoice_the_file_keeps(self):
+        self.assertEqual(self.exported("")["date_window"]["start"], "2015-06-01")
+
+    def test_show_archived_puts_the_year_back_in_the_file(self):
+        data = self.exported("&include_archived=true")
+        self.assertNotIn("hide_archived", {f["id"] for f in data["config"]["filters"]})
+        self.assertEqual(data["matching_rows"], len(self.listed("&include_archived=true")))
+        self.assertEqual(data["matching_rows"], 3)
+
+    def test_naming_the_archived_year_exports_all_of_it(self):
+        data = self.exported("&fiscal_year=2015")
+        self.assertNotIn("hide_archived", {f["id"] for f in data["config"]["filters"]})
+        self.assertEqual(data["matching_rows"], len(self.listed("&fiscal_year=2015")))
+        self.assertEqual(data["matching_rows"], 2)
+
+
 class BranchFilterInTheBuilderTests(TestCase):
     """The builder offers a Branch filter only where there is a branch to choose."""
 
@@ -228,7 +295,7 @@ class ExportPeriodPlacesTheDocumentLikeItsListTests(TestCase):
         )
         for dataset in period_datasets:
             with self.subTest(dataset=dataset.key):
-                spec = dataset.screen_period({"date_from": "2015-01-01"}, scope)
+                [spec] = dataset.screen_period({"date_from": "2015-01-01"}, scope)
                 path = dataset.filter_def(spec["id"]).path
                 model = dataset.base(scope).model
                 *route, date = path.split("__")
@@ -240,6 +307,9 @@ class ExportPeriodPlacesTheDocumentLikeItsListTests(TestCase):
                     {key for key, _ in date_access_keys(model)}, {column.access} - {""},
                     "A switchable document date needs the same switch on its export column.",
                 )
+                self.assertIsNotNone(dataset.filter_def("hide_archived"))
+                dataset.base(scope).filter(
+                    compile_filter(dataset, {"id": "hide_archived", "value": True}, scope)).count()
                 branch = dataset.filter_def("branch")
                 self.assertIsNotNone(branch)
                 self.assertEqual(branch.source, "__".join([*route, "branch"]))
