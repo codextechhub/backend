@@ -31,6 +31,25 @@ ask):
   customer while it stays the same, and logged with ids only, so the school
   can be told to fill them in.
 
+**The family's email.** A pupil's AR account is opened from the roll with no
+billing email, so the account is opened with the email of the pupil's primary
+guardian where the AR account has none (owner decision of 18 October 2026).
+It is sent to the provider and copied nowhere: the AR account's billing email,
+and so where invoices are emailed, is unchanged.
+
+**One email, one pupil.** The provider keeps one customer per email, for the
+whole platform, and a dedicated account belongs to that customer. Siblings
+share their primary guardian, and a parent may have children at two schools,
+so the second child's account would land on the first child's customer, where
+the provider either refuses it or answers with the first child's number. An
+email that already opened an active account for another pupil, at any school,
+is therefore not used again: that pupil's account is opened without the
+family's email, exactly as the Pay screen's button opens one, the adapter
+giving the provider a stand-in address of its own (owner decision of 18
+October 2026). The number is the pupil's either way. Checking and issuing hold
+a lock on the email, so two siblings billed at once are decided one after the
+other.
+
 A provider that fails is retried with backoff a bounded number of times
 (:mod:`schools.core.fal.tasks`); each failed attempt stores nothing, so the
 pupil sees ``NONE`` rather than a half-made account, and the final failure is
@@ -133,18 +152,89 @@ def _record_not_issued(customer, reason, *, missing=()):
     )
 
 
+def _family_email(customer) -> str:
+    """The address the account is opened with: the billing email, else the primary guardian's."""
+    from schools.vs_students.models import StudentGuardian
+
+    from .contracts import student_pk
+
+    if customer.billing_email.strip():
+        return customer.billing_email.strip()
+    link = (
+        StudentGuardian.all_objects.filter(
+            student_id=student_pk(customer.source_id), tenant_id=customer.entity.tenant_id,
+            is_primary=True,
+        )
+        .select_related("guardian").first()
+    )
+    return (link.guardian.email.strip() if link is not None else "")
+
+
+def _email_in_use(email, customer) -> bool:
+    """Whether ``email`` already opened an active account for another pupil, at any school.
+
+    An account counts as opened with it when its AR account's billing email is
+    it, or when its AR account has none and its pupil's primary guardian has
+    it. An account opened without the family's email (from the Pay screen, or
+    a sibling's) counts too: the cost is a stand-in address at the provider,
+    never a shared customer.
+    """
+    from django.db.models import Q
+    from django.db.models.functions import Lower
+
+    from schools.vs_students.models import StudentGuardian
+    from vs_payments.constants import VirtualAccountStatus
+    from vs_payments.models import VirtualAccount
+    from vs_payments.services import resolve_provider_name
+
+    from .contracts import SOURCE_TYPE_STUDENT
+
+    guarded = [
+        str(pk) for pk in StudentGuardian.all_objects
+        .annotate(guardian_email=Lower("guardian__email"))
+        .filter(is_primary=True, guardian_email=email.lower())
+        .values_list("student_id", flat=True)
+    ]
+    return (
+        VirtualAccount.objects.filter(
+            provider=resolve_provider_name(None), status=VirtualAccountStatus.ACTIVE,
+        )
+        .filter(
+            Q(customer__billing_email__iexact=email)
+            | Q(customer__billing_email="", customer__source_type=SOURCE_TYPE_STUDENT,
+                customer__source_id__in=guarded)
+        )
+        .exclude(customer__source_type=SOURCE_TYPE_STUDENT, customer__source_id=customer.source_id)
+        .exists()
+    )
+
+
+def _lock_email(email) -> None:
+    """Hold ``email`` until the transaction ends, so its check and its issue are one step."""
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            [f"transfer-account-email:{email.lower()}"],
+        )
+
+
 def issue_after_first_bill(customer_id) -> str:
     """Issue the pupil's account behind ``customer_id`` where the school can, once.
 
     Returns one of the outcomes above. Raises :class:`ProviderUnavailable`
     when the provider did not answer, having stored nothing. Must run with no
-    transaction open: the provider is called inside the adapter's own short
-    transaction, which holds the pupil's AR account and nothing of the bill.
+    transaction open: the provider is called inside a short transaction of its
+    own, which holds the family's email and the pupil's AR account and nothing
+    of the bill.
     """
+    from django.db import transaction
+
     from vs_payments.exceptions import ProviderNotConfiguredError
     from vs_payments.services import virtual_account_missing_details
 
-    from . import registry
+    from .adapters.django_finance import DjangoStudentPaymentAdapter
     from .contracts import Unavailable
     from .student_payments import read_student_payment_rules
 
@@ -153,19 +243,27 @@ def issue_after_first_bill(customer_id) -> str:
         return NOT_A_PUPIL
     if not read_student_payment_rules(customer.entity.tenant).enabled:
         return PAYMENTS_OFF
-    payments = registry.get_student_payment()
+    payments = DjangoStudentPaymentAdapter()
     current = payments.transfer_account(customer.source_id)
     if current.is_available and current.value is not None:
         return ALREADY_ISSUED
+    email = _family_email(customer)
     try:
-        missing = virtual_account_missing_details(customer)
+        missing = virtual_account_missing_details(customer, email=email)
     except ProviderNotConfiguredError:
         return NOT_OFFERED
     if missing:
         _record_not_issued(customer, MISSING_DETAILS, missing=missing)
         return MISSING_DETAILS
 
-    result = payments.open_transfer_account(customer.source_id, actor=None)
+    with transaction.atomic():
+        if email:
+            _lock_email(email)
+            if _email_in_use(email, customer):
+                email = ""  # A sibling's: opened as the Pay screen opens one.
+        result = payments.issue_transfer_account(
+            customer.source_id, actor=None, customer_email=email,
+        )
     if result.is_available:
         return ISSUED
     if result.reason == Unavailable.NOT_CONFIGURED:

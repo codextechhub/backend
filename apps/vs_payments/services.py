@@ -408,20 +408,23 @@ def _preferred_bank_slug(value) -> str:
     return slug
 
 
-def virtual_account_missing_details(customer, provider=None) -> tuple[str, ...]:
+def virtual_account_missing_details(customer, provider=None, *, email=None) -> tuple[str, ...]:
     """The details the provider needs for a dedicated account that ``customer`` lacks.
 
     Answers names from the provider's ``virtual_account_requires`` (``name``,
     ``email``, ``phone``), in its order; empty when nothing is missing. An
     account issued because the customer asked may go ahead without them, the
     adapter supplying what the provider insists on; one issued without being
-    asked waits for the customer's own. Raises
+    asked waits for the customer's own. ``email``, when given, is the address
+    the account will be opened with in place of the billing email (see
+    :func:`create_virtual_account`). Raises
     :class:`~vs_payments.exceptions.ProviderNotConfiguredError` where the
     provider is not offered or not configured.
     """
     client = get_provider(resolve_provider_name(provider))
     held_details = {
-        "name": customer.name, "email": customer.billing_email, "phone": customer.billing_phone,
+        "name": customer.name, "phone": customer.billing_phone,
+        "email": customer.billing_email if email is None else email,
     }
     return tuple(
         detail for detail in client.virtual_account_requires
@@ -431,7 +434,7 @@ def virtual_account_missing_details(customer, provider=None) -> tuple[str, ...]:
 
 # Handle the create virtual account workflow.
 def create_virtual_account(*, entity, customer, provider=None, deposit_account=None,
-                           preferred_bank="", actor_user=None):
+                           preferred_bank="", actor_user=None, customer_email=None):
     """Provision a dedicated virtual NUBAN for ``customer`` and store it.
 
     The account belongs to the branch its deposits do
@@ -442,6 +445,11 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     ``preferred_bank`` is the provider's identifier for the issuing bank, a slug
     such as ``wema-bank`` and not a numeric bank code; a value that is not shaped
     like a slug is refused so a code is never passed on as if it were one.
+
+    ``customer_email`` is the address the provider's customer is opened with,
+    where the caller holds a better one than the billing email (the family's,
+    for an account issued without anybody asking). It is sent to the provider
+    and stored nowhere here.
     """
     preferred_bank = _preferred_bank_slug(preferred_bank)
     provider_name = resolve_provider_name(provider)  # Refuse a provider this deployment does not offer.
@@ -463,8 +471,8 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     reference = _new_reference(entity)  # Give the PSP request its own reference.
     result = client.create_virtual_account(  # Ask the PSP to provision the account.
         reference=reference, customer_name=customer.name,
-        customer_email=customer.billing_email, preferred_bank=preferred_bank,
-        **({"subaccount": subaccount} if subaccount else {}),
+        customer_email=customer.billing_email if customer_email is None else customer_email,
+        preferred_bank=preferred_bank, **({"subaccount": subaccount} if subaccount else {}),
     )
 
     va = VirtualAccount.objects.create(
