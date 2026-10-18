@@ -238,9 +238,17 @@ class WebhookCapable(abc.ABC):
 
 # Group behavior for Collection Provider.
 class CollectionProvider(WebhookCapable):
-    """Pull money in."""
+    """Pull money in.
+
+    ``virtual_account_requires`` names the customer's own details (``name``,
+    ``email``, ``phone``) the provider needs before it issues a dedicated
+    account. A caller issuing one without being asked
+    (:func:`vs_payments.services.virtual_account_missing_details`) waits until
+    the customer has each of them rather than inventing a stand-in.
+    """
 
     name: str = ""  # Human-readable provider name.
+    virtual_account_requires: tuple[str, ...] = ("name",)
 
     @abc.abstractmethod
     # Handle the create checkout workflow.

@@ -672,6 +672,23 @@ account (one, under a lock on the customer; 10 an hour), or returns it.
 `PENDING` as soon as the provider reports one and `CONFIRMED` with its receipt
 once booked. Both need the school to let pupils pay. No minimum applies.
 
+The account is issued without anybody asking when the pupil's first bill
+posts (owner decision of 17 October: one permanent account per pupil, issued
+at the first bill rather than at enrolment, the `POST` kept for anyone
+missed). `vs_finance` sends `invoice_posted` once a posting commits; the FAL
+(`schools.core.fal.transfer_accounts`) queues `fal.issue_transfer_account`
+for a pupil's AR account with no active account, and the task issues through
+`open_transfer_account`, so the bill and the `POST` share one lock and one
+account. It does nothing where pupils may not pay, where the provider is off
+or issues no dedicated accounts, or where the branch is not set up to take
+payments directly. Where the AR account lacks a detail the provider needs
+(Paystack: a name and a billing email), it issues nothing and records a
+`VIRTUAL_ACCOUNT_NOT_ISSUED` payment event naming the missing detail, once
+per account. A provider that does not answer is retried five times, waiting
+1 to 16 minutes, and then recorded the same way; nothing is stored until the
+provider answers, so the screen shows `NONE`, never a half-made account.
+Where tasks run inline (`CELERY_TASK_ALWAYS_EAGER`), there is one attempt.
+
 A transfer into any customer's virtual account names no bill. Under Finance
 settings > Banking and cash, `apply_transfers_automatically` (default on,
 owner decision of 16 October) settles the customer's open bills as it is

@@ -19,6 +19,7 @@ All amounts are integer kobo; tax is computed from basis points with the same
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -45,6 +46,8 @@ from .deferred_income import defers, schedule_line
 from .money import format_naira
 from .posting import post_journal, resolve_period
 from .wording import counted, state_word
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -248,7 +251,26 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
     )
     apply_customer_credit(invoice, actor_user=actor_user)  # Credit already held pays the new bill.
+    transaction.on_commit(lambda: _announce_posted(invoice), robust=True)
     return invoice  # Return the posted invoice.
+
+
+def _announce_posted(invoice) -> None:
+    """Tell listeners an invoice posted, once its posting has committed.
+
+    Sent from ``on_commit`` so a listener never runs inside the money
+    transaction, and robustly, so a listener that fails is logged rather than
+    turning a posted bill into an error for the person who posted it.
+    """
+    from .signals import invoice_posted
+
+    for receiver, outcome in invoice_posted.send_robust(sender=type(invoice), invoice=invoice):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "invoice_posted listener %s failed for invoice %s",
+                getattr(receiver, "__qualname__", receiver), invoice.pk,
+                exc_info=(type(outcome), outcome, outcome.__traceback__),
+            )
 
 
 def apply_customer_credit(invoice, *, actor_user=None) -> int:
