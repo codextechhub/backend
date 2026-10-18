@@ -11,6 +11,16 @@ differently, and the only way to be sure of that is to make the same call.
 ``InvoiceLine`` and ``JournalLine`` reach ``branch`` through their parent, so
 they pass a prefix rather than growing a column of their own.
 
+**A file answers for the branch and the year its list was showing.** Each
+document dataset carries the shared Branch filter
+(:func:`vs_exports.catalogue.branch_filter`) and reads the list's period
+(:func:`vs_finance.period_filter.export_period`) into its date filter, so Mrs
+Bello exporting Ikeja's FY2015 invoices gets Ikeja's invoices dated inside that
+financial year, the rows the list showed her. With no year picked, the file
+leaves archived years out as the list does
+(:func:`vs_finance.archive.export_archive_filter`). The customer master is not a
+document and takes neither.
+
 
 Registered from :meth:`vs_finance.apps.VsFinanceConfig.ready`, so the Export Centre
 never imports this app and this app never imports the Export Centre's views. All three
@@ -40,11 +50,15 @@ from vs_exports.catalogue import (
     Dataset,
     Field,
     FilterDef,
+    branch_filter,
     choice_labels,
     narrow_to_caller_branches,
     register,
 )
 from vs_workflow.services.approval_filter import export_filter, not_returned_spec
+
+from .archive import export_archive_filter
+from .period_filter import export_period
 
 
 # Build the entity-scoped base queryset for customer invoices.
@@ -251,7 +265,10 @@ def register_datasets():
             FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
             FilterDef("tab", "Tab", FILTER_CHOICE, source="screen_tab", choices=_INVOICE_TABS,
                       description="The invoice screen's tab, overdue judged at each branch."),
+            branch_filter(),
+            export_archive_filter("vs_finance.Invoice"),
         ),
+        screen_period=export_period("invoice_date"),
     ))
 
     register(Dataset(
@@ -284,6 +301,8 @@ def register_datasets():
                       source="invoice__invoice_date", is_primary_date=True),
             FilterDef("status", "Invoice status", FILTER_CHOICE, source="invoice__status",
                       choices=_DOC_STATUS),
+            branch_filter("invoice__"),
+            export_archive_filter("vs_finance.Invoice", prefix="invoice__"),
         ),
     ))
 
@@ -337,7 +356,10 @@ def register_datasets():
             FilterDef("account", "Account code", FILTER_TEXT, source="account__code"),
             # A line's journal is what an approver sends back.
             export_filter("vs_finance.JournalEntry", source="entry"),
+            branch_filter("entry__"),
+            export_archive_filter("vs_finance.JournalEntry", prefix="entry__"),
         ),
+        screen_period=export_period("entry_date"),
     ))
 
     register(Dataset(
@@ -381,7 +403,10 @@ def register_datasets():
                 ("customer__name", "Customer"),
                 ("reference", "Reference"),
             ), description="Matches any one of these, the way the search box does."),
+            branch_filter(),
+            export_archive_filter("vs_finance.Payment"),
         ),
+        screen_period=export_period("payment_date"),
     ))
 
     register(Dataset(
@@ -432,7 +457,10 @@ def register_datasets():
             ), description="Matches any one of these, the way the search box does."),
             FilterDef("total", "Total", FILTER_NUMBER_RANGE, money=True),
             export_filter("vs_finance.ExpenseClaim"),
+            branch_filter(),
+            export_archive_filter("vs_finance.ExpenseClaim"),
         ),
+        screen_period=export_period("claim_date"),
     ))
 
     register(Dataset(
@@ -562,17 +590,6 @@ def _translate_gl_postings(params):
         filters.append(not_returned_spec())
     if value := params.get("source"):
         filters.append({"id": "entry_source", "values": [value]})
-    # The screen sends its date window as two flat params; the export wants one
-    # range object. Either end on its own is still a real narrowing (the range
-    # compiles to gte/lte independently), so a half-open window is carried rather
-    # than dropped - dropping it would widen the file in silence.
-    window = {}
-    if value := params.get("date_from"):
-        window["start"] = value
-    if value := params.get("date_to"):
-        window["end"] = value
-    if window:
-        filters.append({"id": "entry_date", **window})
     if value := params.get("search"):
         filters.append({"id": "search", "value": value})
     if value := params.get("account"):
@@ -661,7 +678,7 @@ def register_screens():
     register_screen(ScreenBinding(
         key="finance.gl_postings",
         handles=(
-            "status", "source", "date_from", "date_to", "search", "account",
+            "status", "source", "search", "account",
         ),
         label="Finance - General ledger",
         dataset_key="finance.gl_postings",

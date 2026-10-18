@@ -256,6 +256,14 @@ class FilterDef:
     #: For :data:`FILTER_SEARCH` only - ``{path: key}`` for a searched path
     #: whose column carries no key. A path not named reads it from the column.
     access_by_path: dict = dc_field(default_factory=dict)
+    #: The rows this filter keeps bound the date window a screen export is
+    #: given (:func:`resolve_screen`), so a window never opens on rows the file
+    #: leaves out.
+    narrows_window: bool = False
+    #: ``(tenant, user) -> {value: label}`` for a choice whose values belong to
+    #: the tenant (its branches) rather than to the code. ``user`` ``None``
+    #: names every value the tenant has, for reading a stored value back.
+    choices_for: object = None
 
     @property
     def path(self) -> str:
@@ -367,6 +375,89 @@ def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True
     ).filter(queryset, prefix, field=field)
 
 
+#: The stored value, and every list's spellings of it, for "not yet given a branch".
+UNASSIGNED_BRANCH = "unassigned"
+UNASSIGNED_BRANCH_REFS = ("unassigned", "none", "null")
+BRANCH_PARAM = "branch"
+
+
+def branch_filter(prefix: str = "") -> FilterDef:
+    """The Branch filter of a dataset of transactions, read as its lists read ``?branch=``.
+
+    ``prefix`` is the route to ``branch`` for a row that reaches it through its
+    document, as for :func:`narrow_to_caller_branches`. The values are branch
+    ids, and ``unassigned`` for the documents not yet given a branch; a list's
+    ``?branch=`` is carried into it by every screen bound to the dataset, so
+    Mrs Bello on Ikeja exports Ikeja's rows and not the school's.
+
+    The builder offers the branches the reader works in, and "Not yet given a
+    branch" to a reader of the whole school (the only one who can see such a
+    document). A branch outside the tenant or the reader's reach is refused in
+    the list's words when the export runs, the way the list refuses it; the
+    rows are already narrowed to that reach, so it could not widen the file
+    either way. A branch is never a Field Access field: its name always shows.
+    """
+    from vs_tenants.references import BRANCH_NOT_FOUND
+
+    def choices_for(tenant, user=None):
+        from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+        from vs_tenants.models import Branch
+
+        reach = visible_branch_ids(user, tenant) if user is not None else WHOLE_TENANT
+        branches = Branch.all_objects.filter(tenant=tenant)
+        if reach is not WHOLE_TENANT:
+            branches = branches.filter(pk__in=reach)
+        choices = {str(b.pk): b.name for b in branches.order_by("name", "pk")}
+        if reach is WHOLE_TENANT and len(choices) > 1:
+            choices[UNASSIGNED_BRANCH] = "Not yet given a branch"
+        return choices
+
+    def read(values):
+        if not isinstance(values, list):
+            raise FilterError("“Branch” expects a list of values.", filter_id=BRANCH_PARAM)
+        ids, unassigned = set(), False
+        for value in values:
+            raw = str(value).strip().lower()
+            if raw in UNASSIGNED_BRANCH_REFS:
+                unassigned = True
+            elif raw.isdigit():
+                ids.add(raw)
+            else:
+                raise FilterError(BRANCH_NOT_FOUND, filter_id=BRANCH_PARAM)
+        return ids, unassigned
+
+    def compiles(spec, scope=None):
+        values = spec.get("values") or []
+        ids, unassigned = read(values)
+        if scope is not None and ids - set(choices_for(scope.tenant, scope.user)):
+            raise FilterError(BRANCH_NOT_FOUND, filter_id=BRANCH_PARAM)
+        if not values:
+            return Q()
+        match = Q(**{f"{prefix}branch_id__in": sorted(int(i) for i in ids)}) if ids else Q(pk__in=[])
+        if unassigned:
+            match |= Q(**{f"{prefix}branch__isnull": True})
+        return match
+
+    def from_screen(value):
+        from rest_framework.exceptions import ValidationError
+
+        try:
+            ids, unassigned = read([value])
+        except FilterError:
+            raise ValidationError({BRANCH_PARAM: BRANCH_NOT_FOUND})
+        return {"id": BRANCH_PARAM, "values": [UNASSIGNED_BRANCH] if unassigned else sorted(ids)}
+
+    return FilterDef(
+        BRANCH_PARAM, "Branch", FILTER_CHOICE,
+        source=f"{prefix}branch",
+        description="Only the documents of the branches picked.",
+        compiles=compiles,
+        screen_param=BRANCH_PARAM,
+        from_screen=from_screen,
+        choices_for=choices_for,
+    )
+
+
 @dataclass(frozen=True)
 class Dataset:
     """One publishable dataset: a queryset, its columns, and its house rules."""
@@ -392,6 +483,13 @@ class Dataset:
     scope: str = DatasetScope.ENTITY
     #: Tenant kinds whose consoles may offer or run this dataset.
     tenant_kinds: tuple = ALL_TENANT_KINDS
+    #: ``(params, scope) -> [spec, ...]``: the period a list screen names with
+    #: :data:`PERIOD_SCREEN_PARAMS`, as this dataset's own filters, read
+    #: whether or not the screen names one (a list with no period still puts
+    #: archived years away). Set on a dataset of documents whose list reads a
+    #: year or a date range (:func:`vs_finance.period_filter.export_period`);
+    #: a value the list refuses raises the list's own error.
+    screen_period: object = None
 
     @property
     def needs_entity(self) -> bool:
@@ -469,8 +567,31 @@ class Dataset:
     def required_filter_ids(self) -> tuple:
         return tuple(f.id for f in self.filters if f.required)
 
+    def offered_filters(self, *, readable=None, tenant=None, user=None) -> list:
+        """The filters the builder offers this reader, each with its choices filled in.
+
+        A filter whose choices belong to the tenant (:attr:`FilterDef.choices_for`)
+        is offered with the values ``user`` may pick, and only when there are at
+        least two: Harbour Primary has one branch, and a Branch filter offering
+        Main Branch alone would narrow nothing. Without a ``tenant`` such a
+        filter is offered with no choices.
+        """
+        offered = []
+        for fdef in self.filters:
+            if not self.filter_readable(fdef, readable):
+                continue
+            fdef = replace(fdef, searches=self.readable_searches(fdef, readable))
+            if fdef.choices_for is not None and tenant is not None:
+                choices = fdef.choices_for(tenant, user)
+                if len(choices) < 2:
+                    continue
+                fdef = replace(fdef, choices=choices)
+            offered.append(fdef)
+        return offered
+
     # Serialise for the catalogue endpoint.
-    def describe(self, *, include_sensitive: bool = True, readable=None) -> dict:
+    def describe(self, *, include_sensitive: bool = True, readable=None,
+                 tenant=None, user=None) -> dict:
         """The catalogue shape the builder reads.
 
         Two gates, and they answer different questions. ``include_sensitive``
@@ -486,7 +607,8 @@ class Dataset:
 
         The same gate shapes the filters: a filter on a column the caller
         cannot read is not offered, and a search filter offers only the
-        columns it would actually match for them.
+        columns it would actually match for them. ``tenant`` and ``user`` fill
+        in the choices that belong to the tenant (:meth:`offered_filters`).
         """
         fields = [
             f for f in self.fields
@@ -505,8 +627,8 @@ class Dataset:
             "default_columns": list(self.default_columns or self.locked_field_ids),
             "required_filters": list(self.required_filter_ids),
             "filters": [
-                replace(f, searches=self.readable_searches(f, readable)).describe()
-                for f in self.filters if self.filter_readable(f, readable)
+                f.describe()
+                for f in self.offered_filters(readable=readable, tenant=tenant, user=user)
             ],
             "supported_formats": [str(f) for f in self.formats],
             "format_options": FORMAT_OPTION_SCHEMA,
@@ -620,6 +742,11 @@ COMMON_SCREEN_PARAMS = frozenset({
     "format", "screen", "cursor", "limit", "offset",
 })
 
+#: The query parameters a document list names its period with
+#: (:mod:`vs_finance.period_filter`): one financial year, or a date range, and
+#: whether its archived years show when it names none.
+PERIOD_SCREEN_PARAMS = ("fiscal_year", "date_from", "date_to", "include_archived")
+
 
 class Unmapped:
     """One screen filter that could not be carried into the export.
@@ -709,29 +836,83 @@ def all_screens() -> list[ScreenBinding]:
     return sorted(_SCREENS.values(), key=lambda s: s.key)
 
 
-def _earliest_day(dataset, spec, scope):
+def _earliest_day(dataset, spec, scope, within=None):
     """The first day any row in ``scope`` falls on by the date filter ``spec``, or None.
 
     Read from the dataset's own base queryset, so it is the earliest row the
-    caller could see on the list. An instant is taken by its UTC date, which is
-    never later than its local one, so the window still starts on or before it.
+    caller could see on the list, and only among the rows ``within`` keeps
+    (the filters marked :attr:`FilterDef.narrows_window`). An instant is taken
+    by its UTC date, which is never later than its local one, so the window
+    still starts on or before it.
     """
     from django.db.models import Min
 
     if scope is None:
         return None
-    earliest = dataset.base(scope).aggregate(first=Min(spec.path))["first"]
+    rows = dataset.base(scope) if within is None else dataset.base(scope).filter(within)
+    earliest = rows.aggregate(first=Min(spec.path))["first"]
     if isinstance(earliest, datetime.datetime):
         return earliest.astimezone(datetime.timezone.utc).date()
     return earliest
 
 
-def _date_window(binding, dataset, spec, scope, end) -> dict:
+def _latest_day(dataset, spec, scope, within=None):
+    """The last day any row in ``scope`` falls on by the date filter ``spec``, or None.
+
+    The twin of :func:`_earliest_day`. An instant is taken by its UTC date.
+    """
+    from django.db.models import Max
+
+    if scope is None:
+        return None
+    rows = dataset.base(scope) if within is None else dataset.base(scope).filter(within)
+    latest = rows.aggregate(last=Max(spec.path))["last"]
+    if isinstance(latest, datetime.datetime):
+        return latest.astimezone(datetime.timezone.utc).date()
+    return latest
+
+
+def _window_rows(dataset, specs, scope):
+    """The rows a screen's default narrowing keeps, as a ``Q``, or None when nothing narrows."""
+    within = None
+    for spec in specs:
+        fdef = dataset.filter_def(str(spec.get("id") or ""))
+        if fdef is not None and fdef.narrows_window:
+            q = compile_filter(dataset, spec, scope)
+            within = q if within is None else within & q
+    return within
+
+
+def _closed_period(dataset, period, scope, today, within=None) -> dict:
+    """A list's period with an open end closed on the rows that end leaves in.
+
+    A required date range runs only when both ends are set, while a list asked
+    for everything from 1 September 2015 shows every row from that day on. So
+    an open start becomes the first row in the reader's reach, and an open end
+    the later of today and the last row, which keeps the file to exactly the
+    rows the list shows.
+    """
+    fdef = dataset.filter_def(str(period.get("id") or ""))
+    if fdef is None or not fdef.required or (period.get("start") and period.get("end")):
+        return period
+    end = period.get("end")
+    if not end:
+        day = today or tenant_today(getattr(scope, "tenant", None))
+        end = max(day, _latest_day(dataset, fdef, scope, within) or day).isoformat()
+    start = period.get("start")
+    if not start:
+        closing = datetime.date.fromisoformat(end)
+        start = min(_earliest_day(dataset, fdef, scope, within) or closing, closing).isoformat()
+    return {**period, "start": start, "end": end}
+
+
+def _date_window(binding, dataset, spec, scope, end, within=None) -> dict:
     """The window a screen export covers when the screen sent no dates: see :func:`resolve_screen`."""
     tenant = getattr(scope, "tenant", None)
     name = dataset.name.lower()
     if binding.default_window_days is None:
-        start = min(_earliest_day(dataset, spec, scope) or end, end)
+        end = max(end, _latest_day(dataset, spec, scope, within) or end)
+        start = min(_earliest_day(dataset, spec, scope, within) or end, end)
         whole_list = True
         sentence = (
             f"Includes every one of the {name} the list shows, from "
@@ -771,7 +952,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
         screen sent none, else ``None``: ``{id, label, start, end, whole_list,
         sentence}``. A list with no date filter shows every row, so by default
         the window runs from the first row in ``scope`` (the caller's reach) to
-        ``today`` and ``whole_list`` is true. A screen that names
+        the later of ``today`` and the last row, and ``whole_list`` is true. A screen that names
         :attr:`ScreenBinding.default_window_days` covers that many days back
         instead, ``whole_list`` false. ``sentence`` says which in the school's
         date format ("Includes invoices from 3 Feb 2021 to 6 Oct 2026, ..."),
@@ -780,8 +961,15 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
 
     A parameter the dataset reads directly (:attr:`FilterDef.screen_param`) is
     carried here, before the screen's translator sees the rest, so every
-    screen bound to that dataset carries it alike. A value its filter refuses
-    raises that filter's own error.
+    screen bound to that dataset carries it alike. So is the list's period
+    (:data:`PERIOD_SCREEN_PARAMS`) on a dataset that reads one
+    (:attr:`Dataset.screen_period`): it becomes the dataset's date filter, so
+    a year picked on the list is the window of the file and no other window is
+    added, and with no period the list's default narrowing (archived years put
+    away) is carried instead. A value either refuses raises the list's own
+    error. The window, closed or added, is measured among the rows the
+    filters marked :attr:`FilterDef.narrows_window` keep, so it never starts
+    in a year the file leaves out.
     """
     dataset = binding.dataset_for(params)
     if dataset is None:
@@ -796,16 +984,25 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
         fdef.screen_param: fdef for fdef in dataset.filters
         if fdef.screen_param and fdef.from_screen is not None
     }
-    filters, unmapped = binding.translate(
-        {key: value for key, value in meaningful.items() if key not in direct}
-    )
+    period_params = set(PERIOD_SCREEN_PARAMS) if dataset.screen_period is not None else set()
+    filters, unmapped = binding.translate({
+        key: value for key, value in meaningful.items()
+        if key not in direct and key not in period_params
+    })
     for param, fdef in direct.items():
         if param in meaningful:
             filters.append(fdef.from_screen(meaningful[param]))
+    within = None
+    if dataset.screen_period is not None:
+        specs = dataset.screen_period(
+            {key: meaningful[key] for key in period_params if key in meaningful}, scope,
+        )
+        within = _window_rows(dataset, specs, scope)
+        filters.extend(_closed_period(dataset, spec, scope, today, within) for spec in specs)
 
     # A parameter the translator never heard of is unmapped, not carried. Assuming
     # otherwise would report "we applied your filter" about a filter nobody applied.
-    known = set(binding.handles) | set(direct)
+    known = set(binding.handles) | set(direct) | period_params
     for param, value in sorted(meaningful.items()):
         if param not in known and not any(u.param == param for u in unmapped):
             unmapped.append(Unmapped(
@@ -827,7 +1024,7 @@ def resolve_screen(binding: ScreenBinding, params: dict, *, today=None, scope=No
         spec = dataset.filter_def(filter_id)
         if spec is not None and spec.kind == FILTER_DATE_RANGE:
             end = today or tenant_today(getattr(scope, "tenant", None))
-            date_window = _date_window(binding, dataset, spec, scope, end)
+            date_window = _date_window(binding, dataset, spec, scope, end, within)
             filters.append({
                 "id": filter_id, "start": date_window["start"], "end": date_window["end"],
             })
@@ -1032,7 +1229,10 @@ def describe_filter(dataset: Dataset, spec: dict, *, tenant=None, readable=None)
         end = format_date(spec.get("end"), tenant) or "any"
         return f"{fdef.label} is {start} to {end}"
     if fdef.kind == FILTER_CHOICE:
-        values = [fdef.choices.get(str(v), str(v)) for v in (spec.get("values") or [])]
+        choices = fdef.choices
+        if fdef.choices_for is not None and tenant is not None:
+            choices = fdef.choices_for(tenant, None)
+        values = [choices.get(str(v), str(v)) for v in (spec.get("values") or [])]
         return f"{fdef.label} is any of {', '.join(values)}" if values else f"{fdef.label} is any"
     if fdef.kind == FILTER_SEARCH:
         columns = ", ".join(label for _, label in dataset.readable_searches(fdef, readable))

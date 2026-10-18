@@ -278,3 +278,53 @@ class CrossTenantPeriodTests(TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"], [])
+
+
+class RequisitionExportScopeTests(TestCase):
+    """The Export button on the requisition list carries its branch and year into the file.
+
+    Procurement spells "not yet given a branch" as ``none``; the export reads it
+    the same way as Finance's ``unassigned``.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        seed_currencies()
+        school = make_school(slug="bright-star-period-exp", name="Bright Star School")
+        cls.ikeja = make_branch(school, name="Ikeja Branch")
+        lekki = make_branch(school, name="Lekki Branch", is_main=False)
+        cls.books = _books(school, "BSPEX")
+        _year(cls.books, 2015, datetime.date(2014, 9, 1), datetime.date(2015, 8, 31))
+        cls.bello = _buyer(
+            school, cls.ikeja, "bello@bright-star-period-exp.example.com",
+            "procurement.requisition.view", "exports.catalogue.view",
+        )
+        for branch, day in (
+            (cls.ikeja, datetime.date(2014, 10, 2)), (cls.ikeja, datetime.date(2015, 9, 1)),
+            (lekki, datetime.date(2015, 3, 9)), (None, datetime.date(2015, 5, 5)),
+        ):
+            PurchaseRequisition.objects.create(
+                entity=cls.books, branch=branch, title="Chalk", request_date=day,
+            )
+
+    def exported(self, query):
+        response = TenantAPIClient(user=self.bello).get(
+            f"/v1/exports/from-screen/?screen=procurement.requisitions"
+            f"&entity={self.books.code}{query}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_branch_and_year_export_only_that_branch_in_that_year(self):
+        data = self.exported(f"&fiscal_year=2015&branch={self.ikeja.pk}")
+        self.assertIn(
+            {"id": "request_date", "start": "2014-09-01", "end": "2015-08-31"},
+            data["config"]["filters"],
+        )
+        self.assertTrue(data["exact"])
+        self.assertEqual(data["matching_rows"], 1)
+
+    def test_none_exports_the_requisitions_not_yet_given_a_branch(self):
+        data = self.exported("&branch=none")
+        self.assertIn({"id": "branch", "values": ["unassigned"]}, data["config"]["filters"])
+        self.assertEqual(data["matching_rows"], 1)

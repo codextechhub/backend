@@ -277,6 +277,9 @@ class PayrollRunListCreateView(PayFieldWriteMixin, _FinanceBase):
     docstring-name: Payroll runs
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     pay_field_resource = "finance.payrollrun"
 
     @property
@@ -375,7 +378,9 @@ class PayrollRunSummaryView(_FinanceBase):
     A branch-bound reader's figures are their branches' part alone
     (:func:`_runs_in_reach`): the runs they reach, their shares of what is
     unpaid, and their own staff on the latest run. Nothing another branch is
-    paid reaches them, even summed into a total.
+    paid reaches them, even summed into a total. A ``?branch=`` or a period
+    (by pay date) narrows the runs as it narrows the list
+    (:mod:`vs_finance.list_scope`).
 
     docstring-name: Payroll runs
     """
@@ -390,9 +395,12 @@ class PayrollRunSummaryView(_FinanceBase):
         from ..constants import PayrollRunStatus
         from ..models import PayrollRunBranch
 
+        from ..list_scope import narrow_finance_document_list
+
         entity = resolve_entity(request)
         reach = caller_branch_ids(request)
-        runs = _runs_in_reach(request, entity)
+        runs = narrow_finance_document_list(
+            _runs_in_reach(request, entity), request, entity=entity, archived=False)
         posted = runs.filter(run_status=PayrollRunStatus.POSTED)
         unsplit = posted.exclude(Exists(PayrollRunBranch.objects.filter(run=OuterRef("pk"))))
         unpaid_shares = PayrollRunBranch.objects.filter(

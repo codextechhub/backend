@@ -245,6 +245,9 @@ class TaxObligationOutstandingView(_FinanceBase):
 class TaxFilingSummaryView(_FinanceBase):
     """GET - header KPIs over **all** tax filings (accurate under pagination).
 
+    A ``?branch=`` or a period (by the end of the period filed) narrows every
+    figure as it narrows the list (:mod:`vs_finance.list_scope`).
+
     docstring-name: Tax filings
     """
 
@@ -259,8 +262,11 @@ class TaxFilingSummaryView(_FinanceBase):
 
         from ..models import TaxFilingShare
 
+        from ..list_scope import narrow_finance_document_list
+
         entity = resolve_entity(request)
-        filings = _filings_in_reach(request, entity)
+        filings = narrow_finance_document_list(
+            _filings_in_reach(request, entity), request, entity=entity, archived=False)
         agg = filings.aggregate(
             outstanding=Coalesce(
                 Sum(F("amount_due") - F("amount_paid"),

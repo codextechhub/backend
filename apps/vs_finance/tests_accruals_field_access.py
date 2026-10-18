@@ -381,6 +381,7 @@ class ProvisionFieldAccessTests(_AccrualsFieldAccess):
                                                 hide=[k + "required_total"])
         cls.lekki_open = cls.staff(cls.tenant, "pv-lekki-open", branch=cls.lekki)
         cls.solo_open = cls.staff(cls.solo_tenant, "pv-solo-open")
+        cls.no_date = cls.staff(cls.tenant, "pv-no-date", hide=[k + "as_of"])
 
     def run_of(self, books=None):
         from vs_finance.provisions import prepare_provision
@@ -391,6 +392,26 @@ class ProvisionFieldAccessTests(_AccrualsFieldAccess):
         return prepare_provision(books, as_of=D(2026, 12, 31), narration="Year end")
 
     # -- reads ---------------------------------------------------------------- #
+
+    def test_a_period_is_refused_where_the_provision_date_is_hidden(self):
+        self.run_of()
+        for query in ("&fiscal_year=2026", "&date_from=2026-12-01"):
+            with self.subTest(query=query):
+                refused = self.api(self.no_date).get(self.url("provisions/") + query)
+                self.assertEqual(refused.status_code, 403, refused.data)
+                self.assertEqual(self.code(refused), "field_read_denied")
+                self.assertIn("Provision date", refused.data["message"])
+        self.assertEqual(self.api(self.no_date).get(self.url("provisions/")).status_code, 200)
+
+    def test_a_period_narrows_runs_for_a_reader_of_the_provision_date(self):
+        self.run_of()
+        for user in (self.open, self.read_only):
+            with self.subTest(user=user.email):
+                path = self.url("provisions/")
+                self.assertEqual(
+                    len(self.api(user).get(path + "&date_from=2026-12-31").data["data"]), 1)
+                self.assertEqual(
+                    len(self.api(user).get(path + "&date_from=2027-01-01").data["data"]), 0)
 
     def test_a_hidden_status_leaves_the_list_and_the_detail_and_the_number_stays(self):
         run = self.run_of()

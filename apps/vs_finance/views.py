@@ -301,19 +301,22 @@ class _BranchStatesListMixin:
 class EntityScopedListMixin:
     """A ListAPIView whose queryset is filtered to the resolved entity via ``entity_qs``.
 
-    A list of finance documents leaves out those dated in an archived fiscal
-    year unless asked with ``?include_archived=true``
-    (:func:`vs_finance.archive.hide_archived`).
+    A list of finance documents is narrowed to the caller's ``?branch=`` and
+    period, and leaves out those dated in an archived fiscal year unless asked
+    with ``?include_archived=true`` or for that year
+    (:func:`vs_finance.list_scope.narrow_finance_document_list`).
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     # Handle the get queryset workflow.
     def get_queryset(self):
-        from .archive import hide_archived
+        from .list_scope import narrow_finance_document_list
 
         self.entity = resolve_entity(self.request)
-        return hide_archived(self.entity_qs(self.entity), self.request)
+        return narrow_finance_document_list(
+            self.entity_qs(self.entity), self.request, self, entity=self.entity,
+        )
 
     # pragma: no cover - overridden
     def entity_qs(self, entity):
@@ -1122,6 +1125,10 @@ class FiscalYearListView(
 class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/journals/?entity= - posted/draft journal entries for the entity.
 
+    The branch and the dates (``?fiscal_year=``, or ``?date_from=`` and
+    ``?date_to=``) are read by :mod:`vs_finance.list_scope`, as at every finance
+    document list.
+
     docstring-name: Journal entries
     """
 
@@ -1144,10 +1151,6 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
         qs = filter_by_stored_status(qs, params.get("status"))
         if (source := params.get("source")):
             qs = qs.filter(source=source)
-        if (date_from := params.get("date_from")):
-            qs = qs.filter(date__gte=date_from)
-        if (date_to := params.get("date_to")):
-            qs = qs.filter(date__lte=date_to)
         if (search := params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search)
@@ -1163,10 +1166,11 @@ class JournalSummaryView(APIView):
     """Status counts + posted total.
 
     Powers the Journal Entries status tabs and footer (one cheap aggregate, honours
-    the same source/date/search filters as the list). Journals dated in an
-    archived fiscal year are left out unless ``?include_archived=true``, as the
-    list leaves them out (:func:`vs_finance.archive.hide_archived`), so each
-    tab's count is the number of rows the tab shows. A journal an approver sent
+    the same source, search, branch and period filters as the list). Journals
+    dated in an archived fiscal year are left out unless ``?include_archived=true``
+    or that year is asked for, as the list leaves them out
+    (:func:`vs_finance.list_scope.narrow_finance_document_list`), so each tab's
+    count is the number of rows the tab shows. A journal an approver sent
     back is counted under ``sent_back`` and in no ``by_status`` entry, as the
     Draft tab does not list it (:func:`vs_workflow.services.approval_filter.word_condition`);
     ``total`` counts every journal, the All tab.
@@ -1181,20 +1185,16 @@ class JournalSummaryView(APIView):
     def get(self, request):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
-        from .archive import hide_archived
         from .constants import DocumentStatus
+        from .list_scope import narrow_finance_document_list
 
         entity = resolve_entity(request)
-        qs = hide_archived(JournalEntry.objects.filter(
+        qs = narrow_finance_document_list(JournalEntry.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ), request)
+        ), request, entity=entity)
         params = request.query_params
         if (source := params.get("source")):
             qs = qs.filter(source=source)
-        if (date_from := params.get("date_from")):
-            qs = qs.filter(date__gte=date_from)
-        if (date_to := params.get("date_to")):
-            qs = qs.filter(date__lte=date_to)
         if (search := params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search)
@@ -1494,10 +1494,11 @@ class InvoiceSummaryView(APIView):
 
     Powers the Student-Invoices KPI cards (total invoiced/collected, collection
     rate, overdue balance + a 12-month series for the sparklines), the status tabs
-    and the footer totals. Honours the same ``?search=`` as the list, and leaves
-    out what the invoice and receipt lists leave out: documents dated in an
-    archived fiscal year, unless ``?include_archived=true``
-    (:func:`vs_finance.archive.hide_archived`; a bill still owed stays in).
+    and the footer totals. Honours the same ``?search=``, branch and period as the
+    list (:mod:`vs_finance.list_scope`), and leaves out what the invoice and
+    receipt lists leave out: documents dated in an archived fiscal year, unless
+    ``?include_archived=true`` or that year is asked for (a bill still owed
+    stays in).
 
     docstring-name: Invoice summary
     """
@@ -1513,16 +1514,16 @@ class InvoiceSummaryView(APIView):
         from .constants import DocumentStatus, InvoicePaymentStatus
         from .models import Invoice, Payment
 
-        from .archive import hide_archived
+        from .list_scope import narrow_finance_document_list
 
         entity = resolve_entity(request)
         today = tenant_today(entity.tenant)
-        base = hide_archived(Invoice.objects.filter(
+        base = narrow_finance_document_list(Invoice.objects.filter(
             transaction_branch_q(request), entity=entity,
-        ), request)
-        receipts = hide_archived(Payment.objects.filter(
+        ), request, entity=entity)
+        receipts = narrow_finance_document_list(Payment.objects.filter(
             transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
-        ), request)
+        ), request, entity=entity)
         if (search := request.query_params.get("search")):
             base = base.filter(
                 Q(document_number__icontains=search)

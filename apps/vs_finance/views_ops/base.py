@@ -518,14 +518,16 @@ class _FinanceBase(APIView):
         from the context, and a list built without it would hand every caller
         the same rows whatever their Field Access says.
 
-        Documents dated in an archived fiscal year are left out unless the caller
-        asks with ``?include_archived=true`` (:func:`vs_finance.archive.hide_archived`).
+        A document list is narrowed to the caller's ``?branch=`` and period, and
+        documents dated in an archived fiscal year are left out unless the caller
+        asks with ``?include_archived=true`` or names that year
+        (:func:`vs_finance.list_scope.narrow_finance_document_list`).
         """
         from core.pagination import XVSPagination
 
-        from ..archive import hide_archived
+        from ..list_scope import narrow_finance_document_list
 
-        qs = hide_archived(qs, request)
+        qs = narrow_finance_document_list(qs, request, self)
         paginator = XVSPagination()  # Instantiate platform paginator.
         paginator.page_size = 25  # Default finance page size.
         page = paginator.paginate_queryset(qs, request, view=self)  # Slice queryset for current request.

@@ -7,6 +7,13 @@ given a branch. The vendor master is a shared record (``inclusive=True``): a
 vendor every branch buys from is in every branch's file, as it is on the vendor
 screen. See :mod:`vs_rbac.scoping` for the two readings.
 
+**A file answers for the branch and the year its list was showing.** Orders,
+vendor bills and requisitions carry the shared Branch filter
+(:func:`vs_exports.catalogue.branch_filter`) and read the list's period
+(:func:`vs_finance.period_filter.export_period`) into the date that places each
+document in a year, and with no year picked leave archived years out as the
+list does. The vendor master takes neither.
+
 
 Registered from :meth:`vs_procurement.apps.VsProcurementConfig.ready`. Entity-scoped
 like finance: a purchase order belongs to the set of books that will pay it.
@@ -31,10 +38,13 @@ from vs_exports.catalogue import (
     Dataset,
     Field,
     FilterDef,
+    branch_filter,
     choice_labels,
     narrow_to_caller_branches,
     register,
 )
+from vs_finance.archive import export_archive_filter
+from vs_finance.period_filter import export_period
 from vs_workflow.services.approval_filter import export_filter, not_returned_spec
 
 
@@ -199,7 +209,10 @@ def register_datasets():
             FilterDef("approval_state", "Approval", FILTER_CHOICE, choices=_APPROVAL_STATE),
             FilterDef("vendor", "Vendor", FILTER_TEXT, source="vendor__name"),
             export_filter("vs_procurement.PurchaseOrder"),
+            branch_filter(),
+            export_archive_filter("vs_procurement.PurchaseOrder"),
         ),
+        screen_period=export_period("order_date"),
     ))
 
     register(Dataset(
@@ -243,7 +256,10 @@ def register_datasets():
             FilterDef("tab", "Tab", FILTER_CHOICE, choices=_BILL_TABS, compiles=_bill_tab_compiles,
                       description="The bill screen's tab, overdue judged at each branch."),
             export_filter("vs_procurement.VendorInvoice"),
+            branch_filter(),
+            export_archive_filter("vs_procurement.VendorInvoice"),
         ),
+        screen_period=export_period("invoice_date"),
     ))
 
     register(Dataset(
@@ -344,7 +360,10 @@ def register_datasets():
             FilterDef("cost_center", "Cost centre", FILTER_TEXT,
                       source="cost_center__code"),
             export_filter("vs_procurement.PurchaseRequisition"),
+            branch_filter(),
+            export_archive_filter("vs_procurement.PurchaseRequisition"),
         ),
+        screen_period=export_period("request_date"),
     ))
 
 

@@ -466,6 +466,9 @@ class InterBranchTransferListCreateView(_FinanceBase):
     docstring-name: Inter-branch transfers
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     @property
     def rbac_permission(self):
         return "finance.interbranch.transfer" if self.request.method == "POST" \
@@ -834,6 +837,9 @@ class HeldReceiptListCreateView(_FinanceBase):
     docstring-name: Receipts held for another branch
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     @property
     def rbac_permission(self):
         return "finance.payment.create" if self.request.method == "POST" else "finance.payment.view"
@@ -1060,6 +1066,9 @@ class RechargeListCreateView(_FinanceBase):
 
     docstring-name: Shared cost recharges
     """
+
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
 
     @property
     def rbac_permission(self):

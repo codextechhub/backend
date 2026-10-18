@@ -558,6 +558,9 @@ class PettyCashReturnListView(_FinanceBase):
     docstring-name: Petty cash returns
     """
 
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
+
     rbac_permission = "finance.pettycash.view"
 
     def get(self, request):

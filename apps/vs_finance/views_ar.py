@@ -44,7 +44,14 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     ``_FinanceBase`` is a plain ``APIView`` (which ignores ``pagination_class``), so
     list views call this to get the standard ``{pagination, data}`` response. Page size
     is a fixed 25 (override per-request with ?page_size=, capped at 100).
+
+    A document list is narrowed here as at every other finance list: to the
+    caller's ``?branch=`` and period, with archived years left out unless asked
+    for (:func:`vs_finance.list_scope.narrow_finance_document_list`).
     """
+    from .list_scope import narrow_finance_document_list
+
+    qs = narrow_finance_document_list(qs, request, view)
     paginator = XVSPagination()
     paginator.page_size = 25
     page = paginator.paginate_queryset(qs, request, view=view)
@@ -990,7 +997,8 @@ class PaymentListView(_FinanceBase):
 class PaymentSummaryView(_FinanceBase):
     """GET /finance/payments/summary/ - receipts KPI totals + allocation-status counts
     for the header cards, over ALL rows (accurate while the list paginates). Honors the
-    same ``?method=``/``?customer=``/``?search=`` as the list.
+    same ``?method=``/``?customer=``/``?search=``, branch and period as the list
+    (:mod:`vs_finance.list_scope`), archived years left out as the list leaves them.
 
     docstring-name: Receipts summary
     """
@@ -1007,10 +1015,12 @@ class PaymentSummaryView(_FinanceBase):
         from .constants import DocumentStatus
         from .models import Payment
 
+        from .list_scope import narrow_finance_document_list
+
         entity = resolve_entity(request)
-        qs = (Payment.objects.filter(
+        qs = narrow_finance_document_list(Payment.objects.filter(
             transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
-        ))
+        ), request, entity=entity)
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
         if (customer := request.query_params.get("customer")):
@@ -3403,9 +3413,10 @@ class ConcessionListCreateView(_FinanceBase):
                 | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
             )
         qs = filter_by_approval_param(qs, request.query_params)
-        paginator = XVSPagination()
-        page = paginator.paginate_queryset(qs.order_by("-concession_date", "-id"), request, view=self)
-        return paginator.get_paginated_response(ConcessionSerializer(page, many=True, context={"request": request}).data)
+        return _paginate(
+            request, qs.order_by("-concession_date", "-id"), ConcessionSerializer, self,
+            context={"request": request},
+        )
 
     # Handle POST requests for this endpoint.
     def post(self, request):
@@ -3640,7 +3651,8 @@ class ConcessionSummaryView(_FinanceBase):
     the Draft filter leaves out. ``active_count`` is the number of concessions
     in force: posted and not reversed, which is what the Posted filter lists.
     A draft, one awaiting approval, one sent back and one reversed are not in
-    force, so none of them is counted.
+    force, so none of them is counted. Each figure reads the list's
+    ``?branch=`` and period (:mod:`vs_finance.list_scope`).
 
     docstring-name: Concession summary
     """
@@ -3653,8 +3665,13 @@ class ConcessionSummaryView(_FinanceBase):
 
         from vs_config.clock import tenant_today
 
+        from .list_scope import narrow_finance_document_list
+
         entity = resolve_entity(request)
-        qs = Concession.objects.filter(transaction_branch_q(request), entity=entity)
+        qs = narrow_finance_document_list(
+            Concession.objects.filter(transaction_branch_q(request), entity=entity),
+            request, entity=entity, archived=False,
+        )
         posted_ytd = qs.filter(
             status=DocumentStatus.POSTED,
             concession_date__year=tenant_today(entity.tenant).year,
@@ -3707,9 +3724,7 @@ class PaymentPlanListCreateView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(invoice__document_number__icontains=search)
                 | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
             )
-        paginator = XVSPagination()
-        page = paginator.paginate_queryset(qs.order_by("-start_date", "-id"), request, view=self)
-        return paginator.get_paginated_response(PaymentPlanSerializer(page, many=True).data)
+        return _paginate(request, qs.order_by("-start_date", "-id"), PaymentPlanSerializer, self)
 
     @transaction.atomic
     # Handle POST requests for this endpoint.
@@ -4322,6 +4337,9 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
 
     docstring-name: Customer credit transfers
     """
+
+    #: Reads ``?branch=`` its own way (:mod:`vs_finance.list_scope`).
+    filters_own_branch = True
 
     @property
     def rbac_permission(self):
