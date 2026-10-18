@@ -104,7 +104,12 @@ from .serializers import (
 from vs_tenants.references import BRANCH_NOT_FOUND
 
 from .views import resolve_entity
-from .views_ops.base import _bank_account_in_reach, require_own_branch_bank
+from .views_ops.base import (
+    UNASSIGNED_REFS,
+    _bank_account_in_reach,
+    _filter_by_branch,
+    require_own_branch_bank,
+)
 from .views_ops import (
     _FinanceBase,
     _date,
@@ -2963,7 +2968,7 @@ class ARAdjustmentBatchView(_FinanceBase):
 
 
 # Support the writeoff rows workflow.
-def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
+def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None, request=None):
     """Normalised bad-debt write-off rows, from two disjoint sources.
 
     * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
@@ -3002,7 +3007,17 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
     (:func:`vs_workflow.services.approval_filter.filter_by_approval`). Given, it
     keeps only the requests it names, and drops the posted write-offs read from
     the ledger record, which have no approval request to be sent back.
+
+    ``request`` carries the list's ``?branch=`` and period
+    (:mod:`vs_finance.list_scope`). A request is narrowed like every document
+    list, by its branch and its write-off date. A posted write-off is narrowed
+    by the written-off invoice's branch, as the reach above is, and by the day
+    it posted, the date its row shows; that day is read in the branch's own
+    time zone, so the database keeps a day either side and the exact day is
+    judged on the row.
     """
+    import datetime
+
     from .approvals import ApprovalGate
     from vs_rbac.scoping import UNNARROWED
 
@@ -3021,9 +3036,12 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
             ref=Cast("pk", CharField()),
         ).values("ref")
         posted = posted.filter(target_type="Invoice", target_id__in=in_reach)
+    period = None
+    requests = scope.filter(WriteOffRequest.objects.filter(entity=entity))
+    if request is not None:
+        posted, requests, period = _writeoffs_in_list_scope(request, entity, posted, requests)
     logs = [] if approval else list(posted.order_by("-created_at", "-id")[:limit])
-    requests = filter_by_approval(
-        scope.filter(WriteOffRequest.objects.filter(entity=entity)), approval)
+    requests = filter_by_approval(requests, approval)
     need_ids = [int(l.target_id) for l in logs
                 if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
     invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
@@ -3046,6 +3064,8 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
             # carries no document id to act on, so no gate applies to it.
             "approval_required": False,
         })
+    if period is not None:
+        rows = [row for row in rows if period.contains(datetime.date.fromisoformat(row["date"]))]
 
     # Non-posted write-off requests (drafts + awaiting approval). The audit log
     # only records POSTED write-offs, so these would otherwise never surface.
@@ -3068,11 +3088,65 @@ def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None, approval=None):
     return rows
 
 
+#: Marks a list asked for no branch, as distinct from the unassigned one (None).
+_ALL_BRANCHES = object()
+
+
+def _picked_branch_id(request, entity):
+    """The branch id the list's ``?branch=`` names, ``None`` for unassigned, or :data:`_ALL_BRANCHES`."""
+    ref = request.query_params.get("branch")
+    if not ref:
+        return _ALL_BRANCHES
+    if str(ref).lower() in UNASSIGNED_REFS:
+        return None
+    # Validated as the lists validate it: unknown or out of reach is a 400.
+    _filter_by_branch(Invoice.objects.none(), request, entity)
+    return int(ref)
+
+
+def _writeoffs_in_list_scope(request, entity, posted, requests):
+    """``(posted, requests, period)`` narrowed to the list's ``?branch=`` and period.
+
+    See :func:`_writeoff_rows`. ``period`` is returned for the exact day check
+    on each posted row, or ``None`` when the list names no period.
+    """
+    import datetime
+
+    from django.db.models import CharField
+    from django.db.models.functions import Cast
+
+    from .list_scope import narrow_finance_document_list
+    from .period_filter import refuse_hidden_period, requested_period
+
+    requests = narrow_finance_document_list(requests, request, entity=entity, archived=False)
+    if request.query_params.get("branch"):
+        invoices = _filter_by_branch(Invoice.objects.filter(entity=entity), request, entity)
+        posted = posted.filter(
+            target_type="Invoice",
+            target_id__in=invoices.annotate(ref=Cast("pk", CharField())).values("ref"),
+        )
+    refuse_hidden_period(request, WriteOffRequest)
+    period = requested_period(request, entity)
+    if period is not None:
+        day = datetime.timedelta(days=1)
+        if period.start is not None:
+            posted = posted.filter(created_at__date__gte=period.start - day)
+        if period.end is not None:
+            posted = posted.filter(created_at__date__lte=period.end + day)
+    return posted, requests, period
+
+
 # Group endpoint behavior for A R Adjustment List View.
 class ARAdjustmentListView(_FinanceBase):
     """GET /finance/ar-adjustments/ - unified customer refunds + bad-debt write-offs.
 
-    Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
+    Filters: ``?type=(refund|writeoff)``, ``?search=``, and the list's
+    ``?branch=`` and period (:mod:`vs_finance.list_scope`), read for refunds and
+    write-off requests as every document list reads them and for posted
+    write-offs as :func:`_writeoff_rows` says; the figures follow both, the
+    refundable credit following the branch alone. ``written_off_ytd`` is this
+    year's posted write-offs, or, with a period named, every posted write-off
+    inside it. The merged list is sorted
     by date and paginated; KPI totals (written-off YTD, pending count, refundable
     credit) ride in the response so they stay accurate across pages. Pending
     counts the documents awaiting approval, not drafts
@@ -3103,6 +3177,8 @@ class ARAdjustmentListView(_FinanceBase):
         from django.utils import timezone
 
         from .approvals import ApprovalGate
+        from .list_scope import narrow_finance_document_list
+        from .period_filter import asks_for_period
 
         entity = resolve_entity(request)
         type_f = (request.query_params.get("type") or "").lower()
@@ -3129,6 +3205,7 @@ class ARAdjustmentListView(_FinanceBase):
         # school that is two extra queries a row for a handful of distinct scopes.
         refunds = (transaction_branch_scope(request).filter(Refund.objects.filter(entity=entity))
                    if sees_refunds else Refund.objects.none())
+        refunds = narrow_finance_document_list(refunds, request, entity=entity, archived=False)
         approval = request.query_params.get("approval")
         for r in (filter_by_approval(refunds, approval)
                   .select_related("customer", "entity__tenant", "branch")
@@ -3142,31 +3219,34 @@ class ARAdjustmentListView(_FinanceBase):
                 "method": r.method, "approval_required": gate.required(r),
             })
         writeoff_rows = (
-            _writeoff_rows(entity, gate=gate, scope=scope, approval=approval)
+            _writeoff_rows(entity, gate=gate, scope=scope, approval=approval, request=request)
             if sees_writeoffs else []
         )
 
         # KPI totals - from the full sets, independent of the type filter / page.
         year = timezone.now().year
-        # "Written off YTD" is money actually written off → POSTED rows only
-        # (writeoff_rows now also carries non-posted requests).
+        # Posted rows only; this year's, or every one inside a named period.
+        in_period = asks_for_period(request)
         written_off_ytd = sum(
             w["amount"] for w in writeoff_rows
-            if w["status"] == "POSTED" and w["date"][:4] == str(year)
+            if w["status"] == "POSTED" and (in_period or w["date"][:4] == str(year))
         ) if sees_writeoffs else None
         # "Pending" spans the adjustment kinds this reader sees.
+        listed_requests = narrow_finance_document_list(
+            scope.filter(WriteOffRequest.objects.filter(entity=entity)),
+            request, entity=entity, archived=False,
+        )
         pending = (
             refunds.filter(status__in=PENDING_STATUSES).count()
-            + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
-               .filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
+            + (listed_requests.filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
         )
         # The Sent back filter's count, over the kinds this reader sees.
         from vs_workflow.services.approval_filter import returned_condition
 
         sent_back = (
             refunds.filter(returned_condition(Refund)).count()
-            + (scope.filter(WriteOffRequest.objects.filter(entity=entity))
-               .filter(returned_condition(WriteOffRequest)).count() if sees_writeoffs else 0)
+            + (listed_requests.filter(returned_condition(WriteOffRequest)).count()
+               if sees_writeoffs else 0)
         )
         refundable_credit = None
         # The credit a reader could refund is customers' balances added up, so it
@@ -3177,8 +3257,13 @@ class ARAdjustmentListView(_FinanceBase):
             active_customer_ids = _branch_visible(request, Customer.objects.filter(
                 entity=entity, is_active=True)).values_list("id", flat=True)
             # The credit this reader could refund: their branches' credit only.
-            refundable_credit = sum(refundable_credit_by_branch(
-                entity, active_customer_ids, scope=transaction_branch_scope(request)).values())
+            by_branch = refundable_credit_by_branch(
+                entity, active_customer_ids, scope=transaction_branch_scope(request))
+            picked = _picked_branch_id(request, entity)
+            refundable_credit = sum(
+                amount for (_customer, branch_id), amount in by_branch.items()
+                if picked is _ALL_BRANCHES or branch_id == picked
+            )
 
         rows = []
         if type_f in ("", "refund"):
@@ -4170,6 +4255,10 @@ class DunningSummaryView(_FinanceBase):
     (how late a customer is) is served no buckets, and one who may not read
     ``balance`` is served each bucket's count without its amount.
 
+    The list's ``?branch=`` narrows the buckets to that branch's invoices. Its
+    period does not: the buckets age what is owed today, whatever year the
+    notices below them were raised in.
+
     docstring-name: Dunning summary
     """
 
@@ -4194,6 +4283,7 @@ class DunningSummaryView(_FinanceBase):
                  .exclude(due_date__isnull=True)
                  .annotate(_balance=balance).filter(_balance__gt=0)
                  .only("due_date", "total", "amount_paid", "amount_credited", "branch_id"))
+        owing = _filter_by_branch(owing, request, entity)
         for inv in owing:
             bal = inv.balance_due
             # Days past due by the invoice's own branch's day: >0 overdue, <=0 upcoming.

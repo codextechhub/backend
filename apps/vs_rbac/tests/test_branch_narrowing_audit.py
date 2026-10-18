@@ -105,6 +105,11 @@ NARROWERS = (
 #: Flagged lookups whose branch question is answered somewhere else. Keyed by
 #: ``<path>::<function>::<Model>``, which survives ordinary edits to the file.
 SETTLED_ELSEWHERE = {
+    "vs_finance/views_ar.py::_writeoff_rows::Invoice":
+        "Reads the customer of each posted write-off for its row. The ids are "
+        "the targets of the ledger entries already narrowed to the caller's "
+        "branches (and to the list's ?branch=) before the list is cut, so every "
+        "invoice looked up is one the caller reaches.",
     "vs_finance/views_ops/banking.py::_shared_source::BankAccount":
         "Splitting a shared bank account by branch, and previewing the split. "
         "The resolver refuses any caller whose reach is not the whole tenant "

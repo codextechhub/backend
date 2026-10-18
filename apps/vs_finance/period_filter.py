@@ -61,6 +61,10 @@ class DocumentPeriod:
             lookups[f"{prefix}{date_field}__lte"] = self.end
         return Q(**lookups)
 
+    def contains(self, day: datetime.date) -> bool:
+        """Whether ``day`` falls inside the period."""
+        return (self.start is None or day >= self.start) and (self.end is None or day <= self.end)
+
 
 def _params(request):
     return getattr(request, "query_params", None) or getattr(request, "GET", {})

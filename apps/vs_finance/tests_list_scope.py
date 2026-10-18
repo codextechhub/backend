@@ -330,3 +330,127 @@ class DocumentDateAccessTests(SimpleTestCase):
                 keys = [k for k, _ in date_access_keys(apps.get_model(label))]
                 self.assertEqual(keys, [key])
         self.assertEqual(date_access_keys(Invoice), ())
+
+
+class RefundsAndWriteOffsScopeTests(TestCase):
+    """The combined refunds and write-offs list reads the branch and the year.
+
+    Refunds and write-off requests are placed by their own dates. A posted
+    write-off is read from the ledger record, so its branch is the written-off
+    invoice's and its year the day it posted. The dunning age buckets follow
+    the branch only, because they age what is owed today.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.constants import (
+            DocumentStatus, FinanceAuditAction, FinanceAuditStatus,
+        )
+        from vs_finance.models import FinanceAuditLog, Refund, WriteOffRequest
+
+        seed_currencies()
+        cls.school = make_school(slug="bright-star-fin-adjust", name="Bright Star School")
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch")
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=False)
+        cls.books = _books(cls.school, "BSFAD")
+        _year(cls.books, 2015, datetime.date(2014, 9, 1), datetime.date(2015, 8, 31))
+        _year(cls.books, 2016, datetime.date(2015, 9, 1), datetime.date(2016, 8, 31))
+        cls.bello = _reader(
+            cls.school, cls.ikeja, "bello@bright-star-fin-adjust.example.com",
+            "finance.refund.view", "finance.writeoff.view", "finance.dunning.view",
+        )
+        customer = _customer(cls.books)
+
+        def refund(branch, day):
+            return Refund.objects.create(
+                entity=cls.books, customer=customer, branch=branch, refund_date=day, amount=10_000,
+            )
+
+        cls.refund_ikeja_2015 = refund(cls.ikeja, datetime.date(2015, 3, 1))
+        cls.refund_lekki_2015 = refund(cls.lekki, datetime.date(2015, 3, 1))
+        cls.refund_ikeja_2016 = refund(cls.ikeja, datetime.date(2015, 10, 1))
+        cls.invoices = {}
+        for branch in (cls.ikeja, cls.lekki):
+            cls.invoices[branch.pk] = Invoice.objects.create(
+                entity=cls.books, customer=customer, branch=branch,
+                invoice_date=datetime.date(2014, 10, 1), due_date=datetime.date(2014, 10, 31),
+            )
+        cls.request_ikeja = WriteOffRequest.objects.create(
+            entity=cls.books, invoice=cls.invoices[cls.ikeja.pk], branch=cls.ikeja,
+            write_off_date=datetime.date(2015, 5, 1), status=DocumentStatus.PENDING_APPROVAL,
+        )
+        cls.request_lekki = WriteOffRequest.objects.create(
+            entity=cls.books, invoice=cls.invoices[cls.lekki.pk], branch=cls.lekki,
+            write_off_date=datetime.date(2015, 5, 1),
+        )
+
+        def posted(branch, when):
+            entry = FinanceAuditLog.objects.create(
+                entity=cls.books, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
+                status=FinanceAuditStatus.SUCCESS, target_type="Invoice",
+                target_id=str(cls.invoices[branch.pk].pk), metadata={"amount": 5_000},
+                created_at=when,
+            )
+            return entry
+
+        utc = datetime.timezone.utc
+        cls.posted_ikeja_2015 = posted(cls.ikeja, datetime.datetime(2015, 6, 1, 12, tzinfo=utc))
+        cls.posted_lekki_2015 = posted(cls.lekki, datetime.datetime(2015, 6, 1, 12, tzinfo=utc))
+        cls.posted_ikeja_2016 = posted(cls.ikeja, datetime.datetime(2016, 1, 10, 12, tzinfo=utc))
+
+    def get(self, path, query="", status=200):
+        response = TenantAPIClient(user=self.bello).get(
+            f"/v1/finance/{path}?entity={self.books.code}{query}",
+        )
+        self.assertEqual(response.status_code, status, getattr(response, "data", None))
+        return response.data
+
+    def keys(self, query=""):
+        return {row["key"] for row in self.get("ar-adjustments/", query)["data"]}
+
+    def test_branch_and_year_together_keep_that_branchs_rows_in_that_year(self):
+        self.assertEqual(self.keys(f"&branch={self.ikeja.pk}&fiscal_year=2015"), {
+            f"R{self.refund_ikeja_2015.pk}", f"WR{self.request_ikeja.pk}",
+            f"W{self.posted_ikeja_2015.pk}",
+        })
+
+    def test_a_posted_write_off_is_placed_by_the_day_it_posted(self):
+        self.assertEqual(self.keys("&fiscal_year=2016"), {
+            f"R{self.refund_ikeja_2016.pk}", f"W{self.posted_ikeja_2016.pk}",
+        })
+
+    def test_a_posted_write_off_follows_its_invoices_branch(self):
+        self.assertEqual(self.keys(f"&branch={self.lekki.pk}"), {
+            f"R{self.refund_lekki_2015.pk}", f"WR{self.request_lekki.pk}",
+            f"W{self.posted_lekki_2015.pk}",
+        })
+
+    def test_nothing_picked_still_lists_every_row(self):
+        self.assertEqual(len(self.keys()), 8)
+
+    def test_the_figures_follow_the_branch(self):
+        self.assertEqual(self.get("ar-adjustments/", f"&branch={self.ikeja.pk}")["kpis"]["pending"], 1)
+        self.assertEqual(self.get("ar-adjustments/", f"&branch={self.lekki.pk}")["kpis"]["pending"], 0)
+
+    def test_the_written_off_figure_counts_the_picked_years_posted_write_offs(self):
+        kpis = self.get("ar-adjustments/", "&fiscal_year=2015")["kpis"]
+        self.assertEqual(kpis["written_off_ytd"], 10_000)
+
+    def test_a_malformed_date_is_refused(self):
+        self.get("ar-adjustments/", "&date_from=01/05/2015", status=400)
+
+    def test_the_dunning_buckets_follow_the_branch_and_ignore_the_year(self):
+        from django.utils import timezone
+
+        from vs_finance.constants import DocumentStatus
+
+        due = timezone.localdate() - datetime.timedelta(days=10)
+        Invoice.objects.filter(pk__in=[i.pk for i in self.invoices.values()]).update(
+            status=DocumentStatus.POSTED, total=50_000, due_date=due,
+        )
+        everyone = self.get("dunning/summary/")["data"]["overdue_1_30"]["count"]
+        lekki = self.get("dunning/summary/", f"&branch={self.lekki.pk}")["data"]["overdue_1_30"]["count"]
+        lekki_2015 = self.get(
+            "dunning/summary/", f"&branch={self.lekki.pk}&fiscal_year=2015",
+        )["data"]["overdue_1_30"]["count"]
+        self.assertEqual((everyone, lekki, lekki_2015), (2, 1, 1))
