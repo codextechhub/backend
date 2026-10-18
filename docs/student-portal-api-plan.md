@@ -681,10 +681,16 @@ for a pupil's AR account with no active account, and the task issues through
 `open_transfer_account`, so the bill and the `POST` share one lock and one
 account. It does nothing where pupils may not pay, where the provider is off
 or issues no dedicated accounts, or where the branch is not set up to take
-payments directly. Where the AR account lacks a detail the provider needs
-(Paystack: a name and a billing email), it issues nothing and records a
-`VIRTUAL_ACCOUNT_NOT_ISSUED` payment event naming the missing detail, once
-per account. A provider that does not answer is retried five times, waiting
+payments directly. The account is opened with the AR account's billing
+email, else the email of the pupil's primary guardian (owner decision of 18
+October), which goes to the provider and is copied nowhere. Because the
+provider keeps one customer per email across the whole platform, an email
+that already opened another pupil's active account (a sibling, or a child at
+another school) is not used again: that pupil's account is opened without it,
+as the `POST` opens one, so every child has a number from the first bill.
+Where a detail the provider needs is still missing (Paystack: a name and an
+email), it issues nothing and records a `VIRTUAL_ACCOUNT_NOT_ISSUED` payment
+event naming it, once per account. A provider that does not answer is retried five times, waiting
 1 to 16 minutes, and then recorded the same way; nothing is stored until the
 provider answers, so the screen shows `NONE`, never a half-made account.
 Where tasks run inline (`CELERY_TASK_ALWAYS_EAGER`), there is one attempt.

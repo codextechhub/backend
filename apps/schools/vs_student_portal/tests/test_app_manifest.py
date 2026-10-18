@@ -27,10 +27,24 @@ def png(width, height, colour=(200, 30, 30, 255)):
 
 
 class ShortNameTests(SimpleTestCase):
-    def test_whole_words_that_fit_under_an_icon(self):
+    def test_a_name_that_fits_stays_whole(self):
+        self.assertEqual(short_name("Bright Star"), "Bright Star")
+        self.assertEqual(short_name("  Bright   Star "), "Bright Star")
+
+    def test_a_name_that_does_not_fit_is_its_first_word(self):
+        self.assertEqual(short_name("Meridian Crest Academy"), "Meridian")
         self.assertEqual(short_name("Corona Secondary School"), "Corona")
-        self.assertEqual(short_name("Lagoon View Academy"), "Lagoon View")
-        self.assertEqual(short_name("Ogbomosholand College"), "Ogbomosholan")
+        # Not "Lagoon View": two words of a longer name are not the name.
+        self.assertEqual(short_name("Lagoon View Academy"), "Lagoon")
+
+    def test_a_word_is_never_cut(self):
+        self.assertEqual(short_name("Ogbomosholand College"), "Ogbomosholand")
+        self.assertEqual(short_name("Ogbomosholand"), "Ogbomosholand")
+
+    def test_letters_are_counted_not_bytes(self):
+        self.assertEqual(short_name("École Sainté"), "École Sainté")
+        self.assertEqual(short_name("Ọmọlúàbí Academy"), "Ọmọlúàbí")
+        self.assertEqual(short_name("学校 星光"), "学校 星光")
 
 
 class StudentAppManifestTests(TestCase):
@@ -78,7 +92,7 @@ class StudentAppManifestTests(TestCase):
 
     def test_a_school_without_a_crest_keeps_the_apps_own_icons(self):
         body = self.manifest("lagoon-view").json()
-        self.assertEqual(body["short_name"], "Lagoon View")
+        self.assertEqual(body["short_name"], "Lagoon")
         self.assertTrue(all(i["src"].startswith("/student/icons/") for i in body["icons"]))
         response = self.client.get(reverse("student-app-icon", args=["lagoon-view", "icon-192.png"]))
         self.assertEqual(response.status_code, 404)

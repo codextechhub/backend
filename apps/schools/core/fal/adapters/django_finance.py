@@ -2335,12 +2335,19 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
 
     @envelope
     def open_transfer_account(self, student_ref, *, actor):
+        """Issue one account for the pupil's AR account, or return theirs."""
+        return self.issue_transfer_account(student_ref, actor=actor)
+
+    def issue_transfer_account(self, student_ref, *, actor, customer_email=None):
         """Issue one account for the pupil's AR account, under a lock on it.
 
         The customer row is locked first, so two requests racing for a pupil
         with none issue one account between them: the second finds the first's.
         A provider that issues no accounts, or a branch not set up to take
-        payments directly, is ``NOT_CONFIGURED``.
+        payments directly, is ``NOT_CONFIGURED``. ``customer_email`` opens the
+        provider's customer with that address instead of the billing email
+        (:mod:`schools.core.fal.transfer_accounts` passes the family's); the
+        pupil's own request passes none.
         """
         from django.db import transaction
         from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -2364,6 +2371,7 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
             try:
                 account = create_virtual_account(
                     entity=customer.entity, customer=customer, actor_user=actor,
+                    customer_email=customer_email,
                 )
             except (ProviderNotConfiguredError, SubaccountMissingError, NotImplementedError):
                 return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)

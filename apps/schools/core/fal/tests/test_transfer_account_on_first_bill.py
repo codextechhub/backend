@@ -40,6 +40,21 @@ def _pupils_accounts(pupil):
     return VirtualAccount.objects.filter(customer__source_id=str(pupil.pk))
 
 
+def give_guardian(pupil, email, *, guardian=None):
+    """Make ``guardian`` (or a new one with ``email``) the pupil's primary contact."""
+    from schools.vs_students.models import Guardian, StudentGuardian
+
+    if guardian is None:
+        guardian = Guardian.all_objects.create(
+            tenant=pupil.tenant, full_name="Ngozi Okoro", phone="08031234567", email=email,
+        )
+    StudentGuardian.all_objects.create(
+        tenant=pupil.tenant, student=pupil, guardian=guardian, relationship="MOTHER",
+        is_primary=True,
+    )
+    return guardian
+
+
 class _FirstBillFixture(FALFixture):
     """Corona and Greenfield with a term to bill, and pupils not yet billed."""
 
@@ -265,6 +280,66 @@ class NoAccountIsIssuedTests(_FirstBillFixture):
         self.assertEqual(_pupils_accounts(self.tunde).count(), 1)
 
 
+class FamilyEmailTests(_FirstBillFixture):
+    """The provider needs an email, as Paystack does, and the family's is used.
+
+    Ngozi Okoro is the primary guardian of Tunde and of his sister Bola. The
+    provider keeps one customer per email, so her email opens one child's
+    account, and the other child's is opened as the Pay screen opens one,
+    without it. Both have their number from the first bill.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.fake.virtual_account_requires = ("name", "email")
+
+    def sent_emails(self):
+        return [call.kwargs["customer_email"] for call in self.issued.call_args_list]
+
+    def test_the_primary_guardian_s_email_opens_the_account(self):
+        give_guardian(self.tunde, "ngozi.okoro@example.ng")
+        self.bill(self.tunde)
+
+        self.assertEqual(_pupils_accounts(self.tunde).count(), 1)
+        self.assertEqual(self.sent_emails(), ["ngozi.okoro@example.ng"])
+        self.tunde_customer.refresh_from_db()
+        self.assertEqual(self.tunde_customer.billing_email, "")
+
+    def test_a_billing_email_on_the_ar_account_comes_first(self):
+        give_guardian(self.tunde, "ngozi.okoro@example.ng")
+        self.tunde_customer.billing_email = "accounts@okoro-family.ng"
+        self.tunde_customer.save(update_fields=["billing_email"])
+        self.bill(self.tunde)
+        self.assertEqual(self.sent_emails(), ["accounts@okoro-family.ng"])
+
+    def test_a_guardian_with_no_email_leaves_the_detail_missing(self):
+        give_guardian(self.tunde, "")
+        self.bill(self.tunde)
+        self.assertFalse(_pupils_accounts(self.tunde).exists())
+        self.assertEqual(self.not_issued_events().get().metadata["missing"], ["email"])
+
+    def test_siblings_sharing_a_guardian_each_get_their_own_account(self):
+        mother = give_guardian(self.tunde, "ngozi.okoro@example.ng")
+        give_guardian(self.bola, "", guardian=mother)
+        self.bill(self.tunde, self.bola)
+
+        self.assertEqual(sorted(self.sent_emails()), ["", "ngozi.okoro@example.ng"])
+        numbers = {_pupils_accounts(p).get().account_number for p in (self.tunde, self.bola)}
+        self.assertEqual(len(numbers), 2)
+        self.assertFalse(self.not_issued_events().exists())
+
+    def test_an_email_used_at_another_school_is_not_used_again(self):
+        give_guardian(self.ada, "ngozi.okoro@example.ng")
+        with self.captureOnCommitCallbacks(execute=True):
+            self.bridge.generate_cohort_invoices(self.g_tuition.pk, (str(self.ada.pk),)).unwrap()
+        self.assertEqual(_pupils_accounts(self.ada).count(), 1)
+
+        give_guardian(self.tunde, "Ngozi.Okoro@example.ng")
+        self.bill(self.tunde)
+        self.assertEqual(_pupils_accounts(self.tunde).count(), 1)
+        self.assertEqual(self.sent_emails(), ["ngozi.okoro@example.ng", ""])
+
+
 @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
 class ProviderFailureTests(_FirstBillFixture):
     """The provider is down: the task waits longer each time, then gives up."""
@@ -345,6 +420,9 @@ class ConcurrentFirstBillsTests(TransactionTestCase):
         self.tunde = FALFixture.student(corona, ikeja)
         self.customer = Customer.objects.get(pk=FALFixture.student_customer(
             books, str(self.tunde.pk), branch=ikeja).customer_ref)
+        self.bola = FALFixture.student(corona, ikeja, first="Bola", last="Okoro")
+        self.bola_customer = Customer.objects.get(pk=FALFixture.student_customer(
+            books, str(self.bola.pk), branch=ikeja).customer_ref)
         self.fake = FakeProvider(secret="test-secret")
         provider_registry.register("PAYSTACK", self.fake)
         self.addCleanup(provider_registry.unregister)
@@ -383,3 +461,40 @@ class ConcurrentFirstBillsTests(TransactionTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(VirtualAccount.objects.filter(customer=self.customer).count(), 1)
         self.assertEqual(outcomes, {"first": transfer_accounts.ISSUED, "second": transfer_accounts.ISSUED})
+
+    def test_two_siblings_billed_at_once_do_not_share_the_family_s_email(self):
+        """The second sibling waits on the email's lock, then is opened without it."""
+        self.fake.virtual_account_requires = ("name", "email")
+        mother = give_guardian(self.tunde, "ngozi.okoro@example.ng")
+        give_guardian(self.bola, "", guardian=mother)
+        first_in_provider, release_first = threading.Event(), threading.Event()
+        create = self.fake.create_virtual_account
+        calls, outcomes = [], {}
+
+        def slow_create(**kwargs):
+            calls.append(kwargs["customer_email"])
+            first_in_provider.set()
+            release_first.wait(10)
+            return create(**kwargs)
+
+        def run(name, customer):
+            try:
+                outcomes[name] = transfer_accounts.issue_after_first_bill(customer.pk)
+            finally:
+                connections.close_all()
+
+        with mock.patch.object(self.fake, "create_virtual_account", side_effect=slow_create):
+            first = threading.Thread(target=run, args=("tunde", self.customer))
+            first.start()
+            self.assertTrue(first_in_provider.wait(10))
+            second = threading.Thread(target=run, args=("bola", self.bola_customer))
+            second.start()
+            second.join(1.0)
+            self.assertTrue(second.is_alive(), "The sibling did not wait for the email's lock.")
+            release_first.set()
+            first.join(10)
+            second.join(10)
+
+        self.assertEqual(calls, ["ngozi.okoro@example.ng", ""])
+        self.assertEqual(outcomes, {"tunde": transfer_accounts.ISSUED, "bola": transfer_accounts.ISSUED})
+        self.assertEqual(VirtualAccount.objects.filter(customer=self.bola_customer).count(), 1)
