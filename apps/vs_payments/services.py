@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import secrets
+from functools import partial
 from typing import NamedTuple
 
 from django.db import IntegrityError, transaction
@@ -493,6 +494,21 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     return va  # Return the stored model instance.
 
 
+def _announce_replaced(old_pk, new_pk) -> None:
+    """Tell listeners a customer's dedicated account was replaced, once the change committed."""
+    from .signals import virtual_account_replaced
+
+    old = VirtualAccount.objects.select_related("customer").get(pk=old_pk)
+    new = VirtualAccount.objects.get(pk=new_pk) if new_pk else None
+    for receiver, outcome in virtual_account_replaced.send_robust(sender=VirtualAccount, old=old, new=new):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "virtual_account_replaced listener %s failed for virtual account %s",
+                getattr(receiver, "__qualname__", receiver), old_pk,
+                exc_info=(type(outcome), outcome, outcome.__traceback__),
+            )
+
+
 def reissue_virtual_account(va, *, actor_user=None):
     """Replace a virtual account settling to the platform's balance with one against its branch's subaccount.
 
@@ -538,6 +554,70 @@ def reissue_virtual_account(va, *, actor_user=None):
             message=f"Virtual account for {customer.code} reissued; the old number is retired.",
             metadata={"retired_id": old.pk, "virtual_account_id": new.pk},
         )
+        transaction.on_commit(partial(_announce_replaced, old.pk, new.pk))
+    return new
+
+
+def replace_withdrawn_virtual_account(va, *, actor_user=None):
+    """Replace a dedicated account its provider no longer holds for its customer.
+
+    A provider can close an account, or assign its number to somebody else (a
+    test key's numbers come from a shared pool and are handed on). The record
+    here would go on offering the number, and a family paying into it would pay
+    a stranger. The old record is switched off, so it is no longer offered and a
+    deposit that still reaches it is held for review rather than booked, and a
+    new account is asked for under the same provider customer, settling where
+    the old one did.
+
+    The provider is asked first, with no transaction open. When it refuses, the
+    old number is switched off all the same and None is returned: no number is
+    better than one that pays somebody else, and the pupil's Pay screen can ask
+    for a new one. An account already replaced returns its replacement.
+    """
+    from .exceptions import ProviderError
+
+    _assert_no_open_transaction("Replacing a withdrawn virtual account")
+    if va.replaced_by_id:
+        return va.replaced_by
+    customer = va.customer
+    client = get_provider(va.provider)
+    _, provider_email = client.virtual_account_customer(va.raw)
+    reference = _new_reference(va.entity)
+    try:
+        result = client.create_virtual_account(
+            reference=reference, customer_name=customer.name,
+            customer_email=provider_email or customer.billing_email,
+            **({"subaccount": va.settlement_subaccount} if va.settlement_subaccount else {}),
+        )
+    except ProviderError:
+        logger.warning("No replacement for withdrawn virtual account %s.", va.pk, exc_info=True)
+        result = None
+    with transaction.atomic():
+        old = VirtualAccount.objects.select_for_update().get(pk=va.pk)
+        if old.status != VirtualAccountStatus.ACTIVE or old.replaced_by_id:
+            return old.replaced_by
+        old.status = VirtualAccountStatus.INACTIVE
+        old.save(update_fields=["status", "updated_at"])
+        new = None
+        if result is not None:
+            new = VirtualAccount.objects.create(
+                entity=old.entity, branch_id=old.branch_id, provider=old.provider, customer=customer,
+                deposit_account=old.deposit_account, account_number=result.account_number,
+                bank_name=result.bank_name, account_name=result.account_name, currency=old.currency,
+                provider_reference=result.provider_reference, status=VirtualAccountStatus.ACTIVE,
+                settlement_subaccount=old.settlement_subaccount, raw=result.raw,
+            )
+            old.replaced_by = new
+            old.save(update_fields=["replaced_by", "updated_at"])
+        audit.record(
+            action=(PaymentAuditAction.VIRTUAL_ACCOUNT_REISSUED if new
+                    else PaymentAuditAction.VIRTUAL_ACCOUNT_STATUS_CHANGED),
+            entity=old.entity, provider=old.provider, reference=reference, actor_user=actor_user,
+            message=(f"The provider no longer holds {customer.code}'s virtual account; "
+                     + ("a new number was issued." if new else "it was switched off and none was issued.")),
+            metadata={"withdrawn_id": old.pk, "virtual_account_id": new.pk if new else None},
+        )
+        transaction.on_commit(partial(_announce_replaced, old.pk, new.pk if new else None))
     return new
 
 
@@ -559,6 +639,10 @@ def set_virtual_account_status(va, *, status, actor_user=None):
             "This account was replaced by a new number when payments started settling "
             "directly to the branch's bank, so it cannot be switched on or off.")})
     
+    if va.replaced_by_id and status == VirtualAccountStatus.ACTIVE:
+        raise ValidationError({"status": (
+            "This number was replaced by a new one, so it cannot be switched back on.")})
+
     if va.status == status:  # No work to do when the requested state is already applied.
         return va
     

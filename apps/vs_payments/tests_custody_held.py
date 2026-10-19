@@ -781,6 +781,22 @@ class CustodySwitchTests(_HeldFixture):
         self.assertEqual(result["result"], "waiting")
         self.assertIn("not set up with the payment provider: Yaba Branch", result["reasons"][0])
 
+    def test_a_reissued_number_is_announced_to_listeners(self):
+        from .signals import virtual_account_replaced
+
+        heard = []
+        virtual_account_replaced.connect(
+            lambda sender, old, new, **kw: heard.append((old.pk, new.pk)), dispatch_uid="test.reissue", weak=False)
+        self.addCleanup(virtual_account_replaced.disconnect, dispatch_uid="test.reissue")
+        old = services.create_virtual_account(entity=self.solo_books, customer=self.solo_parent)
+        self.subaccount(self.solo_bank, "ACCT_SOLO")
+        self.direct(self.solo_tenant)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            new = services.reissue_virtual_account(old)
+
+        self.assertEqual(heard, [(old.pk, new.pk)])
+
     def test_money_paid_into_a_retired_number_is_credited_and_passed_on(self):
         old = services.create_virtual_account(entity=self.solo_books, customer=self.solo_parent)
         self.subaccount(self.solo_bank, "ACCT_SOLO")

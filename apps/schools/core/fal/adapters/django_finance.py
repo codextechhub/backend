@@ -73,6 +73,7 @@ from ..contracts import (
     EntityHandle,
     FeeLiability,
     FeeRow,
+    DebitNoteView,
     FeeStatus,
     FeeTermLink,
     FilterClause,
@@ -1647,6 +1648,19 @@ def _invoice_view(invoice):
     )
 
 
+def _debit_note_view(note):
+    return DebitNoteView(
+        note_ref=note.pk,
+        document_number=note.document_number or "",
+        note_date=note.note_date,
+        reason=note.reason or "",
+        amount_due=note.total,
+        amount_paid=note.amount_paid,
+        balance=note.balance_due,
+        status=InvoiceStatus(note.settlement_status),
+    )
+
+
 class DjangoFinanceReadAdapter(FinanceReadPort):
     """Component 5. Every method scopes to the school's entity before it counts."""
 
@@ -1860,7 +1874,9 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     # ----- per-student views ----------------------------------------------- #
     @envelope
     def fee_status(self, student_ref):
-        from vs_finance.models import Invoice
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.documents import customer_net_after
+        from vs_finance.models import CreditNote, Invoice
 
         customers = list(_customers_for_student(student_ref))
         if not customers:
@@ -1877,15 +1893,21 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
             .select_related("customer").prefetch_related("lines")
             .order_by("-invoice_date", "-pk")
         )
-        billed = sum(inv.total for inv in invoices)
-        paid = sum(inv.amount_paid for inv in invoices)
-        credited = sum(inv.amount_credited for inv in invoices)
+        notes = list(
+            CreditNote.objects
+            .filter(customer__in=customers, status="POSTED", kind=CreditNoteKind.DEBIT)
+            .order_by("-note_date", "-pk")
+        )
+        billed = sum(inv.total for inv in invoices) + sum(note.total for note in notes)
+        paid = sum(inv.amount_paid for inv in invoices) + sum(note.amount_paid for note in notes)
+        balance = sum(customer_net_after(customer.entity, customer) for customer in customers)
         return _available(FeeStatus(
             student_ref=student_ref,
-            balance=billed - paid - credited,
+            balance=balance,
             total_billed=billed,
             total_paid=paid,
             invoices=tuple(_invoice_view(inv) for inv in invoices),
+            debit_notes=tuple(_debit_note_view(note) for note in notes),
         ))
 
     @envelope

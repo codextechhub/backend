@@ -83,6 +83,7 @@ from .base import (
     TerminalResult,
     TransferResult,
     VirtualAccountResult,
+    VirtualAccountStanding,
     WebhookParseResult,
 )
 from .http import request_json
@@ -283,6 +284,57 @@ class PaystackProvider(Provider):
             provider_reference=str(acct.get("id", "")),
             raw=data,  # Keep the raw response for audit/debugging.
         )
+
+    #: Accounts asked for per page when listing them (Paystack's ``perPage`` maximum is 100).
+    VIRTUAL_ACCOUNT_PAGE = 100
+
+    def open_virtual_accounts(self):
+        """Every active dedicated account on this integration (``GET /dedicated_account``).
+
+        Pages through ``active=true`` until Paystack's ``meta.pageCount``, then
+        refuses the answer unless it holds ``meta.total`` accounts: a listing
+        that changed or came back short must not read as accounts withdrawn.
+        """
+        owners, page, total = {}, 1, None
+        while True:
+            query = urllib.parse.urlencode({"active": "true", "perPage": self.VIRTUAL_ACCOUNT_PAGE, "page": page})
+            resp = self._get(f"/dedicated_account?{query}")
+            rows = self._require_ok(resp)
+            meta = resp.get("meta") or {}
+            total = int(meta.get("total") or 0)
+            for row in rows if isinstance(rows, list) else []:
+                customer = row.get("customer") if isinstance(row.get("customer"), dict) else {}
+                owners[str(row.get("id", ""))] = str(customer.get("customer_code", ""))
+            if page >= int(meta.get("pageCount") or 1):
+                break
+            page += 1
+        if len(owners) != total:
+            raise ProviderError(
+                f"Paystack listed {len(owners)} of {total} dedicated accounts.", provider=self.name)
+        return owners
+
+    def virtual_account_standing(self, *, provider_reference):
+        """One dedicated account as Paystack holds it now (``GET /dedicated_account/<id>``)."""
+        try:
+            data = self._require_ok(self._get(f"/dedicated_account/{provider_reference}"))
+        except ProviderError as exc:
+            if exc.provider_code == "404":
+                return None
+            raise
+        customer = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+        return VirtualAccountStanding(
+            provider_reference=str(data.get("id", provider_reference)),
+            account_number=str(data.get("account_number", "")),
+            active=bool(data.get("active")) and data.get("assigned", True) is not False,
+            customer_code=str(customer.get("customer_code", "")),
+            raw=data,
+        )
+
+    def virtual_account_customer(self, raw):
+        customer = (raw or {}).get("customer")
+        if not isinstance(customer, dict):
+            return "", ""
+        return str(customer.get("customer_code", "")), str(customer.get("email", ""))
 
     def verify_collection(self, *, reference, provider_reference=""):
         data = self._require_ok(self._get(f"/transaction/verify/{reference}"))  # Ask Paystack for the final state.

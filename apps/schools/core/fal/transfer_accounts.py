@@ -1,7 +1,7 @@
 """A pupil's permanent bank-transfer account, issued when they are first billed.
 
 A family pays school fees by transfer into one account number that belongs to
-the pupil and never changes. It is issued when the pupil's first bill posts,
+the pupil and is meant to stay theirs. It is issued when the pupil's first bill posts,
 whoever raised it (a fee run or a manual invoice), so the number is there by
 the time the family opens the bill. The Pay screen's "Get my account number"
 (:meth:`~schools.core.fal.adapters.django_finance.DjangoStudentPaymentAdapter.open_transfer_account`)
@@ -49,6 +49,18 @@ giving the provider a stand-in address of its own (owner decision of 18
 October 2026). The number is the pupil's either way. Checking and issuing hold
 a lock on the email, so two siblings billed at once are decided one after the
 other.
+
+**When the number changes.** The payments engine replaces a number the
+provider closed or gave to somebody else
+(:mod:`vs_payments.virtual_account_standing`), and every number when a school's
+money starts settling to its own bank, and sends
+:data:`~vs_payments.signals.virtual_account_replaced`.
+:func:`on_virtual_account_replaced` tells the pupil (in the app, and a push
+that names no number) and their primary guardian (in the app, else by email)
+not to pay into the old number. The guardian is told where to see the new one,
+never the number itself, and that the school never sends one by email (owner
+decision of 19 October 2026): a family taught to trust a number in an email is
+a family a fraudster's copy of it can redirect.
 
 A provider that fails is retried with backoff a bounded number of times
 (:mod:`schools.core.fal.tasks`); each failed attempt stores nothing, so the
@@ -119,6 +131,70 @@ def on_invoice_posted(sender, invoice, **kwargs):
     ).exists():
         return
     issue_transfer_account.delay(invoice.customer_id)
+
+
+EVENT_PUPIL_ACCOUNT_CHANGED = "billing.transfer_account_changed"
+EVENT_GUARDIAN_ACCOUNT_CHANGED = "billing.guardian_transfer_account_changed"
+
+
+def on_virtual_account_replaced(sender, old, new=None, **kwargs):
+    """Tell a pupil and their primary guardian that the pupil's account number changed.
+
+    Connected in :meth:`schools.core.fal.apps.FalConfig.ready`; runs after the
+    replacement committed. A customer that is not a pupil's is left alone.
+    Each message is sent on its own, so one that cannot go never stops the other.
+    """
+    from schools.vs_students.models import Student, StudentGuardian
+    from vs_notifications.notify import UnregisteredRecipient, send_notification
+    from vs_rbac.scoping import only_branch_id_or_several
+
+    from .contracts import student_pk
+
+    customer = _pupil_customer(old.customer_id) if old.customer_id else None
+    if customer is None:
+        return
+    student = (
+        Student.all_objects.select_related("user", "branch", "tenant")
+        .get(pk=student_pk(customer.source_id))
+    )
+    tenant, branch = student.tenant, student.branch
+    context = {
+        "student_first_name": student.first_name,
+        "old_account_number": old.account_number,
+        "has_new_account": new is not None,
+        "tenant_name": tenant.name,
+        "branch_name": branch.name if branch and only_branch_id_or_several(tenant) is None else "",
+    }
+
+    user = student.user if student.user_id else None
+    if user is not None and user.may_sign_in:
+        try:
+            send_notification(event_key=EVENT_PUPIL_ACCOUNT_CHANGED, context=context,
+                              recipients=[user], tenant=tenant, branch=branch)
+        except Exception:
+            logger.exception("The pupil's account-number notice for %s could not be sent.", student.pk)
+
+    link = (
+        StudentGuardian.all_objects.filter(student=student, tenant=tenant, is_primary=True)
+        .select_related("guardian__user").first()
+    )
+    if link is None:
+        return
+    guardian = link.guardian
+    guardian_user = guardian.user if guardian.user_id else None
+    email = ((guardian_user.email if guardian_user else "") or guardian.email or "").strip()
+    if guardian_user is None and not email:
+        return
+    try:
+        send_notification(
+            event_key=EVENT_GUARDIAN_ACCOUNT_CHANGED, context=context,
+            recipients=[guardian_user] if guardian_user else [],
+            unregistered_recipients=None if guardian_user else [
+                UnregisteredRecipient(email=email, name=guardian.full_name)],
+            tenant=tenant, branch=branch,
+        )
+    except Exception:
+        logger.exception("The guardian's account-number notice for %s could not be sent.", student.pk)
 
 
 def _record_not_issued(customer, reason, *, missing=()):

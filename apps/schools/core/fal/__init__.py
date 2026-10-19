@@ -75,6 +75,7 @@ from .contracts import (
     EntityRef,
     FeeLiability,
     FeeRow,
+    DebitNoteView,
     FeeStatus,
     FeeStructureRef,
     FeeTermLink,
@@ -221,6 +222,7 @@ __all__ = [
     # per-entity
     "InvoiceLine",
     "InvoiceView",
+    "DebitNoteView",
     "FeeStatus",
     "Receipt",
     # procurement reads

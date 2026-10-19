@@ -470,14 +470,42 @@ class InvoiceView:
 
 
 @dataclass(frozen=True)
+class DebitNoteView:
+    """A charge added to a student's account after a bill, for the portals.
+
+    A debit note raises what the family owes outside any invoice (a late
+    replacement fee, a missed charge) and is settled by receipts like a bill:
+    a payment or bank transfer into the student's account number settles
+    open bills and debit notes together, oldest first. ``reason`` is the
+    school's own words for the charge.
+    """
+
+    note_ref: int
+    document_number: str
+    note_date: Optional[date]
+    reason: str
+    amount_due: Kobo
+    amount_paid: Kobo
+    balance: Kobo
+    status: InvoiceStatus
+
+
+@dataclass(frozen=True)
 class FeeStatus:
-    """A student's read-only fee position, for the student portal."""
+    """A student's read-only fee position, for the student portal.
+
+    ``balance`` is the family account's net position in the books (open bills
+    and debit notes, less unused credit; negative means in credit), and
+    ``total_billed`` and ``total_paid`` count bills and debit notes alike, so
+    a reader can see what made up the balance.
+    """
 
     student_ref: StudentRef
     balance: Kobo
     total_billed: Kobo
     total_paid: Kobo
     invoices: tuple[InvoiceView, ...]
+    debit_notes: tuple[DebitNoteView, ...] = ()
 
 
 @dataclass(frozen=True)
