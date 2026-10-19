@@ -11,7 +11,8 @@ they wrote.
 **Who sees what.** A pupil sees a published notice when an audience row names
 them: the whole school, their branch, or their level or class this year. A
 member of staff sees a notice when an audience row lies inside their reach,
-and always sees their own drafts.
+and always sees their own drafts. A parent sees the union of what each of
+their children is sent.
 
 **Publishing tells the pupils.** Each pupil in the audience with a working
 portal account is notified in-app and by email, after the publication commits
@@ -295,22 +296,100 @@ def pupil_enrolment(student):
     )
 
 
-def pupil_notices(student):
-    """The published notices addressed to *student*, newest first."""
-    enrolment = pupil_enrolment(student)
-    match = Q(kind=AudienceKind.SCHOOL) | Q(kind=AudienceKind.BRANCH, branch_id=student.branch_id)
+def _addressed_q(branch_id, enrolment) -> Q:
+    """The audience rows that name one pupil: school, branch, level and class.
+
+    *enrolment* is the pupil's placement in the active year, or None for a
+    pupil not placed in a class, who is still reached by the school and their
+    branch.
+    """
+    match = Q(kind=AudienceKind.SCHOOL) | Q(kind=AudienceKind.BRANCH, branch_id=branch_id)
     if enrolment is not None:
         match |= Q(kind=AudienceKind.CLASS, school_class_id=enrolment.school_class_id)
         if enrolment.school_class.level_id:
             match |= Q(kind=AudienceKind.LEVEL, level_id=enrolment.school_class.level_id)
-    addressed = NoticeAudience.objects.filter(tenant=student.tenant).filter(match).values("notice_id")
+    return match
+
+
+def _published_for(tenant_id, match: Q):
+    addressed = NoticeAudience.objects.filter(tenant=tenant_id).filter(match).values("notice_id")
     return (
         Notice.objects.filter(
-            tenant=student.tenant, status=NoticeStatus.PUBLISHED, pk__in=addressed,
+            tenant=tenant_id, status=NoticeStatus.PUBLISHED, pk__in=addressed,
         )
         .prefetch_related("audiences__branch", "audiences__level", "audiences__school_class")
         .order_by("-published_at", "-pk")
     )
+
+
+def pupil_notices(student):
+    """The published notices addressed to *student*, newest first."""
+    match = _addressed_q(student.branch_id, pupil_enrolment(student))
+    return _published_for(student.tenant, match)
+
+
+def pupil_placements(students) -> dict:
+    """Each pupil's active-year placement, keyed by pupil id, in one query.
+
+    A pupil with no placement in the active year maps to None.
+    """
+    from schools.vs_students.models import ClassEnrolment
+
+    placed = {
+        row.student_id: row
+        for row in ClassEnrolment.objects.filter(
+            student__in=[s.pk for s in students], is_active=True, session__status="ACTIVE",
+        ).select_related("school_class__level")
+    }
+    return {s.pk: placed.get(s.pk) for s in students}
+
+
+def guardian_notices(students, *, placements=None):
+    """The published notices addressed to any of *students*, newest first, each once.
+
+    The union of what each child is sent, matched exactly as :func:`pupil_notices`
+    matches one pupil: the school, the child's branch, and the child's level or
+    class this year. A notice that reaches two siblings appears once. *placements*
+    is the result of :func:`pupil_placements`, passed by a caller that already
+    holds it. All of *students* belong to one school.
+    """
+    students = list(students)
+    if not students:
+        return Notice.objects.none()
+    placements = placements if placements is not None else pupil_placements(students)
+    match = Q(pk__in=[])
+    for student in students:
+        match |= _addressed_q(student.branch_id, placements.get(student.pk))
+    return _published_for(students[0].tenant_id, match)
+
+
+def children_addressed(notice, students, placements) -> list:
+    """The pupils among *students* that *notice* is addressed to, in their given order.
+
+    Judged from the notice's audience rows, which :func:`guardian_notices`
+    already loads, by the same rule it queries with.
+    """
+    rows = list(notice.audiences.all())
+    out = []
+    for student in students:
+        enrolment = placements.get(student.pk)
+        for row in rows:
+            if (
+                row.kind == AudienceKind.SCHOOL
+                or (row.kind == AudienceKind.BRANCH and row.branch_id == student.branch_id)
+                or (
+                    enrolment is not None
+                    and (
+                        (row.kind == AudienceKind.CLASS
+                         and row.school_class_id == enrolment.school_class_id)
+                        or (row.kind == AudienceKind.LEVEL and enrolment.school_class.level_id
+                            and row.level_id == enrolment.school_class.level_id)
+                    )
+                )
+            ):
+                out.append(student)
+                break
+    return out
 
 
 def audience_pupils(notice):

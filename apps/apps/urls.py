@@ -44,6 +44,7 @@ urlpatterns = [
     path("v1/gradebook/", include("schools.vs_gradebook.urls")),
     path("v1/notices/", include("schools.vs_notices.urls")),
     path("v1/portal/student/", include("schools.vs_student_portal.urls")),
+    path("v1/portal/parent/", include("schools.vs_parent_portal.urls")),
     # The FAL's front door. It bridges the school's academic structure to the
     # finance engine, so it is mounted under its own prefix rather than inside
     # v1/finance/: those routes are domain-neutral and know nothing of terms

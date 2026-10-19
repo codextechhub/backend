@@ -386,6 +386,9 @@ INSTALLED_APPS = [
     "schools.vs_notices",
     # The pupil portal. Owns no table: it reads every school app above it.
     "schools.vs_student_portal",
+    # The parent portal. Owns no table: it reads through the pupil portal's
+    # services, behind the link between a parent's account and a guardian row.
+    "schools.vs_parent_portal",
     # The Finance Abstraction Layer: the boundary where school words meet the
     # neutral finance engines, so it belongs here and never in apps/core/. A
     # Django app only because it owns the fee-structure-to-term link table.
