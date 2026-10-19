@@ -85,6 +85,32 @@ class PortalFeesTests(_FeesFixture):
         self.assertEqual(invoice["status_label"], "Owing")
         self.assertEqual(invoice["lines"][0]["amount"], 300_000)
 
+    def test_the_pupil_reads_a_charge_added_after_the_bill(self):
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.credit_notes import post_credit_note
+        from vs_finance.models import CreditNote, CreditNoteLine
+
+        note = CreditNote.objects.create(
+            entity=self.tunde_invoice.entity, customer=self.tunde_invoice.customer, branch=self.tunde_invoice.branch,
+            kind=CreditNoteKind.DEBIT, note_date=self.tunde_invoice.invoice_date, reason="Replacement ID card",
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=25_000,
+            revenue_account=self.tunde_invoice.lines.first().revenue_account,
+        )
+        post_credit_note(note)
+
+        data = self.as_pupil().get(reverse("student-portal-fees")).data["data"]
+        self.assertEqual((data["balance"], data["total_billed"], data["total_paid"]), (325_000, 325_000, 0))
+        [charge] = data["debit_notes"]
+        self.assertEqual(charge["reason"], "Replacement ID card")
+        self.assertEqual((charge["total"], charge["paid"], charge["balance"]), (25_000, 0, 25_000))
+        self.assertEqual(charge["status_label"], "Owing")
+        self.assertEqual(charge["number"], note.document_number)
+
+        bola = TenantAPIClient(give_access(self.bola, "COR/002")).get(reverse("student-portal-fees")).data["data"]
+        self.assertEqual(bola["debit_notes"], [])
+
     def test_unreadable_books_say_so_rather_than_zero(self):
         fal_registry.set_finance_reader(unavailable_finance_reader())
         response = self.as_pupil().get(reverse("student-portal-fees"))

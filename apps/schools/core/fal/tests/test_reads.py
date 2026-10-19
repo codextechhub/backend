@@ -291,6 +291,50 @@ class PerStudentViewTests(_ReadFixture):
         self.assertEqual(status.balance, 150_000)
         self.assertEqual(len(status.invoices), 1)
 
+    def debit(self, customer_ref, amount, reason):
+        """A posted charge added to the account after its bill, as Finance raises one."""
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.credit_notes import post_credit_note
+        from vs_finance.models import CreditNote, CreditNoteLine
+
+        line = self.tunde_invoice.lines.first()
+        note = CreditNote.objects.create(
+            entity=self.tunde_invoice.entity, customer_id=customer_ref, branch=self.tunde_invoice.branch,
+            kind=CreditNoteKind.DEBIT, note_date=self.tunde_invoice.invoice_date, reason=reason,
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=amount, revenue_account=line.revenue_account,
+        )
+        post_credit_note(note)
+        return note
+
+    def test_a_charge_added_after_the_bill_is_counted_and_listed(self):
+        self.debit(self.tunde.customer_ref, 25_000, "Replacement ID card")
+
+        status = self.reader.fee_status("stu-tunde").unwrap()
+
+        self.assertEqual(status.total_billed, 325_000)
+        self.assertEqual(status.total_paid, 150_000)
+        self.assertEqual(status.balance, 175_000)
+        [note] = status.debit_notes
+        self.assertEqual((note.reason, note.amount_due, note.amount_paid, note.balance), ("Replacement ID card", 25_000, 0, 25_000))
+        self.assertEqual(note.status.value, "UNPAID")
+
+    def test_a_payment_settles_the_charge_with_the_bill(self):
+        self.debit(self.tunde.customer_ref, 25_000, "Replacement ID card")
+        self.pay(self.corona_books, self.tunde.customer_ref, 175_000)
+
+        status = self.reader.fee_status("stu-tunde").unwrap()
+
+        self.assertEqual(status.balance, 0)
+        self.assertEqual(status.total_paid, status.total_billed)
+        self.assertEqual(status.debit_notes[0].status.value, "PAID")
+
+    def test_a_child_with_no_charges_lists_none(self):
+        self.debit(self.tunde.customer_ref, 25_000, "Replacement ID card")
+
+        self.assertEqual(self.reader.fee_status("stu-ada").unwrap().debit_notes, ())
+
     def test_unallocated_payment_is_shown_as_credit_after_bills_are_paid(self):
         self.pay(self.corona_books, self.ada.customer_ref, 350_000)
 

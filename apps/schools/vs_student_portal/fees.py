@@ -61,7 +61,13 @@ def _status(invoice) -> str:
 
 
 def fee_summary(student) -> dict:
-    """The pupil's balance and invoices, and whether they may pay."""
+    """The pupil's balance, invoices and debit notes, and whether they may pay.
+
+    A debit note is a charge added after a bill. It counts in the balance and
+    the totals like a bill, and it is listed beside the bills so the balance can
+    be accounted for. It cannot be paid by card from here (a card payment names
+    one invoice); a transfer into the pupil's account number settles it.
+    """
     result = registry.get_finance_reader().fee_status(_ref(student))
     if not result.is_available:
         raise FinanceUnavailable()
@@ -86,6 +92,20 @@ def fee_summary(student) -> dict:
                 "status_label": STATUS_LABEL.get(_status(invoice), _status(invoice)),
             }
             for invoice in status.invoices
+        ],
+        "debit_notes": [
+            {
+                "note_ref": note.note_ref,
+                "number": note.document_number,
+                "date": note.note_date,
+                "reason": note.reason,
+                "total": note.amount_due,
+                "paid": note.amount_paid,
+                "balance": note.balance,
+                "status": _status(note),
+                "status_label": STATUS_LABEL.get(_status(note), _status(note)),
+            }
+            for note in status.debit_notes
         ],
         "can_pay": rules.enabled,
         "min_part_payment": rules.min_part_payment,
