@@ -11,7 +11,9 @@ At lagoon-view, from the pupils already on the roll:
                linked, such as a suspended one, stays linked and is listed).
                One child owes
                the term's bill (part-paid at the desk), the other has paid it
-               in full. A published school-wide notice reaches both children
+               in full. Each has a bank transfer account number of their own,
+               on the fake provider where it is on, so a deposit into either
+               can be simulated. A published school-wide notice reaches both children
                and a published class notice reaches the one child in that
                class. The child with a released result, where one has it, is
                given an absent, a late and an excused day this term;
@@ -107,6 +109,7 @@ class Command(BaseCommand):
                     "example.ng" if target.slug == target.recipe else "example.com"
                 )
                 lines = self._seed(target)
+                lines[self.okafor_end:self.okafor_end] = self._transfer_accounts()
                 for line in lines:
                     self.stdout.write(line)
         self.stdout.write(self._how_to_sign_in())
@@ -134,14 +137,17 @@ class Command(BaseCommand):
         self.slug, self.tenant, self.admin = target.slug, tenant, admin
         self.roll = self._roll(tenant)
         self.taken: set[int] = set()
+        self.accounts_owed: list = []
         self.books = self._books(school)
 
         lines = [self.style.SUCCESS(
             f"\n  {school.name} ({school.slug}): {len(branches)} "
             f"branch{'es' if len(branches) > 1 else ''}",
         )]
+        self.okafor_end = len(lines)
         if target.recipe == "lagoon-view":
             lines += self._okafor(branches)
+            self.okafor_end = len(lines)  # Her children's account numbers print here.
             lines += self._teacher()
             lines += self._invited()
         else:
@@ -320,6 +326,37 @@ class Command(BaseCommand):
         )
         post_payment(payment, actor_user=self.admin, allocations=[(invoice, row["balance"])])
 
+    def _transfer_accounts(self) -> list[str]:
+        """Give each of Mrs Okafor's billed children their account number, and name it.
+
+        Issued by the student seeder's own step, on the fake provider and
+        outside the seeding transaction, as the payment engine requires; a child
+        who already has an account keeps it. A parent of two then sees two
+        numbers, each beside its own child's name.
+        """
+        from vs_payments.constants import VirtualAccountStatus
+        from vs_payments.models import VirtualAccount
+        from vs_payments.providers.registry import fake_provider_enabled
+
+        owed = [(pupil, invoice) for pupil, invoice in self.accounts_owed if invoice is not None]
+        if owed and not fake_provider_enabled():
+            self._skipped("no transfer accounts: the fake payment provider is off here")
+            return []
+        lines = []
+        for pupil, invoice in owed:
+            self.pupils._transfer_account({"tenant": self.tenant, "invoice": invoice})
+            account = (
+                VirtualAccount.objects.filter(
+                    customer=invoice.customer, status=VirtualAccountStatus.ACTIVE,
+                ).order_by("-created_at", "-pk").first()
+            )
+            if account is not None:
+                lines.append(
+                    f"             {pupil.full_name}: transfer account "
+                    f"{account.account_number} ({account.bank_name}).",
+                )
+        return lines
+
     def _balance(self, pupil):
         from schools.vs_student_portal.fees import fee_summary
 
@@ -362,6 +399,7 @@ class Command(BaseCommand):
         owing = next(p for p in children if p.pk != paid.pk)
         if self.books:
             self._settle(paid, invoices[paid.pk])
+        self.accounts_owed = [(pupil, invoices[pupil.pk]) for pupil in children]
 
         shown = next((p for p in children if self._has_released_result(p)), None)
         if shown is None:

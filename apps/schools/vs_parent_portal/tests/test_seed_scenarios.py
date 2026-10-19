@@ -30,7 +30,9 @@ from schools.vs_students.constants import StudentStatus
 from schools.vs_students.models import Guardian, Student, StudentGuardian
 from schools.vs_students.services import guardian_portal_access as access
 from vs_finance.models import Invoice
+from vs_payments.constants import VirtualAccountStatus
 from vs_payments.exceptions import ProviderError
+from vs_payments.models import VirtualAccount
 from vs_user.models import User
 
 from ..management.commands.seed_parent_portal_scenarios import (
@@ -67,6 +69,7 @@ def _counts() -> dict:
         "links": StudentGuardian.objects.count(),
         "invoices": Invoice.objects.count(),
         "notices": Notice.objects.count(),
+        "transfer accounts": VirtualAccount.objects.count(),
     }
 
 
@@ -160,6 +163,20 @@ class SeedParentPortalScenariosTests(TestCase):
             sorted(fee_summary(child)["balance"] == 0 for child in children),
             [False, True],
         )
+
+    def test_each_of_her_children_has_a_transfer_account_of_their_own(self):
+        children = self.children(self.guardian("lagoon-view", "patricia.okafor@example.ng"))
+        accounts = [
+            VirtualAccount.objects.get(
+                customer__source_id=str(child.pk), status=VirtualAccountStatus.ACTIVE,
+            )
+            for child in children
+        ]
+        self.assertEqual({account.provider for account in accounts}, {"FAKE"})
+        self.assertEqual(len({account.account_number for account in accounts}), 2)
+        for child, account in zip(children, accounts):
+            with self.subTest(child=child.full_name):
+                self.assertIn(account.account_number, self.first_run)
 
     def test_one_of_her_children_has_a_released_result_and_a_day_to_note(self):
         from schools.vs_attendance.services.student_tab import pupil_attendance
