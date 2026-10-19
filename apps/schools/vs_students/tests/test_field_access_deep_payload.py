@@ -78,7 +78,8 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
             )
             guardian = Guardian.all_objects.create(
                 tenant=tenant, full_name="Mr. Chukwudi Nwosu",
-                phone="08035550101", email="chukwudi@example.ng",
+                phone="08035550101", alt_phone="08035550102",
+                email="chukwudi@example.ng",
                 address="4 Allen Avenue, Ikeja", occupation="Engineer",
             )
             link = StudentGuardian.all_objects.create(
@@ -109,7 +110,8 @@ class StudentsDeepPayloadTests(DeepPayloadChecks, StudentsFixture):
             )
             guardian_values = {
                 "guardian_id": None, "full_name": guardian.full_name,
-                "phone": guardian.phone, "email": guardian.email,
+                "phone": guardian.phone, "alt_phone": guardian.alt_phone,
+                "email": guardian.email,
                 "occupation": guardian.occupation, "address": guardian.address,
                 "relationship": Relationship.FATHER, "is_primary": True,
             }

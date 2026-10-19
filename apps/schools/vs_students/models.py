@@ -288,6 +288,10 @@ class Guardian(_Owned):
     #: The parts were split from a one-line name and nobody has confirmed them.
     name_needs_review = models.BooleanField(default=False)
     phone = models.CharField(max_length=32)
+    #: A second number the guardian gives, for when the first is not answered.
+    #: Optional everywhere and used to match nobody: only ``phone`` joins two
+    #: records to one person.
+    alt_phone = models.CharField(max_length=32, blank=True, default="")
     #: The parent's real address, and the one a login would be issued to.
     #: Optional on the row, because a school may hold a guardian it has no
     #: address for; required before that guardian can be given an account.

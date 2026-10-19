@@ -22,9 +22,14 @@ guardian and student spreadsheet imports) requires one, while the correction
 form may still change it under its switch, so without the flag a role that may
 not change a phone number could never add a guardian at all. Setting it while
 the guardian is created is not changing it, and the Write switch keeps
-deciding who may correct it afterwards. The email address, home address and
-occupation are optional on every create route and a blank one is dropped, so
-each stays governed by its switch on both paths.
+deciding who may correct it afterwards. The alternate phone number, email
+address, home address and occupation are optional on every create route and a
+blank one is dropped, so each stays governed by its switch on both paths.
+
+Whether a guardian has their own sign-in account for the parent portal is a
+read-only field of the same resource (``portal_access``): it is computed from
+the account and written only by the portal-access routes, which have a
+permission key of their own.
 
 The name, the personal and contact details, the emergency contact, the
 background and the student number are open too, for the same reason: every
@@ -281,6 +286,10 @@ def register():
             FieldSpec("phone", "Phone", group="Contact", scope=_TENANT,
                       sort_order=10, open_on_create=True,
                       description="The number the school calls about the child."),
+            FieldSpec("alt_phone", "Alternate phone", group="Contact", scope=_TENANT,
+                      sort_order=15,
+                      description="A second number the school may call when "
+                                  "the first is not answered."),
             FieldSpec("email", "Email", group="Contact", scope=_TENANT,
                       sort_order=20,
                       description="Where the guardian's own login is issued."),
@@ -290,5 +299,11 @@ def register():
                                   "always the child's."),
             FieldSpec("occupation", "Occupation", group="Contact", scope=_TENANT,
                       sort_order=40),
+            FieldSpec("portal_access", "Portal access", group="Portal",
+                      writable=False, scope=_TENANT, sort_order=10,
+                      api_names=("portal_access",),
+                      description="Whether the guardian has their own sign-in "
+                                  "account for the parent portal, and whether "
+                                  "they have activated it."),
         ),
     )

@@ -1,5 +1,9 @@
 from .base import StudentsViewMixin
 from .branch_move import BranchMovePreviewView, BranchMoveView
+from .guardian_portal_access import (
+    GuardianPortalAccessReissueView,
+    GuardianPortalAccessView,
+)
 from .guardians import (
     GuardianDetailView,
     GuardianDirectoryView,
@@ -60,7 +64,8 @@ __all__ = [
     "BranchMovePreviewView", "BranchMoveView", "BulkAssignClassView",
     "BulkStatusView", "ChangeStatusView", "ClassHistoryView", "ClassRosterView",
     "ConfirmApplicantView", "EnrolmentRulesView", "GuardianDetailView",
-    "GuardianDirectoryView", "GuardianRulesView", "GuardianStudentsView",
+    "GuardianDirectoryView", "GuardianPortalAccessReissueView",
+    "GuardianPortalAccessView", "GuardianRulesView", "GuardianStudentsView",
     "BulkPortalAccessView", "PortalAccessReissueView", "PortalAccessView",
     "PromotionBatchView", "PromotionPreviewView", "PromotionRulesView",
     "PromotionRunView", "ReactivateStudentView", "RejectApplicantView",

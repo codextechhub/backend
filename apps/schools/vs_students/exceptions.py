@@ -456,3 +456,29 @@ class PortalAccessNotGiven(PortalAccessError):
 class PortalInviteNotPending(PortalAccessError):
     error_code = "PORTAL_INVITE_NOT_PENDING"
     http_status = 409
+
+
+class PortalGuardianNoEmail(PortalAccessError):
+    """A guardian with no email: nowhere to send the invitation, nothing to sign in with."""
+
+    error_code = "PORTAL_GUARDIAN_NO_EMAIL"
+    http_status = 422
+
+
+class PortalGuardianNoChildOnRoll(PortalAccessError):
+    """A guardian none of whose children is on the roll has nothing to see in the portal."""
+
+    error_code = "PORTAL_GUARDIAN_NO_CHILD_ON_ROLL"
+    http_status = 422
+
+
+class PortalAccountNotUsable(PortalAccessError):
+    """The account at the guardian's email belongs to someone the portal must not reopen.
+
+    A closed staff account, or a pupil's, cannot be turned into a parent
+    account by an invitation: reopening it would also reopen whatever else it
+    is used for.
+    """
+
+    error_code = "PORTAL_ACCOUNT_NOT_USABLE"
+    http_status = 409

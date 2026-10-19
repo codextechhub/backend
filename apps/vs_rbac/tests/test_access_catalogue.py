@@ -460,7 +460,8 @@ class RealFieldOnlyResourceTests(TestCase):
             {field["name"] for field in guardians["fields"]},
             {
                 "first_name", "middle_name", "last_name", "photo",
-                "phone", "email", "address", "occupation",
+                "phone", "alt_phone", "email", "address", "occupation",
+                "portal_access",
             },
         )
 

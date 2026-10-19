@@ -231,6 +231,7 @@ def enrol(
                 first_name=row.get("first_name", ""),
                 middle_name=row.get("middle_name", ""),
                 last_name=row.get("last_name", ""), phone=row.get("phone", ""),
+                alt_phone=row.get("alt_phone", ""),
                 email=row.get("email", ""), occupation=row.get("occupation", ""),
                 address=row.get("address", "") or data.get("address", ""),
                 rules=guardian_rules,

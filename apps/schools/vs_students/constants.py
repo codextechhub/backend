@@ -37,9 +37,10 @@ PERM_SETTINGS_UPDATE = "school.settings.update"
 #: another school: the two acts have nothing in common but a destination.
 PERM_CHANGE_BRANCH = "school.students.change_branch"
 
-#: Giving a pupil a sign-in account for the pupil portal, sending the invitation
-#: again, and taking the account away. Its own key rather than ``update``: it
-#: creates a login, which is a different decision from correcting a record.
+#: Giving a pupil or a guardian a sign-in account for the pupil or parent portal,
+#: sending the invitation again, and taking the account away. Its own key
+#: rather than ``update``: it creates a login, which is a different decision
+#: from correcting a record.
 PERM_PORTAL_ACCESS = "school.portal_access.issue"
 
 PERM_CLASS_ASSIGN = "academics.classes.assign"

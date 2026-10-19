@@ -27,6 +27,8 @@ from .views import (
     EnrolmentRulesView,
     GuardianDetailView,
     GuardianDirectoryView,
+    GuardianPortalAccessReissueView,
+    GuardianPortalAccessView,
     GuardianSearchView,
     GuardianPhotoView,
     GuardianRulesView,
@@ -188,6 +190,14 @@ guardian_patterns = [
         name="guardian-students",
     ),
     path("<int:pk>/photo/", GuardianPhotoView.as_view(), name="guardian-photo"),
+    path(
+        "<int:pk>/portal-access/", GuardianPortalAccessView.as_view(),
+        name="guardian-portal-access",
+    ),
+    path(
+        "<int:pk>/portal-access/reissue/", GuardianPortalAccessReissueView.as_view(),
+        name="guardian-portal-access-reissue",
+    ),
 ]
 
 urlpatterns = student_patterns

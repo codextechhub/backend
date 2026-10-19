@@ -115,7 +115,7 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
                          "class_names": class_names},
             ).data)
         links = list(
-            student.guardian_links.select_related("guardian").order_by(
+            student.guardian_links.select_related("guardian__user").order_by(
                 "-is_primary", "id",
             ),
         )
@@ -178,6 +178,7 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
                 first_name=data.get("first_name", ""),
                 middle_name=data.get("middle_name", ""),
                 last_name=data.get("last_name", ""), phone=data.get("phone", ""),
+                alt_phone=data.get("alt_phone", ""),
                 email=data.get("email", ""),
                 occupation=data.get("occupation", ""),
                 address=data.get("address", ""),

@@ -84,7 +84,8 @@ def resolve_user(tenant, email):
 
 @transaction.atomic
 def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="",
-                    last_name="", email="", occupation="", address="", rules=None):
+                    last_name="", email="", occupation="", address="", rules=None,
+                    alt_phone=""):
     """The guardian row for this person, created only if they are new here.
 
     The name is given in parts. A caller holding only a one-line name passes
@@ -115,7 +116,8 @@ def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="
         tenant=tenant, full_name=(full_name or "").strip(),
         first_name=(first_name or "").strip(), middle_name=(middle_name or "").strip(),
         last_name=(last_name or "").strip(),
-        phone=(phone or "").strip(), email=(email or "").strip(),
+        phone=(phone or "").strip(), alt_phone=(alt_phone or "").strip(),
+        email=(email or "").strip(),
         occupation=(occupation or "").strip(), address=(address or "").strip(),
         user=resolve_user(tenant, email),
     ), True
@@ -402,7 +404,8 @@ def readable_guardian_search_fields(request) -> tuple[str, ...]:
 
 #: The guardian's own details, as opposed to their link to any one student.
 GUARDIAN_FIELDS = (
-    "first_name", "middle_name", "last_name", "phone", "email", "occupation", "address",
+    "first_name", "middle_name", "last_name", "phone", "alt_phone", "email",
+    "occupation", "address",
 )
 
 #: The parts of a guardian's name. Sending any of them confirms the name.

@@ -126,10 +126,14 @@ def readable_name(request, resource, person, parts=PERSON_NAME_PARTS) -> str:
 class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A guardian's own details, as a student's record carries them.
 
-    The phone number, email address, home address and occupation are the
+    The phone numbers, email address, home address and occupation are the
     registered fields of ``school.guardians``, so a school decides per role who
     reads them. This shape travels nested inside a student's guardian list as
     well as on its own, and a nested serializer is filtered as its own resource.
+
+    ``portal_access`` is the state of the guardian's own parent-portal account
+    (``none``, ``invited``, ``active`` or ``revoked``) under its own read-only
+    switch; the detail of it is the portal-access route's.
     """
 
     field_resource = "school.guardians"
@@ -137,14 +141,20 @@ class GuardianSerializer(FieldAccessMixin, serializers.ModelSerializer):
 
     has_account = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
+    portal_access = serializers.SerializerMethodField()
 
     class Meta:
         model = Guardian
         fields = [
             "id", "full_name", "first_name", "middle_name", "last_name",
-            "name_needs_review", "phone", "email", "occupation", "address",
-            "has_account", "photo_url",
+            "name_needs_review", "phone", "alt_phone", "email", "occupation",
+            "address", "has_account", "photo_url", "portal_access",
         ]
+
+    def get_portal_access(self, obj):
+        from .services.guardian_portal_access import state_of
+
+        return state_of(obj)
 
     def get_photo_url(self, obj):
         return guardian_photo_url(obj, request=self.context.get("request"))
@@ -180,6 +190,7 @@ class GuardianUpdateSerializer(FieldAccessMixin, serializers.Serializer):
     middle_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=100, required=False)
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    alt_phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     occupation = serializers.CharField(
         max_length=100, required=False, allow_blank=True,
@@ -297,7 +308,7 @@ class GuardianDirectorySerializer(FieldAccessMixin, serializers.ModelSerializer)
     class Meta:
         model = Guardian
         fields = ["id", "full_name", "first_name", "middle_name", "last_name",
-                  "name_needs_review", "phone", "email", "ward_count",
+                  "name_needs_review", "phone", "alt_phone", "email", "ward_count",
                   "ward_names", "is_sibling_household", "photo_url"]
 
     def get_photo_url(self, obj):
@@ -345,6 +356,7 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
     last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     full_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    alt_phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
     email = serializers.EmailField(required=False, allow_blank=True)
     occupation = serializers.CharField(
         max_length=100, required=False, allow_blank=True,

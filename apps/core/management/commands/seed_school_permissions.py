@@ -115,10 +115,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # and the move itself needs a reach covering both branches, so a branch
     # administrator working at one branch holds the key and moves nobody.
     ("school", "students", "change_branch",    _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    # Giving a pupil their own sign-in account, sending the invitation again,
-    # and taking the account away. Its own resource because it creates a
-    # login, a different decision from correcting the record; scoped to the
-    # holder's branches like every other student key.
+    # Giving a pupil or a guardian their own sign-in account, sending the
+    # invitation again, and taking the account away. Its own resource because
+    # it creates a login, a different decision from correcting the record;
+    # scoped to the holder's branches like every other student key.
     ("school", "portal_access", "issue",       _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     # Notices to pupils. Administrators post to any audience inside their
     # branch reach; a teacher posts only to the classes they teach or lead,
@@ -436,7 +436,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "dashboard"):      "School overview dashboard",
     ("school", "branches"):       "School branch management",
     ("school", "students"):       "Student records",
-    ("school", "portal_access"):  "Pupils' own sign-in accounts for the pupil portal",
+    ("school", "portal_access"):  "Pupils' and guardians' own sign-in accounts for the pupil and parent portals",
     ("school", "notices"):        "Notices the school posts to its pupils",
     ("school", "class_notices"):  "Notices a teacher posts to the classes they teach",
     # Fields only: a guardian is read and corrected with the student keys.
