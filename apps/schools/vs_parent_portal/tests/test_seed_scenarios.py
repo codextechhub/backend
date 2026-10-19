@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import redirect_stdout
 from io import StringIO
+from unittest import mock
 
 from django.core.management import call_command
 from django.test import TestCase, tag
@@ -29,6 +30,7 @@ from schools.vs_students.constants import StudentStatus
 from schools.vs_students.models import Guardian, Student, StudentGuardian
 from schools.vs_students.services import guardian_portal_access as access
 from vs_finance.models import Invoice
+from vs_payments.exceptions import ProviderError
 from vs_user.models import User
 
 from ..management.commands.seed_parent_portal_scenarios import (
@@ -52,6 +54,12 @@ def _build(name, **options) -> None:
         call_command(name, stdout=sink, stderr=sink, **options)
 
 
+def _paystack_offline():
+    """Paystack answering as an outage at the provider boundary, never a socket."""
+    offline = ProviderError("Paystack is not reachable from tests.", provider="PAYSTACK")
+    return mock.patch("vs_payments.providers.paystack.request_json", side_effect=offline)
+
+
 def _counts() -> dict:
     return {
         "guardians": Guardian.all_objects.count(),
@@ -66,7 +74,7 @@ def _counts() -> dict:
 class SeedParentPortalScenariosTests(TestCase):
     @classmethod
     def setUpTestData(cls):
-        with school_clock(SEEDED_ON):
+        with school_clock(SEEDED_ON), _paystack_offline():
             _build("seed_all_permissions")
             _build("seed_notification_event_types")
             _build("seed_notification_templates")
@@ -86,8 +94,18 @@ class SeedParentPortalScenariosTests(TestCase):
 
     @classmethod
     def run_seed(cls, **options) -> str:
+        """Run the seeder with Paystack answering as unreachable.
+
+        Billing a child's first invoice asks the provider for a transfer
+        account, so every seeder here runs under :func:`_paystack_offline`. It
+        is entered first so it is still in force when the on-commit callbacks
+        run, which is where the provider is asked.
+        """
         out = StringIO()
-        with school_clock(MONDAY), cls.captureOnCommitCallbacks(execute=True):
+        with (
+            _paystack_offline(), school_clock(MONDAY),
+            cls.captureOnCommitCallbacks(execute=True),
+        ):
             call_command("seed_parent_portal_scenarios", stdout=out, **options)
         return out.getvalue()
 
