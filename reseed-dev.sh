@@ -110,6 +110,9 @@ run seed_gradebook_history
 echo "→ Student portal: pupils' access, notices, a billed and part-paid family..."
 run seed_student_portal_scenarios
 
+echo "→ Parent portal: parents with accounts, siblings at two branches, a teacher who is a parent..."
+run seed_parent_portal_scenarios
+
 echo ""
 # Rows the seeders wrote without a save (raw bulk paths) still get a first
 # version, so every seeded profile can be read "as at" from today.

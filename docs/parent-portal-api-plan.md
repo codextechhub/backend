@@ -121,4 +121,65 @@ Implemented as section 9 records.
 
 ## 9. As built
 
-To be filled in as each slice lands.
+This section is the contract where it differs from the sections above.
+
+### 9.1 Commits
+
+| Commit | What landed |
+|---|---|
+| `40a7acae` | Portal app, admittance, `me/`, child record, timetable, attendance, results, notices |
+| `ad24f7aa` | M11: guardian portal accounts, `Guardian.alt_phone` |
+| `0f4a35b7` | Parents told of published notices (`notices.tell_parents`) |
+| `d3526087` | Fees, history, receipts, invoices, pay, per-child transfer account, home; FAL contract 1.2.0 |
+| `b6574e3c` | Profile read and edit |
+
+### 9.2 Routes under `/v1/portal/parent/`
+
+| Verb | Path | Notes |
+|---|---|---|
+| GET | `me/` | parent, school, session, term, `show_branch`, children; 404 `NOT_A_PARENT` for anybody else |
+| GET, PATCH | `profile/` | PATCH takes `phone`, `alt_phone`, `address` only; any other key 400 by name; `email_editable: false` |
+| GET | `home/` | per-child blocks (attendance, fees, results, today) and family blocks (fees, notices, notifications), each `available` on its own |
+| GET | `children/<id>/` | record; other guardians by name and relationship only |
+| GET | `children/<id>/timetable/`, `attendance/?term=`, `results/?term=`, `results/session/?session=`, `results/report-card/?term=` | the pupil portal's own reads |
+| GET, POST | `children/<id>/fees/transfer-account/` | the child's permanent account; not gated on the pupils-may-pay rule; POST throttled |
+| GET | `children/<id>/fees/transfer-account/deposits/?since=` | |
+| GET | `fees/` | per child (`available` each), `combined` (withheld while any child is unreadable), `min_part_payment`, `pay_all` {total, steps, complete} |
+| GET | `fees/payments/` | every child's history merged, newest first; 503 if any child is unreadable |
+| GET | `fees/payments/<ref>/receipt/?as=pdf` | found on the parent's children; 404 otherwise |
+| GET | `fees/invoices/<ref>/?as=pdf` | invoice JSON or PDF; 404 otherwise |
+| POST | `fees/invoices/<ref>/pay/` | `{amount}` kobo; 201 `{checkout_url, reference, amount, balance_after, child}`; refusals as the pupil route |
+| GET | `notices/`, `notices/<id>/`; POST `notices/<id>/read/`, `notices/read-all/` | union across the children, each notice naming the children it is for |
+
+Card checkouts return to `/parent/fees/paid?reference=` on the school's host
+(`PARENT_APP_BASE_URL` overrides the host). Status is read on the public
+collection status route by `reference`.
+
+### 9.3 Student Management (M11)
+
+- `GET, POST, DELETE /v1/guardians/<id>/portal-access/`, `POST
+  .../reissue/`, under `school.portal_access.issue` (description widened to
+  pupils and guardians). The account is school-level (no branch, no role). An
+  existing account at the school's address is linked, never duplicated; a
+  pupil's own sign-in is never linked (409 `PORTAL_ACCOUNT_NOT_USABLE`).
+  Revoke closes a parent-only account and keeps the link (`revoked`), and only
+  unlinks an account used for anything else (`none`).
+- `Guardian.alt_phone`; Field Access switches `school.guardians.alt_phone`
+  (read, write) and `school.guardians.portal_access` (read-only).
+
+### 9.4 Differences from sections 1 to 4
+
+- Parent payments go through `ParentPaymentBridgePort`, which now takes the
+  actor (PORTAL origin, so the parent is told on confirmation) and returns a
+  `Checkout` with our reference; `entity_ref` is optional.
+  `StudentPaymentPort.invoice_pdf` is new. FAL contract 1.2.0.
+- The school's smallest part payment (`fees.min_part_payment`) applies to
+  parents; the pupils-may-pay switch does not. The shared amount rule refuses
+  a fractional or boolean amount for pupils too.
+- The parent's email is read-only (owner decision, 19 October 2026).
+- Home has no assignments, follow-ups or messages block, and no route answers
+  for them: neither module exists.
+- Parent reads are not audited, as pupil reads are not; profile edits are
+  audited through `update_guardian`, payments by the payments module.
+- The parent notification's in-app destination is `/notices/{id}` inside the
+  parent app; the parent app's router must match it.
