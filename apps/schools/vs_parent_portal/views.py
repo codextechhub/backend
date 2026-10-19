@@ -12,6 +12,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_student_portal.views import PublicAppView
 
 from .permissions import PORTAL_PERMISSIONS, child_of, children_of, linked_guardian
 
@@ -517,3 +518,53 @@ class NoticeReadAllView(_Feed, PortalView):
         return success_response(
             "All notices marked as read.", data={"marked": marked, "unread_count": 0},
         )
+
+
+class ParentAppManifestView(PublicAppView):
+    """GET /v1/portal/parent/app/<slug>/manifest.webmanifest
+
+    The web app manifest a phone installs the parent app from: the school's
+    name, and icons cut from its crest, or the parent app's own XVS icons where
+    it has none, opening at ``/parent/``. The school's host serves it by passing
+    ``/parent/app/<slug>/manifest.webmanifest`` through here; a crest icon's
+    address is relative to the manifest, so it is right either way. 404 for a
+    slug that names no school able to sign in.
+
+    docstring-name: Parent app manifest
+    """
+
+    def get(self, request, slug):
+        import json
+
+        from django.http import HttpResponse
+
+        from schools.vs_student_portal.app_manifest import PARENT_APP, manifest
+
+        body = manifest(self.school(slug), icon_url=lambda name: f"icons/{name}", app=PARENT_APP)
+        response = HttpResponse(json.dumps(body), content_type="application/manifest+json")
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
+
+
+class ParentAppIconView(PublicAppView):
+    """GET /v1/portal/parent/app/<slug>/icons/<name>
+
+    One home-screen icon cut from the school's crest, the same drawing the
+    student app uses. 404 where the school has no crest, which the manifest
+    never points at.
+
+    docstring-name: Parent app icon
+    """
+
+    def get(self, request, slug, name):
+        from django.http import HttpResponse
+
+        from schools.vs_student_portal.app_manifest import icon
+
+        found = icon(self.school(slug), name)
+        if found is None:
+            raise NotFound("No such icon for this school.")
+        response = HttpResponse(found, content_type="image/png")
+        response["Cache-Control"] = "public, max-age=86400"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response

@@ -529,8 +529,12 @@ class ReceiptView(PortalView):
         return success_response(data=receipt(self.student, payment_ref))
 
 
-class _PublicAppView(APIView):
-    """Read before anyone signs in: a phone fetches these to install the app."""
+class PublicAppView(APIView):
+    """Read before anyone signs in: a phone fetches these to install one of the school's apps.
+
+    The parent app's manifest and icons are served the same way
+    (``schools.vs_parent_portal.views``).
+    """
 
     from rest_framework.permissions import AllowAny
 
@@ -550,7 +554,7 @@ class _PublicAppView(APIView):
         return found
 
 
-class StudentAppManifestView(_PublicAppView):
+class StudentAppManifestView(PublicAppView):
     """GET /v1/portal/student/app/<slug>/manifest.webmanifest
 
     The web app manifest a phone installs the student app from: the school's
@@ -580,7 +584,7 @@ class StudentAppManifestView(_PublicAppView):
         return response
 
 
-class StudentAppIconView(_PublicAppView):
+class StudentAppIconView(PublicAppView):
     """GET /v1/portal/student/app/<slug>/icons/<name>
 
     One home-screen icon cut from the school's crest: ``icon-192.png``,

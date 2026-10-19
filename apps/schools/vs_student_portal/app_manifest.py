@@ -1,11 +1,14 @@
-"""The student app as a phone installs it: each school's own name and crest.
+"""The school's apps as a phone installs them: each school's own name and crest.
 
-The student app is one build served at ``/student/`` on every school's host.
-What a phone puts on its home screen comes from the web app manifest, so the
-school's host passes ``/student/manifest.webmanifest`` through to this one,
-which names the school and, where it has uploaded a crest, points at icons cut
-from it, by addresses relative to the manifest itself. A school with no crest keeps the app's own XVS icons, which the app
-serves at ``/student/icons/``, so a phone never shows the bare CodeX mark.
+The student app and the parent app are each one build, served at ``/student/``
+and ``/parent/`` on every school's host. What a phone puts on its home screen
+comes from the web app manifest, so the school's host passes each app's
+``app/<slug>/manifest.webmanifest`` through to the API, which names the school
+and, where it has uploaded a crest, points at icons cut from it, by addresses
+relative to the manifest itself. An :class:`AppSpec` says which app: its
+address and the line describing it. A school with no crest keeps the app's own
+XVS icons, which each app serves at ``<its address>icons/``, so a phone never
+shows the bare CodeX mark.
 
 Icons are drawn from the crest on a white square, the crest at 80% of the
 square, or at 60% for the maskable icon so a launcher's circle or squircle
@@ -14,6 +17,7 @@ never clips it. They are cached per crest, so a new upload is drawn afresh.
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 
 from django.core.cache import cache
 
@@ -36,6 +40,21 @@ MANIFEST_ICONS = (
 
 #: The most a launcher shows under an icon before it cuts the name off.
 SHORT_NAME_LENGTH = 12
+
+
+@dataclass(frozen=True)
+class AppSpec:
+    """One of the school's apps: where it is served and how its manifest describes it."""
+
+    path: str
+    description: str
+
+    def describe(self, school) -> str:
+        return self.description.format(school=school.name)
+
+
+STUDENT_APP = AppSpec("/student/", "Your classes, results, attendance and fees at {school}.")
+PARENT_APP = AppSpec("/parent/", "Your children's results, attendance, notices and fees at {school}.")
 
 
 def school_for(slug):
@@ -75,23 +94,23 @@ def short_name(name: str) -> str:
     return whole.split(" ", 1)[0]
 
 
-def manifest(school, *, icon_url) -> dict:
-    """The manifest for *school*; ``icon_url(file_name)`` addresses a crest icon."""
+def manifest(school, *, icon_url, app: AppSpec = STUDENT_APP) -> dict:
+    """*app*'s manifest for *school*; ``icon_url(file_name)`` addresses a crest icon."""
     has_crest = crest_file(school) is not None
     return {
-        "id": "/student/",
+        "id": app.path,
         "name": school.name,
         "short_name": short_name(school.name),
-        "description": f"Your classes, results, attendance and fees at {school.name}.",
-        "start_url": "/student/",
-        "scope": "/student/",
+        "description": app.describe(school),
+        "start_url": app.path,
+        "scope": app.path,
         "display": "standalone",
         "orientation": "any",
         "background_color": BACKGROUND_COLOR,
         "theme_color": THEME_COLOR,
         "icons": [
             {
-                "src": icon_url(file_name) if has_crest else f"/student/icons/{file_name}",
+                "src": icon_url(file_name) if has_crest else f"{app.path}icons/{file_name}",
                 "sizes": sizes, "type": "image/png", "purpose": purpose,
             }
             for file_name, sizes, purpose in MANIFEST_ICONS

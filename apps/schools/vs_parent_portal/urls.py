@@ -6,6 +6,8 @@ as itself.
 from django.urls import path
 
 from .views import (
+    ParentAppIconView,
+    ParentAppManifestView,
     AttendanceView,
     ChildRecordView,
     FeesView,
@@ -29,6 +31,11 @@ from .views import (
 )
 
 urlpatterns = [
+    path(
+        "app/<slug:slug>/manifest.webmanifest", ParentAppManifestView.as_view(),
+        name="parent-app-manifest",
+    ),
+    path("app/<slug:slug>/icons/<str:name>", ParentAppIconView.as_view(), name="parent-app-icon"),
     path("me/", MeView.as_view(), name="parent-portal-me"),
     path("profile/", ProfileView.as_view(), name="parent-portal-profile"),
     path("home/", HomeView.as_view(), name="parent-portal-home"),

@@ -64,7 +64,9 @@ class LoginService:
         DEVICE_SESSION_NOT_OFFERED once its password is proven, before anything
         is issued. A browser sign-in by an account that IS offered one answers
         ``device_app`` with the app's path, so the sign-in page can hand the
-        person over to it.
+        person over to it. One that is not, but belongs in another app (a
+        parent with no staff role), answers ``home_app`` with that app's path
+        (``services.home_apps``), so the page can send them there.
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -227,10 +229,15 @@ class LoginService:
         from vs_tenants.context import tenant_context_block
         permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
+        from .home_apps import home_app_payload
+
         device_fields = (
             {'account': session.device_key}
             if device else
-            {'device_app': {'path': policy.app_path} if policy else None}
+            {
+                'device_app': {'path': policy.app_path} if policy else None,
+                'home_app': None if policy else home_app_payload(authed),
+            }
         )
         return {
             **device_fields,

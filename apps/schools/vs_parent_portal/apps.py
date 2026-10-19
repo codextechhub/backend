@@ -18,6 +18,8 @@ class VsParentPortalConfig(AppConfig):
     def ready(self):
         from vs_notifications.services.push import register_destination
 
+        from . import sign_in
         from .push import destination
 
         register_destination(destination)
+        sign_in.register()
