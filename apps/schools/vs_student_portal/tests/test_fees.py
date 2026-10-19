@@ -88,6 +88,18 @@ class PortalFeesTests(_FeesFixture):
         self.assertEqual(invoice["status_label"], "Owing")
         self.assertEqual(invoice["lines"][0]["amount"], 300_000)
 
+    def test_paged_bills_keep_the_balance_and_only_return_the_requested_slice(self):
+        url = reverse("student-portal-fees")
+        first = self.as_pupil().get(url, {"page": 1}).data["data"]
+        self.assertEqual(first["balance"], 300_000)
+        self.assertTrue(first["has_bills"])
+        self.assertEqual(first["pagination"]["total"], 1)
+        self.assertEqual(first["items"][0]["invoice_ref"], self.tunde_invoice.pk)
+        self.assertEqual(first["items"][0]["kind"], "invoice")
+        self.assertNotIn("invoices", first)
+        self.assertEqual(self.as_pupil().get(url, {"page": 2}).data["data"]["items"], [])
+        self.assertEqual(self.as_pupil().get(url, {"page": 0}).status_code, 400)
+
     def test_the_pupil_reads_a_charge_added_after_the_bill(self):
         from vs_finance.constants import CreditNoteKind
         from vs_finance.credit_notes import post_credit_note
@@ -188,6 +200,13 @@ class PortalFeesTests(_FeesFixture):
         rows = self.as_pupil().get(reverse("student-portal-payments")).data["data"]
         self.assertEqual(rows[0]["status"], "PENDING")
         self.assertFalse(rows[0]["has_receipt"])
+
+    def test_payment_history_can_be_read_one_page_at_a_time(self):
+        self.pay(200_000)
+        data = self.as_pupil().get(reverse("student-portal-payments"), {"page": 1}).data["data"]
+        self.assertEqual(data["pagination"]["total"], 1)
+        self.assertEqual(data["items"][0]["status"], "PENDING")
+        self.assertEqual(self.as_pupil().get(reverse("student-portal-payments"), {"page": 2}).data["data"]["items"], [])
 
     def test_a_confirmed_payment_has_a_receipt_with_the_balance_it_left(self):
         reference = self.pay(200_000).data["data"]["reference"]

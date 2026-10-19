@@ -15,11 +15,13 @@ Money crosses this boundary as integer kobo; the portal formats it.
 """
 from __future__ import annotations
 
+import re
+
 from schools.core.fal import registry
 from vs_finance.money import format_naira
 from schools.core.fal.exceptions import CrossTenantError, PaymentGatewayError
 from schools.core.fal.student_payments import read_student_payment_rules
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 
 from .links import student_app_url
 from .exceptions import (
@@ -50,6 +52,89 @@ METHOD_LABEL = {
     "CARD": "Card", "BANK_TRANSFER": "Bank transfer", "USSD": "USSD", "CASH": "Cash",
     "CHEQUE": "Cheque", "ONLINE": "Online", "OTHER": "Other",
 }
+
+BILLS_PAGE_SIZE = 8
+PAYMENTS_PAGE_SIZE = 10
+
+
+def _page_number(value) -> int:
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError({"page": "Choose a valid page."}) from None
+    if page < 1:
+        raise ValidationError({"page": "Choose a valid page."})
+    return page
+
+
+def _year(value) -> str:
+    if value in (None, "", "all"):
+        return "all"
+    if not re.fullmatch(r"\d{4}", value):
+        raise ValidationError({"year": "Choose a valid year."})
+    return value
+
+
+def _page(rows, number: int, size: int) -> dict:
+    total = len(rows)
+    return {
+        "items": rows[(number - 1) * size:number * size],
+        "pagination": {
+            "page": number, "page_size": size, "total": total,
+            "total_pages": max(1, (total + size - 1) // size),
+        },
+    }
+
+
+def bill_page(student, *, page, year=None, status=None) -> dict:
+    """A bounded bill response, with outstanding items before paid history."""
+    number = _page_number(page)
+    year = _year(year)
+    if status not in (None, "", "all", "due", "paid"):
+        raise ValidationError({"status": "Choose a valid bill status."})
+    summary = fee_summary(student)
+    invoices = summary["invoices"]
+    rows = [{"kind": "invoice", **invoice} for invoice in invoices]
+    rows.extend({"kind": "charge", **charge} for charge in summary["debit_notes"])
+
+    def issued_on(row):
+        if row["kind"] == "invoice":
+            return row.get("invoice_date") or row.get("due_date")
+        return row.get("date")
+
+    def sort_date(row):
+        if row["kind"] == "invoice" and row["balance"] > 0:
+            return row.get("due_date") or row.get("invoice_date")
+        return issued_on(row)
+
+    years = sorted({str(date)[:4] for row in rows if (date := issued_on(row))}, reverse=True)
+    next_due = min((invoice["due_date"] for invoice in invoices if invoice["balance"] > 0 and invoice["due_date"]), default=None)
+    if year != "all":
+        rows = [row for row in rows if str(issued_on(row) or "").startswith(year)]
+    if status in ("due", "paid"):
+        rows = [row for row in rows if (row["balance"] > 0) == (status == "due")]
+    open_rows = [row for row in rows if row["balance"] > 0]
+    paid_rows = [row for row in rows if row["balance"] <= 0]
+    open_rows.sort(key=lambda row: (not bool(sort_date(row)), str(sort_date(row) or "")))
+    paid_rows.sort(key=lambda row: (bool(sort_date(row)), str(sort_date(row) or "")), reverse=True)
+    return {
+        **{key: value for key, value in summary.items() if key not in ("invoices", "debit_notes")},
+        "has_bills": bool(invoices or summary["debit_notes"]),
+        "years": years,
+        "next_due": next_due,
+        **_page(open_rows + paid_rows, number, BILLS_PAGE_SIZE),
+    }
+
+
+def payment_page(student, *, page, year=None) -> dict:
+    """The newest confirmed and pending payments for one requested page."""
+    number = _page_number(page)
+    year = _year(year)
+    rows = payment_history(student)
+    years = sorted({str(row["paid_on"])[:4] for row in rows if row["paid_on"]}, reverse=True)
+    if year != "all":
+        rows = [row for row in rows if str(row["paid_on"] or "").startswith(year)]
+    return {"years": years, **_page(rows, number, PAYMENTS_PAGE_SIZE)}
 
 
 def _ref(student) -> str:
