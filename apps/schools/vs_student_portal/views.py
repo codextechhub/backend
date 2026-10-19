@@ -391,8 +391,14 @@ class FeesView(PortalView):
     """
 
     def get(self, request):
-        from .fees import fee_summary
+        from .fees import bill_page, fee_summary
 
+        if "page" in request.query_params:
+            return success_response(data=bill_page(
+                self.student, page=request.query_params["page"],
+                year=request.query_params.get("year"),
+                status=request.query_params.get("status"),
+            ))
         return success_response(data=fee_summary(self.student))
 
 
@@ -407,8 +413,13 @@ class PaymentHistoryView(PortalView):
     """
 
     def get(self, request):
-        from .fees import payment_history
+        from .fees import payment_history, payment_page
 
+        if "page" in request.query_params:
+            return success_response(data=payment_page(
+                self.student, page=request.query_params["page"],
+                year=request.query_params.get("year"),
+            ))
         return success_response(data=payment_history(self.student))
 
 
