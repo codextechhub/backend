@@ -18,6 +18,10 @@ against Paystack's API reference (paystack.com/docs/api) on 2026-10-04:
 * ``POST /dedicated_account`` accepts ``subaccount``, so a dedicated virtual account's
   deposits settle to that subaccount's bank account; whether ``bearer`` is honoured
   there is not stated in the reference (it is sent).
+* A business Paystack has not approved for dedicated accounts is refused with HTTP
+  403, ``code: "feature_unavailable"`` and a ``meta.nextStep`` telling it to write to
+  Paystack support (seen on a test key on 2026-10-19). Approval is per business, so
+  live keys need it too.
 * ``GET /transaction/verify/<reference>`` reports the fee Paystack kept, in kobo, as
   ``data.fees``.
 * ``POST /subaccount`` takes ``business_name``, the bank's code, ``account_number``
@@ -63,9 +67,10 @@ import datetime
 import hashlib
 import hmac
 import json
+import logging
 import urllib.parse
 
-from ..exceptions import ProviderError
+from ..exceptions import ProviderError, ProviderFeatureUnavailableError
 from .base import (
     AccountResolution,
     CheckoutResult,
@@ -81,6 +86,11 @@ from .base import (
     WebhookParseResult,
 )
 from .http import request_json
+
+logger = logging.getLogger(__name__)
+
+#: Paystack's ``code`` on a refusal for a feature the business has not been approved for.
+FEATURE_UNAVAILABLE = "feature_unavailable"
 
 # Paystack transaction/transfer status string → our neutral status.  # Translate provider states into our domain.
 _COLLECTION_STATUS = {
@@ -159,23 +169,39 @@ class PaystackProvider(Provider):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.secret_key}"}  # Standard Paystack auth header.
 
-    # Support the post workflow.
-    def _post(self, path: str, body: dict) -> dict:
-        return request_json("POST", f"{self.base_url}{path}", headers=self._headers(),  # Send an authenticated POST.
-                            body=body, provider=self.name)  # Include provider name for better error context.
+    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+        """One authenticated call, with a refused feature raised as not set up.
 
-    # Support the get workflow.
+        Paystack answers a business it has not approved for a feature (dedicated
+        accounts, for one) with HTTP 403 and code ``feature_unavailable``. That
+        refusal becomes :class:`ProviderFeatureUnavailableError` carrying
+        Paystack's sentence; every other failure is raised unchanged.
+        """
+        try:
+            return request_json(method, f"{self.base_url}{path}", headers=self._headers(),
+                                body=body, provider=self.name)
+        except ProviderError as exc:
+            refusal = getattr(exc, "response_body", None)
+            if not (isinstance(refusal, dict) and refusal.get("code") == FEATURE_UNAVAILABLE):
+                raise
+            sentence = str(refusal.get("message") or "")
+            logger.warning("Paystack refused %s %s: feature not enabled (%s)", method, path, sentence)
+            raise ProviderFeatureUnavailableError(
+                f"Paystack: {sentence}" if sentence else None,
+                provider=self.name, provider_code=exc.provider_code,
+            ) from exc
+
+    def _post(self, path: str, body: dict) -> dict:
+        return self._request("POST", path, body)
+
     def _get(self, path: str) -> dict:
-        return request_json("GET", f"{self.base_url}{path}", headers=self._headers(),  # Send an authenticated GET.
-                            provider=self.name)  # Include provider name for better error context.
+        return self._request("GET", path)
 
     def _put(self, path: str, body: dict | None = None) -> dict:
-        return request_json("PUT", f"{self.base_url}{path}", headers=self._headers(),
-                            body=body, provider=self.name)
+        return self._request("PUT", path, body)
 
     def _delete(self, path: str, body: dict | None = None) -> dict:
-        return request_json("DELETE", f"{self.base_url}{path}", headers=self._headers(),
-                            body=body, provider=self.name)
+        return self._request("DELETE", path, body)
 
     @staticmethod
     # Support the require ok workflow.

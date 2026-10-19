@@ -38,6 +38,24 @@ class ProviderNotConfiguredError(PaymentError):
     http_status = 503  # Service unavailable until configuration is supplied.
 
 
+class ProviderFeatureUnavailableError(ProviderNotConfiguredError, ProviderError):
+    """The provider answered, and this merchant has not been given the feature asked for.
+
+    Paystack, for one, refuses dedicated accounts to a business it has not
+    approved for them. Asking again changes nothing until the provider turns the
+    feature on, so this is a fact about how the school is set up, not an outage.
+
+    It is a :class:`ProviderNotConfiguredError`, so every caller that turns "not
+    configured" into "not offered" does the same here, and a
+    :class:`ProviderError`, so a caller that only knows provider failures still
+    catches it. The message is the provider's own sentence, for the staff who
+    have to ask for the feature.
+    """
+
+    error_code = "PAYMENT_PROVIDER_FEATURE_UNAVAILABLE"
+    default_message = "The payment provider has not enabled this for the school's account."
+
+
 class WebhookSignatureError(PaymentError):
     """The inbound webhook signature did not verify against the provider secret."""
 

@@ -375,6 +375,18 @@ class ProviderFailureTests(_FirstBillFixture):
         self.assertEqual(transfer_account(self.tunde)["state"], "NONE")
         self.assertEqual(self.not_issued_events().get().metadata["reason"], "PROVIDER_FAILED")
 
+    def test_a_provider_that_has_not_given_the_school_dedicated_accounts_is_not_retried(self):
+        from vs_payments.exceptions import ProviderFeatureUnavailableError
+
+        self.issued.side_effect = ProviderFeatureUnavailableError("Dedicated NUBAN is not available")
+        with mock.patch.object(issue_transfer_account, "retry") as retry:
+            outcome = self.run_attempt(0)
+
+        retry.assert_not_called()
+        self.assertEqual(outcome, transfer_accounts.NOT_OFFERED)
+        self.assertFalse(_pupils_accounts(self.tunde).exists())
+        self.assertFalse(self.not_issued_events().exists())
+
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     def test_where_tasks_run_inline_there_is_one_attempt(self):
         self.issued.side_effect = ProviderError("Paystack is down")

@@ -475,6 +475,16 @@ class ParentTransferAccountTests(ParentBooksFixture):
         self.assertEqual(data["state"], "UNAVAILABLE")
         self.assertIn("bank transfers", data["message"])
 
+    def test_a_provider_that_has_not_given_the_school_dedicated_accounts_says_so(self):
+        from vs_payments.exceptions import ProviderFeatureUnavailableError
+
+        refusal = ProviderFeatureUnavailableError("Dedicated NUBAN is not available for your business")
+        with mock.patch.object(self.fake, "create_virtual_account", side_effect=refusal):
+            response = self.transfer(self.chiamaka, "post")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["state"], "UNAVAILABLE")
+        self.assertIn("bank transfers", response.data["data"]["message"])
+
     def test_a_provider_that_is_down_answers_503(self):
         from vs_payments.exceptions import ProviderError
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.urls import reverse
 
@@ -159,6 +160,8 @@ class ParentBooksFixture(BooksHelpers, ParentFixture):
 
     def setUp(self):
         super().setUp()
+        cache.clear()  # Request limits count in the cache; each test starts at zero.
+        self.addCleanup(cache.clear)
         self.fake = FakeProvider(secret="test-secret")
         provider_registry.register("PAYSTACK", self.fake)
         provider_registry.register("FAKE", self.fake)

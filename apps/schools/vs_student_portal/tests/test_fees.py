@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest import mock
 
+from django.core.cache import cache
 from django.test import override_settings
 from django.urls import reverse
 
@@ -59,6 +60,8 @@ class _FeesFixture(FALFixture):
 
     def setUp(self):
         super().setUp()
+        cache.clear()  # Request limits count in the cache; each test starts at zero.
+        self.addCleanup(cache.clear)
         self.fake = FakeProvider(secret="test-secret")
         provider_registry.register("PAYSTACK", self.fake)
         provider_registry.register("FAKE", self.fake)

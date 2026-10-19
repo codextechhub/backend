@@ -15,6 +15,13 @@ from ..exceptions import ProviderError
 DEFAULT_TIMEOUT = 20  # Conservative timeout so provider calls fail fast.
 
 
+def _json_or_none(text: str):
+    try:
+        return json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return None
+
+
 # Handle the request json workflow.
 def request_json(method: str, url: str, *, headers: dict | None = None,
                  body: dict | None = None, provider: str = "",
@@ -22,7 +29,10 @@ def request_json(method: str, url: str, *, headers: dict | None = None,
     """Make an HTTP request and parse a JSON response, or raise :class:`ProviderError`.
 
     A non-2xx status, a transport failure, or a non-JSON body all surface as a typed
-    ``ProviderError`` (HTTP 502 to our callers) carrying the provider name.
+    ``ProviderError`` (HTTP 502 to our callers) carrying the provider name. For a
+    non-2xx answer the parsed JSON body is kept as ``response_body`` (None when it
+    is not JSON), so an adapter can read the provider's own refusal code. It is an
+    attribute, not part of ``extra``, which the exception handler sends to clients.
     """
     data = json.dumps(body).encode() if body is not None else None  # Serialize the body once, if present.
     req = urllib.request.Request(url, data=data, method=method.upper())  # Build the HTTP request object.
@@ -35,11 +45,14 @@ def request_json(method: str, url: str, *, headers: dict | None = None,
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # Open the request with a bounded timeout.
             payload = resp.read().decode("utf-8")  # Decode the raw response body as UTF-8.
     except urllib.error.HTTPError as exc:  # Provider returned a 4xx/5xx response.
-        detail = exc.read().decode("utf-8", "replace")[:500] if exc.fp else ""  # Capture a short error body when available.
-        raise ProviderError(
+        raw = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        detail = raw[:500]  # Capture a short error body when available.
+        error = ProviderError(
             f"{provider or 'Provider'} returned HTTP {exc.code}: {detail}",  # Include status and response snippet.
             provider=provider, provider_code=str(exc.code),  # Attach provider metadata for diagnostics.
         )
+        error.response_body = _json_or_none(raw)
+        raise error
     except urllib.error.URLError as exc:  # DNS, connection, or timeout failure.
         raise ProviderError(
             f"Could not reach {provider or 'provider'}: {exc.reason}", provider=provider,  # Surface the network reason.
