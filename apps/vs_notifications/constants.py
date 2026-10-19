@@ -453,6 +453,22 @@ EVENT_TYPE_REGISTRY = [
         "branch_scoped": True,
     },
     {
+        "key": "gradebook.result_released_parent",
+        "label": "Your child's result is ready",
+        "description": (
+            "Fires when a child's result is released at a school that tells every "
+            "parent (gradebook.results_tell_every_parent), and is sent to the "
+            "child's other parents with a parent account: in the parent app and "
+            "as a push that opens the child's results. Never emailed, so a family "
+            "gets one report card email, the primary guardian's. No score, grade, "
+            "position or comment."
+        ),
+        "source_module": "vs_gradebook",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.PUSH],
+        "default_enabled": True,
+        "branch_scoped": True,
+    },
+    {
         "key": "gradebook.result_released",
         "label": "Your result is ready",
         "description": (

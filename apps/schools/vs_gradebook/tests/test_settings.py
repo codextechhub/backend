@@ -1,4 +1,4 @@
-"""The six gradebook settings: declared, read with defaults, validated, saved and audited."""
+"""The gradebook settings: declared, read with defaults, validated, saved and audited."""
 from __future__ import annotations
 
 import importlib
@@ -15,12 +15,14 @@ from ..constants import (
     CFG_RATING_KEY,
     CFG_RATING_TRAITS,
     CFG_SHOW_CLASS_STATS,
+    CFG_TELL_EVERY_PARENT,
     DEFAULT_RATING_TRAITS,
 )
 from ..services.rules import GradebookRules, read_gradebook_rules
 from .base import GradebookFixture, set_setting
 
 migration_0001 = importlib.import_module("schools.vs_gradebook.migrations.0001_initial")
+migration_0004 = importlib.import_module("schools.vs_gradebook.migrations.0004_tell_every_parent")
 KEYS = (
     CFG_SHOW_CLASS_STATS, CFG_RANK_IN_CLASS, CFG_CONDUCT_RATINGS, CFG_RATING_KEY,
     CFG_RATING_TRAITS, CFG_MODERATED_PROGRAMS,
@@ -219,3 +221,38 @@ class SettingsEndpointTests(GradebookFixture):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(self.data(response)["moderated_programs"], ["BAS"])
         self.assertEqual(read_gradebook_rules(self.tenant).moderated_programs, ())
+
+
+class TellEveryParentTests(GradebookFixture):
+    """Who is told of a released result: the primary guardian alone unless the school widens it."""
+
+    def test_every_database_declares_it_off_at_school_scope_as_the_catalogue_does(self):
+        row = ConfigurationDefinition.objects.get(key=CFG_TELL_EVERY_PARENT)
+        self.assertEqual((row.default_value, sorted(row.allowed_scopes)), (False, ["platform", "school"]))
+        [seeded] = [r for r in SCHOOL_SCOPED_DEFINITIONS if r[0] == CFG_TELL_EVERY_PARENT]
+        definition = migration_0004.DEFINITION
+        self.assertEqual(
+            seeded[1:],
+            (definition["label"], definition["description"], definition["value_type"],
+             definition["default_value"], definition["validation_rules"]),
+        )
+
+    def test_a_school_starts_on_the_primary_guardian_alone(self):
+        self.assertFalse(read_gradebook_rules(self.tenant).tell_every_parent)
+        self.assertFalse(self.data(self.get(self.viewer, "gradebook-settings"))["tell_every_parent"])
+
+    def test_a_school_widens_it_for_itself_and_no_other(self):
+        response = self.patch(self.admin, "gradebook-settings", {"tell_every_parent": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(self.data(response)["tell_every_parent"])
+        self.assertTrue(read_gradebook_rules(self.tenant).tell_every_parent)
+        self.assertFalse(read_gradebook_rules(self.solo).tell_every_parent)
+
+    def test_a_branch_bound_caller_cannot_widen_it(self):
+        response = self.patch(self.lekki_admin, "gradebook-settings", {"tell_every_parent": True})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(read_gradebook_rules(self.tenant).tell_every_parent)
+
+    def test_a_value_that_is_not_true_or_false_is_refused(self):
+        response = self.patch(self.admin, "gradebook-settings", {"tell_every_parent": "sometimes"})
+        self.assertEqual(response.status_code, 400)

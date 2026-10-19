@@ -28,6 +28,7 @@ MAX_SCORE = "gradebook.setup.max_score"
 BANDS = "gradebook.setup.bands"
 REMARK = "gradebook.setup.remark"
 TEMPLATES = "gradebook.setup.remark_templates"
+TELL = "gradebook.setup.tell_every_parent"
 
 
 class _Switches(GradebookFixture):
@@ -59,7 +60,7 @@ class DefaultAccessTests(_Switches):
     def test_the_declaration_matches_what_the_registry_holds(self):
         self.assertEqual(
             set(FieldDefinition.objects.filter(key__startswith=RESOURCE).values_list("key", flat=True)),
-            {COMPONENTS, MAX_SCORE, BANDS, REMARK, TEMPLATES},
+            {COMPONENTS, MAX_SCORE, BANDS, REMARK, TEMPLATES, TELL},
         )
 
     def test_no_setup_field_is_sensitive_and_every_one_is_writable(self):
@@ -202,6 +203,36 @@ class TemplateSwitchTests(_Switches):
         self.assertIn("templates", str(response.data))
 
 
+class TellEveryParentSwitchTests(_Switches):
+    """Who is told of a released result follows its own switch; the other settings do not."""
+
+    def settings(self):
+        return self.data(self.get(self.admin, "gradebook-settings"))
+
+    def test_open_it_is_read_and_changed(self):
+        self.assertNotIn("tell_every_parent", self.settings()["_read_only_fields"])
+        response = self.patch(self.admin, "gradebook-settings", {"tell_every_parent": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(self.data(response)["tell_every_parent"])
+
+    def test_hidden_it_leaves_the_settings_and_the_rest_stay(self):
+        self.close(TELL)
+        body = self.settings()
+        self.assertNotIn("tell_every_parent", body)
+        self.assertIn("rank_in_class", body)
+
+    def test_read_only_it_is_shown_greyed_and_a_change_to_it_is_refused(self):
+        self.close(TELL, read=True, write=False)
+        body = self.settings()
+        self.assertFalse(body["tell_every_parent"])
+        self.assertIn("tell_every_parent", body["_read_only_fields"])
+        response = self.patch(self.admin, "gradebook-settings", {"tell_every_parent": True})
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("tell_every_parent", str(response.data))
+        allowed = self.patch(self.admin, "gradebook-settings", {"rank_in_class": False})
+        self.assertEqual(allowed.status_code, 200, allowed.data)
+
+
 class RegistryTests(TestCase):
     """The declarations, as the sync writes them against the seeded permission tree."""
 
@@ -261,6 +292,7 @@ class RegistryTests(TestCase):
             "gradebook.sheet.mark", "gradebook.sheet.return_note",
             "gradebook.result.ratings", "gradebook.result.teacher_comment",
             "gradebook.result.principal_comment", "gradebook.hold.reason",
+            TELL,
         }
         everything = {
             f.key: f for f in FieldDefinition.objects.filter(resource__module_id="gradebook")

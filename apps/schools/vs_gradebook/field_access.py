@@ -7,8 +7,8 @@ result and not a programme's grading scale:
 * ``gradebook.result`` is a student's result for a term: the figures that are
   compiled across subjects, the comments and ratings, and the release record.
 * ``gradebook.hold`` is a fee hold and the balance beside it.
-* ``gradebook.setup`` is assessment setup: structures, scales and remark
-  templates.
+* ``gradebook.setup`` is assessment setup: structures, scales, remark
+  templates and who is told of a released result.
 * ``gradebook.amendment`` is a correction to a result that was already
   published: the reason it was asked for and the note it was decided with.
 
@@ -83,6 +83,11 @@ they add up to, with the verdict on it), the bands of a scale (with the verdict
 on them), a band's remark and the principal's remark templates are read and
 written. The names of structures and scales, their status and the programme they
 belong to are not school data and have no switch.
+
+**Families.** Who is told when a result is released (``tell_every_parent`` on the
+settings screen) is read and written: it decides which of a family's people hear
+of a child's result. The report card options and moderation on the same screen
+have no switch; they are governed by the setup keys alone.
 
 **The report card, the class print and the Results tab are staff screens and
 are filtered.** The card is rendered from the published snapshot through the
@@ -227,6 +232,8 @@ SETUP_SURFACES = (
     "schools.vs_gradebook.serializers.BandWriteSerializer",
     "schools.vs_gradebook.serializers.RemarkTemplatesSerializer",
     "schools.vs_gradebook.serializers.RemarkTemplatesWriteSerializer",
+    "schools.vs_gradebook.serializers.SettingsSerializer",
+    "schools.vs_gradebook.serializers.SettingsWriteSerializer",
 )
 
 
@@ -386,5 +393,10 @@ def register():
                       description="The sentences the principal starts a class's "
                                   "comments from, one for each band of overall "
                                   "average."),
+            FieldSpec("tell_every_parent", "Who is told when a result is released",
+                      group="Families", scope=_TENANT, sort_order=10,
+                      description="Whether every parent with a parent account is "
+                                  "told of a child's released result, or the "
+                                  "primary guardian alone."),
         ),
     )

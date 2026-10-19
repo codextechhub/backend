@@ -1,6 +1,6 @@
 """Reading and changing a school's gradebook settings.
 
-The six settings are tenant-wide ``vs_config`` values (:mod:`.rules`), so one
+The seven settings are tenant-wide ``vs_config`` values (:mod:`.rules`), so one
 change binds every branch of the school. This module is the settings screen's
 side of them: it builds the body the screen reads, which carries the school's
 programmes beside the values so the screen holds no copy of what a programme is,
@@ -32,6 +32,7 @@ from ..constants import (
     CFG_RATING_KEY,
     CFG_RATING_TRAITS,
     CFG_SHOW_CLASS_STATS,
+    CFG_TELL_EVERY_PARENT,
 )
 from ..exceptions import GradebookSettingNotRegistered, UnknownProgramCodes
 from .rules import GradebookRules, read_gradebook_rules
@@ -45,6 +46,7 @@ KEY_FOR_FIELD = {
     "rating_key": CFG_RATING_KEY,
     "rating_traits": CFG_RATING_TRAITS,
     "moderated_programs": CFG_MODERATED_PROGRAMS,
+    "tell_every_parent": CFG_TELL_EVERY_PARENT,
 }
 
 _WHY = "Gradebook settings changed from the assessment setup screen."
@@ -85,6 +87,7 @@ def settings_body(tenant, rules: GradebookRules | None = None) -> dict:
         "rating_traits": list(rules.rating_traits),
         "moderated_programs": list(rules.moderated_programs),
         "programs": programs_offered(tenant, rules.moderated_programs),
+        "tell_every_parent": rules.tell_every_parent,
     }
 
 
@@ -146,6 +149,7 @@ def write_settings(tenant, actor, values: dict) -> GradebookRules:
         CFG_RATING_KEY: current.rating_key,
         CFG_RATING_TRAITS: list(current.rating_traits),
         CFG_MODERATED_PROGRAMS: list(current.moderated_programs),
+        CFG_TELL_EVERY_PARENT: current.tell_every_parent,
     }
     for key, value in wanted.items():
         if in_force[key] == value:

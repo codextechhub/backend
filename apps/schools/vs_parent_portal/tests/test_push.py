@@ -78,6 +78,14 @@ class ParentPushTests(ParentBooksFixture):
         self.assertEqual(payload["child"], self.chiamaka.pk)
         self.assertEqual(payload["title"], "Chiamaka's First Term result is ready")
 
+    def test_another_parent_told_of_a_result_is_taken_to_the_child_too(self):
+        payload = self.sent(
+            event_key="gradebook.result_released_parent", context=RESULT,
+            metadata={"student_id": self.tobi.pk},
+        )
+        self.assertEqual(payload["url"], f"/parent/results?child={self.tobi.pk}")
+        self.assertEqual(payload["child"], self.tobi.pk)
+
     def test_a_child_of_another_family_is_never_named(self):
         payload = self.sent(
             event_key="gradebook.report_card_ready", context=RESULT,

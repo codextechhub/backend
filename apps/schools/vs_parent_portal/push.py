@@ -5,8 +5,10 @@ when the app loads. It recognises the three notifications a parent is pushed:
 
 - a notice reaching their children opens that notice (``/parent/notices/<id>``);
   a notice can reach several of them, so it names no child;
-- a released result (``gradebook.report_card_ready``) opens Results with that
-  child showing (``/parent/results?child=<id>``);
+- a released result (``gradebook.report_card_ready`` to the primary guardian,
+  ``gradebook.result_released_parent`` to the others where the school tells
+  every parent) opens Results with that child showing
+  (``/parent/results?child=<id>``);
 - a confirmed payment opens Fees with the child it paid for
   (``/parent/fees?child=<id>``).
 
@@ -24,7 +26,7 @@ from vs_notifications.services.push import PushDestination
 
 def destination(notification):
     """A :class:`PushDestination` for a parent's notification, or None to pass."""
-    from schools.vs_gradebook.constants import EVENT_REPORT_CARD_READY
+    from schools.vs_gradebook.constants import EVENT_REPORT_CARD_READY, EVENT_RESULT_RELEASED_PARENT
     from schools.vs_notices.constants import EVENT_PUBLISHED_PARENT, PARENT_APP_PATH
 
     key = notification.event_type.key
@@ -34,7 +36,7 @@ def destination(notification):
         return PushDestination(
             url=f"{PARENT_APP_PATH}notices/{notice_id}" if notice_id else f"{PARENT_APP_PATH}notices",
         )
-    if key == EVENT_REPORT_CARD_READY:
+    if key in (EVENT_REPORT_CARD_READY, EVENT_RESULT_RELEASED_PARENT):
         child = _own_child(notification.recipient, metadata.get("student_id"))
         screen = "results"
     elif key == "billing.payment_received":

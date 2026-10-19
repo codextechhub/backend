@@ -1,6 +1,6 @@
 """A school's gradebook settings.
 
-Six ``vs_config`` definitions, all school-scoped, read through ``resolve_many``
+Seven ``vs_config`` definitions, all school-scoped, read through ``resolve_many``
 so a school's value, the platform's and the definition's default are inherited
 exactly as every other setting is:
 
@@ -17,6 +17,9 @@ exactly as every other setting is:
 * ``gradebook.moderated_programs``: the codes of the programmes whose sheets go
   to the head of the subject's department before they count. Empty by default,
   which means nothing is moderated.
+* ``gradebook.results_tell_every_parent``: whether a released result is told to
+  every parent of the child who has a parent account, in the parent app and on
+  their phone, as well as to the primary guardian. Default off.
 
 A value stored by hand at the platform layer can be anything its type allows,
 so every read is cleaned here rather than trusted: a value that breaks a rule
@@ -34,11 +37,13 @@ from ..constants import (
     CFG_RATING_KEY,
     CFG_RATING_TRAITS,
     CFG_SHOW_CLASS_STATS,
+    CFG_TELL_EVERY_PARENT,
     DEFAULT_CONDUCT_RATINGS,
     DEFAULT_RANK_IN_CLASS,
     DEFAULT_RATING_KEY,
     DEFAULT_RATING_TRAITS,
     DEFAULT_SHOW_CLASS_STATS,
+    DEFAULT_TELL_EVERY_PARENT,
     RATING_TRAIT_NAME_MAX,
     RATING_TRAITS_MAX,
     RATING_TRAITS_MIN,
@@ -51,6 +56,7 @@ RULE_KEYS = (
     CFG_RATING_KEY,
     CFG_RATING_TRAITS,
     CFG_MODERATED_PROGRAMS,
+    CFG_TELL_EVERY_PARENT,
 )
 
 
@@ -92,7 +98,7 @@ def _flag(value, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class GradebookRules:
-    """The six settings, cleaned, with every default a school starts on."""
+    """The seven settings, cleaned, with every default a school starts on."""
 
     show_class_stats: bool = DEFAULT_SHOW_CLASS_STATS
     rank_in_class: bool = DEFAULT_RANK_IN_CLASS
@@ -100,6 +106,7 @@ class GradebookRules:
     rating_key: bool = DEFAULT_RATING_KEY
     rating_traits: tuple = DEFAULT_RATING_TRAITS
     moderated_programs: tuple = ()
+    tell_every_parent: bool = DEFAULT_TELL_EVERY_PARENT
 
     def moderates(self, program) -> bool:
         """Whether sheets of *program* (a programme or its code) go to moderation."""
@@ -135,4 +142,8 @@ def read_gradebook_rules(tenant, keys=RULE_KEYS) -> GradebookRules:
         values["rating_traits"] = clean_traits(found.get(CFG_RATING_TRAITS)) or DEFAULT_RATING_TRAITS
     if CFG_MODERATED_PROGRAMS in keys:
         values["moderated_programs"] = clean_program_codes(found.get(CFG_MODERATED_PROGRAMS))
+    if CFG_TELL_EVERY_PARENT in keys:
+        values["tell_every_parent"] = _flag(
+            found.get(CFG_TELL_EVERY_PARENT), DEFAULT_TELL_EVERY_PARENT,
+        )
     return GradebookRules(**values)

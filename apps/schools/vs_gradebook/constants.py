@@ -52,19 +52,23 @@ AMENDMENT_FIELD_RESOURCE = "gradebook.amendment"
 MARK_FIELD = "gradebook.sheet.mark"
 
 # ── The school's gradebook settings ────────────────────────────────────────
-# Six school-scoped ``vs_config`` definitions, declared by migration
-# ``0001_initial`` and by ``seed_config_catalogue``, read in ``services.rules``.
+# Seven school-scoped ``vs_config`` definitions, declared by migrations
+# ``0001_initial`` and ``0004`` and by ``seed_config_catalogue``, read in
+# ``services.rules``.
 CFG_SHOW_CLASS_STATS = "gradebook.show_class_stats"
 CFG_RANK_IN_CLASS = "gradebook.rank_in_class"
 CFG_CONDUCT_RATINGS = "gradebook.conduct_ratings"
 CFG_RATING_KEY = "gradebook.rating_key"
 CFG_RATING_TRAITS = "gradebook.rating_traits"
 CFG_MODERATED_PROGRAMS = "gradebook.moderated_programs"
+#: Whether a released result is told to every parent with an account, not only the primary guardian.
+CFG_TELL_EVERY_PARENT = "gradebook.results_tell_every_parent"
 
 DEFAULT_SHOW_CLASS_STATS = True
 DEFAULT_RANK_IN_CLASS = True
 DEFAULT_CONDUCT_RATINGS = True
 DEFAULT_RATING_KEY = True
+DEFAULT_TELL_EVERY_PARENT = False
 
 #: The traits a class teacher rates, in the order the report card prints them.
 DEFAULT_RATING_TRAITS = (
@@ -123,6 +127,8 @@ EVENT_CLASS_RETURNED = "gradebook.class_returned"
 EVENT_REPORT_CARD_READY = "gradebook.report_card_ready"
 #: To the pupil, when their own result is released: that it is ready to read.
 EVENT_RESULT_RELEASED = "gradebook.result_released"
+#: To a child's other parents with an account, where the school tells every parent.
+EVENT_RESULT_RELEASED_PARENT = "gradebook.result_released_parent"
 EVENT_REPORT_CARD_UPDATED = "gradebook.report_card_updated"
 
 

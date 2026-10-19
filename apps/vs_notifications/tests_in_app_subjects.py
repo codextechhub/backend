@@ -58,6 +58,7 @@ _ALREADY_TITLED = {
     "attendance.register_reminder",
     "gradebook.sheet_reminder",
     "gradebook.result_released",
+    "gradebook.result_released_parent",
     "gradebook.sheet_returned",
     "gradebook.class_returned",
     "gradebook.report_card_ready",

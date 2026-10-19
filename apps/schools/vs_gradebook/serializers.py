@@ -341,13 +341,45 @@ class RemarkTemplatesWriteSerializer(FieldAccessMixin, serializers.Serializer):
 # ── Settings ───────────────────────────────────────────────────────────────
 
 
-class SettingsWriteSerializer(serializers.Serializer):
-    """The body of a change to the school's gradebook settings: any of the six.
+class SettingsProgramSerializer(serializers.Serializer):
+    code = serializers.CharField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    moderated = serializers.BooleanField(read_only=True)
 
-    Whether a programme code exists at this school is answered by the service,
-    which knows the school's programmes.
+
+class SettingsSerializer(FieldAccessMixin, serializers.Serializer):
+    """The school's gradebook settings, with its programmes beside them.
+
+    ``tell_every_parent`` is a registered field of the setup resource: a role
+    that may not read it is sent the settings without it, and
+    ``_read_only_fields`` names it for a role that may read but not change it.
+    The report card options and moderation have no switch of their own.
     """
 
+    field_resource = SETUP_FIELD_RESOURCE
+    field_access_detail = True
+
+    show_class_stats = serializers.BooleanField(read_only=True)
+    rank_in_class = serializers.BooleanField(read_only=True)
+    conduct_ratings = serializers.BooleanField(read_only=True)
+    rating_key = serializers.BooleanField(read_only=True)
+    rating_traits = serializers.ListField(child=serializers.CharField(), read_only=True)
+    moderated_programs = serializers.ListField(child=serializers.CharField(), read_only=True)
+    programs = SettingsProgramSerializer(many=True, read_only=True)
+    tell_every_parent = serializers.BooleanField(read_only=True)
+
+
+class SettingsWriteSerializer(FieldAccessMixin, serializers.Serializer):
+    """The body of a change to the school's gradebook settings: any of the seven.
+
+    Whether a programme code exists at this school is answered by the service,
+    which knows the school's programmes. A role that may not change
+    ``tell_every_parent`` is refused a body that sends it.
+    """
+
+    field_resource = SETUP_FIELD_RESOURCE
+
+    tell_every_parent = serializers.BooleanField(required=False)
     show_class_stats = serializers.BooleanField(required=False)
     rank_in_class = serializers.BooleanField(required=False)
     conduct_ratings = serializers.BooleanField(required=False)

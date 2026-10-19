@@ -20,7 +20,7 @@ from decimal import Decimal
 from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
 
 from ..constants import SheetStatus
-from ..services import moderation, setup, sheets
+from ..services import configuration, moderation, setup, sheets
 from .base import GradebookFixture
 from .sheet_base import SheetFixture
 
@@ -36,7 +36,8 @@ class GradebookDeepPayloadTests(DeepPayloadChecks, SheetFixture):
             "StructureSerializer", "ComponentSerializer", "StructureWriteSerializer",
             "ComponentWriteSerializer", "ScaleSerializer", "BandSerializer",
             "ScaleWriteSerializer", "BandWriteSerializer", "RemarkTemplatesSerializer",
-            "RemarkTemplatesWriteSerializer", "SheetSerializer", "SheetRowSerializer",
+            "RemarkTemplatesWriteSerializer", "SettingsSerializer", "SettingsWriteSerializer",
+            "SheetSerializer", "SheetRowSerializer",
             "SheetCellSerializer", "SheetStatsSerializer", "ResultRowSerializer",
             "SheetReturnedSerializer",
             "SheetProgressSerializer", "ModerationRowSerializer", "CellWriteSerializer",
@@ -115,6 +116,8 @@ class GradebookDeepPayloadTests(DeepPayloadChecks, SheetFixture):
             Sample(_SURFACE + "BandWriteSerializer", write_scale["bands"][0]),
             Sample(_SURFACE + "RemarkTemplatesSerializer", templates),
             Sample(_SURFACE + "RemarkTemplatesWriteSerializer", template_body),
+            Sample(_SURFACE + "SettingsSerializer", configuration.settings_body(self.tenant)),
+            Sample(_SURFACE + "SettingsWriteSerializer", {"tell_every_parent": True}),
             Sample(_SURFACE + "ResultRowSerializer", result),
             *self.sheet_samples(),
         ]

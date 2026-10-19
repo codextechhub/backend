@@ -25,7 +25,13 @@ guardian of each released child, one per child, so a family with two children
 at the school gets two. A guardian who has an account is written to through it
 and so reads it in the app as well, and is pushed on the devices they allowed:
 the notice names the child, so the push opens that child's results in the
-parent app. One with only an address is an unregistered recipient. It says only that the report card is ready to collect: the child's
+parent app. One with only an address is an unregistered recipient.
+
+**Every parent, where the school chooses** (``gradebook.results_tell_every_parent``,
+off by default). The child's other parents with a parent account are told too
+(``gradebook.result_released_parent``), in the app and by push and never by
+email, so a family still gets one report card email. A parent already told as the
+primary guardian is not told again. It says only that the report card is ready to collect: the child's
 first name, the term and year, the school and branch and the phone to call (the
 class's branch phone, or the school's when the branch has none). A child whose
 primary guardian has no email is recorded ``NO_EMAIL`` at once, and the rest are
@@ -67,8 +73,10 @@ from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_rbac.scoping import only_branch_id_or_several
 
 from ..constants import (
+    CFG_TELL_EVERY_PARENT,
     EVENT_REPORT_CARD_READY,
     EVENT_RESULT_RELEASED,
+    EVENT_RESULT_RELEASED_PARENT,
     EVENT_REPORT_CARD_UPDATED,
     EmailState,
     StoredStage,
@@ -77,6 +85,7 @@ from ..exceptions import GradebookError, NotAwaiting, SubjectsMissing
 from ..models import ClassTerm, PrincipalComment, ResultVersion, StudentTermResult
 from . import approvals, audit, classbook, compute, cumulative, resolve, setup
 from .classbook import ClassBook, ClassContext, percentage_of
+from .rules import read_gradebook_rules
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +187,7 @@ def send_ready_notices(tenant, class_term_id, student_ids) -> int:
     }
     reach = primary_guardians(tenant, list(results))
     delivered = 0
+    told: dict = {}
     for student_id, result in results.items():
         _tell_the_pupil(tenant, class_term, result.student)
         found = reach.get(student_id)
@@ -190,12 +200,58 @@ def send_ready_notices(tenant, class_term_id, student_ids) -> int:
                     email_state=EmailState.SENT, emailed_at=now, updated_at=now,
                 )
                 delivered += 1
+                if found.user is not None:
+                    told[student_id] = found.user.pk
         except Exception:
             logger.exception(
                 "Report card notice for result %s could not be sent. The release stands.",
                 result.pk,
             )
+    if read_gradebook_rules(tenant, keys=(CFG_TELL_EVERY_PARENT,)).tell_every_parent:
+        _tell_every_parent(tenant, class_term, results, told)
     return delivered
+
+
+def _tell_every_parent(tenant, class_term, results, told) -> None:
+    """Tell each released child's other parents with an account, in the app and by push.
+
+    A parent is the active, signed-in-able ``user`` of a guardian record at
+    this school linked to the child. The one already told through the primary
+    guardian's notice (*told*, by child) is not told twice, and nobody is
+    emailed. One notice per child, to all of that child's other parents, naming
+    the child for the parent app. Best effort: a notice that cannot go never
+    undoes a release.
+    """
+    from schools.vs_students.models import StudentGuardian
+
+    links = (
+        StudentGuardian.all_objects.filter(
+            tenant=tenant, student_id__in=list(results), guardian__tenant=tenant,
+            guardian__user__isnull=False, guardian__user__is_active=True,
+            guardian__user__tenant=tenant,
+        )
+        .select_related("guardian__user")
+        .order_by("student_id", "pk")
+    )
+    parents_of: dict = {}
+    for link in links:
+        user = link.guardian.user
+        if not user.may_sign_in or told.get(link.student_id) == user.pk:
+            continue
+        parents_of.setdefault(link.student_id, {})[user.pk] = user
+    for student_id, users in parents_of.items():
+        student = results[student_id].student
+        try:
+            send_notification(
+                event_key=EVENT_RESULT_RELEASED_PARENT,
+                context=ready_context(tenant, class_term.branch, class_term.term, student),
+                recipients=list(users.values()),
+                tenant=tenant,
+                branch=class_term.branch,
+                metadata={"student_id": student_id},
+            )
+        except Exception:
+            logger.exception("The parents' result notice for %s could not be sent.", student_id)
 
 
 def send_after_commit(tenant, class_term_id, student_ids) -> None:

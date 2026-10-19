@@ -565,6 +565,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", [], {},
     ),
     (
+        "gradebook.results_tell_every_parent", "Tell Every Parent When A Result Is Released",
+        "Whether a released result is told to every parent of the child who "
+        "has a parent account, in the parent app and on their phone. Off "
+        "tells the primary guardian alone. The report card email goes to the "
+        "primary guardian either way.",
+        "BOOLEAN", False, {},
+    ),
+    (
         "display.timezone", "Time Zone",
         "The IANA time zone this school keeps its calendar in, such as "
         "Africa/Lagos. It decides which day \"today\" is for due dates, overdue "

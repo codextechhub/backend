@@ -737,6 +737,21 @@ def _build_default_templates() -> dict:
             "subject": "{{ student_first_name }}'s {{ term_name }} result is ready",
             "body": "Open the parent app to read it.",
         },
+
+        # ── gradebook.result_released_parent ────────────────────────────────
+        # A child's other parents, where the school tells every parent: in the
+        # app and on their phone, never by email, and nothing from the result.
+        ("gradebook.result_released_parent", C.IN_APP): {
+            "subject": "{{ student_first_name }}'s {{ term_name }} result is ready",
+            "body": (
+                "{{ student_first_name }}'s result for {{ term_name }}, "
+                "{{ session_name }} is ready to read in the parent app."
+            ),
+        },
+        ("gradebook.result_released_parent", C.PUSH): {
+            "subject": "{{ student_first_name }}'s {{ term_name }} result is ready",
+            "body": "Open the parent app to read it.",
+        },
         ("gradebook.report_card_ready", C.EMAIL): {
             "subject": "{{ student_first_name }}'s report card is ready",
             "body": (

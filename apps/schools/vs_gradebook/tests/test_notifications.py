@@ -18,8 +18,12 @@ KEYS = {
     constants.EVENT_REPORT_CARD_READY: {ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH},
     constants.EVENT_REPORT_CARD_UPDATED: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
     constants.EVENT_RESULT_RELEASED: {ChannelChoices.IN_APP, ChannelChoices.PUSH},
+    constants.EVENT_RESULT_RELEASED_PARENT: {ChannelChoices.IN_APP, ChannelChoices.PUSH},
 }
-GUARDIAN_EVENTS = (constants.EVENT_REPORT_CARD_READY, constants.EVENT_REPORT_CARD_UPDATED)
+GUARDIAN_EVENTS = (
+    constants.EVENT_REPORT_CARD_READY, constants.EVENT_REPORT_CARD_UPDATED,
+    constants.EVENT_RESULT_RELEASED_PARENT,
+)
 
 #: The only values a guardian's report card notice may be built from.
 ALLOWED_GUARDIAN_VARIABLES = {
