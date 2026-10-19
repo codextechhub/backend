@@ -47,6 +47,22 @@ class VirtualAccountResult:
 
 
 @dataclass
+class VirtualAccountStanding:
+    """What a provider says of one dedicated account now: whether it is open, and whose.
+
+    ``customer_code`` is the provider's customer the number is assigned to, or
+    "" for none. It is compared with the customer the account was opened for,
+    because a provider can hand a number on to somebody else.
+    """
+
+    provider_reference: str
+    account_number: str = ""
+    active: bool = False
+    customer_code: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 # Define Collection Status Result values.
 class CollectionStatusResult:
     """Outcome of verifying a collection (poll or post-webhook confirm)."""
@@ -275,6 +291,31 @@ class CollectionProvider(WebhookCapable):
         (a slug such as ``wema-bank`` at Paystack), not the bank code used for
         transfers. Empty leaves the choice to the provider's adapter.
         """
+
+    def open_virtual_accounts(self) -> dict[str, str]:
+        """Every dedicated account the provider holds open for this merchant.
+
+        Maps each account's provider reference to the customer code it is
+        assigned to. The listing must be complete or not answered at all: a
+        partial one would read every account left off it as withdrawn, so an
+        adapter raises :class:`~vs_payments.exceptions.ProviderError` rather
+        than return less than the provider holds. A provider that cannot list
+        its accounts raises ``NotImplementedError`` and is not checked.
+        """
+        raise NotImplementedError
+
+    def virtual_account_standing(self, *, provider_reference: str) -> VirtualAccountStanding | None:
+        """The provider's word on one dedicated account, or None when it has no such account."""
+        raise NotImplementedError
+
+    def virtual_account_customer(self, raw: dict) -> tuple[str, str]:
+        """The provider's customer code and email recorded on a stored account's payload.
+
+        Blanks when the payload does not say. The code is what a later
+        :meth:`virtual_account_standing` is compared with; the email opens a
+        replacement under the same provider customer.
+        """
+        return "", ""
 
     def create_subaccount(self, *, business_name: str, settlement_bank_code: str,
                           account_number: str, percentage_charge: float = 0) -> SubaccountResult:

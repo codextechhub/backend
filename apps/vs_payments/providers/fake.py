@@ -28,6 +28,7 @@ from .base import (
     TerminalResult,
     TransferResult,
     VirtualAccountResult,
+    VirtualAccountStanding,
     WebhookParseResult,
 )
 
@@ -80,6 +81,13 @@ class FakeProvider(Provider):
         self.terminal_error: str = ""
         # Holder names ``resolve_account`` answers, by (bank code, account number).
         self.account_names: dict[tuple[str, str], str] = {}
+        # Dedicated accounts opened, by provider reference: the customer code each is assigned to.
+        self.virtual_accounts: dict[str, str] = {}
+        # Whether the fake answers for its accounts; off, it cannot list them, as a
+        # fresh process cannot list accounts an earlier one opened.
+        self.reports_virtual_accounts: bool = False
+        # Provider references the fake has closed, as a provider withdraws a number.
+        self.closed_virtual_accounts: set[str] = set()
 
     def healthcheck(self) -> bool:
         return True
@@ -105,13 +113,36 @@ class FakeProvider(Provider):
             self.subaccounts_named[reference] = subaccount
         # Deterministic 10-digit NUBAN from the reference.  # Keep account generation repeatable.
         digits = str(abs(hash(reference)) % 10_000_000_000).rjust(10, "0")  # Normalize the hash into a 10-digit string.
+        customer_code = f"FAKE-CUS-{customer_email or reference}"
+        self.virtual_accounts[f"FAKE-VA-{reference}"] = customer_code
         return VirtualAccountResult(  # Return a predictable virtual account payload.
             account_number=digits,  # Fake account number.
             bank_name=self.bank_name,  # Configured fake bank name.
             account_name=customer_name,  # Use the customer name as the account name.
             provider_reference=f"FAKE-VA-{reference}",  # Fake provider reference for the virtual account.
-            raw={"reference": reference},  # Keep the seed reference for traceability.
+            raw={"reference": reference, "customer": {"customer_code": customer_code, "email": customer_email}},
         )
+
+    def open_virtual_accounts(self):
+        if not self.reports_virtual_accounts:
+            raise NotImplementedError
+        return {ref: code for ref, code in self.virtual_accounts.items()
+                if ref not in self.closed_virtual_accounts}
+
+    def virtual_account_standing(self, *, provider_reference):
+        if not self.reports_virtual_accounts:
+            raise NotImplementedError
+        if provider_reference not in self.virtual_accounts:
+            return None
+        return VirtualAccountStanding(
+            provider_reference=provider_reference,
+            active=provider_reference not in self.closed_virtual_accounts,
+            customer_code=self.virtual_accounts[provider_reference],
+        )
+
+    def virtual_account_customer(self, raw):
+        customer = (raw or {}).get("customer") or {}
+        return str(customer.get("customer_code", "")), str(customer.get("email", ""))
 
     def verify_collection(self, *, reference, provider_reference=""):
         status = self.forced_status.get(reference, "PENDING")

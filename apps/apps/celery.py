@@ -129,6 +129,14 @@ app.conf.beat_schedule = {
         "task": "vs_payments.run_held_settlements",
         "schedule": crontab(hour=6, minute=30),
     },
+    # Daily: a dedicated account the provider closed, or gave to somebody else,
+    # is switched off and replaced, so no family keeps paying into it. Accounts
+    # are listed a hundred to a call, and a run that would replace too many
+    # replaces none.
+    "payments-check-virtual-accounts": {
+        "task": "vs_payments.check_virtual_accounts",
+        "schedule": crontab(hour=5, minute=45),
+    },
     # Daily: compare the platform's books with the provider balance it reports.
     # A disagreement opens one health incident; the next agreeing check resolves it.
     "payments-reconcile-held-ledger": {

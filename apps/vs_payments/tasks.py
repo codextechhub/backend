@@ -56,6 +56,17 @@ def alert_unbooked_receipts():
     return summary
 
 
+@shared_task(name="vs_payments.check_virtual_accounts")
+def check_virtual_accounts():
+    """Daily: replace each dedicated account its provider no longer holds for its customer."""
+    from .virtual_account_standing import check_virtual_accounts as check
+
+    summary = check()
+    if summary["withdrawn"] or summary["refused"]:
+        logger.warning("check_virtual_accounts: %s", summary)
+    return summary
+
+
 @shared_task(name="vs_payments.alert_unbooked_surge")
 # Alarm platform staff when bookings start failing in bulk.
 def alert_unbooked_surge():
