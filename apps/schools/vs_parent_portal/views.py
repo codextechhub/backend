@@ -57,6 +57,38 @@ class MeView(PortalView):
         return success_response(data=me(self.guardian, self.children, request=request))
 
 
+class ProfileView(PortalView):
+    """GET, PATCH /v1/portal/parent/profile/
+
+    GET is the parent's own profile: what the school manages (name, the address
+    they sign in with, their children on the roll) and what they may change
+    (``phone``, ``alt_phone`` and ``address``), with ``email_editable: false``.
+    PATCH takes any of the three editable fields and answers with the profile as
+    it now stands. A value that cannot be stored is refused with a sentence
+    keyed on its field, and any other field, ``email`` and ``first_name``
+    included, is refused 400 with "This cannot be changed here. Ask the school."
+    The change is audited with the parent as its actor.
+
+    docstring-name: My profile as a parent
+    """
+
+    def get(self, request):
+        from .profile import profile
+
+        return success_response(
+            data=profile(self.guardian, self.children, user=request.user, request=request),
+        )
+
+    def patch(self, request):
+        from .profile import profile, update_contact
+
+        guardian = update_contact(self.guardian, request.data, actor=request.user)
+        return success_response(
+            "Profile updated.",
+            data=profile(guardian, self.children, user=request.user, request=request),
+        )
+
+
 class HomeView(PortalView):
     """GET /v1/portal/parent/home/
 

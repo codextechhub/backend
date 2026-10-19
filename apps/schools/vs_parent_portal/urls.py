@@ -18,6 +18,7 @@ from .views import (
     NoticeReadView,
     PayInvoiceView,
     PaymentHistoryView,
+    ProfileView,
     ReceiptView,
     ReportCardView,
     ResultsView,
@@ -29,6 +30,7 @@ from .views import (
 
 urlpatterns = [
     path("me/", MeView.as_view(), name="parent-portal-me"),
+    path("profile/", ProfileView.as_view(), name="parent-portal-profile"),
     path("home/", HomeView.as_view(), name="parent-portal-home"),
     path("children/<int:child_id>/", ChildRecordView.as_view(), name="parent-portal-child"),
     path(
