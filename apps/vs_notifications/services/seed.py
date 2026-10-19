@@ -805,6 +805,51 @@ def _build_default_templates() -> dict:
             "body": "Open the app to read it.",
         },
 
+        # ── billing.transfer_account_changed ────────────────────────────────
+        # To the pupil: the old number is dead, the new one is under Fees. The
+        # push names no number, because it can show on a locked screen.
+        ("billing.transfer_account_changed", C.IN_APP): {
+            "subject": "Your account number for school fees has changed",
+            "body": (
+                "Don't pay into your old account number ({{ old_account_number }}) any more. "
+                "{% if has_new_account %}Your new number is under Fees."
+                "{% else %}Get a new number under Fees.{% endif %}"
+            ),
+        },
+        ("billing.transfer_account_changed", C.PUSH): {
+            "subject": "Your account number has changed",
+            "body": "Open Fees in the app before you pay again.",
+        },
+
+        # ── billing.guardian_transfer_account_changed ───────────────────────
+        # To the primary guardian. Never the new number: the school does not
+        # send account numbers by email, and says so.
+        ("billing.guardian_transfer_account_changed", C.IN_APP): {
+            "subject": "{{ student_first_name }}'s account number for school fees has changed",
+            "body": (
+                "Don't pay into the old number ({{ old_account_number }}) any more. "
+                "{% if has_new_account %}See the new number in {{ student_first_name }}'s "
+                "student app, under Fees, or in your own app."
+                "{% else %}{{ student_first_name }} can get a new number in the student app, "
+                "under Fees.{% endif %} {{ tenant_name }} never sends a new account number by email."
+            ),
+        },
+        ("billing.guardian_transfer_account_changed", C.EMAIL): {
+            "subject": "{{ student_first_name }}'s account number for school fees has changed",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "The account number {{ student_first_name }} uses for school fees has changed. "
+                "Please do not pay into the old number ({{ old_account_number }}) any more.\n\n"
+                "{% if has_new_account %}You can see the new number in {{ student_first_name }}'s "
+                "student app, under Fees, or in your own parent app."
+                "{% else %}{{ student_first_name }} can get a new number in the student app, under "
+                "Fees, and you will see it in your own parent app.{% endif %} "
+                "{{ tenant_name }} will never send you a new account number by email.\n\n"
+                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+        },
+
         # ── billing.payment_received (push) ─────────────────────────────────
         # No amount: a confirmed payment, and where to find the receipt.
         ("billing.payment_received", C.PUSH): {

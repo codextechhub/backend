@@ -623,6 +623,37 @@ EVENT_TYPE_REGISTRY = [
         "branch_scoped": True,
     },
     {
+        "key": "billing.transfer_account_changed",
+        "label": "Your account number changed",
+        "description": (
+            "Fires when a pupil's account number for school fees is replaced: the "
+            "provider closed it or gave it to somebody else, or the school's money "
+            "started settling to its own bank. Sent to the pupil when they have a "
+            "portal account, so they stop paying into the old number. The push "
+            "carries no number. Always sent: a school cannot switch it off."
+        ),
+        "source_module": "vs_billing",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.PUSH],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "billing.guardian_transfer_account_changed",
+        "label": "Your child's account number changed",
+        "description": (
+            "Fires with \"Your account number changed\" and goes to the pupil's "
+            "primary guardian. It names the old number, says not to pay into it, "
+            "and sends them to the pupil's app or their own for the new one. It "
+            "never carries the new number, and says the school never sends one by "
+            "email, so a copy of it with a stranger's number reads as a fraud. "
+            "Always sent: a school cannot switch it off."
+        ),
+        "source_module": "vs_billing",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
         "key": "billing.invoice_overdue",
         "label": "Invoice overdue",
         "description": "Fires when a student invoice passes its due date without full payment.",

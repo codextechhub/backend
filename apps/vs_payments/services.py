@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import secrets
+from functools import partial
 from typing import NamedTuple
 
 from django.db import IntegrityError, transaction
@@ -493,6 +494,21 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     return va  # Return the stored model instance.
 
 
+def _announce_replaced(old_pk, new_pk) -> None:
+    """Tell listeners a customer's dedicated account was replaced, once the change committed."""
+    from .signals import virtual_account_replaced
+
+    old = VirtualAccount.objects.select_related("customer").get(pk=old_pk)
+    new = VirtualAccount.objects.get(pk=new_pk) if new_pk else None
+    for receiver, outcome in virtual_account_replaced.send_robust(sender=VirtualAccount, old=old, new=new):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "virtual_account_replaced listener %s failed for virtual account %s",
+                getattr(receiver, "__qualname__", receiver), old_pk,
+                exc_info=(type(outcome), outcome, outcome.__traceback__),
+            )
+
+
 def reissue_virtual_account(va, *, actor_user=None):
     """Replace a virtual account settling to the platform's balance with one against its branch's subaccount.
 
@@ -538,6 +554,7 @@ def reissue_virtual_account(va, *, actor_user=None):
             message=f"Virtual account for {customer.code} reissued; the old number is retired.",
             metadata={"retired_id": old.pk, "virtual_account_id": new.pk},
         )
+        transaction.on_commit(partial(_announce_replaced, old.pk, new.pk))
     return new
 
 
@@ -600,6 +617,7 @@ def replace_withdrawn_virtual_account(va, *, actor_user=None):
                      + ("a new number was issued." if new else "it was switched off and none was issued.")),
             metadata={"withdrawn_id": old.pk, "virtual_account_id": new.pk if new else None},
         )
+        transaction.on_commit(partial(_announce_replaced, old.pk, new.pk if new else None))
     return new
 
 

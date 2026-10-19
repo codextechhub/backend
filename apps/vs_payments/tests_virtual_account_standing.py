@@ -62,6 +62,24 @@ class WithdrawnVirtualAccountTests(_PaymentsFixtureMixin, TestCase):
         self.assertNotEqual(new.provider_reference, self.va.provider_reference)
         self.assertEqual(new.raw["customer"]["email"], "ar@acme.test")
 
+    def test_listeners_hear_of_the_replacement_once_it_commits(self):
+        from .signals import virtual_account_replaced
+
+        heard = []
+
+        def listen(sender, old, new, **kwargs):
+            heard.append((old.pk, new.pk if new else None))
+
+        virtual_account_replaced.connect(listen, dispatch_uid="test.listen")
+        self.addCleanup(virtual_account_replaced.disconnect, dispatch_uid="test.listen")
+        self.fake.closed_virtual_accounts.add(self.va.provider_reference)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            check_virtual_accounts()
+
+        self.va.refresh_from_db()
+        self.assertEqual(heard, [(self.va.pk, self.va.replaced_by_id)])
+
     def test_a_closed_number_is_replaced(self):
         self.fake.closed_virtual_accounts.add(self.va.provider_reference)
 
