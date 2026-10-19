@@ -443,11 +443,12 @@ EVENT_TYPE_REGISTRY = [
         "description": (
             "Fires when a class's results are published and a child's result is "
             "released, and is sent to the child's primary guardian. It says only "
-            "that the report card is ready to collect from the school: no score, "
-            "grade, position or comment."
+            "that the report card is ready: no score, grade, position or comment. "
+            "A guardian with a parent app account also gets it as a push, which "
+            "opens the child's results there."
         ),
         "source_module": "vs_gradebook",
-        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
         "default_enabled": True,
         "branch_scoped": True,
     },
@@ -499,10 +500,11 @@ EVENT_TYPE_REGISTRY = [
             "Fires when a school publishes a notice that reaches a child, and "
             "is sent once to each parent with an account, naming their "
             "children it reaches. Whether it is sent at all is the school's "
-            "setting, notices.tell_parents."
+            "setting, notices.tell_parents. As a push it opens the notice in the "
+            "parent app."
         ),
         "source_module": "vs_notices",
-        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
         "default_enabled": True,
     },
 

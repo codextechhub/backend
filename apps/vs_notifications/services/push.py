@@ -18,6 +18,13 @@ the recipient's first name so the family can tell whose it is, and carries that
 child's ``account`` so tapping it opens the app as them. Signing one child
 out deletes that child's subscription only (:func:`forget_device`).
 
+**Where a tap opens.** By default, the recipient's own app (a pupil's device
+session names it) or the root. A module that serves another app registers a
+destination (:func:`register_destination`) that may name, for a notification
+it recognises, the path to open and the child it is about; the parent portal
+does, so a parent's push opens the notice, the child's results or Fees in the
+parent app. A destination that fails is logged and skipped; the push still goes.
+
 A push service that answers 404 or 410 has forgotten the device, so its
 subscription is deleted. Keys come from ``WEB_PUSH_VAPID_*`` settings; with
 none, push is off: nobody can subscribe and nothing is sent.
@@ -27,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 
 from django.conf import settings
 from django.utils import timezone
@@ -92,6 +100,36 @@ def subscribed_user_ids(user_ids) -> set:
     )
 
 
+@dataclass(frozen=True)
+class PushDestination:
+    """Where a tap on one push opens (a path on the school's host), and the child it is about."""
+
+    url: str
+    child: int | None = None
+
+
+#: Callables taking a notification and answering a PushDestination, or None to pass.
+_DESTINATIONS: list = []
+
+
+def register_destination(resolver) -> None:
+    """Let a module say where the pushes it recognises open; registering twice is one."""
+    if resolver not in _DESTINATIONS:
+        _DESTINATIONS.append(resolver)
+
+
+def _destination(notification) -> PushDestination | None:
+    for resolver in _DESTINATIONS:
+        try:
+            found = resolver(notification)
+        except Exception:  # noqa: BLE001 - a destination never stops the push
+            logger.exception("Push destination for notification %s failed.", notification.pk)
+            continue
+        if found is not None:
+            return found
+    return None
+
+
 def _app_path(user) -> str:
     """Where tapping the push opens: the recipient's own app, else the root."""
     from vs_user.services.device_sessions import device_session_policy
@@ -110,6 +148,10 @@ def deliver(notification) -> bool:
     if user is None or not configured():
         return False
     subscriptions = list(PushSubscription.all_objects.filter(user=user))
+    if not subscriptions:
+        return False
+    destination = _destination(notification)
+    url = destination.url if destination is not None else _app_path(user)
     delivered = False
     for subscription in subscriptions:
         title = notification.subject
@@ -119,9 +161,11 @@ def deliver(notification) -> bool:
             "title": title,
             "body": notification.body,
             "tag": notification.event_type.key,
-            "url": _app_path(user),
+            "url": url,
             "notification_id": str(notification.pk),
         }
+        if destination is not None and destination.child is not None:
+            message["child"] = destination.child
         if subscription.device_key:
             # Which person on a shared device it is for, so a tap opens theirs.
             message["account"] = subscription.device_key

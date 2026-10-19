@@ -14,3 +14,10 @@ class VsParentPortalConfig(AppConfig):
 
     # Stated, not inferred: a label is how every later migration names the app.
     label = "vs_parent_portal"
+
+    def ready(self):
+        from vs_notifications.services.push import register_destination
+
+        from .push import destination
+
+        register_destination(destination)

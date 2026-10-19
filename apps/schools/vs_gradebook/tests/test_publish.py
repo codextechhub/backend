@@ -351,6 +351,15 @@ class ReleaseTests(ClassFixture):
         self.assertEqual(call.kwargs["tenant"], self.tenant)
         self.assertEqual(call.kwargs["branch"], self.lekki)
 
+    def test_the_guardians_notice_names_the_child_for_the_parent_app(self):
+        self.publish(self.principal)
+        call = next(
+            c for c in self.send.call_args_list
+            if c.kwargs["event_key"] == "gradebook.report_card_ready"
+            and c.kwargs["context"]["student_first_name"] == "Chiamaka"
+        )
+        self.assertEqual(call.kwargs["metadata"], {"student_id": self.chiamaka.pk})
+
     def test_a_guardian_with_no_email_is_recorded_as_such_and_nobody_is_written_to(self):
         self.publish(self.principal)
         tunde = result_of(self.tunde)

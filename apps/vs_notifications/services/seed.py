@@ -732,6 +732,11 @@ def _build_default_templates() -> dict:
                 "{{ session_name }} is ready to collect from the school."
             ),
         },
+        # Reaches only a guardian with a parent app account, where it opens the result.
+        ("gradebook.report_card_ready", C.PUSH): {
+            "subject": "{{ student_first_name }}'s {{ term_name }} result is ready",
+            "body": "Open the parent app to read it.",
+        },
         ("gradebook.report_card_ready", C.EMAIL): {
             "subject": "{{ student_first_name }}'s report card is ready",
             "body": (
@@ -813,6 +818,11 @@ def _build_default_templates() -> dict:
             ),
             "cta_label": "Read the notice",
             "cta_url": "{{ notice_url }}",
+        },
+        # A push can show on a locked screen: the title and whose it is, no body.
+        ("notices.published_parent", C.PUSH): {
+            "subject": "A new notice for {{ child_names }}: {{ notice_title }}",
+            "body": "Open the parent app to read it.",
         },
 
         # ── gradebook.result_released ───────────────────────────────────────

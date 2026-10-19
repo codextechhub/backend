@@ -158,6 +158,22 @@ class PushTests(_NotifFixture):
                 for word in ("amount", "balance", "score", "grade", "position", "average"):
                     self.assertNotIn(word, text)
 
+    def test_a_registered_destination_sets_where_the_push_opens_and_its_child(self):
+        self.subscribe()
+        resolver = mock.Mock(return_value=push.PushDestination(url="/parent/results?child=7", child=7))
+        with mock.patch.object(push, "_DESTINATIONS", [resolver]):
+            webpush = self.notify_tunde()
+        payload = json.loads(webpush.call_args.kwargs["data"])
+        self.assertEqual((payload["url"], payload["child"]), ("/parent/results?child=7", 7))
+
+    def test_a_destination_that_fails_leaves_the_push_going_to_the_app(self):
+        self.subscribe(account="a" * 32)
+        with mock.patch.object(push, "_DESTINATIONS", [mock.Mock(side_effect=RuntimeError)]):
+            webpush = self.notify_tunde()
+        payload = json.loads(webpush.call_args.kwargs["data"])
+        self.assertEqual(payload["url"], push._app_path(self.tunde))
+        self.assertNotIn("child", payload)
+
     @override_settings(WEB_PUSH_VAPID_PUBLIC_KEY="", WEB_PUSH_VAPID_PRIVATE_KEY="")
     def test_without_keys_nothing_is_pushed(self):
         PushSubscription.all_objects.create(

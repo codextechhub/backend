@@ -23,8 +23,9 @@ read, and nothing from it.
 **The guardian's email** (``gradebook.report_card_ready``) goes to the primary
 guardian of each released child, one per child, so a family with two children
 at the school gets two. A guardian who has an account is written to through it
-and so reads it in the app as well; one with only an address is an unregistered
-recipient. It says only that the report card is ready to collect: the child's
+and so reads it in the app as well, and is pushed on the devices they allowed:
+the notice names the child, so the push opens that child's results in the
+parent app. One with only an address is an unregistered recipient. It says only that the report card is ready to collect: the child's
 first name, the term and year, the school and branch and the phone to call (the
 class's branch phone, or the school's when the branch has none). A child whose
 primary guardian has no email is recorded ``NO_EMAIL`` at once, and the rest are
@@ -129,6 +130,7 @@ def _send_one(tenant, class_term, student, reach, event_key=EVENT_REPORT_CARD_RE
         unregistered_recipients=unregistered,
         tenant=tenant,
         branch=class_term.branch,
+        metadata={"student_id": student.pk},  # Which child a parent's push opens.
     )
     return bool(sent)
 

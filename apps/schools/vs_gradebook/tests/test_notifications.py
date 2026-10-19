@@ -15,7 +15,7 @@ KEYS = {
     constants.EVENT_SHEET_REMINDER: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
     constants.EVENT_SHEET_RETURNED: {ChannelChoices.IN_APP},
     constants.EVENT_CLASS_RETURNED: {ChannelChoices.IN_APP},
-    constants.EVENT_REPORT_CARD_READY: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
+    constants.EVENT_REPORT_CARD_READY: {ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH},
     constants.EVENT_REPORT_CARD_UPDATED: {ChannelChoices.IN_APP, ChannelChoices.EMAIL},
     constants.EVENT_RESULT_RELEASED: {ChannelChoices.IN_APP, ChannelChoices.PUSH},
 }
