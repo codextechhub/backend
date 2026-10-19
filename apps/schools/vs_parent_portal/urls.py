@@ -8,19 +8,28 @@ from django.urls import path
 from .views import (
     AttendanceView,
     ChildRecordView,
+    FeesView,
+    HomeView,
+    InvoiceDetailView,
     MeView,
     NoticeDetailView,
     NoticeFeedView,
     NoticeReadAllView,
     NoticeReadView,
+    PayInvoiceView,
+    PaymentHistoryView,
+    ReceiptView,
     ReportCardView,
     ResultsView,
     SessionResultsView,
     TimetableView,
+    TransferAccountView,
+    TransferDepositsView,
 )
 
 urlpatterns = [
     path("me/", MeView.as_view(), name="parent-portal-me"),
+    path("home/", HomeView.as_view(), name="parent-portal-home"),
     path("children/<int:child_id>/", ChildRecordView.as_view(), name="parent-portal-child"),
     path(
         "children/<int:child_id>/timetable/", TimetableView.as_view(),
@@ -41,6 +50,28 @@ urlpatterns = [
     path(
         "children/<int:child_id>/results/report-card/", ReportCardView.as_view(),
         name="parent-portal-report-card",
+    ),
+    path("fees/", FeesView.as_view(), name="parent-portal-fees"),
+    path("fees/payments/", PaymentHistoryView.as_view(), name="parent-portal-payments"),
+    path(
+        "fees/payments/<int:payment_ref>/receipt/", ReceiptView.as_view(),
+        name="parent-portal-receipt",
+    ),
+    path(
+        "fees/invoices/<int:invoice_ref>/", InvoiceDetailView.as_view(),
+        name="parent-portal-invoice",
+    ),
+    path(
+        "fees/invoices/<int:invoice_ref>/pay/", PayInvoiceView.as_view(),
+        name="parent-portal-pay",
+    ),
+    path(
+        "children/<int:child_id>/fees/transfer-account/", TransferAccountView.as_view(),
+        name="parent-portal-transfer-account",
+    ),
+    path(
+        "children/<int:child_id>/fees/transfer-account/deposits/",
+        TransferDepositsView.as_view(), name="parent-portal-transfer-deposits",
     ),
     path("notices/", NoticeFeedView.as_view(), name="parent-portal-notices"),
     path(

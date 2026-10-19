@@ -60,6 +60,24 @@ def _status(invoice) -> str:
     return getattr(invoice.status, "value", invoice.status)
 
 
+def invoice_row(invoice) -> dict:
+    """One invoice as the portals show it: number, title, dates, lines, balance, status."""
+    status = _status(invoice)
+    return {
+        "invoice_ref": invoice.invoice_ref,
+        "number": invoice.document_number,
+        "title": invoice.term_label,
+        "invoice_date": invoice.invoice_date,
+        "due_date": invoice.due_date,
+        "lines": [{"description": l.description, "amount": l.amount} for l in invoice.lines],
+        "total": invoice.amount_due,
+        "paid": invoice.amount_paid,
+        "balance": invoice.balance,
+        "status": status,
+        "status_label": STATUS_LABEL.get(status, status),
+    }
+
+
 def fee_summary(student) -> dict:
     """The pupil's balance and invoices, and whether they may pay."""
     result = registry.get_finance_reader().fee_status(_ref(student))
@@ -71,22 +89,7 @@ def fee_summary(student) -> dict:
         "balance": status.balance,
         "total_billed": status.total_billed,
         "total_paid": status.total_paid,
-        "invoices": [
-            {
-                "invoice_ref": invoice.invoice_ref,
-                "number": invoice.document_number,
-                "title": invoice.term_label,
-                "invoice_date": invoice.invoice_date,
-                "due_date": invoice.due_date,
-                "lines": [{"description": l.description, "amount": l.amount} for l in invoice.lines],
-                "total": invoice.amount_due,
-                "paid": invoice.amount_paid,
-                "balance": invoice.balance,
-                "status": _status(invoice),
-                "status_label": STATUS_LABEL.get(_status(invoice), _status(invoice)),
-            }
-            for invoice in status.invoices
-        ],
+        "invoices": [invoice_row(invoice) for invoice in status.invoices],
         "can_pay": rules.enabled,
         "min_part_payment": rules.min_part_payment,
     }
@@ -118,6 +121,37 @@ def payment_history(student) -> list:
     ]
 
 
+def validated_amount(amount, *, balance, minimum) -> int:
+    """The kobo amount a payer may pay on an invoice owing *balance*, or a refusal.
+
+    The whole balance is always payable; a part payment must reach *minimum*.
+    An amount that is not a whole number of kobo (a decimal, a boolean, text
+    that is not digits) is refused rather than rounded, so what is charged is
+    exactly what was typed.
+    """
+    if balance <= 0:
+        raise InvoiceNotPayable("This invoice is already paid.")
+    if isinstance(amount, str) and amount.strip().isdigit():
+        amount = int(amount)
+    if isinstance(amount, bool) or not isinstance(amount, int):
+        raise PaymentAmountInvalid("Enter the amount to pay.", field="amount")
+    if amount <= 0:
+        raise PaymentAmountInvalid("Enter an amount of more than ₦0.00.", field="amount")
+    if amount > balance:
+        raise AmountAboveBalance(
+            f"You can pay at most the balance on this invoice, {format_naira(balance)}.",
+            field="amount", balance=balance,
+        )
+    if amount < balance and amount < minimum:
+        raise AmountBelowMinimum(
+            f"The smallest part payment your school accepts is "
+            f"{format_naira(minimum)}. Enter {format_naira(minimum)} "
+            f"or more, or pay the full balance.",
+            field="amount", minimum=minimum,
+        )
+    return amount
+
+
 def start_payment(student, *, actor, invoice_ref, amount) -> dict:
     """Check the payment against the school's rules and hand back a checkout.
 
@@ -136,27 +170,8 @@ def start_payment(student, *, actor, invoice_ref, amount) -> dict:
     )
     if invoice is None:
         raise NotFound("No such invoice on your account.")
+    amount = validated_amount(amount, balance=invoice["balance"], minimum=rules.min_part_payment)
     balance = invoice["balance"]
-    if balance <= 0:
-        raise InvoiceNotPayable("This invoice is already paid.")
-    try:
-        amount = int(amount)
-    except (TypeError, ValueError):
-        raise PaymentAmountInvalid("Enter the amount to pay.", field="amount") from None
-    if amount <= 0:
-        raise PaymentAmountInvalid("Enter an amount of more than ₦0.00.", field="amount")
-    if amount > balance:
-        raise AmountAboveBalance(
-            f"You can pay at most the balance on this invoice, {format_naira(balance)}.",
-            field="amount", balance=balance,
-        )
-    if amount < balance and amount < rules.min_part_payment:
-        raise AmountBelowMinimum(
-            f"The smallest part payment your school accepts is "
-            f"{format_naira(rules.min_part_payment)}. Enter {format_naira(rules.min_part_payment)} "
-            f"or more, or pay the full balance.",
-            field="amount", minimum=rules.min_part_payment,
-        )
     try:
         result = registry.get_student_payment().start_payment_session(
             student_ref=_ref(student), invoice_ref=invoice["invoice_ref"],
@@ -247,7 +262,8 @@ def _account_body(account) -> dict:
     }
 
 
-def _account_result(result) -> dict:
+def account_answer(result) -> dict:
+    """A transfer account read or issue, as the portals answer it (ISSUED, NONE or UNAVAILABLE)."""
     from schools.core.fal.contracts import Unavailable
 
     if result.is_available:
@@ -264,7 +280,7 @@ def transfer_account(student) -> dict:
     deposit, so a phone whose clock is wrong still sees it arrive.
     """
     _transfer_rules(student)
-    return _account_result(
+    return account_answer(
         registry.get_student_payment().transfer_account(_ref(student)),
     )
 
@@ -272,7 +288,7 @@ def transfer_account(student) -> dict:
 def open_transfer_account(student, *, actor) -> dict:
     """Issue the pupil's account, or return the one they already have."""
     _transfer_rules(student)
-    return _account_result(
+    return account_answer(
         registry.get_student_payment().open_transfer_account(_ref(student), actor=actor),
     )
 
@@ -284,10 +300,15 @@ def transfer_deposits(student, since) -> dict:
     appears as ``PENDING`` as soon as the provider reports it and turns
     ``CONFIRMED`` once its receipt is booked.
     """
+    _transfer_rules(student)
+    return deposits_since(student, since)
+
+
+def deposits_since(student, since) -> dict:
+    """Transfers into the pupil's account since *since*, with no school rule applied."""
     from django.utils import timezone
     from django.utils.dateparse import parse_datetime
 
-    _transfer_rules(student)
     moment = parse_datetime(str(since or "").strip().replace(" ", "+"))
     if moment is None:
         raise DepositSinceInvalid()

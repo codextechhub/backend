@@ -57,6 +57,28 @@ class MeView(PortalView):
         return success_response(data=me(self.guardian, self.children, request=request))
 
 
+class HomeView(PortalView):
+    """GET /v1/portal/parent/home/
+
+    The parent's home in one read. For each child: their class, and a block each
+    for attendance (the term's rate and today's mark), fees (balance, status
+    ``OWING`` / ``CLEAR`` / ``IN_CREDIT``, open invoices), results (the latest
+    released term and its overall average, or none released) and today (the
+    lesson in progress or next). For the family: fees (what is owed in all and
+    the total of paying every open invoice), notices (the newest one, with the
+    children it is for, and the unread count) and notifications. Every block
+    carries ``available``; one that cannot be read answers ``available: false``
+    with a sentence and the rest still arrive.
+
+    docstring-name: My family's home
+    """
+
+    def get(self, request):
+        from .home import home
+
+        return success_response(data=home(self.guardian, self.children, user=request.user))
+
+
 class ChildRecordView(ChildView):
     """GET /v1/portal/parent/children/<child_id>/
 
@@ -160,6 +182,174 @@ class ReportCardView(ChildView):
             data=report_card(
                 self.child, request.query_params.get("term") or None, user=request.user,
             ),
+        )
+
+
+class FeesView(PortalView):
+    """GET /v1/portal/parent/fees/
+
+    Every child's fees: balance, billed, paid and each invoice with its number,
+    title, dates, lines and status, all in kobo. A child whose books cannot be
+    read carries ``available: false`` and a sentence, never zeros. ``combined``
+    sums billed, paid and outstanding across the children, and is itself
+    ``available: false`` while any child cannot be read. ``min_part_payment`` is
+    the school's smallest part payment; the whole balance of an invoice may
+    always be paid. ``pay_all`` lists one step per open invoice, by child and
+    then oldest due date first: the payments engine charges one child's account
+    per checkout, so the app runs one checkout for each step in turn.
+
+    docstring-name: My children's fees
+    """
+
+    def get(self, request):
+        from .fees import family_fees
+
+        return success_response(data=family_fees(self.guardian, self.children))
+
+
+class PaymentHistoryView(PortalView):
+    """GET /v1/portal/parent/fees/payments/
+
+    Every child's payments merged, newest first, each naming its child:
+    confirmed ones with a receipt and online ones still being confirmed. 503
+    ``FINANCE_UNAVAILABLE`` when any child's history cannot be read.
+
+    docstring-name: My children's payments
+    """
+
+    def get(self, request):
+        from .fees import payment_history
+
+        return success_response(data=payment_history(self.children))
+
+
+class ReceiptView(PortalView):
+    """GET /v1/portal/parent/fees/payments/<payment_ref>/receipt/?as=pdf
+
+    A confirmed payment's receipt on one of the parent's children's accounts:
+    JSON for the screen, or with ``as=pdf`` the PDF the school's receipt email
+    attaches. (Not ``format``, which DRF reserves for choosing a renderer.) 404
+    for a payment not confirmed or not a child of this parent's.
+
+    docstring-name: My children's receipt
+    """
+
+    def get(self, request, payment_ref):
+        from django.http import HttpResponse
+
+        from .fees import receipt, receipt_pdf
+
+        if request.query_params.get("as") == "pdf":
+            response = HttpResponse(
+                receipt_pdf(self.children, payment_ref), content_type="application/pdf",
+            )
+            response["Content-Disposition"] = f'attachment; filename="receipt-{payment_ref}.pdf"'
+            return response
+        return success_response(data=receipt(self.children, payment_ref))
+
+
+class InvoiceDetailView(PortalView):
+    """GET /v1/portal/parent/fees/invoices/<invoice_ref>/?as=pdf
+
+    One invoice on a child's account: JSON for the screen (number, dates, lines,
+    balance, status and the child), or with ``as=pdf`` the PDF the school sends.
+    404 for an invoice that is not on one of the parent's children's accounts.
+
+    docstring-name: My children's invoice
+    """
+
+    def get(self, request, invoice_ref):
+        from django.http import HttpResponse
+
+        from .fees import invoice_detail, invoice_pdf
+
+        if request.query_params.get("as") == "pdf":
+            response = HttpResponse(
+                invoice_pdf(self.children, invoice_ref), content_type="application/pdf",
+            )
+            response["Content-Disposition"] = f'attachment; filename="invoice-{invoice_ref}.pdf"'
+            return response
+        return success_response(data=invoice_detail(self.children, invoice_ref))
+
+
+class PayInvoiceView(PortalView):
+    """POST /v1/portal/parent/fees/invoices/<invoice_ref>/pay/
+
+    Starts a payment for one invoice of one of the parent's children and answers
+    with the gateway checkout to send them to. ``amount`` is kobo: the whole
+    balance, or a part of at least the school's smallest part payment. A parent
+    may always pay for their own children. Refusals: 404 for an invoice that is
+    not a child's of this parent, 400 ``AMOUNT_BELOW_MINIMUM`` /
+    ``AMOUNT_ABOVE_BALANCE`` / ``PAYMENT_AMOUNT_INVALID``, 409
+    ``INVOICE_NOT_PAYABLE``, 503 ``PROVIDER_UNAVAILABLE``. Card and bank details
+    are entered on the gateway's own page, never here. Its status is read on the
+    public collection status route with the returned ``reference``.
+
+    docstring-name: Pay my child's invoice
+    """
+
+    def post(self, request, invoice_ref):
+        from .fees import start_payment
+
+        return success_response(
+            "Continue to the secure payment page.",
+            data=start_payment(
+                self.guardian, self.children, user=request.user,
+                invoice_ref=invoice_ref, amount=request.data.get("amount"),
+            ),
+            status=201,
+        )
+
+
+class TransferAccountView(ChildView):
+    """GET, POST /v1/portal/parent/children/<child_id>/fees/transfer-account/
+
+    The child's permanent account for paying fees by bank transfer; each pupil
+    has one, and there is none for a parent. GET answers ``state`` ``ISSUED``
+    (``bank_name``, ``account_number``, ``account_name``, ``as_of``), ``NONE``
+    (POST to issue one) or ``UNAVAILABLE`` with a sentence to show. POST issues
+    the account, or returns the one the child has; it is rate limited. Offered
+    whether or not the school lets pupils pay for themselves. 503
+    ``PROVIDER_UNAVAILABLE`` when the provider is down.
+
+    docstring-name: My child's bank transfer account
+    """
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            from rest_framework.throttling import ScopedRateThrottle
+
+            self.throttle_scope = "portal_transfer_account"
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
+    def get(self, request, child_id):
+        from .fees import transfer_account
+
+        return success_response(data=transfer_account(self.child))
+
+    def post(self, request, child_id):
+        from .fees import open_transfer_account
+
+        return success_response(data=open_transfer_account(self.child, actor=request.user))
+
+
+class TransferDepositsView(ChildView):
+    """GET /v1/portal/parent/children/<child_id>/fees/transfer-account/deposits/?since=<as_of>
+
+    Transfers into the child's account since the ``as_of`` the account read
+    answered, oldest first: ``PENDING`` (``Arriving``) as soon as the provider
+    reports one, ``CONFIRMED`` (``Received``) once its receipt is booked. The
+    page polls this while it shows the account, then re-reads ``fees/``.
+
+    docstring-name: Transfers into my child's account
+    """
+
+    def get(self, request, child_id):
+        from .fees import transfer_deposits
+
+        return success_response(
+            data=transfer_deposits(self.child, request.query_params.get("since")),
         )
 
 

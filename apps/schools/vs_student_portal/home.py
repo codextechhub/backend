@@ -43,7 +43,7 @@ def _block(name, read):
         return {"available": False, "message": UNAVAILABLE[name]}
 
 
-def _today(student) -> dict:
+def today_block(student) -> dict:
     """Today's periods with done / now / next / later, from the published grid."""
     from .services import timetable
 
@@ -56,7 +56,7 @@ def _today(student) -> dict:
     }
 
 
-def _attendance(student) -> dict:
+def attendance_block(student) -> dict:
     """Today's mark, or not taken yet, and the term's attendance rate so far."""
     from schools.vs_attendance.constants import Mark
     from schools.vs_attendance.services.student_tab import pupil_attendance
@@ -138,8 +138,8 @@ def home(student, *, user) -> dict:
 
     return {
         "date": branch_today(student.tenant, student.branch),
-        "today": _block("today", lambda: _today(student)),
-        "attendance": _block("attendance", lambda: _attendance(student)),
+        "today": _block("today", lambda: today_block(student)),
+        "attendance": _block("attendance", lambda: attendance_block(student)),
         "fees": _block("fees", lambda: _fees(student)),
         "notices": _block("notices", lambda: _notices(student, user)),
         "notifications": _block("notifications", lambda: _notifications(user)),

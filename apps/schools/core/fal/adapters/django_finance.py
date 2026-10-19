@@ -2018,27 +2018,35 @@ class DjangoParentPaymentBridgeAdapter(ParentPaymentBridgePort):
             )
 
     @envelope
-    def start_payment_session(self, *, guardian_ref, entity_ref, amount,
+    def start_payment_session(self, *, guardian_ref, amount, entity_ref=None,
                               customer_ref=None, invoice_ref=None,
-                              payer_email="", callback_url=""):
+                              payer_email="", callback_url="", actor=None):
         from rest_framework.exceptions import ValidationError as DRFValidationError
 
         from vs_finance.models import Customer, Invoice
+        from vs_payments.constants import CollectionOrigin
         from vs_payments.exceptions import ProviderError, ProviderNotConfiguredError
         from vs_payments.services import initiate_collection
 
-        entity = _entity(entity_ref)
+        entity = _entity(entity_ref) if entity_ref is not None else None
 
         invoice = None
         if invoice_ref is not None:
-            invoice = (
-                Invoice.objects.filter(pk=invoice_ref, entity=entity)
-                .select_related("customer").first()
+            invoices = Invoice.objects.filter(pk=invoice_ref).select_related(
+                "customer", "entity",
             )
+            if entity is not None:
+                invoices = invoices.filter(entity=entity)
+            invoice = invoices.first()
             if invoice is None:
                 raise CrossTenantError(
                     f"Invoice {invoice_ref!r} does not belong to this school's books."
                 )
+            entity = entity or invoice.entity
+        if entity is None:
+            raise PaymentGatewayError(
+                "An entity or an invoice is required to start a payment session."
+            )
 
         customer = invoice.customer if invoice is not None else None
         if customer_ref is not None:
@@ -2060,10 +2068,16 @@ class DjangoParentPaymentBridgeAdapter(ParentPaymentBridgePort):
 
         self._assert_owns(guardian_ref, customer)
 
+        extra = {}
+        if actor is not None:
+            extra = {
+                "actor_user": actor, "origin": CollectionOrigin.PORTAL,
+                "payer_name": getattr(actor, "full_name", "") or customer.name,
+            }
         try:
             intent = initiate_collection(
                 entity=entity, amount=amount, customer=customer, invoice=invoice,
-                payer_email=payer_email, callback_url=callback_url or None,
+                payer_email=payer_email, callback_url=callback_url or None, **extra,
             )
         except ProviderNotConfiguredError:
             return FinanceResult.unavailable(Unavailable.NOT_CONFIGURED)
@@ -2074,7 +2088,7 @@ class DjangoParentPaymentBridgeAdapter(ParentPaymentBridgePort):
             # Retrying will not help, so it raises rather than reading as an outage.
             raise PaymentGatewayError(str(exc.detail)) from exc
 
-        return _available(intent.checkout_url)
+        return _available(Checkout(checkout_url=intent.checkout_url, reference=intent.reference))
 
     @envelope
     def receipt_for(self, payment_ref, *, guardian_ref):
@@ -2306,6 +2320,19 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
 
         payment = self._payment(student_ref, payment_ref)
         return _available(receipt_pdf(payment) if payment is not None else None)
+
+    @envelope
+    def invoice_pdf(self, student_ref, invoice_ref):
+        from vs_finance.models import Invoice
+        from vs_finance.pdf import invoice_pdf
+
+        customers = self._customers(student_ref)
+        invoice = (
+            Invoice.objects.filter(pk=invoice_ref, customer__in=customers, status="POSTED")
+            .select_related("customer", "entity").first()
+            if customers else None
+        )
+        return _available(invoice_pdf(invoice) if invoice is not None else None)
 
     @staticmethod
     def _transfer_view(account):

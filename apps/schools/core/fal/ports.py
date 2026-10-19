@@ -102,6 +102,7 @@ from .contracts import (
     ArAgeingReport,
     BillLine,
     BranchRef,
+    Checkout,
     CustomerHandle,
     CustomerRef,
     DateRange,
@@ -623,16 +624,28 @@ class ParentPaymentBridgePort(ABC):
 
     @abstractmethod
     def start_payment_session(
-        self, *, guardian_ref: GuardianRef, entity_ref: EntityRef,
-        amount: Kobo, customer_ref: Optional[CustomerRef] = None,
+        self, *, guardian_ref: GuardianRef, amount: Kobo,
+        entity_ref: Optional[EntityRef] = None,
+        customer_ref: Optional[CustomerRef] = None,
         invoice_ref: Optional[InvoiceRef] = None,
-        payer_email: str = "", callback_url: str = "",
-    ) -> FinanceResult[str]:
-        """Create a gateway checkout session; return its ``checkout_url``.
+        payer_email: str = "", callback_url: str = "", actor=None,
+    ) -> FinanceResult[Checkout]:
+        """Create a gateway checkout session; return a ``Checkout``.
+
+        The ``Checkout`` carries the gateway's ``checkout_url`` and our own
+        ``reference``, the same result :class:`StudentPaymentPort` returns, so
+        a caller can watch the collection by that reference.
 
         ``amount`` is integer kobo. At least one of ``customer_ref`` or
         ``invoice_ref`` must resolve to a customer, because the backend refuses
-        a customer-free collection.
+        a customer-free collection. ``entity_ref`` names the books the payment
+        belongs to; left out, the invoice's own entity is used, which is why an
+        ``invoice_ref`` is then required.
+
+        ``actor`` is the signed-in account that pressed Pay. With it the
+        collection carries the ``PORTAL`` origin and that account as its
+        creator, so the parent who started a payment is the one told when it is
+        confirmed. The ownership check runs first either way.
 
         Outage versus rejection:
 
@@ -709,6 +722,11 @@ class StudentPaymentPort(ABC):
     @abstractmethod
     def receipt_pdf(self, student_ref: StudentRef, payment_ref: PaymentRef) -> FinanceResult:
         """The same receipt as the PDF the school's receipt email attaches, or None."""
+
+    @abstractmethod
+    def invoice_pdf(self, student_ref: StudentRef, invoice_ref: InvoiceRef) -> FinanceResult:
+        """The invoice as the PDF the school sends, or None when the invoice is
+        not on this pupil's account (the same answer as one that does not exist)."""
 
     @abstractmethod
     def transfer_account(self, student_ref: StudentRef) -> FinanceResult:

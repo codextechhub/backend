@@ -420,15 +420,17 @@ class FakeParentPaymentBridge(ParentPaymentBridgePort):
         #: payment_ref -> student_ref, for the receipt ownership check.
         self.payment_students: dict = {}
 
-    def start_payment_session(self, *, guardian_ref, entity_ref, amount,
+    def start_payment_session(self, *, guardian_ref, amount, entity_ref=None,
                               customer_ref=None, invoice_ref=None,
-                              payer_email="", callback_url=""):
+                              payer_email="", callback_url="", actor=None):
         if customer_ref is None and invoice_ref is None:
             raise PaymentGatewayError("A customer or an invoice is required.")
         if self.reject:
             raise PaymentGatewayError("The gateway refused this request.")
         self.sessions.append((guardian_ref, entity_ref, amount, customer_ref, invoice_ref))
-        return _ok(self.checkout_url)
+        return _ok(Checkout(
+            checkout_url=self.checkout_url, reference=f"FAKE-{len(self.sessions)}",
+        ))
 
     def receipt_for(self, payment_ref, *, guardian_ref):
         receipt = self.receipts.get(payment_ref)
@@ -749,6 +751,10 @@ class FakeStudentPayment(StudentPaymentPort):
         found = self.receipts.get((student_ref, payment_ref))
         return _ok(b"%PDF-fake" if found is not None else None)
 
+    def invoice_pdf(self, student_ref, invoice_ref):
+        found = self.invoices.get(invoice_ref) == student_ref
+        return _ok(b"%PDF-fake" if found else None)
+
     def transfer_account(self, student_ref):
         return _ok(self.transfer_accounts.get(student_ref))
 
@@ -812,6 +818,7 @@ class UnavailableStudentPayment(_UnavailableMixin, StudentPaymentPort):
     def start_payment_session(self, *a, **k): return self._u()
     def receipt(self, *a, **k): return self._u()
     def receipt_pdf(self, *a, **k): return self._u()
+    def invoice_pdf(self, *a, **k): return self._u()
     def transfer_account(self, *a, **k): return self._u()
     def open_transfer_account(self, *a, **k): return self._u()
     def transfer_deposits(self, *a, **k): return self._u()

@@ -80,7 +80,7 @@ class ParentPaymentBridgeTests(FALFixture):
         )
 
         self.assertTrue(result.is_available)
-        self.assertTrue(result.value)
+        self.assertTrue(result.value.checkout_url)
 
     def test_the_shipped_default_refuses_somebody_elses_child(self):
         student = self.student(self.corona, self.ikeja)
@@ -126,7 +126,64 @@ class ParentPaymentBridgeTests(FALFixture):
         )
 
         self.assertTrue(result.is_available)
-        self.assertTrue(result.value)
+        self.assertTrue(result.value.checkout_url)
+
+    def test_the_actor_who_pressed_pay_starts_a_portal_collection(self):
+        from vs_payments.constants import CollectionOrigin
+        from vs_payments.models import CollectionIntent
+
+        actor = self.user_for(self.corona, "adeyemi@corona.test")
+
+        result = self.bridge_for().start_payment_session(
+            guardian_ref="g-adeyemi", entity_ref=self.corona_books.entity_ref,
+            amount=100_000, invoice_ref=self.ada_invoice.pk, actor=actor,
+        )
+
+        intent = CollectionIntent.objects.get(reference=result.value.reference)
+        self.assertEqual(intent.origin, CollectionOrigin.PORTAL)
+        self.assertEqual(intent.created_by_id, actor.pk)
+        self.assertEqual(intent.invoice_id, self.ada_invoice.pk)
+
+    def test_without_an_actor_the_collection_is_a_standard_one(self):
+        from vs_payments.constants import CollectionOrigin
+        from vs_payments.models import CollectionIntent
+
+        result = self.bridge_for().start_payment_session(
+            guardian_ref="g-adeyemi", entity_ref=self.corona_books.entity_ref,
+            amount=100_000, invoice_ref=self.ada_invoice.pk,
+        )
+
+        intent = CollectionIntent.objects.get(reference=result.value.reference)
+        self.assertEqual(intent.origin, CollectionOrigin.STANDARD)
+        self.assertIsNone(intent.created_by_id)
+
+    def test_the_invoices_own_books_are_used_when_no_entity_is_named(self):
+        from vs_payments.models import CollectionIntent
+
+        result = self.bridge_for().start_payment_session(
+            guardian_ref="g-adeyemi", amount=100_000, invoice_ref=self.ada_invoice.pk,
+        )
+
+        intent = CollectionIntent.objects.get(reference=result.value.reference)
+        self.assertEqual(intent.entity_id, self.corona_books.entity_ref)
+
+    def test_no_entity_and_no_invoice_is_a_rejection(self):
+        with self.assertRaises(PaymentGatewayError):
+            self.bridge_for().start_payment_session(
+                guardian_ref="g-adeyemi", amount=100_000,
+                customer_ref=self.ada.customer_ref,
+            )
+
+    def test_an_invoice_found_without_an_entity_is_still_ownership_checked(self):
+        from vs_payments.models import CollectionIntent
+
+        with self.assertRaises(CrossTenantError):
+            self.bridge_for({"g-okafor": {"stu-green"}}).start_payment_session(
+                guardian_ref="g-okafor", amount=100_000,
+                invoice_ref=self.ada_invoice.pk,
+            )
+
+        self.assertFalse(CollectionIntent.objects.exists())
 
     def test_a_guardian_cannot_pay_a_child_who_is_not_theirs(self):
         with self.assertRaises(CrossTenantError):
@@ -272,3 +329,21 @@ class ParentPaymentBridgeTests(FALFixture):
         self.assertFalse(Payment.objects.exists())
         self.ada_invoice.refresh_from_db()
         self.assertEqual(self.ada_invoice.amount_paid, 0)
+
+    # ----- the pupil port's invoice PDF, read by the same family screens ---- #
+    def test_an_invoice_on_the_pupils_account_renders_as_a_pdf(self):
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+
+        result = DjangoStudentPaymentAdapter().invoice_pdf("stu-ada", self.ada_invoice.pk)
+
+        self.assertTrue(result.value.startswith(b"%PDF"))
+
+    def test_an_invoice_not_on_the_pupils_account_has_no_pdf(self):
+        """Another school's invoice and a missing one answer alike."""
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+
+        port = DjangoStudentPaymentAdapter()
+
+        self.assertIsNone(port.invoice_pdf("stu-ada", self.green_invoice.pk).value)
+        self.assertIsNone(port.invoice_pdf("stu-ada", 9_999_999).value)
+        self.assertIsNone(port.invoice_pdf("stu-nobody", self.ada_invoice.pk).value)

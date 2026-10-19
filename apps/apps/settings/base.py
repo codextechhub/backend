@@ -640,6 +640,8 @@ SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="http://localhost:51
 # the school app's host, which is where it lives in every deployed
 # environment; development serves it from a second dev server.
 STUDENT_APP_BASE_URL = config("STUDENT_APP_BASE_URL", default="")
+# The parent app is served at /parent/ on each school's own host, the same way.
+PARENT_APP_BASE_URL = config("PARENT_APP_BASE_URL", default="")
 
 # Web Push (vs_notifications push channel). A key pair per environment, made
 # once with py_vapid and kept: a new pair orphans every phone's subscription.
