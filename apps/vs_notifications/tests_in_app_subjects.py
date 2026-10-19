@@ -63,6 +63,7 @@ _ALREADY_TITLED = {
     "gradebook.report_card_ready",
     "gradebook.report_card_updated",
     "notices.published",
+    "notices.published_parent",
 }
 
 

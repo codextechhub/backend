@@ -14,11 +14,15 @@ member of staff sees a notice when an audience row lies inside their reach,
 and always sees their own drafts. A parent sees the union of what each of
 their children is sent.
 
-**Publishing tells the pupils.** Each pupil in the audience with a working
-portal account is notified in-app and by email, after the publication commits
-(``tasks.dispatch_published``). Read counts are taken against every pupil on
-the roll in the audience, account or not, so a class where half the pupils
-have no account reads "12 of 32", which is the truth a teacher needs.
+**Publishing tells the pupils, and their parents.** Each pupil in the audience
+with a working portal account is notified in-app and by email, after the
+publication commits (``tasks.dispatch_published``). Unless the school has
+turned off ``notices.tell_parents`` (on by default), each parent with an active
+account is then told the same way, once, naming every one of their children the
+notice reaches; a guardian with no account is skipped, and a member of staff
+who is also a parent is told as a parent. Read counts are taken against every
+pupil on the roll in the audience, account or not, so a class where half the
+pupils have no account reads "12 of 32", which is the truth a teacher needs.
 """
 from __future__ import annotations
 

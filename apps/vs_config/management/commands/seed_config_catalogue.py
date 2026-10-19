@@ -296,6 +296,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "notices.tell_parents", "Tell Parents About New Notices",
+        "Whether publishing a notice also tells the parents of the pupils it "
+        "is for, in their parent app and by email. A parent is told once per "
+        "notice, naming each of their children it reaches, and only when they "
+        "have a parent account. Off tells the pupils alone.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "students.portal.session_days", "Student App Sign-In Length",
         "How many days a student stays signed in to the student app on their "
         "phone or tablet without opening it. Each use starts the count again, "

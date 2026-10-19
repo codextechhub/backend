@@ -12,6 +12,15 @@ PERM_POST_CLASS = "school.class_notices.post"
 
 #: The in-app and email notice a pupil receives when a notice reaches them.
 EVENT_PUBLISHED = "notices.published"
+#: The in-app and email notice a parent receives when a notice reaches one of
+#: their children.
+EVENT_PUBLISHED_PARENT = "notices.published_parent"
+
+#: The school setting that decides whether parents are told about a new notice.
+CFG_TELL_PARENTS = "notices.tell_parents"
+
+#: Where the parent app is served on the school's own host.
+PARENT_APP_PATH = "/parent/"
 
 TITLE_MAX = 150
 BODY_MAX = 5000

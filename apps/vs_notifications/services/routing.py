@@ -146,13 +146,22 @@ _WORKFLOW_APPROVAL_KEYS = ("workflow.stage_activated", "workflow.escalated")
 # that would answer them with a 404.
 _WORKFLOW_RELEASED_KEYS = ("workflow.approver_removed",)
 
+_NOTICE_PARENT_KEYS = ("notices.published_parent",)
+
 RECORD_DESTINATIONS = (
     # A pupil opens a notice in the portal; opening it clears the bell entry.
     RecordDestination(
         family=RecordFamily.NOTICE,
-        keys=EventKeys(prefix="notices."),
+        keys=EventKeys(prefix="notices.", excluded=_NOTICE_PARENT_KEYS),
         id_key="notice_id",
         route="/portal/notices/{id}",
+    ),
+    # A parent opens the same notice in the parent app, which has its own route.
+    RecordDestination(
+        family=RecordFamily.NOTICE,
+        keys=EventKeys(keys=_NOTICE_PARENT_KEYS),
+        id_key="notice_id",
+        route="/notices/{id}",
     ),
     RecordDestination(
         family=RecordFamily.TICKET,

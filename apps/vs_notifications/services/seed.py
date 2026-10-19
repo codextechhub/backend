@@ -793,6 +793,28 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── notices.published_parent ────────────────────────────────────────
+        # Goes to a parent, naming their children the notice reaches. It
+        # carries the notice's title and a link, never its body: the notice is
+        # read in the parent app.
+        ("notices.published_parent", C.IN_APP): {
+            "subject": "A new notice for {{ child_names }}: {{ notice_title }}",
+            "body": "Open the parent app to read it.",
+        },
+        ("notices.published_parent", C.EMAIL): {
+            "subject": "A new notice for {{ child_names }}: {{ notice_title }}",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "{{ tenant_name }} has posted a notice for {{ child_names }}:\n\n"
+                "{{ notice_title }}\n\n"
+                "{% if notice_url %}You can read it in the parent app:\n"
+                "{{ notice_url }}\n\n{% endif %}"
+                "{{ tenant_name }} via {{ email_brand }}"
+            ),
+            "cta_label": "Read the notice",
+            "cta_url": "{{ notice_url }}",
+        },
+
         # ── gradebook.result_released ───────────────────────────────────────
         # To the pupil, in the app and as a push: that the term's result is
         # there, never a figure from it.
