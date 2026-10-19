@@ -1860,6 +1860,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
     # ----- per-student views ----------------------------------------------- #
     @envelope
     def fee_status(self, student_ref):
+        from vs_finance.documents import customer_net_after
         from vs_finance.models import Invoice
 
         customers = list(_customers_for_student(student_ref))
@@ -1879,10 +1880,10 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
         )
         billed = sum(inv.total for inv in invoices)
         paid = sum(inv.amount_paid for inv in invoices)
-        credited = sum(inv.amount_credited for inv in invoices)
+        balance = sum(customer_net_after(customer.entity, customer) for customer in customers)
         return _available(FeeStatus(
             student_ref=student_ref,
-            balance=billed - paid - credited,
+            balance=balance,
             total_billed=billed,
             total_paid=paid,
             invoices=tuple(_invoice_view(inv) for inv in invoices),

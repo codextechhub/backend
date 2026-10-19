@@ -291,6 +291,26 @@ class PerStudentViewTests(_ReadFixture):
         self.assertEqual(status.balance, 150_000)
         self.assertEqual(len(status.invoices), 1)
 
+    def test_unallocated_payment_is_shown_as_credit_after_bills_are_paid(self):
+        self.pay(self.corona_books, self.ada.customer_ref, 350_000)
+
+        status = self.reader.fee_status("stu-ada").unwrap()
+
+        self.assertEqual(status.total_billed, 300_000)
+        self.assertEqual(status.total_paid, 300_000)
+        self.assertEqual(status.balance, -350_000)
+
+    def test_credit_is_shown_before_the_first_bill(self):
+        customer = self.student_customer(self.corona_books, "stu-prepaid")
+        self.pay(self.corona_books, customer.customer_ref, 350_000)
+
+        status = self.reader.fee_status("stu-prepaid").unwrap()
+
+        self.assertEqual(status.total_billed, 0)
+        self.assertEqual(status.total_paid, 0)
+        self.assertEqual(status.balance, -350_000)
+        self.assertEqual(status.invoices, ())
+
     def test_a_child_who_has_never_been_billed_reads_as_zero_not_missing(self):
         result = self.reader.fee_status("stu-nobody")
 
