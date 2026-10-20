@@ -51,6 +51,8 @@ class CurrentUserView(APIView):
         from vs_rbac.field_enforcement import field_access_payload
         from vs_rbac.scoping import branch_reach_payload
         from vs_tenants.context import tenant_context_block
+
+        from ..services.home_apps import other_apps_payload
         # request.tenant is bound by TenantJWTAuthentication; fall back to the
         # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
         tenant = getattr(request, "tenant", None) or request.user.tenant
@@ -70,6 +72,11 @@ class CurrentUserView(APIView):
             # the forms and columns that have no record to ask.
             "field_access": field_access_payload(request.user, tenant),
             "branch_reach": branch_reach_payload(request.user, tenant),
+            # None while proxying: the way in would open as the actor.
+            "other_apps": (
+                [] if request.META.get("HTTP_X_IMPERSONATION_SESSION")
+                else other_apps_payload(request.user)
+            ),
         }
 
         # Browser reloads deliberately persist no proxy credential. Tell the

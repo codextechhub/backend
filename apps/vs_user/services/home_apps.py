@@ -13,6 +13,13 @@ teacher who is also a parent keeps the staff app. A pupil's app is not named
 here: a pupil is offered a device session, which sign-in already answers as
 ``device_app``. A provider that raises is logged and treated as not answering,
 so a broken product hook never breaks a sign-in.
+
+An account can also hold another app beside the one it signs in to: a teacher
+whose own child attends keeps the staff app and is a parent in the parent app
+as well. A product registers an *other app* provider
+(:func:`register_other_app`) that answers a path for such accounts, and the
+staff app's sign-in and ``me/`` list them as ``other_apps``, each
+``{"key", "path"}``, so the staff app can offer the way in.
 """
 from __future__ import annotations
 
@@ -50,3 +57,30 @@ def home_app_payload(user) -> Optional[dict]:
     """``{"path": ...}`` for *user*'s own app, as sign-in and the link previews answer it, or None."""
     path = home_app_path(user)
     return {"path": path} if path else None
+
+
+_other_providers: dict[str, HomeAppProvider] = {}
+
+
+def register_other_app(key: str, provider: HomeAppProvider) -> None:
+    """Make *provider* name an app, under *key*, that the accounts it knows can also open."""
+    _other_providers[key] = provider
+
+
+def other_apps_payload(user) -> list[dict]:
+    """``[{"key", "path"}]`` for each other app *user* can open, in registration order.
+
+    A provider that raises is logged and left out, as a home app provider is.
+    """
+    if user is None or not getattr(user, "pk", None):
+        return []
+    found = []
+    for key, provider in list(_other_providers.items()):
+        try:
+            path = provider(user)
+        except Exception:  # noqa: BLE001 - a product hook never breaks sign-in
+            logger.exception("Other app provider %r failed.", key)
+            continue
+        if path:
+            found.append({"key": key, "path": path})
+    return found

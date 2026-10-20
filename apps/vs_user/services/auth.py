@@ -66,7 +66,9 @@ class LoginService:
         ``device_app`` with the app's path, so the sign-in page can hand the
         person over to it. One that is not, but belongs in another app (a
         parent with no staff role), answers ``home_app`` with that app's path
-        (``services.home_apps``), so the page can send them there.
+        (``services.home_apps``), so the page can send them there, and
+        ``other_apps`` lists the apps it can open beside this one (a teacher
+        who is a parent too).
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -229,7 +231,7 @@ class LoginService:
         from vs_tenants.context import tenant_context_block
         permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
-        from .home_apps import home_app_payload
+        from .home_apps import home_app_payload, other_apps_payload
 
         device_fields = (
             {'account': session.device_key}
@@ -237,6 +239,7 @@ class LoginService:
             {
                 'device_app': {'path': policy.app_path} if policy else None,
                 'home_app': None if policy else home_app_payload(authed),
+                'other_apps': [] if policy else other_apps_payload(authed),
             }
         )
         return {
