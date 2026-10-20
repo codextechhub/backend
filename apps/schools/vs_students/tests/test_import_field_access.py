@@ -555,6 +555,13 @@ class HouseholdWriteSwitchTests(_HouseholdFixture):
                 )
 
     def test_fields_open_on_create_load_for_a_runner_who_cannot_correct_them(self):
+        # A blank email is the case here, so the parent app rule must not demand one.
+        for school, admin in ((self.school, self.admin), (self.solo, self.solo_admin)):
+            write_guardian_rules(
+                school.tenant, admin, min_per_student=1, email_required=False,
+                matching="EMAIL_THEN_PHONE", extra_relationships=[],
+                parent_app_auto_access=False,
+            )
         for label in ("multi", "single"):
             with self.subTest(school=label):
                 self.assertEqual(

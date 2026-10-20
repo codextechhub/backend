@@ -35,7 +35,7 @@ from ..exceptions import (
     SuspensionEndsBeforeItStarts,
     TerminalStatus,
 )
-from ..models import StudentStatusLog
+from ..models import StudentGuardian, StudentStatusLog
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,9 @@ def transition(
     and it reaches a guardian's notice only where the person suspending the
     pupil chose to send it.
 
+    Joining the roll invites the pupil's guardians to the parent app where the
+    school says so (``parent_app_auto``).
+
     The audit event carries the reason in ``metadata["reason"]`` and never in
     its summary. The reason is a Field Access field (``status_reason``), and
     a summary is one sentence that every surface printing the trail shows
@@ -234,6 +237,17 @@ def transition(
         student, to_status, effective_date,
         return_date=return_date, reason=reason if send_reason else "",
     )
+    if to_status in PORTAL_STATUSES and from_status not in PORTAL_STATUSES:
+        from .parent_app_auto import invite_when_due
+
+        invite_when_due(
+            StudentGuardian.all_objects.filter(
+                tenant_id=student.tenant_id, student=student,
+            ).values_list(
+                "guardian_id", flat=True,
+            ),
+            tenant=student.tenant, actor=actor,
+        )
     return student
 
 

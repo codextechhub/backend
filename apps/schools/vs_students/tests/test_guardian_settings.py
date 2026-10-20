@@ -52,12 +52,30 @@ class _GuardianRulesFixture(StudentsFixture):
         make_assignment(cls.solo, cls.solo_settings, solo_role, branch=None)
 
     def rules_body(self, **overrides):
+        """Every rule, with the parent app rule off so the email rule is the school's own.
+
+        The parent app rule and the email it needs are covered in
+        ``test_guardian_parent_app_auto``.
+        """
         body = {
             "min_per_student": 1, "email_required": False,
             "matching": "EMAIL_THEN_PHONE", "extra_relationships": [],
+            "parent_app_auto_access": False,
         }
         body.update(overrides)
         return body
+
+    def without_parent_app(self, tenant):
+        """Turn the parent app rule off at *tenant* and leave every other rule as it is."""
+        from ..services.guardian_rules import read_guardian_rules, write_guardian_rules
+
+        rules = read_guardian_rules(tenant)
+        write_guardian_rules(
+            tenant, self.admin, min_per_student=rules.min_per_student,
+            email_required=rules.email_required, matching=rules.matching,
+            extra_relationships=list(rules.extra_relationships),
+            parent_app_auto_access=False,
+        )
 
     def set_rules(self, user=None, **overrides):
         response = self.put(
@@ -146,11 +164,12 @@ class GuardianRulesSecurityTests(_GuardianRulesFixture):
         self.set_rules(min_per_student=2)
 
     def test_one_schools_rules_never_reach_another(self):
-        """Brightfield asks for everything; Sunrise has set nothing."""
+        """Brightfield asks for everything; Sunrise has only turned the parent app rule off."""
         self.set_rules(
             min_per_student=2, email_required=True, matching="EMAIL_ONLY",
-            extra_relationships=["Sponsor"],
+            extra_relationships=["Sponsor"], parent_app_auto_access=True,
         )
+        self.without_parent_app(self.solo.tenant)
         theirs = self.get(self.solo_admin, "student-guardian-rules").data["data"]
         self.assertEqual(theirs["min_per_student"], 1)
         self.assertFalse(theirs["email_required"])
@@ -202,7 +221,8 @@ class GuardianRulesShapeTests(_GuardianRulesFixture):
         self.assertEqual(data, {
             "min_per_student": 1,
             "email_required": False,
-            "binding_email_required": False,
+            "parent_app_auto_access": True,
+            "binding_email_required": True,
             "matching": "EMAIL_THEN_PHONE",
             "matching_options": [
                 {"value": "EMAIL_THEN_PHONE", "label": "Email, then phone"},
@@ -243,10 +263,14 @@ class GuardianRulesShapeTests(_GuardianRulesFixture):
         from vs_config.models import ConfigurationAuditEvent
 
         before = ConfigurationAuditEvent.objects.count()
-        self.set_rules(min_per_student=2, extra_relationships=["Sponsor"])
+        self.set_rules(
+            min_per_student=2, extra_relationships=["Sponsor"], parent_app_auto_access=True,
+        )
         after_change = ConfigurationAuditEvent.objects.count()
         self.assertEqual(after_change - before, 2)
-        self.set_rules(min_per_student=2, extra_relationships=["Sponsor"])
+        self.set_rules(
+            min_per_student=2, extra_relationships=["Sponsor"], parent_app_auto_access=True,
+        )
         self.assertEqual(ConfigurationAuditEvent.objects.count(), after_change)
 
     def assert_refused(self, field, **overrides):
@@ -527,6 +551,7 @@ class GuardianEmailRequiredTests(_GuardianRulesFixture):
         self.assertEqual(response.status_code, 200, response.data)
 
     def test_a_school_without_the_rule_may_blank_an_email(self):
+        self.without_parent_app(self.solo.tenant)
         held = self.guardian(
             tenant=self.solo.tenant, name="Mrs. Ada Obi", phone="08035550602",
             email="ada.obi@example.ng",
@@ -569,6 +594,10 @@ class GuardianMatchingTests(_GuardianRulesFixture):
     """The Bellos and the Okekes share the landline 01 234 5678 at Brightfield."""
 
     LANDLINE = "012345678"
+
+    def setUp(self):
+        # The Okekes give no email, which the parent app rule would refuse.
+        self.without_parent_app(self.tenant)
 
     def enrol_two_families(self):
         first = self.post(self.admin, "student-list", self.enrolment_body(

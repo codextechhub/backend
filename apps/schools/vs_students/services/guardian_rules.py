@@ -1,16 +1,22 @@
-"""A school's own guardian rules: how many, whether an email, how matched, which relationships.
+"""A school's own guardian rules: how many, whether an email, how matched, which relationships, the parent app.
 
-Four ``vs_config`` definitions, all school-scoped, read through
-``rules.resolve_many`` so inheritance is vs_config's own. Each default is the
-behaviour every school had before it could choose, so a school that has set
-nothing is treated exactly as before:
+Five ``vs_config`` definitions, all school-scoped, read through
+``rules.resolve_many`` so inheritance is vs_config's own. The first four
+default to the behaviour every school had before it could choose:
 
 * every child needs one guardian, and the last one on the roll cannot be
   removed;
-* a guardian needs a phone number and no email;
+* a guardian needs a phone number, and an email only where the school asks;
 * a guardian typed in is matched to one the school holds on email, then phone;
 * a relationship is one of the eight fixed ones, and anything else in a
   spreadsheet is imported as Other.
+
+The fifth, ``parent_app_auto_access``, defaults on: a guardian is invited to
+the parent app as soon as a child of theirs is on the roll
+(``services/parent_app_auto.py``), and while it is on a new guardian needs an
+email, because that is where the invitation goes. ``email_required`` stays the
+school's own email switch, so turning the parent app rule off restores whatever
+the school chose for email; ``needs_email`` is the rule in force.
 
 A value stored by hand at the platform layer can be anything its type allows,
 so every read is cleaned here rather than trusted: a minimum out of range reads
@@ -34,6 +40,7 @@ from ..constants import (
     CFG_GUARDIAN_EXTRA_RELATIONSHIPS,
     CFG_GUARDIAN_MATCHING,
     CFG_GUARDIAN_MINIMUM,
+    CFG_GUARDIAN_PARENT_APP_AUTO,
     EXTRA_RELATIONSHIP_MAX_LENGTH,
     EXTRA_RELATIONSHIPS_MAX,
     GUARDIAN_MINIMUM_CEILING,
@@ -46,7 +53,7 @@ from .rules import resolve_many
 
 _RULE_KEYS = (
     CFG_GUARDIAN_MINIMUM, CFG_GUARDIAN_EMAIL_REQUIRED, CFG_GUARDIAN_MATCHING,
-    CFG_GUARDIAN_EXTRA_RELATIONSHIPS,
+    CFG_GUARDIAN_EXTRA_RELATIONSHIPS, CFG_GUARDIAN_PARENT_APP_AUTO,
 )
 
 #: Every spelling of a fixed relationship a person or a spreadsheet uses: the
@@ -134,6 +141,16 @@ class GuardianRules:
     email_required: bool = False
     matching: str = GuardianMatching.EMAIL_THEN_PHONE.value
     extra_relationships: tuple = ()
+    parent_app_auto_access: bool = True
+    #: Set by :meth:`binding` for a caller who cannot supply a guardian email.
+    email_waived: bool = False
+
+    @property
+    def needs_email(self) -> bool:
+        """Whether a new guardian must be given an email, as the rules bind now."""
+        if self.email_waived:
+            return False
+        return self.email_required or self.parent_app_auto_access
 
     @property
     def email_only(self) -> bool:
@@ -162,19 +179,21 @@ class GuardianRules:
     def binding(self, request) -> "GuardianRules":
         """These rules as they bind *request*'s caller.
 
-        A guardian email the school requires does not bind a caller who cannot
-        read and write ``school.guardians.email``: the guardian is added
-        without it and somebody with Write completes it later. Every other
-        rule is unchanged, and so are these for ``request=None``.
+        A guardian email the school requires, by its own switch or by the
+        parent app rule, does not bind a caller who cannot read and write
+        ``school.guardians.email``: the guardian is added without it and
+        somebody with Write completes it later, which is when the parent app
+        invitation goes. Every other rule is unchanged, and so are these for
+        ``request=None``.
         """
         from dataclasses import replace
 
         from vs_rbac.field_enforcement import can_supply
 
-        if self.email_required and not can_supply(
+        if self.needs_email and not can_supply(
             request, "school.guardians", "email", creating=True,
         ):
-            return replace(self, email_required=False)
+            return replace(self, email_waived=True)
         return self
 
     def email_required_after(self, request, submitted: bool) -> bool:
@@ -193,13 +212,16 @@ class GuardianRules:
     def as_dict(self, request=None) -> dict:
         """The body of ``GET /v1/students/guardian-rules/``.
 
-        With a *request*, ``binding_email_required`` says whether the school's
-        email rule binds that caller (see :meth:`binding`).
+        ``email_required`` is the school's own email switch. With a *request*,
+        ``binding_email_required`` says whether a guardian email is required
+        of that caller, by that switch or by the parent app rule (see
+        :meth:`binding`).
         """
         return {
             "min_per_student": self.min_per_student,
             "email_required": self.email_required,
-            "binding_email_required": self.binding(request).email_required,
+            "parent_app_auto_access": self.parent_app_auto_access,
+            "binding_email_required": self.binding(request).needs_email,
             "matching": self.matching,
             "matching_options": [
                 {"value": value, "label": label}
@@ -211,7 +233,7 @@ class GuardianRules:
 
 
 def read_guardian_rules(tenant) -> GuardianRules:
-    """All four rules in one read: five queries whatever the school.
+    """All five rules in one read, a fixed number of queries whatever the school.
 
     With no tenant, the defaults: a caller judging for no school is held to
     the behaviour every school has until it chooses otherwise.
@@ -227,18 +249,21 @@ def read_guardian_rules(tenant) -> GuardianRules:
         email_required=found.get(CFG_GUARDIAN_EMAIL_REQUIRED) is True,
         matching=_matching(found.get(CFG_GUARDIAN_MATCHING)),
         extra_relationships=clean_extras(found.get(CFG_GUARDIAN_EXTRA_RELATIONSHIPS, [])),
+        # On unless stored off: a stored value that is not a boolean reads as the default.
+        parent_app_auto_access=found.get(CFG_GUARDIAN_PARENT_APP_AUTO, True) is not False,
     )
 
 
 @transaction.atomic
 def write_guardian_rules(
     tenant, actor, *, min_per_student, email_required, matching,
-    extra_relationships, reason="",
+    extra_relationships, parent_app_auto_access=None, reason="",
 ) -> GuardianRules:
     """Store the school's guardian rules. The caller has already validated them.
 
     The added relationships are stored trimmed, in the order the school gave
-    them, so the picker offers them in that order.
+    them, so the picker offers them in that order. ``parent_app_auto_access``
+    left as None stays as stored.
     """
     from vs_config.models import ConfigurationDefinition
     from vs_config.services.resolution import resolve_value, set_value
@@ -249,6 +274,8 @@ def write_guardian_rules(
         CFG_GUARDIAN_MATCHING: matching,
         CFG_GUARDIAN_EXTRA_RELATIONSHIPS: list(clean_extras(extra_relationships)),
     }
+    if parent_app_auto_access is not None:
+        wanted[CFG_GUARDIAN_PARENT_APP_AUTO] = bool(parent_app_auto_access)
     definitions = {
         d.key: d for d in ConfigurationDefinition.objects.filter(
             key__in=list(wanted), is_active=True,

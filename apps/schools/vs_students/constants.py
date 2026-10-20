@@ -85,14 +85,17 @@ AGE_RULE_CEILING = 99
 DEFAULT_CAPACITY_MIN = 1
 DEFAULT_CAPACITY_MAX = 500
 
-# The school's guardian rules (services/guardian_rules.py). As with the
-# enrolment rules, each default is the behaviour every school had before it
-# could choose: one guardian, no email demanded, email then phone, and the
-# eight fixed relationships.
+# The school's guardian rules (services/guardian_rules.py). The first four
+# default to the behaviour every school had before it could choose: one
+# guardian, no email demanded, email then phone, and the eight fixed
+# relationships. The parent app rule defaults on, so a guardian is invited to
+# the parent app as soon as a child of theirs is on the roll, and a guardian
+# email is required while it is on.
 CFG_GUARDIAN_MINIMUM = "guardians.min_per_student"
 CFG_GUARDIAN_EMAIL_REQUIRED = "guardians.email_required"
 CFG_GUARDIAN_MATCHING = "guardians.matching"
 CFG_GUARDIAN_EXTRA_RELATIONSHIPS = "guardians.relationships.extra"
+CFG_GUARDIAN_PARENT_APP_AUTO = "guardians.parent_app.auto_access"
 
 #: How many guardians a school may ask for on every child.
 GUARDIAN_MINIMUM_FLOOR = 1

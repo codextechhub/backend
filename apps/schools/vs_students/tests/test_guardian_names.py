@@ -77,7 +77,7 @@ class GuardianNameTests(StudentsFixture):
     def test_enrolment_accepts_a_guardian_in_parts(self):
         body = self.enrolment_body(guardians=[{
             "first_name": "Amina", "last_name": "Yusuf", "phone": "08115550199",
-            "relationship": "MOTHER", "is_primary": True,
+            "email": "amina.yusuf@example.ng", "relationship": "MOTHER", "is_primary": True,
         }])
         response = self.post(self.admin, "student-list", body)
         self.assertEqual(response.status_code, 201, response.data)

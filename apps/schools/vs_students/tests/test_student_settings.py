@@ -452,6 +452,7 @@ class RequiredFieldsTests(_SettingsFixture):
             "date_of_birth": years_ago(9).isoformat(), "gender": "Female",
             "branch": "Lekki", "guardian_first_name": "Ngozi",
             "guardian_last_name": "Obi", "guardian_phone": "08035550101",
+            "guardian_email": "ngozi.obi@example.ng",
         }
         row = resolve_row(
             payload, tenant=self.tenant, session=self.year,
@@ -815,6 +816,7 @@ class BranchAdmissionPolicyTests(_SettingsFixture):
             "date_of_birth": years_ago(9).isoformat(), "gender": "Female",
             "student_number": "IKJ/0005", "guardian_first_name": "Ngozi",
             "guardian_last_name": "Obi", "guardian_phone": "08035550101",
+            "guardian_email": "ngozi.obi@example.ng",
         }
         at_ikeja = resolve_row(
             {**payload, "branch": "Ikeja"}, tenant=self.tenant, session=self.year,

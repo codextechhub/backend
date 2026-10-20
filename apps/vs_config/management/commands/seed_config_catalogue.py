@@ -241,6 +241,15 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "JSON", [], {},
     ),
     (
+        "guardians.parent_app.auto_access", "Parent App Automatic Access",
+        "Whether a guardian is invited to the parent app automatically, as "
+        "soon as a child of theirs is on the roll. While it is on, a new "
+        "guardian must be given an email address, because that is where the "
+        "invitation goes. A guardian whose access was taken away is never "
+        "invited again automatically.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "applicants.documents.required_to_confirm",
         "Documents Required To Confirm An Applicant",
         "The documents a child must have on their record before joining the roll: "

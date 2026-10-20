@@ -696,7 +696,7 @@ def _resolve_guardian(row, payload, *, guardian_rules):
                 "guardian_email", row.guardian_email,
             ))
 
-    if guardian_rules.email_required and not row.guardian_email:
+    if guardian_rules.needs_email and not row.guardian_email:
         row.issues.append(RowIssue(
             "required", EMAIL_REQUIRED_MESSAGE, "guardian_email",
         ))

@@ -529,7 +529,16 @@ class Command(BaseCommand):
         ]
 
     def _no_email_child(self, tenant, admin, c1):
-        """A child in C1 whose household gave no email address."""
+        """A child in C1 whose household gave no email address.
+
+        A school that gives parents the parent app automatically requires a
+        guardian email, so the guardian is added the way a role that cannot
+        give one adds them: with the email requirement waived.
+        """
+        from dataclasses import replace
+
+        from schools.vs_students.services.guardian_rules import read_guardian_rules
+
         first, last = NO_EMAIL_CHILD
         child = Student.all_objects.filter(
             tenant=tenant, first_name=first, last_name=last,
@@ -556,6 +565,7 @@ class Command(BaseCommand):
             }],
             school_class=c1.school_class, allow_over_capacity=True,
             confirm_duplicate=True,
+            guardian_rules=replace(read_guardian_rules(tenant), email_waived=True),
         )
         self._made(f"pupil {child.full_name} in {c1.name}, household with no email")
         return child

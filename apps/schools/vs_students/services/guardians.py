@@ -31,6 +31,7 @@ from ..constants import ON_ROLL, GuardianMatching
 from ..exceptions import GuardianRequired, PrimaryGuardianRequired
 from ..models import Guardian, StudentGuardian
 from .guardian_rules import read_guardian_rules
+from .parent_app_auto import invite_when_due
 
 #: The refusal for a new guardian with no email at a school that asks for one.
 EMAIL_REQUIRED_MESSAGE = "A guardian email is required at this school."
@@ -109,7 +110,7 @@ def upsert_guardian(tenant, *, phone, full_name="", first_name="", middle_name="
         # has not renamed the guardian it already holds.
         return existing, False
 
-    if rules.email_required and not (email or "").strip():
+    if rules.needs_email and not (email or "").strip():
         raise ValidationError({"email": [EMAIL_REQUIRED_MESSAGE]})
 
     return Guardian.objects.create(
@@ -128,7 +129,9 @@ def link(student, guardian, *, relationship, is_primary, actor, relationship_det
     """Join a guardian to a student. A pair can only be linked once.
 
     *relationship_detail* is the school's own relationship, stored beside
-    OTHER (``GuardianRules.resolve_relationship`` gives both).
+    OTHER (``GuardianRules.resolve_relationship`` gives both). Linking to a
+    child on the roll invites the guardian to the parent app where the school
+    says so (``parent_app_auto``).
     """
     if StudentGuardian.objects.filter(student=student, guardian=guardian).exists():
         raise ValidationError({
@@ -161,6 +164,8 @@ def link(student, guardian, *, relationship, is_primary, actor, relationship_det
             "relationship_label": row.relationship_label,
         },
     )
+    if student.status in ON_ROLL:
+        invite_when_due([guardian], tenant=student.tenant, actor=actor)
     return row
 
 
@@ -439,6 +444,8 @@ def update_guardian(guardian, *, actor, **fields):
 
     At a school that requires a guardian email, blanking one is refused. A
     guardian who never had one is not, because nothing is being blanked.
+    Giving one an email invites them to the parent app where the school says
+    so and they have none yet (``parent_app_auto``).
     """
     changed = {}
     for key in GUARDIAN_FIELDS:
@@ -455,7 +462,7 @@ def update_guardian(guardian, *, actor, **fields):
         return guardian, []
 
     if "email" in changed and not changed["email"]:
-        if read_guardian_rules(guardian.tenant).email_required:
+        if read_guardian_rules(guardian.tenant).needs_email:
             raise ValidationError({"email": [EMAIL_REQUIRED_MESSAGE]})
 
     email = changed.get("email")
@@ -478,6 +485,8 @@ def update_guardian(guardian, *, actor, **fields):
     if "email" in changed:
         guardian.user = resolve_user(guardian.tenant, changed["email"])
     guardian.save(update_fields=[*changed, "user", "updated_at"])
+    if changed.get("email"):
+        invite_when_due([guardian], tenant=guardian.tenant, actor=actor)
 
     emit_audit_event(
         module_key=AuditModuleKey.STUDENT,

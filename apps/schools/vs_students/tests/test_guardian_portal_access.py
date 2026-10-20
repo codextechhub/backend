@@ -494,7 +494,7 @@ class AltPhoneTests(GuardianPortalFixture):
     def link_body(self, **extra):
         return {
             "full_name": "Mr. Emeka Obi", "phone": "08077770000",
-            "relationship": "FATHER", **extra,
+            "email": "emeka.obi@example.ng", "relationship": "FATHER", **extra,
         }
 
     def test_a_caller_who_may_read_it_sees_it_on_every_guardian_payload(self):

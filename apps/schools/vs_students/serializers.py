@@ -404,7 +404,7 @@ class GuardianWriteSerializer(FieldAccessMixin, serializers.Serializer):
                 raise serializers.ValidationError({
                     "phone": "A guardian needs a phone number the school can reach.",
                 })
-            if rules.email_required and not (attrs.get("email") or "").strip():
+            if rules.needs_email and not (attrs.get("email") or "").strip():
                 held = match_existing(
                     _context_tenant(self), phone=attrs.get("phone", ""),
                     matching=rules.matching,
@@ -1350,10 +1350,12 @@ class GuardianRulesSerializer(serializers.Serializer):
     """The full set of a school's guardian rules, as the settings screen saves it.
 
     Every rule is sent every time, for the reason ``EnrolmentRulesSerializer``
-    gives. The added relationships are each trimmed and must be 1 to 30
-    characters, distinct ignoring case, and not a relationship every school
-    already has, because a second "Mother" would be two answers to one
-    question. Each refusal is keyed on its own field, as a sentence.
+    gives. The one exception is ``parent_app_auto_access``: left out, it stays
+    as stored, so a screen that does not know the rule cannot turn it off.
+    The added relationships are each trimmed and must be 1 to 30 characters,
+    distinct ignoring case, and not a relationship every school already has,
+    because a second "Mother" would be two answers to one question. Each
+    refusal is keyed on its own field, as a sentence.
     """
 
     min_per_student = serializers.IntegerField(
@@ -1394,6 +1396,13 @@ class GuardianRulesSerializer(serializers.Serializer):
             "not_a_list": "Give the school's own relationships as a list.",
             "required": "Give the school's own relationships, or an empty list.",
             "null": "Give the school's own relationships, or an empty list.",
+        },
+    )
+    parent_app_auto_access = serializers.BooleanField(
+        required=False,
+        error_messages={
+            "invalid": "Say whether guardians get the parent app automatically, true or false.",
+            "null": "Say whether guardians get the parent app automatically.",
         },
     )
     reason = serializers.CharField(

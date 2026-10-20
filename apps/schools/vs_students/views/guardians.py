@@ -564,8 +564,8 @@ class GuardianRulesView(StudentsViewMixin, APIView):
 
     The school's own guardian rules: how many guardians every child needs,
     whether a new guardian needs an email, how a guardian typed in is matched
-    to one the school holds, and the relationships it records beyond the
-    fixed eight. Reading needs ``school.students.view``, because the enrolment
+    to one the school holds, the relationships it records beyond the fixed
+    eight, and whether guardians are invited to the parent app automatically. Reading needs ``school.students.view``, because the enrolment
     form and the guardian drawer render from it; changing needs
     ``school.settings.update``, because these are the school's settings
     rather than a student record, and a caller whose reach is the whole
@@ -574,7 +574,8 @@ class GuardianRulesView(StudentsViewMixin, APIView):
     written.
 
     The school is ``request.tenant`` and nothing in the request names another.
-    PUT takes every rule every time, plus an optional ``reason`` for the audit
+    PUT takes every rule every time (``parent_app_auto_access`` may be left
+    out, and then stays as stored), plus an optional ``reason`` for the audit
     trail, and answers with the same body as GET. Refusals are 400s keyed on
     the field, in sentences.
 

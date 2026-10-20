@@ -129,6 +129,7 @@ class EnrolmentTests(StudentsFixture):
         body = self.enrolment_body()
         body["guardians"].append({
             "full_name": "Mr. Yusuf", "phone": "08115550178",
+            "email": "mr.yusuf@example.ng",
             "relationship": Relationship.FATHER, "is_primary": True,
         })
         response = self.post(self.admin, "student-list", body)
@@ -187,6 +188,7 @@ class EnrolmentTests(StudentsFixture):
             date_of_birth="2014-03-09",
             guardians=[{
                 "full_name": "Mrs. Chukwu", "phone": "08115550999",
+                "email": "mrs.chukwu@example.ng",
                 "relationship": Relationship.MOTHER, "is_primary": True,
             }],
         ))
@@ -308,6 +310,7 @@ class SingleBranchSchoolTests(StudentsFixture):
             "school_class": self.solo_class.pk,
             "guardians": [{
                 "full_name": "Alhaji Musa Bello", "phone": "08075550098",
+                "email": "musa.bello@example.ng",
                 "relationship": Relationship.FATHER, "is_primary": True,
             }],
         }

@@ -224,7 +224,7 @@ def resolve_row(payload: dict, *, tenant, guardian_rules=None, request=None):
     # A new guardian needs an email where the school requires one; a guardian
     # the school already holds is linked as they stand.
     if (
-        guardian_rules.email_required
+        guardian_rules.needs_email
         and not row.guardian_email
         and row.existing_guardian is None
     ):

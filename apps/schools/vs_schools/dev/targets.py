@@ -16,7 +16,9 @@ Two guards hold for every run:
 * ``quiet()`` keeps the run's side effects on the server: background tasks run
   in this process and email goes to Django's in-memory outbox. On a server
   whose worker sends email for real, an invitation to an invented address
-  would otherwise leave the building.
+  would otherwise leave the building. It also holds back the parent app
+  invitations a school sends its guardians automatically, because a seeder
+  gives each seeded guardian the access its scenario needs and no more.
 """
 from __future__ import annotations
 
@@ -88,8 +90,9 @@ def admin_email(target: Target) -> str:
 
 @contextmanager
 def quiet():
-    """Run background tasks here and keep every email in the in-memory outbox."""
+    """Run background tasks here, keep every email in the in-memory outbox, invite no parent automatically."""
     from apps.celery import app
+    from schools.vs_students.services.parent_app_auto import paused
 
     eager = app.conf.task_always_eager
     propagates = app.conf.task_eager_propagates
@@ -99,7 +102,7 @@ def quiet():
         with override_settings(
             EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
             CELERY_TASK_ALWAYS_EAGER=True,
-        ):
+        ), paused():
             yield
     finally:
         app.conf.task_always_eager = eager
