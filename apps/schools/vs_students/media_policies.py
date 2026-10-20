@@ -76,6 +76,9 @@ def _may_read_guardian_photo(request, guardian) -> bool:
 
     Written against ``wards_queryset``, the same call the page uses, so the
     photograph can never be readable by somebody the record is not.
+
+    The guardian themselves, signed in to the parent app as the account linked
+    to this record, reads their own photograph and no other guardian's.
     """
     from vs_rbac.permissions import has_permission
 
@@ -88,6 +91,12 @@ def _may_read_guardian_photo(request, guardian) -> bool:
         return False
     if guardian.tenant_id != getattr(tenant, "pk", None):
         return False
+    if (
+        guardian.user_id is not None
+        and getattr(user, "pk", None) == guardian.user_id
+        and getattr(user, "is_active", False)
+    ):
+        return True
     if not has_permission(user, PERM_VIEW, tenant=tenant):
         return False
     return wards_queryset(guardian, user, tenant).exists()

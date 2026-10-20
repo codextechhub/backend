@@ -8,6 +8,7 @@ shares the family record; nothing of his appears and nothing of his is touched.
 """
 from __future__ import annotations
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
 from core.test_utils import TenantAPIClient
@@ -18,7 +19,15 @@ from vs_audit.models import AuditEvent
 from .base import HUSBAND_ADDRESS, HUSBAND_EMAIL, HUSBAND_PHONE, ParentFixture
 
 PROFILE = "parent-portal-profile"
+PHOTO = "parent-portal-profile-photo"
 ME = "parent-portal-me"
+
+#: A one-pixel PNG, enough for the upload checks.
+PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01"
+    b"\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 class ProfileTests(ParentFixture):
@@ -189,3 +198,61 @@ class ProfileTests(ParentFixture):
         self.teacher.refresh_from_db()
         self.assertEqual((self.teacher.email, self.teacher.first_name, self.teacher.last_name), before)
         self.assertEqual(TenantAPIClient(self.teacher).get(reverse(ME)).status_code, 200)
+
+
+class ProfilePhotoTests(ParentFixture):
+    """Mrs. Nwosu sets and removes her own photograph from the parent app.
+
+    It is her guardian record's photograph, the one the school sees, so the
+    change is audited with her as the actor. She can load it; Mrs. Yusuf, a
+    parent of another family at the same school, cannot, and neither can a
+    member of staff with no guardian record set it.
+    """
+
+    def upload(self, user, content=PNG, name="me.png", kind="image/png"):
+        return TenantAPIClient(user).post(
+            reverse(PHOTO), {"file": SimpleUploadedFile(name, content, content_type=kind)},
+            format="multipart",
+        )
+
+    def test_the_parent_sets_her_own_photograph_and_it_is_audited(self):
+        response = self.upload(self.nwosu_user)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["data"]["photo_url"])
+        self.nwosu.refresh_from_db()
+        self.assertTrue(self.nwosu.photo)
+        event = AuditEvent.objects.filter(
+            entity_type="Guardian", entity_id=str(self.nwosu.pk),
+        ).latest("pk")
+        self.assertEqual(event.actor_user_id, self.nwosu_user.pk)
+        self.husband.refresh_from_db()
+        self.assertFalse(self.husband.photo)
+
+    def test_she_can_load_her_photograph_and_another_parent_cannot(self):
+        from core.media import signed_url
+
+        self.upload(self.nwosu_user)
+        self.nwosu.refresh_from_db()
+        mine = signed_url(self.nwosu.photo.name, user=self.nwosu_user)
+        self.assertEqual(TenantAPIClient(self.nwosu_user).get(mine).status_code, 200)
+        theirs = signed_url(self.nwosu.photo.name, user=self.yusuf_user)
+        self.assertEqual(TenantAPIClient(self.yusuf_user).get(theirs).status_code, 404)
+
+    def test_she_removes_her_photograph(self):
+        self.upload(self.nwosu_user)
+        response = TenantAPIClient(self.nwosu_user).delete(reverse(PHOTO))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["photo_url"], "")
+        self.nwosu.refresh_from_db()
+        self.assertFalse(self.nwosu.photo)
+
+    def test_a_file_that_is_not_a_picture_is_refused_on_its_field(self):
+        response = self.upload(self.nwosu_user, content=b"%PDF-1.4 nope", name="me.pdf", kind="application/pdf")
+        self.assertEqual(response.status_code, 400)
+        self.nwosu.refresh_from_db()
+        self.assertFalse(self.nwosu.photo)
+
+    def test_a_member_of_staff_with_no_guardian_record_cannot_set_one(self):
+        response = self.upload(self.admin)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["error"]["code"], "NOT_A_PARENT")

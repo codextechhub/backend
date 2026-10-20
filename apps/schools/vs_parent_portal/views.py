@@ -90,6 +90,51 @@ class ProfileView(PortalView):
         )
 
 
+class ProfilePhotoView(PortalView):
+    """POST, DELETE /v1/portal/parent/profile/photo/
+
+    Replaces or removes the parent's own photograph, the one the school sees on
+    their guardian record. POST is ``multipart/form-data`` with one image in
+    ``file``, checked as a staff upload of a guardian photograph is. Both answer
+    with the profile as it now stands, and both are audited with the parent as
+    the actor.
+
+    docstring-name: My photograph as a parent
+    """
+
+    def post(self, request):
+        from rest_framework.exceptions import ValidationError
+
+        from schools.vs_students.serializers import check_upload
+        from schools.vs_students.services.guardians import set_photo
+
+        from .profile import profile
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "Choose a photograph to upload."})
+        check_upload(upload, field="file", must_be_image=True, subject="A photograph")
+        guardian = set_photo(self.guardian, upload=upload, actor=request.user)
+        return success_response(
+            "Photograph updated.",
+            data=profile(guardian, self.children, user=request.user, request=request),
+            status=201,
+        )
+
+    def delete(self, request):
+        from schools.vs_students.services.guardians import clear_photo
+
+        from .profile import profile
+
+        guardian = self.guardian
+        if guardian.photo:
+            guardian = clear_photo(guardian, actor=request.user)
+        return success_response(
+            "Photograph removed.",
+            data=profile(guardian, self.children, user=request.user, request=request),
+        )
+
+
 class HomeView(PortalView):
     """GET /v1/portal/parent/home/
 

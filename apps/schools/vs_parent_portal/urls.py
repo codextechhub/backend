@@ -20,6 +20,7 @@ from .views import (
     NoticeReadView,
     PayInvoiceView,
     PaymentHistoryView,
+    ProfilePhotoView,
     ProfileView,
     ReceiptView,
     ReportCardView,
@@ -38,6 +39,10 @@ urlpatterns = [
     path("app/<slug:slug>/icons/<str:name>", ParentAppIconView.as_view(), name="parent-app-icon"),
     path("me/", MeView.as_view(), name="parent-portal-me"),
     path("profile/", ProfileView.as_view(), name="parent-portal-profile"),
+    path(
+        "profile/photo/", ProfilePhotoView.as_view(),
+        name="parent-portal-profile-photo",
+    ),
     path("home/", HomeView.as_view(), name="parent-portal-home"),
     path("children/<int:child_id>/", ChildRecordView.as_view(), name="parent-portal-child"),
     path(

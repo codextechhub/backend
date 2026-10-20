@@ -3,8 +3,10 @@
 **A parent holds no role, so Field Access switches do not apply.** The profile
 is a fixed, narrow shape written for the signed-in parent: their name, the
 address they sign in with and their children on the roll are the school's to
-manage and are shown read-only; their phone numbers and address are theirs to
-change.
+manage and are shown read-only; their phone numbers, address and photograph
+are theirs to change. The photograph is the guardian's own (``Guardian.photo``),
+the one the school sees on the guardian record, set and removed through the
+same Student Management services and audited with the parent as the actor.
 
 The guardian record belongs to Student Management and is written only through
 ``update_guardian``, which writes the fields that changed and audits them with
@@ -31,6 +33,7 @@ NOT_CHANGEABLE = "This cannot be changed here. Ask the school."
 
 def profile(guardian, children, *, user, request) -> dict:
     """The parent's profile as it now stands."""
+    from schools.vs_students.serializers import guardian_photo_url
     from schools.vs_students.services.scoping import branch_dimension_applies
 
     from .services import _child_summary, child_enrolments
@@ -38,6 +41,7 @@ def profile(guardian, children, *, user, request) -> dict:
     show_branch = branch_dimension_applies(guardian.tenant)
     placed = child_enrolments(children)
     return {
+        "photo_url": guardian_photo_url(guardian, request=request) or "",
         "managed_by_school": {
             "full_name": guardian.full_name,
             "sign_in_email": user.email or "",
