@@ -238,3 +238,28 @@ class StudentSearchProviderTests(TestCase):
         )
         self.assertEqual(len(self.directory(self.admin, "/v1/students/", "adaora")), 1)
         self.assertEqual(len(self.directory(self.admin, "/v1/guardians/", "adamu")), 1)
+
+    def test_student_searches_share_multiword_and_middle_name_matching(self):
+        self.lekki_pupil.middle_name = "Chisom"
+        self.lekki_pupil.save(update_fields=["middle_name"])
+        for query in ("adaora okafor", "okafor ada", "chisom", "ada chi"):
+            with self.subTest(query=query):
+                palette = TenantAPIClient(self.admin).get("/v1/students/search/", {"q": query})
+                self.assertEqual(palette.status_code, 200, palette.data)
+                self.assertEqual([row["id"] for row in palette.data["data"]], [self.lekki_pupil.id])
+                self.assertEqual(
+                    self.labels(self.people(self.admin, query, "student")),
+                    ["Adaora Chisom Okafor"],
+                )
+                self.assertEqual(
+                    [row["id"] for row in self.directory(self.admin, "/v1/students/", query)],
+                    [self.lekki_pupil.id],
+                )
+
+    def test_directory_search_finds_a_departed_student(self):
+        self.lekki_pupil.status = StudentStatus.GRADUATED
+        self.lekki_pupil.save(update_fields=["status"])
+        self.assertEqual(
+            [row["id"] for row in self.directory(self.admin, "/v1/students/", "adaora")],
+            [self.lekki_pupil.id],
+        )

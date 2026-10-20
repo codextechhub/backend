@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Prefetch
 from rest_framework import generics
 from rest_framework.views import APIView
 
@@ -97,10 +97,6 @@ STUDENT_SEARCH_FIELDS = {
     "student_number": "student_number",
 }
 
-#: The fields the command palette matches a query inside, of the same four.
-PALETTE_SEARCH_FIELDS = ("first_name", "last_name", "student_number")
-
-
 def readable_search_fields(request) -> tuple[str, ...]:
     """The :data:`STUDENT_SEARCH_FIELDS` lookups the caller may read.
 
@@ -138,10 +134,9 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
         status = (params.get("status") or "").strip().upper()
         if status and status != "ALL":
             qs = qs.filter(status=status)
-        elif not status:
-            # A withdrawn or graduated student is still a record and still
-            # findable by name; they are simply not what "the students at this
-            # school" means on the screen that says so.
+        elif not status and not (params.get("search") or "").strip():
+            # The default roll stays focused on current students. A search
+            # still finds an archived record unless Status narrows it.
             qs = qs.filter(status__in=DEFAULT_LIST_STATUSES)
 
         # Matched loosely and ranked, the same way every other directory in the
@@ -429,21 +424,16 @@ def search_student_hits(request, tenant, query, limit):
     rendered with the request in context, so the caller's Field Access applies
     to the admission number and the name parts behind ``full_name``, exactly
     as it does in the directory. The query is matched only inside the fields
-    of :data:`PALETTE_SEARCH_FIELDS` the caller may read, so a hidden last
-    name finds nobody, and with all three hidden nothing is found.
+    the caller may read, so a hidden last name finds nobody, and with every
+    searchable field hidden nothing is found.
 
     The caller's read permission is the caller's to check first.
     """
-    readable = set(readable_search_fields(request))
-    condition = Q()
-    for field in PALETTE_SEARCH_FIELDS:
-        if field in readable:
-            condition |= Q(**{f"{field}__icontains": query})
-    if not condition:
-        return []
-    rows = scope_students(
-        _list_queryset(tenant).filter(condition),
-        request.user, tenant,
+    rows = scope_students(_list_queryset(tenant), request.user, tenant)
+    rows = core_search(
+        rows, query,
+        fields=readable_search_fields(request),
+        then=("first_name", "last_name", "pk"),
     ).distinct()[:limit]
     return SearchHitSerializer(rows, many=True, context={"request": request}).data
 
