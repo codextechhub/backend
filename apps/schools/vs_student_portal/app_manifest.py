@@ -6,7 +6,10 @@ comes from the web app manifest, so the school's host passes each app's
 ``app/<slug>/manifest.webmanifest`` through to the API, which names the school
 and, where it has uploaded a crest, points at icons cut from it, by addresses
 relative to the manifest itself. An :class:`AppSpec` says which app: its
-address and the line describing it. A school with no crest keeps the app's own
+address, the word that names it beside the school ("Corona Secondary School
+Parent", "Corona Parent" under the icon) and the line describing it. The
+school's own name rides along as ``school_name``, which browsers ignore and
+the app reads to name the school on its screens. A school with no crest keeps the app's own
 XVS icons, which each app serves at ``<its address>icons/``, so a phone never
 shows the bare CodeX mark.
 
@@ -47,14 +50,27 @@ class AppSpec:
     """One of the school's apps: where it is served and how its manifest describes it."""
 
     path: str
+    label: str
     description: str
 
     def describe(self, school) -> str:
         return self.description.format(school=school.name)
 
+    def name(self, school) -> str:
+        """The installed app's full name: "Corona Secondary School Student"."""
+        return f"{' '.join(school.name.split())} {self.label}"
 
-STUDENT_APP = AppSpec("/student/", "Your classes, results, attendance and fees at {school}.")
-PARENT_APP = AppSpec("/parent/", "Your children's results, attendance, notices and fees at {school}.")
+    def home_screen_name(self, school) -> str:
+        """The label under the icon: "Corona Student" (see :func:`short_name`)."""
+        return f"{short_name(school.name)} {self.label}"
+
+
+STUDENT_APP = AppSpec(
+    "/student/", "Student", "Your classes, results, attendance and fees at {school}.",
+)
+PARENT_APP = AppSpec(
+    "/parent/", "Parent", "Your children's results, attendance, notices and fees at {school}.",
+)
 
 
 def school_for(slug):
@@ -80,7 +96,7 @@ def crest_file(school):
 
 
 def short_name(name: str) -> str:
-    """The name under the home-screen icon: the whole name if it fits, else its first word.
+    """The school's part of the label under the icon: whole if it fits, else its first word.
 
     "Bright Star" stays whole; "Meridian Crest Academy" becomes "Meridian".
     A word is never cut, so "Ogbomosholand College" is "Ogbomosholand" even
@@ -99,8 +115,9 @@ def manifest(school, *, icon_url, app: AppSpec = STUDENT_APP) -> dict:
     has_crest = crest_file(school) is not None
     return {
         "id": app.path,
-        "name": school.name,
-        "short_name": short_name(school.name),
+        "name": app.name(school),
+        "short_name": app.home_screen_name(school),
+        "school_name": " ".join(school.name.split()),
         "description": app.describe(school),
         "start_url": app.path,
         "scope": app.path,

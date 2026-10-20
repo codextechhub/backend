@@ -44,7 +44,10 @@ class ParentAppManifestTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/manifest+json")
         body = response.json()
-        self.assertEqual((body["name"], body["short_name"]), ("Corona Secondary School", "Corona"))
+        self.assertEqual(
+            (body["name"], body["short_name"], body["school_name"]),
+            ("Corona Secondary School Parent", "Corona Parent", "Corona Secondary School"),
+        )
         self.assertEqual(
             (body["id"], body["start_url"], body["scope"]), ("/parent/", "/parent/", "/parent/"),
         )

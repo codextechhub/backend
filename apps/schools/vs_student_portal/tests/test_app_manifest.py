@@ -70,7 +70,10 @@ class StudentAppManifestTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/manifest+json")
         body = response.json()
-        self.assertEqual((body["name"], body["short_name"]), ("Corona Secondary School", "Corona"))
+        self.assertEqual(
+            (body["name"], body["short_name"], body["school_name"]),
+            ("Corona Secondary School Student", "Corona Student", "Corona Secondary School"),
+        )
         self.assertEqual((body["start_url"], body["scope"]), ("/student/", "/student/"))
         icon = next(i for i in body["icons"] if i["purpose"] == "maskable")
         self.assertEqual(icon["src"], "icons/maskable-512.png")
@@ -92,7 +95,7 @@ class StudentAppManifestTests(TestCase):
 
     def test_a_school_without_a_crest_keeps_the_apps_own_icons(self):
         body = self.manifest("lagoon-view").json()
-        self.assertEqual(body["short_name"], "Lagoon")
+        self.assertEqual(body["short_name"], "Lagoon Student")
         self.assertTrue(all(i["src"].startswith("/student/icons/") for i in body["icons"]))
         response = self.client.get(reverse("student-app-icon", args=["lagoon-view", "icon-192.png"]))
         self.assertEqual(response.status_code, 404)
