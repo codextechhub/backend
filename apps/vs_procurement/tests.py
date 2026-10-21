@@ -12016,6 +12016,15 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
 
         ensure_tenant_approval_templates(cls.multi_tenant)
         ensure_tenant_approval_templates(cls.flat_tenant)
+        # A requisition first waits on the requester's line manager, and these
+        # schools draw no organogram. Routing to the approver groups is what is
+        # tested here; the line manager step is tested in tests_teacher_requisitions.
+        from django.utils import timezone
+        from vs_workflow.models import WorkflowStage
+
+        WorkflowStage.objects.filter(
+            template__tenant__in=(cls.multi_tenant, cls.flat_tenant), code="line_manager",
+        ).update(retired_at=timezone.now())
 
         cls.lekki_approver = cls.user_for(
             cls.multi_tenant, "lekki-approver@t.com", branch=cls.lekki, first_name="Lekki",
@@ -12123,8 +12132,17 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
             for stage in template.stages.all()
         ]
         self.assertTrue(stages)
-        self.assertEqual({stage.approver_scope for stage in stages}, {"BRANCH"})
-        # Round 1's guarantee must survive: spend still never approves itself.
+        # Every approver group step routes by the document's branch. The line
+        # manager step climbs the whole school's organogram.
+        self.assertEqual(
+            {stage.approver_scope for stage in stages if stage.approver_source == "WORKFLOW_GROUP"},
+            {"BRANCH"},
+        )
+        self.assertEqual(
+            {stage.approver_scope for stage in stages if stage.approver_source == "ORGANOGRAM"},
+            {"SCHOOL"},
+        )
+        # Spend still never approves itself.
         self.assertEqual({stage.skip_if_no_approvers for stage in stages}, {False})
 
     def test_the_migration_reroutes_already_published_stages(self):

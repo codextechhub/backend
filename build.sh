@@ -36,6 +36,10 @@ python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds (all idempotent - safe every deploy)
 python manage.py seed_all_permissions
+# Each school's own procurement approval routes, as books provisioning publishes
+# them for a new school: a school created before a route changed gains it here,
+# and a route somebody has configured is left alone.
+python manage.py provision_procurement_routes
 # Import templates and their columns. Upserts a template by `code` and a column
 # by (template, column_name), and deletes a column the definition has dropped,
 # so a template that gains a column gains it here rather than only where somebody

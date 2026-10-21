@@ -136,6 +136,68 @@ def _default_stages_payload(
     ]
 
 
+#: The document type whose route starts with a step wherever the tenant keeps an
+#: organogram, whether or not the tenant asked for the default ladder.
+LINE_MANAGER_FIRST = "procurement.requisition"
+
+
+def line_manager_stage() -> dict:
+    """The first step of a requisition: the requester's line manager.
+
+    Every teacher may raise a requisition, so the person who first decides it is
+    the one who knows the class or department it is for: the requester's direct
+    manager on the school's own organogram. When Mrs Adeyemi in Biology asks for
+    ten microscopes, the Head of Sciences she reports to decides first. Nothing
+    has to be configured for it: the chart the school already keeps names them.
+
+    ``skip_if_no_approvers`` is False, as on every spend step. A requester with
+    no manager on the chart (a principal, or anybody at a school that has not
+    drawn one) parks on this step until an administrator chooses who decides,
+    rather than approving their own request. The requester is never their own
+    approver: the organogram climb leaves them out.
+
+    ``approver_scope`` is SCHOOL because a reporting line belongs to the whole
+    school's chart, and a line manager posted at another branch still manages.
+    """
+    return {
+        "code": "line_manager",
+        "label": "Line manager approval",
+        "kind": "APPROVAL",
+        "order": 5,
+        "approver_source": "ORGANOGRAM",
+        "organogram_target": "DIRECT_MANAGER",
+        "approver_scope": "SCHOOL",
+        "advance_rule": "ANY",
+        "on_rejection": "TERMINAL",
+        "skip_if_no_approvers": False,
+    }
+
+
+def _configured(template, *, with_default_stages: bool) -> bool:
+    """Whether ``template`` carries steps somebody chose, which are never overwritten.
+
+    A route with no live step is a placeholder. So, when the default ladder is
+    being asked for, is a requisition route holding only the line manager step
+    provisioning gave it: the school asking for the ladder gets it after that
+    step, rather than being told it already has rules.
+    """
+    live = set(template.stages.filter(retired_at__isnull=True).values_list("code", flat=True))
+    if with_default_stages and live == {line_manager_stage()["code"]}:
+        return False
+    return bool(live)
+
+
+def _routes_through_line_manager(tenant, document_type: str) -> bool:
+    """Whether this tenant's route for ``document_type`` starts at the line manager.
+
+    Only a requisition, and only where the tenant's kind keeps an organogram to
+    climb: a step that could never resolve anybody would park every request.
+    """
+    from vs_workflow.services.positions import tenant_organogram
+
+    return document_type == LINE_MANAGER_FIRST and tenant_organogram(tenant) is not None
+
+
 def ensure_default_approval_templates(*, created_by=None) -> list:
     """Publish the **platform-wide** route for each approvable type, with no steps.
 
@@ -221,6 +283,13 @@ def ensure_tenant_approval_templates(
     branch-specific template stays available for a site whose *rules* genuinely differ,
     and still wins over this one.
 
+    A requisition is the exception to both: wherever the tenant keeps an organogram,
+    its route starts with the requester's line manager (:func:`line_manager_stage`),
+    with the default ladder or without it. Every teacher raises requisitions, and the
+    chart already says who decides them. An existing requisition route holding no live
+    step is filled with it for the same reason an empty route is filled with the
+    default ladder below.
+
     ``with_default_stages`` chooses between the two things a tenant-scoped row is for:
 
     * **True** publishes the two-stage ladder and the approver groups its stages name.
@@ -283,37 +352,45 @@ def ensure_tenant_approval_templates(
     # already had rules while no document could ever route through them. Retired
     # steps are history rather than configuration, so a route holding only those is
     # empty for this purpose exactly as the engine treats it as empty for routing.
-    if with_default_stages:
-        existing = {
-            document_type: template
-            for document_type, template in existing.items()
-            if template.stages.filter(retired_at__isnull=True).exists()
-        }
+    staffed = {
+        document_type
+        for document_type, template in existing.items()
+        if _configured(template, with_default_stages=with_default_stages)
+    }
 
     results = []
     for model in _doc_models():
         document_type = model.workflow_document_type
         label, name = _TEMPLATE_META[document_type]
-        if document_type in existing:
+        line_manager = _routes_through_line_manager(tenant, document_type)
+        wants_steps = with_default_stages or line_manager
+        if document_type in existing and (document_type in staffed or not wants_steps):
             results.append((existing[document_type], False))
             continue
+        stages = [line_manager_stage()] if line_manager else []
+        if with_default_stages:
+            stages += _default_stages_payload(
+                model.workflow_amount_field, threshold=threshold,
+                manager_group_code=manager_group_code,
+                senior_group_code=senior_group_code,
+            )
+            description = f"Threshold-gated approval ladder for a {label}."
+        elif line_manager:
+            description = (
+                f"The requester's line manager approves a {label} first. Any "
+                "further steps are the tenant's own to add."
+            )
+        else:
+            description = (
+                f"Approval route for a {label}, held by this tenant so its "
+                "spend is never governed by the shared platform rules. The "
+                "steps are the tenant's own to add."
+            )
         results.append((
             publish_template(
                 tenant=tenant, branch=None, document_type=document_type,
-                code=WF_DEFAULT_TEMPLATE_CODE, name=name,
-                description=(
-                    f"Threshold-gated approval ladder for a {label}."
-                    if with_default_stages else
-                    f"Approval route for a {label}, held by this tenant so its "
-                    "spend is never governed by the shared platform rules. The "
-                    "steps are the tenant's own to add."
-                ),
-                created_by=created_by,
-                stages_payload=_default_stages_payload(
-                    model.workflow_amount_field, threshold=threshold,
-                    manager_group_code=manager_group_code,
-                    senior_group_code=senior_group_code,
-                ) if with_default_stages else [],
+                code=WF_DEFAULT_TEMPLATE_CODE, name=name, description=description,
+                created_by=created_by, stages_payload=stages,
             ),
             True,
         ))

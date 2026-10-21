@@ -88,18 +88,22 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
             document_type=document_type,
         )
 
-    def test_every_approvable_type_gets_a_route_of_its_own_with_no_steps(self):
+    def test_every_approvable_type_gets_a_route_of_its_own(self):
         """The route exists so the school never resolves to the shared platform row.
 
-        Empty, because nobody has said who approves anything yet.
+        Every route but the requisition's is empty, because nobody has said who
+        approves spend yet. A requisition starts with the requester's line manager,
+        whom the school's own organogram already names.
         """
         school, _entity = self._provisioned("larch-confirm", "LRCCF")
 
         for document_type in PROCUREMENT_APPROVAL_TYPES:
             with self.subTest(document_type=document_type):
                 template = self._tenant_template(school.tenant, document_type)
-                # Nothing live and nothing retired: no step was ever published here.
-                self.assertEqual(template.stages.count(), 0)
+                expected = {"line_manager"} if document_type == WF_DOCTYPE_REQUISITION else set()
+                self.assertEqual(_live_stage_codes(template), expected)
+                # Nothing retired: no other step was ever published here.
+                self.assertFalse(template.stages.filter(retired_at__isnull=False).exists())
 
     def test_no_approver_group_is_created(self):
         """A group exists to be named by a step, and there are no steps.
@@ -131,7 +135,7 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
         # The school asks for the default ladder, deliberately.
         ensure_tenant_approval_templates(school.tenant)
         template = self._tenant_template(school.tenant)
-        self.assertEqual(_live_stage_codes(template), {"manager", "senior"})
+        self.assertEqual(_live_stage_codes(template), {"line_manager", "manager", "senior"})
 
         second = LedgerEntity.objects.create(
             name="Ash Annex", code="ASHCF2", kind=LedgerEntity.Kind.TENANT,
@@ -140,7 +144,7 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
         provision_entity(second)
 
         template.refresh_from_db()
-        self.assertEqual(_live_stage_codes(template), {"manager", "senior"})
+        self.assertEqual(_live_stage_codes(template), {"line_manager", "manager", "senior"})
         self.assertFalse(template.stages.filter(retired_at__isnull=False).exists())
 
     def test_the_seeding_command_still_publishes_the_full_ladder(self):
@@ -158,7 +162,7 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
 
         self.assertEqual(
             _live_stage_codes(self._tenant_template(school.tenant)),
-            {"manager", "senior"},
+            {"line_manager", "manager", "senior"},
         )
         self.assertTrue(WorkflowApproverGroup.all_objects.filter(
             tenant=school.tenant, code=WF_DEFAULT_MANAGER_GROUP).exists())

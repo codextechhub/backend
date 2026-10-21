@@ -22,7 +22,7 @@ from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
-from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.permissions import HasRBACPermission, is_vision_super_admin, user_has_rbac_permission
 from vs_config.clock import tenant_today
 
 from .. import approval_override, approval_parking, approvals
@@ -61,6 +61,36 @@ from .catalog import _resolve_catalog_item
 # --------------------------------------------------------------------------- #
 # Purchase requisitions                                                       #
 # --------------------------------------------------------------------------- #
+
+#: Either key opens the requisition screens: ``view`` reads every requisition in
+#: the caller's branches, ``create`` reads the ones the caller raised.
+REQUISITION_READ_KEYS = ["procurement.requisition.view", "procurement.requisition.create"]
+
+
+class _ReadsEveryRequisition:
+    """The question :func:`requisition_reach` puts to the permission gate."""
+
+    rbac_permission = "procurement.requisition.view"
+
+
+def requisition_reach(request, qs):
+    """The requisitions in ``qs`` the caller may read and act on.
+
+    A holder of ``procurement.requisition.view`` reaches every requisition in
+    their branches. Anybody else raising requisitions, which is every teacher,
+    reaches only their own: a teacher asking for lab glassware has no business
+    reading what the sports department asked for, what it costs or why. The
+    approver of a requisition reads it through the approvals inbox, which opens
+    to whoever the request waits on, so narrowing here never hides a request
+    from the person asked to decide it.
+
+    The view key is asked of the same gate that opened the endpoint, so the
+    two can never disagree about the caller's tenant, plan or grants.
+    """
+    if HasRBACPermission().has_permission(request, _ReadsEveryRequisition()):
+        return qs
+    return qs.filter(requested_by=request.user)
+
 
 def _comparable(line):
     """What a requisition line says, from a saved line or a sent line's resolved values.
@@ -289,14 +319,14 @@ class RequisitionListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
-        """Require create permission for POST and requisition view for GET."""
+        """Require create permission for POST; either read key for GET (see :func:`requisition_reach`)."""
         return "procurement.requisition.create" if self.request.method == "POST" \
-            else "procurement.requisition.view"
+            else REQUISITION_READ_KEYS
 
     def get(self, request):
         """List entity requisitions with requester, cost center, and lines preloaded."""
         entity = resolve_entity(request)
-        qs = PurchaseRequisition.objects.filter(entity=entity).select_related(
+        qs = requisition_reach(request, PurchaseRequisition.objects.filter(entity=entity)).select_related(
             "requested_by", "cost_center", "branch",
         ).prefetch_related("lines__expense_account")
         qs = _branch_scoped(request, entity, qs, request.query_params)
@@ -354,14 +384,14 @@ class RequisitionDetailView(_ProcBase):
     def rbac_permission(self):
         """Separate draft-intent edits from requisition visibility."""
         return "procurement.requisition.update" if self.request.method == "PATCH" \
-            else "procurement.requisition.view"
+            else REQUISITION_READ_KEYS
 
     def get(self, request, pk):
         """Return one entity requisition with a safe workflow-instance overlay."""
         entity = resolve_entity(request)
         req = _document_or_404(
             request,
-            PurchaseRequisition.objects.filter(entity=entity).select_related(
+            requisition_reach(request, PurchaseRequisition.objects.filter(entity=entity)).select_related(
                 "requested_by", "cost_center", "branch",
             ).prefetch_related("lines"),
             pk, "No such requisition in this entity.",
@@ -381,7 +411,8 @@ class RequisitionDetailView(_ProcBase):
         """
         entity = resolve_entity(request)
         req = _document_or_404(
-            request, PurchaseRequisition.objects.select_for_update().filter(entity=entity),
+            request,
+            requisition_reach(request, PurchaseRequisition.objects.select_for_update().filter(entity=entity)),
             pk, "No such requisition in this entity.",
         )
         _correcting_returned(
@@ -410,9 +441,10 @@ class RequisitionSummaryView(_ProcBase):
     caller is not allowed to see, nor totals that fail to reconcile with the
     rows underneath them. Each status tile counts what its tab lists
     (:func:`requisition_status_rules`): a requisition sent back is in no tile
-    but ``sent_back``.
+    but ``sent_back``. A caller who reads only their own requisitions counts
+    only their own (:func:`requisition_reach`).
     """
-    rbac_permission = "procurement.requisition.view"
+    rbac_permission = REQUISITION_READ_KEYS
 
     def get(self, request):
         """Return same-period KPI comparisons in integer kobo for the visible rows."""
@@ -424,7 +456,8 @@ class RequisitionSummaryView(_ProcBase):
         # Compare the same number of elapsed calendar days so a partial month is not measured against a full month.
         prior_end = min(prior_month_end, prior_start + datetime.timedelta(days=as_of.day - 1))
         qs = _branch_scoped(
-            request, entity, PurchaseRequisition.objects.filter(entity=entity),
+            request, entity,
+            requisition_reach(request, PurchaseRequisition.objects.filter(entity=entity)),
             request.query_params,
         ).filter(period_q(request, entity, PurchaseRequisition))
 
@@ -484,8 +517,13 @@ class RequisitionSummaryView(_ProcBase):
 
 
 class RequisitionBudgetAvailabilityView(_ProcBase):
-    """Return the approved monthly budget and open-PO commitment for a cost centre."""
-    rbac_permission = "procurement.requisition.view"
+    """Return the approved monthly budget and open-PO commitment for a cost centre.
+
+    Open to whoever may raise a requisition as well as whoever reads them all,
+    because it is the budget panel on the requisition form: a teacher asking
+    for equipment sees what the cost centre has left before they ask.
+    """
+    rbac_permission = REQUISITION_READ_KEYS
 
     def get(self, request):
         """Compare one entity cost centre's annual approved plan with open commitments."""
@@ -566,7 +604,7 @@ class RequisitionSubmitView(_ProcBase):
         """Submit entity-scoped intent; workflow owns threshold and approver routing."""
         entity = resolve_entity(request)
         req = _document_or_404(
-            request, PurchaseRequisition.objects.filter(entity=entity),
+            request, requisition_reach(request, PurchaseRequisition.objects.filter(entity=entity)),
             pk, "No such requisition in this entity.",
         )
         instance = approvals.submit_for_approval(

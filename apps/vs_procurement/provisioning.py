@@ -17,13 +17,18 @@ from __future__ import annotations
 
 
 def provision_approval_ladders(entity):
-    """Publish this tenant's own approval routes, carrying no steps. Idempotent.
+    """Publish this tenant's own approval routes. Idempotent.
 
-    One route per approvable document type, scoped to the tenant and published empty.
-    Empty is the point: who approves a school's spend is the school's own answer, read
-    from the organogram it builds, and a ladder invented at creation would be a guess
-    at the people and the amounts. Nothing is invented here, so no approver group is
-    created either: a group exists to be named by a step, and there are no steps.
+    One route per approvable document type, scoped to the tenant. All but one are
+    published empty. Empty is the point: who approves a school's spend is the
+    school's own answer, and a ladder invented at creation would be a guess at the
+    people and the amounts. Nothing is invented here, so no approver group is
+    created either: a group exists to be named by a step.
+
+    The requisition is the exception. Every teacher raises them, so a school's
+    requisition route starts with the requester's line manager on its own
+    organogram (:func:`vs_procurement.approvals.line_manager_stage`), which names
+    nobody the school did not already put on its chart.
 
     The empty row is not the same as no row. It stands in front of the shared platform
     route, so a change to that shared row can never begin governing this tenant's

@@ -64,7 +64,10 @@ PROCUREMENT_RESOURCES = [
     # AP and GRIR aging and vendor performance are the analytical tail. One key
     # served both and could only ever be banded at one of them.
     ("analytics",      "procurement analytics", [("view", "NORMAL")]),
-    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
+    # ``submit`` asks for approval and approves nothing, so it is NORMAL: every
+    # teacher holds it, and a restricted key on the Teacher role would send each
+    # teacher's appointment through a role-grant approval.
+    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "NORMAL")]),
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     # A vendor's contact and banking details are not a key of their own: who
@@ -99,6 +102,25 @@ PROCUREMENT_RESOURCES = [
 FIELD_ONLY_RESOURCES = [
     ("vendor_contact", "vendor contacts"),
 ]
+
+#: Procurement keys the school library roles hold by default, granted once to
+#: every school's existing copies when a role first gains one
+#: (:func:`vs_rbac.library_growth.attach_defaults`).
+#:
+#: Every teacher may ask for what their class or department needs. They raise,
+#: correct and submit their own requisitions and read the catalogue to pick an
+#: item. They do not hold ``procurement.requisition.view``, so they read their
+#: own requisitions and no one else's
+#: (:func:`vs_procurement.views.requisitions.requisition_reach`). Procurement
+#: Admin owns the whole module by prefix and needs no entry here.
+SCHOOL_ROLE_DEFAULTS = {
+    "teacher": [
+        "procurement.requisition.create",
+        "procurement.requisition.update",
+        "procurement.requisition.submit",
+        "procurement.catalog_item.view",
+    ],
+}
 
 
 class Command(BaseCommand):
@@ -250,6 +272,27 @@ class Command(BaseCommand):
                     f"  {role_id}: granted {counted(granted, 'new key')}." if granted
                     else f"  {role_id}: all keys already assigned."
                 )
+
+        # ── Defaults for the school library roles ─────────────────────────────
+        from vs_rbac.library_growth import attach_defaults
+        from vs_rbac.models import PrebuiltRoleTemplate
+
+        for prebuilt_key, keys in SCHOOL_ROLE_DEFAULTS.items():
+            prebuilt = PrebuiltRoleTemplate.objects.filter(key=prebuilt_key).first()
+            if prebuilt is None:
+                self.stdout.write(self.style.WARNING(
+                    f"  ⚠  Prebuilt role '{prebuilt_key}' not found - run "
+                    "seed_prebuilt_role_templates first; its defaults were skipped."
+                ))
+                continue
+            attached, grown = attach_defaults(
+                prebuilt, keys, branch_copies=True, tenant_kind="SCHOOL",
+            )
+            self.stdout.write(
+                f"  {prebuilt_key}: attached {len(attached)} new default(s), "
+                f"{grown} grant(s) added to schools' copies."
+                if attached else f"  {prebuilt_key}: defaults already attached."
+            )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {counted(created_perms, 'new permission')}, {len(all_perms)} total "
