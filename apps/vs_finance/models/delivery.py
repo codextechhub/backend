@@ -74,6 +74,11 @@ class FinanceDocumentDelivery(TimeStampedModel):
     # A covering note from the sender, shown in the email above the document.
     note = models.TextField(blank=True, default="")
     recipients = models.JSONField(default=list)
+    # ``{email: {name, field, label}}`` for each recipient the product hosting the
+    # books named (vs_finance.document_contacts): who they are greeted as, the
+    # Field Access key guarding their address, and what a reader who may not
+    # read it is shown. The billing email is not in it.
+    recipient_contacts = models.JSONField(default=dict, blank=True)
     # Monitoring copies are blind: these addresses are ours, not the customer's.
     bcc = models.JSONField(default=list)
     notification_ids = models.JSONField(default=list)

@@ -898,9 +898,10 @@ def _build_default_templates() -> dict:
         },
 
         # ── billing.guardian_invoice_issued ─────────────────────────────────
-        # To the primary guardian when a fee is raised for their child. The
-        # email carries the invoice PDF; the push opens the child's Fees and,
-        # like every push, names no figure, because it shows on a locked screen.
+        # To the primary guardian, in the parent app, when a fee is raised for
+        # their child. Their email is the invoice email itself. The push opens
+        # the child's Fees and, like every push, names no figure, because it
+        # shows on a locked screen.
         ("billing.guardian_invoice_issued", C.IN_APP): {
             "subject": "New bill for {{ student_first_name }}: ₦{{ invoice_amount }}",
             "body": (
@@ -911,24 +912,6 @@ def _build_default_templates() -> dict:
         ("billing.guardian_invoice_issued", C.PUSH): {
             "subject": "New bill for {{ student_first_name }}",
             "body": "Open Fees in the parent app to see it.",
-        },
-        ("billing.guardian_invoice_issued", C.EMAIL): {
-            "subject": "{{ student_first_name }}'s invoice {{ invoice_number }} from {{ tenant_name }}",
-            "body": (
-                "Dear Parent or Guardian,\n\n"
-                "{{ tenant_name }} has issued an invoice for {{ student_first_name }}. "
-                "A PDF copy is attached.\n\n"
-                "Invoice number: {{ invoice_number }}\n"
-                "Amount: ₦{{ invoice_amount }}\n"
-                "Due date: {{ due_date }}\n\n"
-                "{% if has_parent_app %}You can pay it in the parent app, under Fees."
-                "{% else %}Please pay it as the school has told you, or ask the school "
-                "about the parent app.{% endif %}\n\n"
-                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
-                "via {{ email_brand }}"
-            ),
-            "cta_label": "Open Fees",
-            "cta_url": "{{ parent_app_link }}",
         },
 
         # ── billing.payment_received (push) ─────────────────────────────────
@@ -1171,15 +1154,18 @@ def _build_default_templates() -> dict:
             "subject": "Invoice {{ invoice_number }} for {{ customer_name }}",
             "body": "₦{{ invoice_amount }} due by {{ due_date }}.",
         },
-        # Neutral wording on purpose. The same event now carries every invoice the
-        # finance console sends - a school billing a guardian, and CodeX billing a
-        # school - so it addresses the customer rather than assuming a parent. It
-        # also names the attached PDF, which vs_finance.document_email attaches.
+        # Neutral wording on purpose. The same event carries every invoice the
+        # finance console sends - a school billing a family, and CodeX billing a
+        # school - so it greets whoever it reaches by their own name: the customer,
+        # or a contact the product names, such as a pupil's primary guardian, who
+        # is told whose invoice it is. It names the attached PDF, which
+        # vs_finance.document_email attaches.
         ("billing.invoice_issued", C.EMAIL): {
             "subject": "Invoice {{ invoice_number }} from {{ issuer_name }}",
             "body": (
-                "Hello {{ customer_name }},\n\n"
-                "An invoice has been issued to your account. A PDF copy is attached.\n\n"
+                "Hello {% if recipient_name %}{{ recipient_name }}{% else %}{{ customer_name }}{% endif %},\n\n"
+                "An invoice has been issued {% if recipient_name and not recipient_is_customer %}for "
+                "{{ customer_name }}{% else %}to your account{% endif %}. A PDF copy is attached.\n\n"
                 "Invoice number: {{ invoice_number }}\n"
                 "Amount: ₦{{ invoice_amount }}\n"
                 "Due date: {{ due_date }}\n\n"
@@ -1197,8 +1183,9 @@ def _build_default_templates() -> dict:
         ("billing.statement_issued", C.EMAIL): {
             "subject": "Statement of account from {{ issuer_name }}",
             "body": (
-                "Hello {{ customer_name }},\n\n"
-                "Your statement of account is attached as a PDF.\n\n"
+                "Hello {% if recipient_name %}{{ recipient_name }}{% else %}{{ customer_name }}{% endif %},\n\n"
+                "{% if recipient_name and not recipient_is_customer %}The statement of account for "
+                "{{ customer_name }}{% else %}Your statement of account{% endif %} is attached as a PDF.\n\n"
                 "Period: {{ period_start }} to {{ period_end }}\n"
                 "Opening balance: ₦{{ opening_balance }}\n"
                 "Charges in period: ₦{{ total_charges }}\n"

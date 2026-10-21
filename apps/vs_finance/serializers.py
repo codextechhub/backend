@@ -3065,7 +3065,9 @@ class FinanceDocumentDeliverySerializer(FieldAccessMixin, serializers.ModelSeria
     ``recipients`` is the customer's billing email as it stood when the send was made,
     so it is read under the billing email switch of ``finance.customer``: a caller who
     may not read that field sees that a send happened, to how many addresses, and not
-    which. ``bcc`` is the finance monitoring copy and belongs to the school, not to the
+    which. An address the product hosting the books added, such as a pupil's primary
+    guardian, is further read under its own key, and shown as who the contact is to a
+    caller who may not read it. ``bcc`` is the finance monitoring copy and belongs to the school, not to the
     customer.
     """
 
@@ -3113,12 +3115,25 @@ class FinanceDocumentDeliverySerializer(FieldAccessMixin, serializers.ModelSeria
 
         return obj.status == FinanceDeliveryStatus.FAILED
 
+    def to_representation(self, instance):
+        """A guardian's address the caller may not read is shown as who they are."""
+        from .field_guards import shown_recipients
+
+        data = super().to_representation(instance)
+        if "recipients" in data:
+            data["recipients"] = shown_recipients(
+                self.context.get("request"), data["recipients"], instance.recipient_contacts,
+            )
+        return data
+
 
 class DocumentEmailPreviewSerializer(FieldAccessMixin, serializers.Serializer):
     """What a send of a customer document would do, under ``finance.customer``.
 
     ``recipients`` is the customer's billing email, so a caller who may not read it
-    is told whether a send is possible and not where it would go.
+    is told whether a send is possible and not where it would go. A guardian or
+    other contact the product named is shown as who they are to a caller who may
+    not read their address (:func:`vs_finance.field_guards.shown_recipients`).
     """
 
     field_resource = "finance.customer"
@@ -3129,6 +3144,17 @@ class DocumentEmailPreviewSerializer(FieldAccessMixin, serializers.Serializer):
     can_send = serializers.ReadOnlyField()
     blocked_reason = serializers.ReadOnlyField()
     deliveries = FinanceDocumentDeliverySerializer(many=True, read_only=True)
+
+    def to_representation(self, instance):
+        """A guardian's address the caller may not read is shown as who they are."""
+        from .field_guards import shown_recipients
+
+        data = super().to_representation(instance)
+        if "recipients" in data:
+            data["recipients"] = shown_recipients(
+                self.context.get("request"), data["recipients"], instance.get("recipient_contacts"),
+            )
+        return data
 
 
 class DoubtfulDebtProvisionLineSerializer(FieldAccessMixin, serializers.ModelSerializer):

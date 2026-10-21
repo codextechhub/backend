@@ -38,6 +38,43 @@ def queue_payment_received_notification(payment_id, *, actor_user_id=None):
         return False
 
 
+def queue_invoice_issued_notification(invoice_id, *, actor_user_id=None):
+    """Enqueue the invoice email without delaying or breaking invoice posting."""
+    try:
+        send_invoice_issued_notification.delay(
+            invoice_id, actor_user_id=actor_user_id,
+            _job_owner_id=str(actor_user_id) if actor_user_id else None,
+            _job_label="Invoice email",
+            _job_kind="email",
+        )
+        return True
+    except Exception:  # Broker availability must never change a posted invoice.
+        logger.exception("Could not enqueue the invoice email for invoice %s", invoice_id)
+        return False
+
+
+@shared_task(name="vs_finance.send_invoice_issued_notification")
+def send_invoice_issued_notification(invoice_id, *, actor_user_id=None):
+    """Email a posted invoice to its customer and named contacts; vs_notifications delivers it."""
+    from django.contrib.auth import get_user_model
+
+    from .models import Invoice
+    from .notifications import notify_invoice_issued
+
+    invoice = Invoice.objects.select_related(
+        "customer", "entity__tenant__school_profile",
+    ).filter(pk=invoice_id).first()
+    if invoice is None:
+        logger.warning("Invoice email skipped; invoice %s no longer exists", invoice_id)
+        return {"queued": False, "reason": "invoice_not_found"}
+
+    actor_user = None
+    if actor_user_id:
+        actor_user = get_user_model().objects.filter(pk=actor_user_id).first()
+    notification_ids = notify_invoice_issued(invoice, actor_user=actor_user) or []
+    return {"queued": bool(notification_ids), "notification_ids": notification_ids}
+
+
 @shared_task(name="vs_finance.send_payment_received_notification")
 def send_payment_received_notification(payment_id, *, actor_user_id=None):
     """Create the receipt notification; vs_notifications owns delivery and status."""

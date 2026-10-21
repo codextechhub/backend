@@ -690,14 +690,15 @@ EVENT_TYPE_REGISTRY = [
         "label": "New bill for your child",
         "description": (
             "Fires when the school raises a fee for a pupil, by billing a class or "
-            "one pupil, and goes to the pupil's primary guardian: in the parent app "
-            "and as a push that opens the child's Fees when they have a parent app "
-            "account, and by email with the invoice as a PDF either way. A second "
-            "parent sees the bill in their own parent app without being sent it. "
-            "An opening balance carried into the books is not sent."
+            "one pupil, and goes to the pupil's primary guardian when they have a "
+            "parent app account: in the app, and as a push that opens the child's "
+            "Fees. Their email copy, with the PDF, is the invoice email itself, "
+            "which reaches the primary guardian as well as any billing address. A "
+            "second parent sees the bill in their own parent app without being "
+            "sent it. An opening balance carried into the books is not sent."
         ),
         "source_module": "vs_billing",
-        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.PUSH],
         "default_enabled": True,
     },
     {

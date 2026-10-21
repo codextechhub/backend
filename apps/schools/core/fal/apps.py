@@ -26,8 +26,13 @@ class FalConfig(AppConfig):
 
         from vs_payments.signals import virtual_account_replaced
 
+        from vs_finance.document_contacts import register_contact_resolver
+
         from .guardian_invoices import on_invoice_posted as tell_primary_guardian
+        from .guardian_invoices import primary_guardian_contact
         from .transfer_accounts import on_invoice_posted, on_virtual_account_replaced
+
+        register_contact_resolver(primary_guardian_contact)
 
         invoice_posted.connect(on_invoice_posted, dispatch_uid="fal.transfer_account_on_first_bill")
         invoice_posted.connect(tell_primary_guardian, dispatch_uid="fal.guardian_invoice_on_post")

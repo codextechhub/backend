@@ -49,6 +49,26 @@ def readable(request, resource, name) -> bool:
     return can_read(request, f"{resource}.{name}")
 
 
+def shown_recipients(request, recipients, details) -> list[str]:
+    """A send's addresses as *request*'s caller may see them.
+
+    *details* is ``{email: {field, label, ...}}`` for the recipients a product
+    named (:func:`vs_finance.document_email.contact_details`). An address its
+    Field Access key closes to the caller is shown as its label, so a role that
+    may read a customer's billing email but not a guardian's email learns who
+    was sent the document and not where.
+    """
+    details = details or {}
+    shown = []
+    for email in recipients or []:
+        contact = details.get(email)
+        if contact and contact.get("field") and not can_read(request, contact["field"]):
+            shown.append(contact.get("label") or "another contact")
+        else:
+            shown.append(email)
+    return shown
+
+
 def customer_balance_readable(request) -> bool:
     """Whether the caller may read a customer's balance, wherever a payload restates it."""
     return can_read(request, "finance.customer.balance")

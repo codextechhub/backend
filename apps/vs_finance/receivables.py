@@ -110,9 +110,16 @@ def post_invoice(invoice, *, actor_user=None):
             exc=exc, actor_user=actor_user, target=invoice,
         )
         raise
-    # Best-effort customer notification (never rolls back the post; skips openings).  # Notify after success only.
-    from .notifications import notify_invoice_issued
-    notify_invoice_issued(invoice, actor_user=actor_user)  # Send a receipt/notice if configured.
+    # The invoice email, queued once the posting commits, as a receipt's is: a
+    # class billed at once posts one invoice a pupil, and rendering each PDF must
+    # not hold the request open, nor survive a billing preview that rolls back.
+    from django.db import transaction
+    from .tasks import queue_invoice_issued_notification
+
+    actor_user_id = getattr(actor_user, "pk", None)
+    transaction.on_commit(
+        lambda: queue_invoice_issued_notification(invoice.pk, actor_user_id=actor_user_id),
+    )
     return result  # Return the posted invoice.
 
 

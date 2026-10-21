@@ -32,7 +32,7 @@ from .document_email import preview as build_preview
 from .document_email import retry as retry_delivery
 from .document_email import send_invoice, send_receipt, send_statement
 from .models import FinanceDocumentDelivery, Invoice, Payment
-from .field_guards import readable
+from .field_guards import readable, shown_recipients
 from .serializers import DocumentEmailPreviewSerializer, FinanceDocumentDeliverySerializer
 from .views import resolve_entity
 from .views_ops.base import _FinanceBase
@@ -57,9 +57,13 @@ def _date(raw, field):
 
 
 def _sent_to(request, delivery) -> str:
-    """Where a send went: the addresses it used, or "the customer's billing email" when the caller may not read them."""
+    """Where a send went: the addresses it used, or "the customer's billing email" when the caller may not read them.
+
+    An address the product named (a pupil's primary guardian) that the caller may
+    not read is said as who the contact is (:func:`shown_recipients`).
+    """
     if readable(request, "finance.customer", "billing_email"):
-        return ", ".join(delivery.recipients)
+        return ", ".join(shown_recipients(request, delivery.recipients, delivery.recipient_contacts))
     return "the customer's billing email"
 
 

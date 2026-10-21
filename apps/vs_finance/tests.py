@@ -9759,7 +9759,9 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         from vs_notifications.constants import ChannelChoices
 
         inv = self._make_invoice()
-        post_invoice(inv)
+        # The invoice email is queued once the posting commits.
+        with self.captureOnCommitCallbacks(execute=True):
+            post_invoice(inv)
         self.assertTrue(self._issued().filter(
             channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com").exists())
 
@@ -9908,7 +9910,8 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
             invoice=inv, revenue_account=Account.objects.get(entity=platform, code="4100"),
             quantity=1, unit_price=100000, tax_code=None, line_no=1,
         )
-        post_invoice(inv)  # must not raise
+        with self.captureOnCommitCallbacks(execute=True):
+            post_invoice(inv)  # must not raise
         inv.refresh_from_db()
         self.assertEqual(inv.status, DocumentStatus.POSTED)
         self.assertTrue(self._issued().filter(unregistered_email="pp@example.com").exists())
@@ -11987,7 +11990,8 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
         customer.billing_email = "payer@example.com"
         customer.save(update_fields=["billing_email"])
 
-        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"), \
+                self.captureOnCommitCallbacks(execute=True):
             invoice = self._posted_invoice(entity, customer)
 
         # History must start at the automatic copy, not at the first manual re-send,

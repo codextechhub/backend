@@ -79,15 +79,58 @@ def _dedupe(values) -> list[str]:
     return result
 
 
-def resolve_recipients(customer) -> list[str]:
-    """Where a customer's documents go. One billing email today, a list by contract.
+#: The documents that reach the contacts a product names as well as the billing
+#: email. Not a receipt: whoever pays in an app is already sent theirs as the
+#: payer (vs_payments.services._tell_the_payer), from the same template, so a
+#: guardian who paid would be emailed the same receipt twice.
+CONTACT_DOCUMENTS = frozenset({FinanceDeliveryDocument.INVOICE, FinanceDeliveryDocument.STATEMENT})
 
-    Returning a list rather than a string is not speculative generality: the
-    notification layer takes a list, procurement already resolves several vendor
-    contacts, and customer contacts are the obvious next step. Callers that assume a
-    single address would all have to change then.
+
+def resolve_contacts(customer, document_type=None) -> list[dict]:
+    """Everybody a customer's document goes to, each as ``{email, name, field, label}``.
+
+    The billing email first, greeted by the customer's name, then, for an invoice
+    or a statement (:data:`CONTACT_DOCUMENTS`), whoever the product hosting the
+    books names (:mod:`vs_finance.document_contacts`): for a pupil, the primary
+    guardian, greeted by their own name. ``field`` is the Field
+    Access key guarding a contact's address and ``label`` what a reader who may not
+    read it is shown; the billing email carries neither, because the billing email
+    switch of ``finance.customer`` governs it. One address named twice is sent once.
     """
-    return _dedupe([getattr(customer, "billing_email", "")])
+    from .document_contacts import host_contacts
+
+    named = host_contacts(customer) if document_type in CONTACT_DOCUMENTS else []
+    contacts = [{
+        "email": getattr(customer, "billing_email", ""), "name": customer.name,
+        "field": "", "label": "",
+    }] + [
+        {"email": c.email, "name": c.name, "field": c.field, "label": c.label}
+        for c in named
+    ]
+    result, seen = [], set()
+    for contact in contacts:
+        email = str(contact["email"] or "").strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            result.append({**contact, "email": email})
+    return result
+
+
+def resolve_recipients(customer, document_type=None) -> list[str]:
+    """Where a customer's document goes: the addresses of :func:`resolve_contacts`."""
+    return [contact["email"] for contact in resolve_contacts(customer, document_type)]
+
+
+def contact_details(contacts) -> dict:
+    """``{email: {name, field, label}}`` for the contacts a product named, kept on a delivery.
+
+    The billing email is left out: it is greeted by the customer's name and read
+    under the billing email switch, both known from the delivery itself.
+    """
+    return {
+        c["email"]: {"name": c["name"], "field": c["field"], "label": c["label"]}
+        for c in contacts if c["field"]
+    }
 
 
 def finance_bcc(recipients=None) -> list[str]:
@@ -130,9 +173,11 @@ def _subject(document_type, entity, document_number) -> str:
 
 def preview(*, customer, document_type, entity, document_number="") -> dict:
     """What a send would do, so nobody emails a customer without seeing the address."""
-    recipients = resolve_recipients(customer)
+    contacts = resolve_contacts(customer, document_type)
+    recipients = [contact["email"] for contact in contacts]
     return {
         "recipients": recipients,
+        "recipient_contacts": contact_details(contacts),
         "bcc": finance_bcc(recipients),
         "subject": _subject(document_type, entity, document_number),
         "can_send": bool(recipients),
@@ -365,28 +410,38 @@ def _queue(delivery_id: int, *, actor_user=None):
     delivery.save(update_fields=["pdf_file", "queued_at", "failure_reason", "updated_at"])
 
     school = getattr(delivery.entity.tenant, "school_profile", None)
-    notification_ids = send_notification(
-        event_key=EVENT_KEYS[delivery.document_type],
-        context=context,
-        recipients=[],
-        school=school,
-        branch=branch,
-        unregistered_recipients=[
-            UnregisteredRecipient(email=email, name=delivery.customer.name)
-            for email in delivery.recipients
-        ],
-        metadata={
-            "finance_delivery_id": delivery.pk,
-            "finance_document_type": delivery.document_type,
-            "document_number": delivery.document_number,
-            "bcc": delivery.bcc,
-            "attachments": [{
-                "name": filename,
-                "storage_name": delivery.pdf_file.name,
-                "content_type": "application/pdf",
-            }],
-        },
-    )
+    # One message per address, so each reader is greeted by their own name: a
+    # guardian is told of their child's invoice, not addressed as the child. The
+    # finance monitoring copy rides on the first message only.
+    details = delivery.recipient_contacts or {}
+    notification_ids = []
+    for index, email in enumerate(delivery.recipients):
+        contact = details.get(email)
+        notification_ids += send_notification(
+            event_key=EVENT_KEYS[delivery.document_type],
+            context={
+                **context,
+                "recipient_name": contact["name"] if contact else delivery.customer.name,
+                "recipient_is_customer": contact is None,
+            },
+            recipients=[],
+            school=school,
+            branch=branch,
+            unregistered_recipients=[
+                UnregisteredRecipient(email=email, name=contact["name"] if contact else delivery.customer.name),
+            ],
+            metadata={
+                "finance_delivery_id": delivery.pk,
+                "finance_document_type": delivery.document_type,
+                "document_number": delivery.document_number,
+                "bcc": delivery.bcc if index == 0 else [],
+                "attachments": [{
+                    "name": filename,
+                    "storage_name": delivery.pdf_file.name,
+                    "content_type": "application/pdf",
+                }],
+            },
+        ) or []
 
     delivery.notification_ids = notification_ids or []
     if not notification_ids:
@@ -414,7 +469,8 @@ def _queue(delivery_id: int, *, actor_user=None):
 
 def _create(*, entity, customer, document_type, document_id="", document_number="",
             period_start=None, period_end=None, source, actor_user, note="", parent=None):
-    recipients = resolve_recipients(customer)
+    contacts = resolve_contacts(customer, document_type)
+    recipients = [contact["email"] for contact in contacts]
     if not recipients:
         raise FinanceDocumentEmailError(
             "This customer has no billing email. Add one on the customer record first."
@@ -433,6 +489,7 @@ def _create(*, entity, customer, document_type, document_id="", document_number=
         parent=parent,
         note=_clean_note(note),
         recipients=recipients,
+        recipient_contacts=contact_details(contacts),
         bcc=finance_bcc(recipients),
     )
 

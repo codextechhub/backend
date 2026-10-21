@@ -43,12 +43,12 @@ def issue_transfer_account(self, customer_id: int):
 
 @shared_task(name="fal.send_guardian_invoice", acks_late=True)
 def send_guardian_invoice(invoice_id: int):
-    """Send a pupil's primary guardian their new bill, with its PDF.
+    """Tell a pupil's primary guardian of their new bill in the parent app.
 
     Queued by :func:`schools.core.fal.guardian_invoices.on_invoice_posted`.
     Never raises and is not retried: the bill stands either way, and a second
-    attempt could send the same bill twice.
+    attempt could tell them twice.
     """
-    from .guardian_invoices import send_to_primary_guardian
+    from .guardian_invoices import tell_primary_guardian
 
-    return send_to_primary_guardian(invoice_id)
+    return tell_primary_guardian(invoice_id)
