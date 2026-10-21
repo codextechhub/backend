@@ -69,6 +69,60 @@ def notify_invoice_issued(invoice, *, actor_user=None):
     return list(delivery.notification_ids) if delivery is not None else None
 
 
+def _note_direction(note, is_debit, *, whose=None) -> dict:
+    """The words that say which way a note moved an account, for one reader.
+
+    ``whose`` is None for the customer reading about their own account, and the
+    customer's name for somebody reading about it on their behalf ("This
+    additional charge increases Grace Nwankwo's balance").
+    """
+    if whose is None:
+        title = "A debit note has been added to your account" if is_debit \
+            else "A credit note has been applied to your account"
+        summary = (
+            "This additional charge increases your account balance. It is payable "
+            "alongside your other open billing documents."
+            if is_debit else
+            "This adjustment reduces the amount you owe. If it exceeds your open "
+            "charges, the remainder stays available as account credit."
+        )
+        action = (
+            f"Please include debit note {note.document_number} when reviewing or "
+            "paying your outstanding account balance."
+            if is_debit else
+            f"No payment is required for credit note {note.document_number}. "
+            "Use the updated account position shown above when making your next payment."
+        )
+    else:
+        title = f"A debit note has been added to {whose}'s account" if is_debit \
+            else f"A credit note has been applied to {whose}'s account"
+        summary = (
+            f"This additional charge increases {whose}'s balance. It is payable "
+            f"alongside {whose}'s other open bills."
+            if is_debit else
+            f"This adjustment reduces what {whose} owes. If it exceeds the open "
+            "charges, the remainder stays available as account credit."
+        )
+        action = (
+            f"Please include debit note {note.document_number} when paying "
+            f"{whose}'s outstanding balance."
+            if is_debit else
+            f"No payment is required for credit note {note.document_number}. "
+            "Use the updated account position shown above when making the next payment."
+        )
+    return {
+        "badge": "ADDITIONAL CHARGE" if is_debit else "ACCOUNT CREDIT",
+        "title": title,
+        "summary": summary,
+        "amount_label": "Additional amount charged" if is_debit else "Amount credited",
+        "action_title": "What you need to do" if is_debit else "What this means",
+        "action_message": action,
+        "accent_color": "#b54708" if is_debit else "#067647",
+        "accent_soft": "#fffaeb" if is_debit else "#ecfdf3",
+        "accent_border": "#fedf89" if is_debit else "#abefc6",
+    }
+
+
 # Send best-effort credit/debit-note issuance notification.
 def notify_credit_note_issued(note, *, actor_user=None):
     """Best-effort: tell the customer that a credit/debit note changed their account.
@@ -81,6 +135,7 @@ def notify_credit_note_issued(note, *, actor_user=None):
     try:  # Notification failures must never roll back note posting.
         from vs_notifications.notify import send_notification, UnregisteredRecipient
 
+        from .document_email import resolve_contacts
         from .views_ar import _customer_ledger
 
         customer = note.customer
@@ -96,31 +151,6 @@ def notify_credit_note_issued(note, *, actor_user=None):
         issuer_name = school.name if school else note.entity.name
         related_invoice = note.invoice.document_number if note.invoice_id else "Standalone account adjustment"
         event_key = "billing.debit_note_issued" if is_debit else "billing.credit_note_issued"
-        direction = {
-            "badge": "ADDITIONAL CHARGE" if is_debit else "ACCOUNT CREDIT",
-            "title": "A debit note has been added to your account" if is_debit
-                     else "A credit note has been applied to your account",
-            "summary": (
-                "This additional charge increases your account balance. It is payable "
-                "alongside your other open billing documents."
-                if is_debit else
-                "This adjustment reduces the amount you owe. If it exceeds your open "
-                "charges, the remainder stays available as account credit."
-            ),
-            "amount_label": "Additional amount charged" if is_debit else "Amount credited",
-            "action_title": "What you need to do" if is_debit else "What this means",
-            "action_message": (
-                f"Please include debit note {note.document_number} when reviewing or "
-                "paying your outstanding account balance."
-                if is_debit else
-                f"No payment is required for credit note {note.document_number}. "
-                "Use the updated account position shown above when making your next payment."
-            ),
-            "accent_color": "#b54708" if is_debit else "#067647",
-            "accent_soft": "#fffaeb" if is_debit else "#ecfdf3",
-            "accent_border": "#fedf89" if is_debit else "#abefc6",
-        }
-
         context = {
             "customer_name": customer.name,
             "note_number": note.document_number,
@@ -133,24 +163,40 @@ def notify_credit_note_issued(note, *, actor_user=None):
             "current_balance_label": current_label,
             "current_balance_amount": current_amount,
             "issuer_name": issuer_name,
-            **direction,
         }
-        return send_notification(
-            event_key=event_key,
-            context=context,
-            recipients=[],
-            school=school,
-            # The branch the note is filed under decides whose settings apply.
-            branch=note.branch,
-            unregistered_recipients=[
-                UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),
-            ],
-            metadata={
-                "finance_document_type": "DEBIT_NOTE" if is_debit else "CREDIT_NOTE",
-                "finance_document_id": note.pk,
-                "document_number": note.document_number,
-            },
-        )
+        # One message per address: the customer reads about their own account, and
+        # a contact the product names (a pupil's primary guardian) reads about the
+        # customer's, greeted by their own name.
+        # With nobody to send to, one blank address still records the note that
+        # reached nobody (NO_EMAIL_ADDRESS), so the school can see it.
+        contacts = resolve_contacts(customer) or [
+            {"email": "", "name": customer.name, "field": "", "label": ""},
+        ]
+        notification_ids = []
+        for contact in contacts:
+            own = not contact["field"]
+            notification_ids += send_notification(
+                event_key=event_key,
+                context={
+                    **context,
+                    **_note_direction(note, is_debit, whose=None if own else customer.name),
+                    "recipient_name": contact["name"],
+                    "recipient_is_customer": own,
+                },
+                recipients=[],
+                school=school,
+                # The branch the note is filed under decides whose settings apply.
+                branch=note.branch,
+                unregistered_recipients=[
+                    UnregisteredRecipient(email=contact["email"], name=contact["name"]),
+                ],
+                metadata={
+                    "finance_document_type": "DEBIT_NOTE" if is_debit else "CREDIT_NOTE",
+                    "finance_document_id": note.pk,
+                    "document_number": note.document_number,
+                },
+            ) or []
+        return notification_ids
     except Exception:  # best-effort - never break the posting
         logger.warning(
             "credit_note_issued notification failed for note %s",

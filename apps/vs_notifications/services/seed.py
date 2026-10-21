@@ -1210,7 +1210,7 @@ def _build_default_templates() -> dict:
             "subject": "Debit note {{ note_number }} - additional charge of ₦{{ note_amount }}",
             "body": (
                 "DEBIT NOTE - ADDITIONAL CHARGE\n\n"
-                "Hello {{ customer_name }},\n\n"
+                "Hello {% if recipient_name %}{{ recipient_name }}{% else %}{{ customer_name }}{% endif %},\n\n"
                 "{{ summary }}\n\n"
                 "Additional amount charged: ₦{{ note_amount }}\n"
                 "Debit note: {{ note_number }}\n"
@@ -1241,7 +1241,7 @@ def _build_default_templates() -> dict:
             "subject": "Credit note {{ note_number }} - ₦{{ note_amount }} credited",
             "body": (
                 "CREDIT NOTE - ACCOUNT CREDIT\n\n"
-                "Hello {{ customer_name }},\n\n"
+                "Hello {% if recipient_name %}{{ recipient_name }}{% else %}{{ customer_name }}{% endif %},\n\n"
                 "{{ summary }}\n\n"
                 "Amount credited: ₦{{ note_amount }}\n"
                 "Credit note: {{ note_number }}\n"
@@ -1273,8 +1273,9 @@ def _build_default_templates() -> dict:
         ("billing.payment_received", C.EMAIL): {
             "subject": "Receipt {{ receipt_number }} from {{ issuer_name }}",
             "body": (
-                "Hello {{ customer_name }},\n\n"
-                "We have received your payment. Thank you. A PDF receipt is attached.\n\n"
+                "Hello {% if recipient_name %}{{ recipient_name }}{% else %}{{ customer_name }}{% endif %},\n\n"
+                "We have received {% if recipient_name and not recipient_is_customer %}a payment for "
+                "{{ customer_name }}{% else %}your payment{% endif %}. Thank you. A PDF receipt is attached.\n\n"
                 "Receipt number: {{ receipt_number }}\n"
                 "Amount paid: ₦{{ amount_paid }}\n"
                 "Payment date: {{ payment_date }}\n"

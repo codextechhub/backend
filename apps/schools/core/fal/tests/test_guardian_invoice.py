@@ -5,8 +5,9 @@ guardian. The invoice email reaches her with its PDF, greeted by her own name
 and told it is Tunde's invoice; Email invoice and Email statement reach her
 too. When she has a parent app account she is told of the bill there as well,
 with a push that opens Tunde's Fees. His father, a second guardian, is sent
-nothing; he sees the bill in his own parent app. A receipt is not sent to her,
-because whoever pays in an app is sent theirs as the payer. A finance reader
+nothing; he sees the bill in his own parent app. Receipts, debit and credit
+notes and overdue reminders reach her as well, each telling her it is about
+Tunde's account. A finance reader
 whose role may not read a guardian's email sees "Tunde's primary guardian"
 where her address would be.
 """
@@ -120,12 +121,58 @@ class GuardianInvoiceTests(_FirstBillFixture):
               "label": "Tunde's primary guardian"}],
         )
 
-    def test_a_statement_reaches_her_and_a_receipt_does_not(self):
-        self.assertEqual(
-            [c["email"] for c in resolve_contacts(self.tunde_customer, FinanceDeliveryDocument.STATEMENT)],
-            ["ngozi@example.ng"],
+    def test_statements_and_receipts_reach_her_too(self):
+        for document_type in (FinanceDeliveryDocument.STATEMENT, FinanceDeliveryDocument.RECEIPT):
+            with self.subTest(document_type=document_type):
+                self.assertEqual(
+                    [c["email"] for c in resolve_contacts(self.tunde_customer, document_type)],
+                    ["ngozi@example.ng"],
+                )
+
+    def test_a_debit_note_tells_her_it_is_on_tunde_s_account(self):
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.models import Account, CreditNote, CreditNoteLine
+        from vs_finance.notifications import notify_credit_note_issued
+        from vs_finance.credit_notes import post_credit_note
+
+        self.billed(self.tunde)
+        note = CreditNote.objects.create(
+            entity=self.tunde_customer.entity, customer=self.tunde_customer, kind=CreditNoteKind.DEBIT,
+            note_date=self.term.start_date, reason="Late transport charge",
         )
-        self.assertEqual(resolve_contacts(self.tunde_customer, FinanceDeliveryDocument.RECEIPT), [])
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=20_000,
+            revenue_account=Account.objects.get(entity=self.tunde_customer.entity, code="4100"),
+        )
+        with mock.patch(_SEND, return_value=["sent"]):
+            post_credit_note(note)
+        with mock.patch(_SEND, return_value=["sent"]) as send:
+            notify_credit_note_issued(note)
+
+        [call] = send.call_args_list
+        self.assertEqual([r.email for r in call.kwargs["unregistered_recipients"]], ["ngozi@example.ng"])
+        context = call.kwargs["context"]
+        self.assertEqual(context["recipient_name"], "Ngozi Okoro")
+        self.assertIn(f"{self.tunde_customer.name}'s balance", context["summary"])
+        self.assertNotIn("your", context["summary"])
+
+    def test_an_overdue_reminder_reaches_her(self):
+        from types import SimpleNamespace
+
+        from vs_finance.dunning import _dispatch_notice
+
+        invoice = self.manual_invoice(self.tunde_customer)
+        notice = SimpleNamespace(
+            entity=invoice.entity, customer=self.tunde_customer, invoice=invoice,
+            amount_due=20_000, days_overdue=14, message="Second reminder.", level=2,
+            document_number="DN-1", pk=1,
+        )
+        with mock.patch(_SEND, return_value=["sent"]) as send:
+            _dispatch_notice(notice)
+
+        self.assertEqual(
+            [r.email for r in send.call_args.kwargs["unregistered_recipients"]], ["ngozi@example.ng"],
+        )
 
     def test_a_preview_tells_nobody(self):
         self.assertEqual(self.billed(self.tunde, dry_run=True), {})

@@ -100,6 +100,7 @@ class NotificationService:
         unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
         metadata: Optional[dict] = None,
         delivery_replacements: Optional[dict[str, str]] = None,
+        only_channels: Optional[list] = None,
     ) -> list:
         """
         Dispatch notifications for a given event to a list of recipients.
@@ -131,6 +132,11 @@ class NotificationService:
             delivery_replacements:   Optional marker-to-value substitutions passed
                                      only to the email delivery task. They are not
                                      written to Notification history.
+            only_channels:           Optional channels this one send may use. It
+                                     narrows the channels the settings resolve and
+                                     never turns one on: a send whose email the
+                                     recipient is already receiving another way
+                                     names the in-app and push channels here.
 
         Returns:
             List of created Notification UUIDs (as strings).
@@ -189,7 +195,10 @@ class NotificationService:
         plans = []
         for owner_tenant, targets in groups:
             resolved = resolve_channels(event_type, tenant=owner_tenant, branch=branch)
-            enabled_channels = [channel for channel, on in resolved.items() if on]
+            enabled_channels = [
+                channel for channel, on in resolved.items()
+                if on and (only_channels is None or channel in only_channels)
+            ]
             if not enabled_channels:
                 logger.debug(
                     "All channels disabled for event_key=%s (owner tenant=%s) - "

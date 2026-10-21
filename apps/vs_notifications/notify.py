@@ -68,6 +68,7 @@ def send_notification(
     unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
     metadata: Optional[dict] = None,
     delivery_replacements: Optional[dict[str, str]] = None,
+    only_channels: Optional[list] = None,
 ) -> list[str]:
     """
     Send a notification to one or more recipients for the given event.
@@ -93,6 +94,8 @@ def send_notification(
                                  the email task immediately before SMTP. Values are
                                  never stored on Notification rows. Use this for
                                  one-time credentials that must not enter history.
+        only_channels:           Optional channels this one send may use, narrowing
+                                 what the settings resolve and never turning one on.
 
     Returns:
         List of created Notification UUIDs as strings.
@@ -112,4 +115,5 @@ def send_notification(
         unregistered_recipients=unregistered_recipients,
         metadata=metadata,
         delivery_replacements=delivery_replacements,
+        only_channels=only_channels,
     )

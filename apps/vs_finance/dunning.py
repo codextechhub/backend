@@ -367,8 +367,9 @@ def _dispatch_notice(notice, *, actor_user=None):
     consolidated :func:`vs_notifications.notify.send_notification` API, with a context
     carrying every variable the templates reference (plus the policy stage's
     ``reminder_message`` so the escalation wording comes from the dunning policy, not a
-    per-level event), targeting the customer's ``billing_email`` as an
-    :class:`~vs_notifications.notify.UnregisteredRecipient`.
+    per-level event), targeting the customer's ``billing_email`` and the contacts the
+    product names (a pupil's primary guardian, :func:`vs_finance.document_email.resolve_contacts`),
+    each as an :class:`~vs_notifications.notify.UnregisteredRecipient`.
 
     Notifications are **recipient-centric**: ``school`` is an optional scope, not a
     gate. A platform/product book (no school profile on the tenant) still delivers to
@@ -386,6 +387,8 @@ def _dispatch_notice(notice, *, actor_user=None):
 
     try:  # Delivery is best-effort and must not break dunning lifecycle.
         from vs_notifications.notify import send_notification, UnregisteredRecipient
+
+        from .document_email import resolve_contacts
 
         school = getattr(notice.entity.tenant, "school_profile", None)  # optional scope; may be None (platform books).
         customer = notice.customer  # Recipient information.
@@ -407,11 +410,13 @@ def _dispatch_notice(notice, *, actor_user=None):
             recipients=[],  # No registered portal recipients are targeted here.
             school=school,  # Optional school scope.
             branch=invoice.branch,  # The overdue invoice's branch decides whose settings apply.
-            unregistered_recipients=[  # Billing emails can receive without portal accounts.
-                UnregisteredRecipient(  # Customer recipient payload.
-                    email=customer.billing_email or "", name=customer.name,  # Recipient email and display name.
-                ),
-            ],
+            # The billing email and the contacts the product names. With nobody to
+            # send to, one blank address still records the reminder that reached
+            # nobody (NO_EMAIL_ADDRESS), so the school can see it.
+            unregistered_recipients=[
+                UnregisteredRecipient(email=contact["email"], name=contact["name"])
+                for contact in resolve_contacts(customer)
+            ] or [UnregisteredRecipient(email="", name=customer.name)],
         )
     except Exception:  # best-effort - a notification problem must not break dunning
         logger.warning(  # Log failure with stack trace for operations.

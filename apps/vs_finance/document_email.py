@@ -79,27 +79,24 @@ def _dedupe(values) -> list[str]:
     return result
 
 
-#: The documents that reach the contacts a product names as well as the billing
-#: email. Not a receipt: whoever pays in an app is already sent theirs as the
-#: payer (vs_payments.services._tell_the_payer), from the same template, so a
-#: guardian who paid would be emailed the same receipt twice.
-CONTACT_DOCUMENTS = frozenset({FinanceDeliveryDocument.INVOICE, FinanceDeliveryDocument.STATEMENT})
-
-
 def resolve_contacts(customer, document_type=None) -> list[dict]:
     """Everybody a customer's document goes to, each as ``{email, name, field, label}``.
 
-    The billing email first, greeted by the customer's name, then, for an invoice
-    or a statement (:data:`CONTACT_DOCUMENTS`), whoever the product hosting the
-    books names (:mod:`vs_finance.document_contacts`): for a pupil, the primary
-    guardian, greeted by their own name. ``field`` is the Field
+    The billing email first, greeted by the customer's name, then whoever the
+    product hosting the books names (:mod:`vs_finance.document_contacts`): for a
+    pupil, the primary guardian, greeted by their own name. Every customer
+    document reaches them: invoices, receipts, statements, debit and credit notes
+    and overdue reminders. A guardian who paid in an app is sent the receipt here
+    and is told in the app without a second email
+    (:func:`vs_payments.services._tell_the_payer`). ``document_type`` is accepted
+    for the callers that name the document and changes nothing. ``field`` is the Field
     Access key guarding a contact's address and ``label`` what a reader who may not
     read it is shown; the billing email carries neither, because the billing email
     switch of ``finance.customer`` governs it. One address named twice is sent once.
     """
     from .document_contacts import host_contacts
 
-    named = host_contacts(customer) if document_type in CONTACT_DOCUMENTS else []
+    named = host_contacts(customer)
     contacts = [{
         "email": getattr(customer, "billing_email", ""), "name": customer.name,
         "field": "", "label": "",

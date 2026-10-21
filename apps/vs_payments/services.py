@@ -869,12 +869,16 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
 def _tell_the_payer(intent):
     """Tell the account that started a portal payment that it went through.
 
-    The receipt email goes to the customer's billing address whatever started
-    the payment; this reaches the person who pressed Pay, in their app and at
-    their own address, once the booking commits. Best effort: a notice that
-    cannot be sent never undoes a booked receipt.
+    The receipt email goes to the customer's billing address and the contacts
+    the product names, such as a pupil's primary guardian, whatever started the
+    payment; this reaches the person who pressed Pay, in their app and at their
+    own address, once the booking commits. A payer the receipt email already
+    reaches (a primary guardian paying for their child) is told in the app
+    only, so they are not emailed the same receipt twice. Best effort: a notice
+    that cannot be sent never undoes a booked receipt.
     """
-    from vs_finance.document_email import receipt_notice_context
+    from vs_finance.document_email import receipt_notice_context, resolve_recipients
+    from vs_notifications.constants import ChannelChoices
     from vs_notifications.notify import send_notification
 
     payment = intent.payment
@@ -884,12 +888,14 @@ def _tell_the_payer(intent):
 
     def _send():
         try:
+            emailed = (payer.email or "").strip().lower() in resolve_recipients(payment.customer)
             send_notification(
                 event_key="billing.payment_received",
                 context=receipt_notice_context(payment),
                 recipients=[payer],
                 tenant=getattr(intent.entity, "tenant", None),
                 metadata={"payment_id": payment.pk, "collection_reference": intent.reference},
+                only_channels=[ChannelChoices.IN_APP, ChannelChoices.PUSH] if emailed else None,
             )
         except Exception:  # pragma: no cover - best effort by contract
             logger.warning("payer notice failed for collection %s", intent.reference, exc_info=True)
