@@ -39,3 +39,16 @@ def issue_transfer_account(self, customer_id: int):
         if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False) or self.request.retries >= self.max_retries:
             return give_up(customer_id)
         raise self.retry(exc=exc, countdown=TRANSFER_ACCOUNT_FIRST_WAIT * 2 ** self.request.retries)
+
+
+@shared_task(name="fal.send_guardian_invoice", acks_late=True)
+def send_guardian_invoice(invoice_id: int):
+    """Send a pupil's primary guardian their new bill, with its PDF.
+
+    Queued by :func:`schools.core.fal.guardian_invoices.on_invoice_posted`.
+    Never raises and is not retried: the bill stands either way, and a second
+    attempt could send the same bill twice.
+    """
+    from .guardian_invoices import send_to_primary_guardian
+
+    return send_to_primary_guardian(invoice_id)

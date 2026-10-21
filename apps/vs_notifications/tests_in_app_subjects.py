@@ -67,6 +67,7 @@ _ALREADY_TITLED = {
     "notices.published_parent",
     "billing.transfer_account_changed",
     "billing.guardian_transfer_account_changed",
+    "billing.guardian_invoice_issued",
 }
 
 

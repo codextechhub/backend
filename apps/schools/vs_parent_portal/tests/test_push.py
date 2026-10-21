@@ -107,6 +107,19 @@ class ParentPushTests(ParentBooksFixture):
         self.assertEqual(payload["child"], self.chiamaka.pk)
         self.assertNotIn("2,000", json.dumps(payload))
 
+    def test_a_new_bill_opens_fees_with_the_child_and_names_no_figure(self):
+        payload = self.sent(
+            event_key="billing.guardian_invoice_issued",
+            context={"student_first_name": "Chiamaka", "invoice_number": "INV-1",
+                     "invoice_amount": "180,000.00", "due_date": "15 Nov 2026",
+                     "tenant_name": "Brightfield Schools", "branch_name": "",
+                     "has_parent_app": True, "parent_app_link": ""},
+            metadata={"student_id": self.chiamaka.pk},
+        )
+        self.assertEqual(payload["url"], f"/parent/fees?child={self.chiamaka.pk}")
+        self.assertEqual(payload["child"], self.chiamaka.pk)
+        self.assertNotIn("180,000", json.dumps(payload))
+
     def test_a_payment_to_somebody_who_is_not_the_childs_parent_says_nothing(self):
         reference = self.pay_invoice(self.chiamaka_tuition, 200_000).data["data"]["reference"]
         intent = CollectionIntent.objects.get(reference=reference)

@@ -686,6 +686,21 @@ EVENT_TYPE_REGISTRY = [
         "is_transactional": True,
     },
     {
+        "key": "billing.guardian_invoice_issued",
+        "label": "New bill for your child",
+        "description": (
+            "Fires when the school raises a fee for a pupil, by billing a class or "
+            "one pupil, and goes to the pupil's primary guardian: in the parent app "
+            "and as a push that opens the child's Fees when they have a parent app "
+            "account, and by email with the invoice as a PDF either way. A second "
+            "parent sees the bill in their own parent app without being sent it. "
+            "An opening balance carried into the books is not sent."
+        ),
+        "source_module": "vs_billing",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "default_enabled": True,
+    },
+    {
         "key": "billing.invoice_overdue",
         "label": "Invoice overdue",
         "description": "Fires when a student invoice passes its due date without full payment.",

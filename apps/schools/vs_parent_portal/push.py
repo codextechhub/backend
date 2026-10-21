@@ -9,7 +9,8 @@ when the app loads. It recognises the three notifications a parent is pushed:
   ``gradebook.result_released_parent`` to the others where the school tells
   every parent) opens Results with that child showing
   (``/parent/results?child=<id>``);
-- a confirmed payment opens Fees with the child it paid for
+- a confirmed payment opens Fees with the child it paid for, and a new bill
+  sent to the primary guardian opens Fees with the child it is for
   (``/parent/fees?child=<id>``).
 
 A child is named only when the recipient is that child's parent at the school
@@ -41,6 +42,9 @@ def destination(notification):
         screen = "results"
     elif key == "billing.payment_received":
         child = _own_child(notification.recipient, _paid_for(metadata.get("payment_id")))
+        screen = "fees"
+    elif key == "billing.guardian_invoice_issued":
+        child = _own_child(notification.recipient, metadata.get("student_id"))
         screen = "fees"
     else:
         return None

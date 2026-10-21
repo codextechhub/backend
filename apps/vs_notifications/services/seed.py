@@ -897,6 +897,40 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── billing.guardian_invoice_issued ─────────────────────────────────
+        # To the primary guardian when a fee is raised for their child. The
+        # email carries the invoice PDF; the push opens the child's Fees and,
+        # like every push, names no figure, because it shows on a locked screen.
+        ("billing.guardian_invoice_issued", C.IN_APP): {
+            "subject": "New bill for {{ student_first_name }}: ₦{{ invoice_amount }}",
+            "body": (
+                "Invoice {{ invoice_number }} from {{ tenant_name }} is due by "
+                "{{ due_date }}. You can pay it under Fees."
+            ),
+        },
+        ("billing.guardian_invoice_issued", C.PUSH): {
+            "subject": "New bill for {{ student_first_name }}",
+            "body": "Open Fees in the parent app to see it.",
+        },
+        ("billing.guardian_invoice_issued", C.EMAIL): {
+            "subject": "{{ student_first_name }}'s invoice {{ invoice_number }} from {{ tenant_name }}",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "{{ tenant_name }} has issued an invoice for {{ student_first_name }}. "
+                "A PDF copy is attached.\n\n"
+                "Invoice number: {{ invoice_number }}\n"
+                "Amount: ₦{{ invoice_amount }}\n"
+                "Due date: {{ due_date }}\n\n"
+                "{% if has_parent_app %}You can pay it in the parent app, under Fees."
+                "{% else %}Please pay it as the school has told you, or ask the school "
+                "about the parent app.{% endif %}\n\n"
+                "{{ tenant_name }}{% if branch_name %}, {{ branch_name }}{% endif %} "
+                "via {{ email_brand }}"
+            ),
+            "cta_label": "Open Fees",
+            "cta_url": "{{ parent_app_link }}",
+        },
+
         # ── billing.payment_received (push) ─────────────────────────────────
         # No amount: a confirmed payment, and where to find the receipt.
         ("billing.payment_received", C.PUSH): {
