@@ -208,6 +208,8 @@ class RequisitionRouteStartsAtTheLineManagerTests(OrganogramFixture):
             [("line_manager", "ORGANOGRAM", "DIRECT_MANAGER")],
         )
         self.assertEqual(self.steps(routes["procurement.purchase_order"]), [])
+        # Alone, a step nobody can fill waits rather than approving the request.
+        self.assertFalse(routes["procurement.requisition"].stages.get(code="line_manager").skip_if_no_approvers)
 
     def test_the_default_ladder_follows_the_line_manager(self):
         routes = self.routes(ensure_tenant_approval_templates(self.tenant, with_default_stages=True))
@@ -220,6 +222,11 @@ class RequisitionRouteStartsAtTheLineManagerTests(OrganogramFixture):
             [code for code, _, _ in self.steps(routes["procurement.purchase_order"])],
             ["manager", "senior"],
         )
+        # Followed by the approver groups, a requester with no line manager on
+        # the chart goes straight to them, who still have to approve it.
+        stages = {s.code: s for s in routes["procurement.requisition"].stages.all()}
+        self.assertTrue(stages["line_manager"].skip_if_no_approvers)
+        self.assertFalse(stages["manager"].skip_if_no_approvers)
 
     def test_a_teachers_request_waits_on_her_head_of_department(self):
         from django.contrib.contenttypes.models import ContentType

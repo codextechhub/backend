@@ -141,7 +141,7 @@ def _default_stages_payload(
 LINE_MANAGER_FIRST = "procurement.requisition"
 
 
-def line_manager_stage() -> dict:
+def line_manager_stage(*, followed: bool = False) -> dict:
     """The first step of a requisition: the requester's line manager.
 
     Every teacher may raise a requisition, so the person who first decides it is
@@ -150,11 +150,14 @@ def line_manager_stage() -> dict:
     ten microscopes, the Head of Sciences she reports to decides first. Nothing
     has to be configured for it: the chart the school already keeps names them.
 
-    ``skip_if_no_approvers`` is False, as on every spend step. A requester with
-    no manager on the chart (a principal, or anybody at a school that has not
-    drawn one) parks on this step until an administrator chooses who decides,
-    rather than approving their own request. The requester is never their own
-    approver: the organogram climb leaves them out.
+    A requester with no manager on the chart (a principal, or anybody at a
+    school that has not drawn one) is the case ``followed`` decides. When the
+    step stands alone, it parks until an administrator chooses who decides,
+    rather than letting the request approve itself. When the default ladder
+    follows it (``followed``), the step is skipped and the request goes on to
+    the approver groups, who still have to approve it: a school that has not
+    drawn its chart is not stalled by a step nobody can fill. The requester is
+    never their own approver: the organogram climb leaves them out.
 
     ``approver_scope`` is SCHOOL because a reporting line belongs to the whole
     school's chart, and a line manager posted at another branch still manages.
@@ -169,7 +172,7 @@ def line_manager_stage() -> dict:
         "approver_scope": "SCHOOL",
         "advance_rule": "ANY",
         "on_rejection": "TERMINAL",
-        "skip_if_no_approvers": False,
+        "skip_if_no_approvers": followed,
     }
 
 
@@ -367,7 +370,7 @@ def ensure_tenant_approval_templates(
         if document_type in existing and (document_type in staffed or not wants_steps):
             results.append((existing[document_type], False))
             continue
-        stages = [line_manager_stage()] if line_manager else []
+        stages = [line_manager_stage(followed=with_default_stages)] if line_manager else []
         if with_default_stages:
             stages += _default_stages_payload(
                 model.workflow_amount_field, threshold=threshold,
