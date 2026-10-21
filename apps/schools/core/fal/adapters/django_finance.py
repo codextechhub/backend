@@ -100,6 +100,11 @@ from ..contracts import (
     TransferAccount,
     TransferDeposit,
     ReceiptDocument,
+    DocumentBankAccount,
+    DocumentLetterhead,
+    DocumentParty,
+    InvoiceDocument,
+    InvoiceDocumentLine,
     Series,
     SeriesPoint,
     Unavailable,
@@ -2182,6 +2187,67 @@ def _payer(intent) -> str:
     return intent.created_by.full_name
 
 
+def _letterhead(issuer: dict) -> DocumentLetterhead:
+    """The letterhead the printed documents carry, from their issuer block."""
+    return DocumentLetterhead(
+        name=issuer["name"], tag=issuer["tag"], logo_url=issuer["logo"],
+        address=issuer["address"], email=issuer["email"], phone=issuer["phone"],
+        website=issuer["website"],
+    )
+
+
+def _invoice_document(invoice) -> InvoiceDocument:
+    """An invoice as its printed copy reads, in kobo.
+
+    The letterhead, bill-to block, tax treatments and bank come from the same
+    builders the printed and emailed copies use (:mod:`vs_finance.documents`),
+    so the family's screen cannot show a different school, account or figure.
+    """
+    from vs_finance.documents import _customer_block, _issuer_block, _vat_label
+
+    issuer = _issuer_block(invoice.entity, branch=invoice.branch)
+    customer = _customer_block(invoice.customer)
+    bank = issuer["bank"]
+    lines = tuple(
+        InvoiceDocumentLine(
+            description=line.description or line.revenue_account.name,
+            detail=line.cost_center.name if line.cost_center_id else "",
+            quantity=(str(int(line.quantity)) if line.quantity == line.quantity.to_integral_value()
+                      else f"{line.quantity.normalize()}"),
+            unit_price=line.unit_price,
+            tax_amount=line.tax_amount,
+            tax_label=_vat_label(line) or "",
+            amount=line.net_amount,
+        )
+        for line in invoice.lines.select_related("tax_code", "cost_center", "revenue_account")
+        .order_by("line_no", "id")
+    )
+    return InvoiceDocument(
+        invoice_ref=invoice.pk,
+        document_number=invoice.document_number or "",
+        invoice_date=invoice.invoice_date,
+        due_date=invoice.due_date,
+        reference=invoice.reference or "",
+        narration=invoice.narration or "",
+        status=InvoiceStatus(invoice.payment_status),
+        letterhead=_letterhead(issuer),
+        billed_to=DocumentParty(
+            name=customer["customer_name"], code=customer["customer_code"] or "",
+            email=customer["email"] or "", phone=customer["phone"] or "",
+            address=customer["address"] or "",
+        ),
+        lines=lines,
+        subtotal=invoice.subtotal,
+        tax_total=invoice.tax_total,
+        total=invoice.total,
+        amount_paid=invoice.amount_paid,
+        adjustments=invoice.total - invoice.amount_paid - invoice.balance_due,
+        balance_due=invoice.balance_due,
+        bank=(DocumentBankAccount(bank["bank_name"], bank["account_name"], bank["account_number"])
+              if bank["account_number"] else None),
+    )
+
+
 class DjangoStudentPaymentAdapter(StudentPaymentPort):
     """Component 6b. The pupil's own accounts bound every read and every write.
 
@@ -2294,7 +2360,7 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
             return None
         return (
             Payment.objects.filter(pk=payment_ref, customer__in=customers, status="POSTED")
-            .select_related("customer", "entity")
+            .select_related("customer", "entity", "branch")
             .prefetch_related("collection_intents__created_by", "allocations__invoice")
             .first()
         )
@@ -2302,7 +2368,8 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
     @envelope
     def receipt(self, student_ref, payment_ref):
         from vs_finance.document_email import _issuer_name
-        from vs_finance.documents import customer_net_after
+        from vs_finance.documents import _issuer_block, customer_net_after
+        from vs_finance.money import naira_in_words
 
         payment = self._payment(student_ref, payment_ref)
         if payment is None:
@@ -2334,6 +2401,9 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
                            if payment.customer_balance_after is not None
                            else customer_net_after(payment.entity, payment.customer)),
             issuer_name=_issuer_name(payment.entity),
+            letterhead=_letterhead(_issuer_block(payment.entity, branch=payment.branch)),
+            amount_in_words=naira_in_words(payment.amount),
+            customer_code=payment.customer.code or "",
         ))
 
     @envelope
@@ -2343,18 +2413,28 @@ class DjangoStudentPaymentAdapter(StudentPaymentPort):
         payment = self._payment(student_ref, payment_ref)
         return _available(receipt_pdf(payment) if payment is not None else None)
 
-    @envelope
-    def invoice_pdf(self, student_ref, invoice_ref):
+    def _invoice(self, student_ref, invoice_ref):
         from vs_finance.models import Invoice
-        from vs_finance.pdf import invoice_pdf
 
         customers = self._customers(student_ref)
-        invoice = (
+        if not customers:
+            return None
+        return (
             Invoice.objects.filter(pk=invoice_ref, customer__in=customers, status="POSTED")
-            .select_related("customer", "entity").first()
-            if customers else None
+            .select_related("customer", "entity", "branch").first()
         )
+
+    @envelope
+    def invoice_pdf(self, student_ref, invoice_ref):
+        from vs_finance.pdf import invoice_pdf
+
+        invoice = self._invoice(student_ref, invoice_ref)
         return _available(invoice_pdf(invoice) if invoice is not None else None)
+
+    @envelope
+    def invoice_document(self, student_ref, invoice_ref):
+        invoice = self._invoice(student_ref, invoice_ref)
+        return _available(_invoice_document(invoice) if invoice is not None else None)
 
     @staticmethod
     def _transfer_view(account):

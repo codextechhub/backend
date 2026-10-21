@@ -330,7 +330,8 @@ class InvoiceDetailView(PortalView):
     """GET /v1/portal/parent/fees/invoices/<invoice_ref>/?as=pdf
 
     One invoice on a child's account: JSON for the screen (number, dates, lines,
-    balance, status and the child), or with ``as=pdf`` the PDF the school sends.
+    balance, status, the child, and the printed ``document`` the sheet draws),
+    or with ``as=pdf`` the PDF the school sends.
     404 for an invoice that is not on one of the parent's children's accounts.
 
     docstring-name: My children's invoice

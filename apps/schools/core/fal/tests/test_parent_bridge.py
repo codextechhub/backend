@@ -347,3 +347,67 @@ class ParentPaymentBridgeTests(FALFixture):
         self.assertIsNone(port.invoice_pdf("stu-ada", self.green_invoice.pk).value)
         self.assertIsNone(port.invoice_pdf("stu-ada", 9_999_999).value)
         self.assertIsNone(port.invoice_pdf("stu-nobody", self.ada_invoice.pk).value)
+
+    # ----- the same invoice and receipt as documents, for the family's screen -- #
+    def ada_code(self):
+        from vs_finance.models import Customer
+
+        return Customer.objects.get(pk=self.ada.customer_ref).code
+
+    def test_the_invoice_document_is_the_printed_invoice_in_kobo(self):
+        """Ada's 3,000 bill reads with Corona's letterhead, its line and its totals."""
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+        from schools.core.fal.contracts import InvoiceStatus
+
+        self.pay(self.corona_books, self.ada.customer_ref, 100_000, invoice=self.ada_invoice)
+        doc = DjangoStudentPaymentAdapter().invoice_document("stu-ada", self.ada_invoice.pk).value
+
+        self.assertEqual(doc.document_number, self.ada_invoice.document_number)
+        self.assertEqual(doc.letterhead.name, "Corona Secondary")
+        self.assertEqual(doc.billed_to.code, self.ada_code())
+        self.assertEqual(doc.total, 300_000)
+        self.assertEqual(doc.amount_paid, 100_000)
+        self.assertEqual(doc.adjustments, 0)
+        self.assertEqual(doc.balance_due, 200_000)
+        self.assertEqual(doc.status, InvoiceStatus.PARTIAL)
+        self.assertEqual(sum(line.amount for line in doc.lines), doc.subtotal)
+
+    def test_an_invoice_not_on_the_pupils_account_has_no_document(self):
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+
+        port = DjangoStudentPaymentAdapter()
+
+        self.assertIsNone(port.invoice_document("stu-ada", self.green_invoice.pk).value)
+        self.assertIsNone(port.invoice_document("stu-ada", 9_999_999).value)
+        self.assertIsNone(port.invoice_document("stu-nobody", self.ada_invoice.pk).value)
+
+    def test_the_invoice_document_names_the_branchs_collection_account(self):
+        from vs_finance.models import Account, BankAccount
+
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+
+        port = DjangoStudentPaymentAdapter()
+        self.assertIsNone(port.invoice_document("stu-ada", self.ada_invoice.pk).value.bank)
+
+        cash = Account.objects.create(
+            entity_id=self.corona_books.entity_ref, code="1109", name="Cash - Ikeja",
+            account_type="ASSET",
+        )
+        BankAccount.objects.create(
+            entity_id=self.corona_books.entity_ref, branch=self.ikeja, name="Corona Ikeja",
+            bank_name="GTBank", account_number="0123456789", gl_account=cash,
+            is_active=True, is_primary_collection=True,
+        )
+        bank = port.invoice_document("stu-ada", self.ada_invoice.pk).value.bank
+
+        self.assertEqual((bank.bank_name, bank.account_number), ("GTBank", "0123456789"))
+
+    def test_the_receipt_carries_its_letterhead_and_amount_in_words(self):
+        from schools.core.fal.adapters.django_finance import DjangoStudentPaymentAdapter
+
+        payment = self.pay(self.corona_books, self.ada.customer_ref, 100_000, invoice=self.ada_invoice)
+        doc = DjangoStudentPaymentAdapter().receipt("stu-ada", payment.pk).value
+
+        self.assertEqual(doc.letterhead.name, "Corona Secondary")
+        self.assertEqual(doc.amount_in_words, "One thousand naira only")
+        self.assertEqual(doc.customer_code, self.ada_code())

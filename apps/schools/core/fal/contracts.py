@@ -589,8 +589,99 @@ class PaymentReceiptLine:
 
 
 @dataclass(frozen=True)
+class DocumentLetterhead:
+    """Who issued a finance document, as its letterhead prints them.
+
+    For a school's books it is the school's own identity: its name, motto and
+    logo, and the issuing branch's address and email. It is the letterhead the
+    printed and emailed copies carry, so a family reads the same one on screen.
+    ``logo_url`` is signed for the reader, and blank when the school has no logo.
+    """
+
+    name: str
+    tag: str = ""
+    logo_url: str = ""
+    address: str = ""
+    email: str = ""
+    phone: str = ""
+    website: str = ""
+
+
+@dataclass(frozen=True)
+class DocumentBankAccount:
+    """The collection account an invoice asks to be paid into."""
+
+    bank_name: str
+    account_name: str
+    account_number: str
+
+
+@dataclass(frozen=True)
+class DocumentParty:
+    """The customer a document is addressed to: the family's billing account."""
+
+    name: str
+    code: str = ""
+    email: str = ""
+    phone: str = ""
+    address: str = ""
+
+
+@dataclass(frozen=True)
+class InvoiceDocumentLine:
+    """One line of an invoice as printed.
+
+    ``tax_label`` names the line's tax treatment ("No VAT", "Exempt") where the
+    invoice prints that in place of an amount, and is blank where it prints
+    ``tax_amount``. ``quantity`` is text so a fractional quantity keeps its
+    decimals and a whole one prints without them.
+    """
+
+    description: str
+    detail: str
+    quantity: str
+    unit_price: Kobo
+    tax_amount: Kobo
+    tax_label: str
+    amount: Kobo
+
+
+@dataclass(frozen=True)
+class InvoiceDocument:
+    """An invoice as the family's copy prints it: letterhead, lines, totals, bank.
+
+    ``adjustments`` is what lowered the balance other than a payment (a credit
+    note, a concession, a write-off), so ``total - amount_paid - adjustments``
+    is ``balance_due``. ``bank`` is None when the branch has no collection
+    account to print.
+    """
+
+    invoice_ref: InvoiceRef
+    document_number: str
+    invoice_date: Optional[date]
+    due_date: Optional[date]
+    reference: str
+    narration: str
+    status: InvoiceStatus
+    letterhead: DocumentLetterhead
+    billed_to: DocumentParty
+    lines: tuple[InvoiceDocumentLine, ...]
+    subtotal: Kobo
+    tax_total: Kobo
+    total: Kobo
+    amount_paid: Kobo
+    adjustments: Kobo
+    balance_due: Kobo
+    bank: Optional[DocumentBankAccount] = None
+
+
+@dataclass(frozen=True)
 class ReceiptDocument:
-    """A confirmed payment's receipt, as a student or family reads it."""
+    """A confirmed payment's receipt, as a student or family reads it.
+
+    ``letterhead`` and ``amount_in_words`` are what the printed receipt carries
+    beside the figures; ``customer_code`` is the account it was received on.
+    """
 
     payment_ref: PaymentRef
     receipt_number: str
@@ -603,6 +694,9 @@ class ReceiptDocument:
     lines: tuple[PaymentReceiptLine, ...]
     balance_after: Kobo
     issuer_name: str
+    letterhead: Optional[DocumentLetterhead] = None
+    amount_in_words: str = ""
+    customer_code: str = ""
 
 
 @dataclass(frozen=True)

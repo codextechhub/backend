@@ -219,9 +219,64 @@ def find_invoice(children, invoice_ref):
 
 
 def invoice_detail(children, invoice_ref) -> dict:
-    """One invoice for the screen: its number, dates, lines, balance and child."""
+    """One invoice for the screen: its number, dates, lines, balance and child.
+
+    ``document`` is the invoice as its printed copy reads (letterhead, billed-to
+    account, lines with their tax, totals and the bank to pay into), so the
+    sheet on screen and the PDF the parent downloads are the same document.
+    """
     child, invoice = find_invoice(children, invoice_ref)
-    return {**pupil_fees.invoice_row(invoice), "child": child_label(child)}
+    result = registry.get_student_payment().invoice_document(_ref(child), invoice.invoice_ref)
+    if not result.is_available:
+        raise FinanceUnavailable()
+    return {
+        **pupil_fees.invoice_row(invoice),
+        "child": child_label(child),
+        "document": _invoice_document_row(result.value),
+    }
+
+
+def _invoice_document_row(document) -> dict | None:
+    """An ``InvoiceDocument`` as the parent app reads it; money in kobo."""
+    if document is None:
+        return None
+    bank = document.bank
+    return {
+        "document_number": document.document_number,
+        "invoice_date": document.invoice_date,
+        "due_date": document.due_date,
+        "reference": document.reference,
+        "narration": document.narration,
+        "status": document.status.value,
+        "letterhead": pupil_fees.letterhead_row(document.letterhead),
+        "billed_to": {
+            "name": document.billed_to.name,
+            "code": document.billed_to.code,
+            "email": document.billed_to.email,
+            "phone": document.billed_to.phone,
+            "address": document.billed_to.address,
+        },
+        "lines": [
+            {
+                "description": line.description,
+                "detail": line.detail,
+                "quantity": line.quantity,
+                "unit_price": line.unit_price,
+                "tax_amount": line.tax_amount,
+                "tax_label": line.tax_label,
+                "amount": line.amount,
+            }
+            for line in document.lines
+        ],
+        "subtotal": document.subtotal,
+        "tax_total": document.tax_total,
+        "total": document.total,
+        "amount_paid": document.amount_paid,
+        "adjustments": document.adjustments,
+        "balance_due": document.balance_due,
+        "bank": ({"bank_name": bank.bank_name, "account_name": bank.account_name,
+                  "account_number": bank.account_number} if bank is not None else None),
+    }
 
 
 def invoice_pdf(children, invoice_ref) -> bytes:

@@ -729,6 +729,11 @@ class StudentPaymentPort(ABC):
         not on this pupil's account (the same answer as one that does not exist)."""
 
     @abstractmethod
+    def invoice_document(self, student_ref: StudentRef, invoice_ref: InvoiceRef) -> FinanceResult:
+        """The ``InvoiceDocument`` the PDF is printed from, for the screen, or
+        None when the invoice is not on this pupil's account."""
+
+    @abstractmethod
     def transfer_account(self, student_ref: StudentRef) -> FinanceResult:
         """The pupil's permanent bank-transfer account, a ``TransferAccount``,
         or None when none has been issued."""

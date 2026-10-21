@@ -718,12 +718,15 @@ class FakeStudentPayment(StudentPaymentPort):
     """
 
     def __init__(self, *, invoices: Optional[dict] = None, history: tuple = (),
-                 receipts: Optional[dict] = None, reject: bool = False,
+                 receipts: Optional[dict] = None, invoice_documents: Optional[dict] = None,
+                 reject: bool = False,
                  checkout_url: str = "https://pay.example/checkout/FAKE",
                  issues_accounts: bool = True) -> None:
         self.invoices: dict = dict(invoices or {})
         self.history = tuple(history)
         self.receipts: dict = dict(receipts or {})
+        #: invoice_ref -> InvoiceDocument, for an invoice in ``invoices``.
+        self.invoice_documents: dict = dict(invoice_documents or {})
         self.reject = reject
         self.checkout_url = checkout_url
         self.sessions: list = []
@@ -754,6 +757,11 @@ class FakeStudentPayment(StudentPaymentPort):
     def invoice_pdf(self, student_ref, invoice_ref):
         found = self.invoices.get(invoice_ref) == student_ref
         return _ok(b"%PDF-fake" if found else None)
+
+    def invoice_document(self, student_ref, invoice_ref):
+        if self.invoices.get(invoice_ref) != student_ref:
+            return _ok(None)
+        return _ok(self.invoice_documents.get(invoice_ref))
 
     def transfer_account(self, student_ref):
         return _ok(self.transfer_accounts.get(student_ref))
@@ -819,6 +827,7 @@ class UnavailableStudentPayment(_UnavailableMixin, StudentPaymentPort):
     def receipt(self, *a, **k): return self._u()
     def receipt_pdf(self, *a, **k): return self._u()
     def invoice_pdf(self, *a, **k): return self._u()
+    def invoice_document(self, *a, **k): return self._u()
     def transfer_account(self, *a, **k): return self._u()
     def open_transfer_account(self, *a, **k): return self._u()
     def transfer_deposits(self, *a, **k): return self._u()

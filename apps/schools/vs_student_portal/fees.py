@@ -298,6 +298,21 @@ def start_payment(student, *, actor, invoice_ref, amount) -> dict:
     }
 
 
+def letterhead_row(letterhead) -> dict | None:
+    """A document's letterhead as the portals send it, or None when it has none."""
+    if letterhead is None:
+        return None
+    return {
+        "name": letterhead.name,
+        "tag": letterhead.tag,
+        "logo_url": letterhead.logo_url,
+        "address": letterhead.address,
+        "email": letterhead.email,
+        "phone": letterhead.phone,
+        "website": letterhead.website,
+    }
+
+
 def receipt(student, payment_ref) -> dict:
     """A confirmed payment's receipt, or 404 when there is none for this pupil."""
     result = registry.get_student_payment().receipt(_ref(student), payment_ref)
@@ -327,6 +342,9 @@ def receipt(student, payment_ref) -> dict:
         ],
         "balance_after": doc.balance_after,
         "issuer_name": doc.issuer_name,
+        "letterhead": letterhead_row(doc.letterhead),
+        "amount_in_words": doc.amount_in_words,
+        "customer_code": doc.customer_code,
     }
 
 
