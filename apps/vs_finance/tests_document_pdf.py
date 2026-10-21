@@ -388,8 +388,15 @@ class RealRenderTests(_DocumentFixture, TestCase):
                 mock.patch("vs_finance.pdf._embedded_logo", return_value="http://10.0.0.1/x.png"):
             self.assertTrue(invoice_pdf(self.invoice).startswith(b"%PDF"))
 
+        from vs_finance.pdf import FONT_DIR
+
+        # Inline data: images (the pay link's QR code) are read in memory, and the
+        # bundled fonts from disk; nothing else may be opened.
+        fonts = FONT_DIR.as_uri() + "/"
         self.assertTrue(requested, "the bundled fonts are read through the fetcher")
-        self.assertEqual([url for url in requested if not url.startswith("file:")], [])
+        self.assertFalse([url for url in requested if "10.0.0.1" in url])
+        self.assertEqual(
+            [url for url in requested if not url.startswith(("data:", fonts))], [])
 
 
 class WithoutWeasyPrintTests(_DocumentFixture, TestCase):
