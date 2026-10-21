@@ -9,6 +9,7 @@ libraries still sends the document, in the plain layout, with an error logged.
 from __future__ import annotations
 
 import datetime
+import re
 import types
 import urllib.request
 from unittest import mock
@@ -34,6 +35,25 @@ PIXEL_PNG = bytes.fromhex(
     "1f15c4890000000d49444154789c6360f8cf000000030101005b1d1f5e0000000049454e44ae426082"
 )
 
+
+
+def pdf_bytes(pdf: bytes) -> bytes:
+    """A PDF's raw bytes with every Flate stream inflated beside them.
+
+    WeasyPrint packs the document's metadata (its Producer) and font
+    dictionaries into compressed object streams, so a search of the raw bytes
+    finds them on some renders and not others. Searching what a reader would
+    decompress asks what the document says, not how it was packed.
+    """
+    import zlib
+
+    inflated = []
+    for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):
+        try:
+            inflated.append(zlib.decompress(match.group(1)))
+        except zlib.error:
+            continue
+    return pdf + b"".join(inflated)
 
 class _DocumentFixture(_ARFixtureMixin):
 
@@ -353,8 +373,9 @@ class RealRenderTests(_DocumentFixture, TestCase):
         pdf = invoice_pdf(self.invoice)
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertIn(b"WeasyPrint", pdf)
-        self.assertIn(b"NotoSerif", pdf)
+        self.assertIn(b"WeasyPrint", pdf_bytes(pdf))
+        # The bundled Noto Serif embeds under the family the PDF stylesheet declares.
+        self.assertIn(b"Document-Serif", pdf_bytes(pdf))
 
     def test_statement_renders_a_pdf_with_weasyprint(self):
         from vs_finance.pdf import statement_pdf
@@ -363,7 +384,7 @@ class RealRenderTests(_DocumentFixture, TestCase):
         pdf = statement_pdf(self.customer)
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertIn(b"WeasyPrint", pdf)
+        self.assertIn(b"WeasyPrint", pdf_bytes(pdf))
 
     def test_receipt_renders_a_pdf_with_weasyprint(self):
         from vs_finance.pdf import receipt_pdf
@@ -371,7 +392,7 @@ class RealRenderTests(_DocumentFixture, TestCase):
         pdf = receipt_pdf(self.pay(40000))
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertIn(b"WeasyPrint", pdf)
+        self.assertIn(b"WeasyPrint", pdf_bytes(pdf))
 
     def test_a_remote_image_in_the_page_is_not_requested(self):
         from vs_finance.pdf import invoice_pdf
@@ -412,7 +433,7 @@ class WithoutWeasyPrintTests(_DocumentFixture, TestCase):
             pdf = invoice_pdf(self.invoice)
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertNotIn(b"WeasyPrint", pdf)
+        self.assertNotIn(b"WeasyPrint", pdf_bytes(pdf))
         self.assertIn("invoice_document.html", logs.output[0])
 
     def test_statement_falls_back_to_the_plain_layout(self):
@@ -423,7 +444,7 @@ class WithoutWeasyPrintTests(_DocumentFixture, TestCase):
             pdf = statement_pdf(self.customer, note="Term 2")
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertNotIn(b"WeasyPrint", pdf)
+        self.assertNotIn(b"WeasyPrint", pdf_bytes(pdf))
         self.assertIn("statement_document.html", logs.output[0])
 
     def test_receipt_falls_back_to_the_plain_layout(self):
@@ -434,7 +455,7 @@ class WithoutWeasyPrintTests(_DocumentFixture, TestCase):
             pdf = receipt_pdf(payment)
 
         self.assertTrue(pdf.startswith(b"%PDF"))
-        self.assertNotIn(b"WeasyPrint", pdf)
+        self.assertNotIn(b"WeasyPrint", pdf_bytes(pdf))
 
 
 class WeasyPrintLoadsOnceTests(TestCase):
