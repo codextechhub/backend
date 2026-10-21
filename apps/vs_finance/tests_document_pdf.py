@@ -15,7 +15,7 @@ from unittest import mock
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from vs_finance.models import Account, BankAccount, Payment
 from vs_finance.receivables import post_invoice, post_payment
@@ -235,6 +235,50 @@ class StatementPdfIsTheTemplateTests(_DocumentFixture, TestCase):
         html = self.rendered_html(statement_pdf, self.customer)
 
         self.assertNotIn("Payment by bank transfer", html)
+
+
+@override_settings(SCHOOL_APP_BASE_URL="https://xvs.example.test",
+                   PLATFORM_PAY_BASE_URL="https://pay.example.test")
+class InvoiceQrCodeTests(_DocumentFixture, TestCase):
+    """The code on the invoice opens its pay page, which shows a settled invoice as paid."""
+
+    def context(self):
+        from vs_finance.documents import invoice_document_context
+
+        self.invoice.refresh_from_db()
+        return invoice_document_context(self.invoice)["invoice"]
+
+    def test_an_owing_invoice_carries_a_code_to_pay(self):
+        inv = self.context()
+
+        self.assertIn("/pay/", inv["pay_url"])
+        self.assertTrue(inv["qr_image"].startswith("data:image/svg+xml;base64,"))
+        self.assertEqual(inv["qr_label"], "Scan to pay")
+
+    def test_a_paid_invoice_carries_a_code_to_view_it(self):
+        self.pay(107500)
+        inv = self.context()
+
+        self.assertTrue(inv["qr_image"])
+        self.assertEqual(inv["qr_label"], "Scan to view")
+
+    def test_the_printed_invoice_shows_the_code_and_its_label(self):
+        from vs_finance.documents import render_invoice_document_html
+
+        html = render_invoice_document_html(self.invoice)
+
+        self.assertIn('class="qr-code" src="data:image/svg+xml;base64,', html)
+        self.assertIn("Scan to pay", html)
+
+    @override_settings(SCHOOL_APP_BASE_URL="", PLATFORM_PAY_BASE_URL="")
+    def test_without_a_pay_page_no_code_is_printed(self):
+        from vs_finance.documents import render_invoice_document_html
+
+        inv = self.context()
+        html = render_invoice_document_html(self.invoice)
+
+        self.assertEqual(inv["qr_image"], "")
+        self.assertNotIn("qr-code", html.split("</style>")[1])
 
 
 class LogoIsEmbeddedTests(TestCase):

@@ -127,6 +127,7 @@
   .foot-notes{ font-size:10.5px; color:var(--muted); line-height:1.6; max-width:62%; }
   .foot-notes .thanks{ font-style:italic; color:var(--navy); font-size:12.5px; margin-top:8px; }
   .qr{ text-align:center; flex:0 0 auto; }
+  .qr-code{ display:block; width:74px; height:74px; margin:0 auto; }
   .qr-label{ font-family:var(--label); font-size:8px; letter-spacing:1px; text-transform:uppercase;
     color:var(--muted); margin-top:4px; }
 
@@ -261,19 +262,12 @@
       {% firstof note invoice.narration as notes %}{% if notes %}<strong>Notes:</strong> {{ notes|linebreaksbr }}{% endif %}
       <div class="thanks">Thank you.</div>
     </div>
+    {% if invoice.qr_image %}
     <div class="qr">
-      <svg width="74" height="74" viewBox="0 0 74 74" xmlns="http://www.w3.org/2000/svg" aria-label="Verification QR placeholder">
-        <rect width="74" height="74" fill="#fff" stroke="#1B2A4A" stroke-width="1.4"/>
-        <g fill="#1B2A4A">
-          <rect x="8" y="8" width="18" height="18"/><rect x="11" y="11" width="12" height="12" fill="#fff"/><rect x="14" y="14" width="6" height="6"/>
-          <rect x="48" y="8" width="18" height="18"/><rect x="51" y="11" width="12" height="12" fill="#fff"/><rect x="54" y="14" width="6" height="6"/>
-          <rect x="8" y="48" width="18" height="18"/><rect x="11" y="51" width="12" height="12" fill="#fff"/><rect x="14" y="54" width="6" height="6"/>
-          <rect x="32" y="10" width="4" height="4"/><rect x="38" y="14" width="4" height="4"/><rect x="32" y="20" width="4" height="4"/>
-          <rect x="44" y="32" width="4" height="4"/><rect x="32" y="32" width="4" height="4"/><rect x="38" y="38" width="4" height="4"/>
-        </g>
-      </svg>
-      <div class="qr-label">{{ invoice.qr_payload }}</div>
+      <img class="qr-code" src="{{ invoice.qr_image }}" width="74" height="74" alt="QR code for the invoice's pay page">
+      <div class="qr-label">{{ invoice.qr_label }}</div>
     </div>
+    {% endif %}
   </footer>
 
 </div>

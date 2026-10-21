@@ -271,6 +271,30 @@ def _vat_label(line):
     return TaxTreatment(treatment).label
 
 
+def _qr_image(url: str) -> str:
+    """``url`` as a QR code, an SVG ``data:`` URI an ``<img>`` shows, or "" for no url.
+
+    Drawn on the server with ReportLab, so the printed page and the PDF carry the
+    same code without fetching anything, and the image is markup the template
+    never has to mark safe.
+    """
+    import base64
+
+    from reportlab.graphics import renderSVG
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    if not url:
+        return ""
+    widget = QrCodeWidget(url, barLevel="M")
+    left, bottom, right, top = widget.getBounds()
+    size = 74
+    drawing = Drawing(size, size, transform=[size / (right - left), 0, 0, size / (top - bottom), 0, 0])
+    drawing.add(widget)
+    svg = renderSVG.drawToString(drawing)
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
+
+
 # Build printable invoice template context.
 def invoice_document_context(invoice) -> dict:
     """Build the render context for the branded invoice document."""
@@ -296,6 +320,9 @@ def invoice_document_context(invoice) -> dict:
 
     # Worked from the kobo integers, never by parsing formatted strings back.
     adjustments = int(invoice.total) - int(invoice.amount_paid) - int(invoice.balance_due)
+    # The public pay page, which shows a settled invoice as paid rather than
+    # asking for money, so the printed code stays right after the invoice is paid.
+    pay_url = invoice_pay_url(invoice)
 
     return {  # Return full invoice document context.
         "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
@@ -321,11 +348,12 @@ def invoice_document_context(invoice) -> dict:
             "adjustments": ("\u2212\u00a0" if adjustments > 0 else "+\u00a0") + format_naira(abs(adjustments)),
             "has_adjustments": adjustments != 0,
             "balance_due": format_naira(invoice.balance_due),  # Display outstanding balance.
-            "qr_payload": invoice.document_number,  # QR payload currently uses document number.
             # The public pay page. The printable invoice reaches the same
             # customer the email does, so its "Pay online" control has to be a
             # real destination rather than a dead chip.
-            "pay_url": invoice_pay_url(invoice),
+            "pay_url": pay_url,
+            "qr_image": _qr_image(pay_url),
+            "qr_label": "Scan to pay" if invoice.balance_due > 0 else "Scan to view",
         },
     }
 
