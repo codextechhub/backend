@@ -162,6 +162,7 @@
         <div class="issuer-meta">
           {% if issuer.address %}{{ issuer.address }}<br>{% endif %}
           {% if issuer.email %}{{ issuer.email }}{% endif %}{% if issuer.email and issuer.phone %} &middot; {% endif %}{% if issuer.phone %}{{ issuer.phone }}{% endif %}
+          {% if issuer.website %}<br>{{ issuer.website }}{% endif %}
         </div>
       </div>
     </div>
@@ -225,7 +226,8 @@
       <div class="row"><span class="lbl">Subtotal (net)</span><span class="amt">{{ invoice.subtotal }}</span></div>
       {% if invoice.has_tax %}<div class="row sep"><span class="lbl">VAT</span><span class="amt">{{ invoice.tax_total }}</span></div>{% endif %}
       <div class="row grand"><span class="lbl">Total</span><span class="amt">{{ invoice.total }}</span></div>
-      <div class="row"><span class="lbl">Amount paid</span><span class="amt">&minus;&nbsp;{{ invoice.amount_paid }}</span></div>
+      {% if invoice.has_paid %}<div class="row"><span class="lbl">Amount paid</span><span class="amt">&minus;&nbsp;{{ invoice.amount_paid }}</span></div>{% endif %}
+      {% if invoice.has_adjustments %}<div class="row"><span class="lbl">Credits and adjustments</span><span class="amt">{{ invoice.adjustments }}</span></div>{% endif %}
       <div class="balance"><span class="lbl">Balance due</span><span class="amt">{{ invoice.balance_due }}</span></div>
     </div>
   </div>
@@ -233,11 +235,13 @@
   <!-- ============ PAY-TO ============ -->
   <section class="payto">
     <div class="pay-bank">
+      {% if issuer.bank.account_number %}
       <div class="block-title">Payment by bank transfer</div>
       <div class="pb-row"><span class="pb-k">Bank</span><span class="pb-v">{{ issuer.bank.bank_name }}</span></div>
       <div class="pb-row"><span class="pb-k">Account name</span><span class="pb-v">{{ issuer.bank.account_name }}</span></div>
       <div class="pb-row"><span class="pb-k">Account number</span><span class="pb-v">{{ issuer.bank.account_number }}</span></div>
       <div class="pb-row"><span class="pb-k">Use reference</span><span class="pb-v">{{ invoice.document_number }}</span></div>
+      {% endif %}
     </div>
     <div class="paystack">
       {% if invoice.pay_url %}
@@ -254,7 +258,7 @@
   <!-- ============ FOOTER ============ -->
   <footer class="footer">
     <div class="foot-notes">
-      {% if invoice.narration %}<strong>Notes:</strong> {{ invoice.narration }}{% endif %}
+      {% firstof note invoice.narration as notes %}{% if notes %}<strong>Notes:</strong> {{ notes|linebreaksbr }}{% endif %}
       <div class="thanks">Thank you.</div>
     </div>
     <div class="qr">

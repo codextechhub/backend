@@ -30,10 +30,11 @@ from .pay_links import invoice_pay_url
 def render_document_html(template_name: str, context: dict, *, request=None) -> str:
     """Render a printable finance document template to HTML.
 
-    PDF is produced client-side: the frontend opens this print-ready HTML (the
-    templates carry ``@media print`` / ``@page A4`` rules) and the browser's
-    print-to-PDF renders it. There is no server-side PDF path, so nothing here
-    depends on native rendering libraries.
+    The same templates serve two readers. A member of staff opens the HTML in a
+    browser and prints it (the templates carry ``@media print`` / ``@page A4``
+    rules); :mod:`vs_finance.pdf` renders the identical HTML to the PDF a
+    customer is emailed or downloads. One template is one design, so the
+    printed copy and the attached copy cannot drift apart.
     """
     return render_to_string(template_name, context, request=request)  # Delegate rendering to Django templates.
 
@@ -293,6 +294,9 @@ def invoice_document_context(invoice) -> dict:
             "net_amount": format_naira(ln.net_amount),  # Display net line amount.
         })
 
+    # Worked from the kobo integers, never by parsing formatted strings back.
+    adjustments = int(invoice.total) - int(invoice.amount_paid) - int(invoice.balance_due)
+
     return {  # Return full invoice document context.
         "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
         "customer": _customer_block(invoice.customer),  # Bill-to block.
@@ -310,6 +314,12 @@ def invoice_document_context(invoice) -> dict:
             "has_tax": invoice.tax_total > 0,  # Template flag for tax rows.
             "total": format_naira(invoice.total),  # Display gross total.
             "amount_paid": format_naira(invoice.amount_paid),  # Display paid amount.
+            "has_paid": int(invoice.amount_paid) > 0,  # Template flag for the paid row.
+            # What lowered the balance other than a payment: a credit note,
+            # concession or write-off. Without this row a customer cannot
+            # reconcile Total less Paid against Balance due.
+            "adjustments": ("\u2212\u00a0" if adjustments > 0 else "+\u00a0") + format_naira(abs(adjustments)),
+            "has_adjustments": adjustments != 0,
             "balance_due": format_naira(invoice.balance_due),  # Display outstanding balance.
             "qr_payload": invoice.document_number,  # QR payload currently uses document number.
             # The public pay page. The printable invoice reaches the same
@@ -397,3 +407,45 @@ def render_receipt_document_html(payment, *, request=None) -> str:
         receipt_document_context(payment),  # Build receipt context.
         request=request,  # Pass request for context processors/static absolute paths.
     )
+
+
+# --------------------------------------------------------------------------- #
+# Statement of account                                                        #
+# --------------------------------------------------------------------------- #
+
+def statement_document_context(customer, *, start_date=None, end_date=None, scope=None) -> dict:
+    """Build the render context for the branded statement of account.
+
+    ``scope`` narrows the statement to a reader's branches, as
+    :func:`vs_finance.reports.customer_statement` does; ``None`` is the whole
+    account. A day with nothing charged or paid prints blank rather than a zero,
+    so the column a movement falls in reads at a glance.
+    """
+    from .reports import customer_statement
+
+    statement = customer_statement(customer, start_date=start_date, end_date=end_date, scope=scope)
+    tenant = customer.entity.tenant
+    return {
+        "issuer": _issuer_block(customer.entity, branch=customer.branch),
+        "customer": _customer_block(customer),
+        "statement": {
+            "customer_code": statement.customer_code,
+            "period": statement_period(statement, tenant),
+            "statement_date": format_date(statement.end_date, tenant),
+            "opening_balance": format_naira(statement.opening_balance),
+            "rows": [
+                {
+                    "date": format_date(entry.date, tenant),
+                    "document_number": entry.document_number,
+                    "description": entry.description or entry.doc_type,
+                    "debit": format_naira(entry.debit) if entry.debit else "",
+                    "credit": format_naira(entry.credit) if entry.credit else "",
+                    "balance": format_naira(entry.balance),
+                }
+                for entry in statement.entries
+            ],
+            "total_debits": format_naira(statement.total_debits),
+            "total_credits": format_naira(statement.total_credits),
+            "closing_balance": format_naira(statement.closing_balance),
+        },
+    }

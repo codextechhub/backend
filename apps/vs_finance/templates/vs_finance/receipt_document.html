@@ -81,6 +81,7 @@
   .sign-line{ width:200px; border-top:1px solid var(--ink); margin-bottom:5px; }
   .sign-label{ font-family:var(--label); font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
   .gen-note{ font-size:10px; color:var(--muted); line-height:1.6; max-width:54%; }
+  .gen-note .note{ color:var(--ink); margin-bottom:8px; }
   .gen-note .thanks{ font-style:italic; color:var(--navy); font-size:12px; margin-top:6px; }
 
   @media print{
@@ -114,6 +115,7 @@
         <div class="issuer-meta">
           {% if issuer.address %}{{ issuer.address }}<br>{% endif %}
           {% if issuer.email %}{{ issuer.email }}{% endif %}{% if issuer.email and issuer.phone %} &middot; {% endif %}{% if issuer.phone %}{{ issuer.phone }}{% endif %}
+          {% if issuer.website %}<br>{{ issuer.website }}{% endif %}
         </div>
       </div>
     </div>
@@ -191,6 +193,7 @@
 
   <footer class="footer">
     <div class="gen-note">
+      {% if note %}<p class="note"><strong>Note:</strong> {{ note|linebreaksbr }}</p>{% endif %}
       This is a computer-generated receipt and is valid without a physical signature.
       Retain it as proof of payment.
       <div class="thanks">Thank you - your payment has been received and applied.</div>

@@ -1,14 +1,28 @@
 """Branded PDF copies of the customer-facing finance documents.
 
-These are the files attached to a customer email. Three rules shaped the module:
+These are the files attached to a customer email and the copies a parent or pupil
+downloads from their app.
+
+**The invoice, the receipt and the statement are HTML templates rendered to PDF.**
+WeasyPrint renders ``vs_finance/invoice_document.html``, ``receipt_document.html`` and
+``statement_document.html``; the first two are the templates a member of staff prints
+from the browser, so Mrs Bello sees one design whether the bursar printed her invoice,
+emailed it or she downloaded it herself, and her statement shares their letterhead.
+Rendering is sealed off from the network: the school's logo is read from storage and
+embedded, the typeface is the Noto Serif bundled in ``fonts/`` (so the naira sign has
+a glyph on any server), and every other address in the page is refused rather than
+fetched. Where WeasyPrint's native libraries are missing the document still goes out,
+drawn by the ReportLab layout below, and the failure is logged as an error.
+
+The payslip and the tax summary, and the plain fallback invoice, receipt and
+statement, are drawn with ReportLab. Three rules shaped that layout:
 
 * **One source of truth for the content.** Every renderer is driven by the *same*
   context dict the printable HTML uses (:func:`vs_finance.documents.invoice_document_context`,
   :func:`~vs_finance.documents.receipt_document_context`), so a change to how an
   amount or a line is presented reaches the PDF without anyone remembering to. The
   renderers here decide layout only; they never compute a figure.
-* **One look across the three.** A customer can receive an invoice, a receipt and a
-  statement from the same business in one week, so they share a letterhead, a party
+* **One look across the ReportLab documents.** They share a letterhead, a party
   block, a table style and a footer rather than each inventing their own.
 * **No second money formatter.** The contexts arrive pre-formatted through
   ``format_naira``; nothing here parses an amount back into a number.
@@ -19,8 +33,18 @@ a trial balance and wrong for a document going to a paying customer.
 """
 from __future__ import annotations
 
+import base64
+import functools
 import io
+import logging
+import mimetypes
 from html import escape
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import unquote, urlparse
+
+from django.core.files.storage import default_storage
+from django.template.loader import render_to_string
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -42,6 +66,17 @@ MUTED = colors.HexColor("#667085")
 RULE = colors.HexColor("#D5DFEA")
 BAND = colors.HexColor("#F4F7FB")
 CONTENT_WIDTH = 178 * mm
+
+logger = logging.getLogger(__name__)
+
+FONT_DIR = Path(__file__).resolve().parent / "fonts"
+
+# The bundled faces, as (file, weight, style). The templates use regular, bold and italic.
+_FACES = (
+    ("NotoSerif-Regular.ttf", 400, "normal"),
+    ("NotoSerif-Bold.ttf", 700, "normal"),
+    ("NotoSerif-Italic.ttf", 400, "italic"),
+)
 
 
 def _styles():
@@ -242,14 +277,145 @@ def _build(story, *, title) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Invoice                                                                     #
+# HTML documents rendered to PDF                                              #
 # --------------------------------------------------------------------------- #
 
+def _pdf_stylesheet() -> str:
+    """Page and typeface rules layered over a document template's own CSS.
+
+    The templates name Hoefler Text, Garamond and Georgia, none of which a Linux
+    server has, so the PDF swaps in the bundled serif through the templates'
+    ``--serif`` and ``--label`` tokens. The page margin moves from the ``.page``
+    box to ``@page`` so that a second page of invoice lines keeps its margins.
+    WeasyPrint reads this sheet as the reader's own, which loses to the
+    template's rules, so every rule here is ``!important``. The ``.page`` box is
+    laid out as plain blocks: the flex column that pins a
+    printed page's footer to its foot spreads the sections apart in WeasyPrint
+    and pushes the footer onto a page of its own. The header row carries the
+    navy fill as well as its cells, so no seam shows between them.
+    """
+    faces = "".join(
+        f'@font-face{{font-family:"Document Serif";src:url("{(FONT_DIR / name).as_uri()}");'
+        f"font-weight:{weight};font-style:{style};}}"
+        for name, weight, style in _FACES
+    )
+    return faces + """
+      :root{ --serif:"Document Serif",serif !important; --label:"Document Serif",serif !important; }
+      @page{ size:A4 portrait !important; margin:14mm 14mm 12mm !important; }
+      html,body{ background:#fff !important; padding:0 !important; }
+      .page{ display:block !important; width:auto !important; min-height:0 !important;
+        padding:0 !important; margin:0 !important; box-shadow:none !important; }
+      .footer{ margin-top:24px !important; }
+      table.items thead tr, table.alloc thead tr{ background:var(--navy) !important; }
+    """
+
+
+def _embedded_logo(issuer) -> str:
+    """The issuer's stored logo as a ``data:`` URI, or ``""`` to draw the initials crest.
+
+    The HTML document carries a URL signed for whoever opened it, and an emailed
+    document has no reader to sign for, so the PDF reads the bytes from storage
+    instead. A platform logo is an address typed into Platform Settings rather than
+    a stored file; it is not fetched, so CodeX's documents print the crest.
+    """
+    name = issuer.get("logo_name") or ""
+    mime = mimetypes.guess_type(name)[0] or ""
+    if not name or not mime.startswith("image/"):
+        return ""
+    try:
+        with default_storage.open(name, "rb") as handle:
+            data = handle.read()
+    except Exception:  # A missing file prints the crest rather than failing the document.
+        logger.warning("Finance document logo %s could not be read", name, exc_info=True)
+        return ""
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+@functools.cache
+def _weasyprint():
+    """WeasyPrint's renderer classes, or None where its native libraries are missing.
+
+    Loaded once per process and the answer kept. A failed load leaves libraries
+    half opened, and a third attempt in the same process crashes it outright, so
+    a server without Pango must not try again on every document.
+    """
+    try:
+        from weasyprint import CSS, HTML
+        from weasyprint.text.fonts import FontConfiguration
+        from weasyprint.urls import URLFetcher
+    except (ImportError, OSError):
+        logger.exception("WeasyPrint could not load; invoices and receipts use the plain layout")
+        return None
+    return SimpleNamespace(HTML=HTML, CSS=CSS, FontConfiguration=FontConfiguration,
+                           URLFetcher=URLFetcher)
+
+
+def _local_only_fetcher(base):
+    """A WeasyPrint fetcher that reads ``data:`` URIs and the bundled fonts, nothing else.
+
+    The page is built from text a school typed (names, narrations, addresses) and is
+    rendered on the server, so nothing in it may make the server request an address:
+    not a remote image, not an internal service, not another file on disk. ``base``
+    is WeasyPrint's ``URLFetcher``.
+    """
+    class LocalOnlyFetcher(base):
+        def fetch(self, url, headers=None):
+            parsed = urlparse(url)
+            if parsed.scheme == "data" or (
+                parsed.scheme == "file"
+                and Path(unquote(parsed.path)).resolve().parent == FONT_DIR
+            ):
+                return super().fetch(url, headers)
+            raise ValueError(f"{url!r} is not fetched into a finance document")
+
+    return LocalOnlyFetcher(allowed_protocols=("data", "file"))
+
+
+def _html_document_pdf(template_name: str, context: dict, *, note: str) -> bytes | None:
+    """Render a printable document template to PDF, or ``None`` when WeasyPrint cannot load.
+
+    ``note`` is the sender's covering note on an emailed copy; the templates print it
+    in place of the invoice's narration.
+    """
+    engine = _weasyprint()
+    if engine is None:
+        logger.error("WeasyPrint is unavailable; %s went out in the plain layout", template_name)
+        return None
+
+    issuer = {**context["issuer"], "logo": _embedded_logo(context["issuer"])}
+    html = render_to_string(template_name, {**context, "issuer": issuer, "note": note})
+    fonts = engine.FontConfiguration()
+    fetcher = _local_only_fetcher(engine.URLFetcher)
+    return engine.HTML(string=html, url_fetcher=fetcher).write_pdf(
+        stylesheets=[engine.CSS(string=_pdf_stylesheet(), font_config=fonts, url_fetcher=fetcher)],
+        font_config=fonts,
+    )
+
+
 def invoice_pdf(invoice, *, note: str = "") -> bytes:
-    """Render the branded invoice a customer receives by email."""
+    """The invoice a customer is emailed or downloads, in the printable design."""
     from .documents import invoice_document_context
 
     context = invoice_document_context(invoice)
+    pdf = _html_document_pdf("vs_finance/invoice_document.html", context, note=note)
+    return pdf if pdf is not None else _plain_invoice_pdf(invoice, context, note=note)
+
+
+def receipt_pdf(payment, *, note: str = "") -> bytes:
+    """The receipt a customer is emailed or downloads, in the printable design."""
+    from .documents import receipt_document_context
+
+    context = receipt_document_context(payment)
+    pdf = _html_document_pdf("vs_finance/receipt_document.html", context, note=note)
+    return pdf if pdf is not None else _plain_receipt_pdf(context, note=note)
+
+
+# --------------------------------------------------------------------------- #
+# Invoice and receipt, plain layout                                           #
+# --------------------------------------------------------------------------- #
+
+def _plain_invoice_pdf(invoice, context, *, note: str = "") -> bytes:
+    """The invoice drawn with ReportLab, for a server without WeasyPrint's libraries."""
     issuer, customer, inv = context["issuer"], context["customer"], context["invoice"]
     styles = _styles()
 
@@ -307,15 +473,8 @@ def invoice_pdf(invoice, *, note: str = "") -> bytes:
     return _build(story, title=f"Invoice {inv['document_number']}")
 
 
-# --------------------------------------------------------------------------- #
-# Receipt                                                                     #
-# --------------------------------------------------------------------------- #
-
-def receipt_pdf(payment, *, note: str = "") -> bytes:
-    """Render the branded receipt a customer receives by email."""
-    from .documents import receipt_document_context
-
-    context = receipt_document_context(payment)
+def _plain_receipt_pdf(context, *, note: str = "") -> bytes:
+    """The receipt drawn with ReportLab, for a server without WeasyPrint's libraries."""
     issuer, customer, rcp = context["issuer"], context["customer"], context["receipt"]
     styles = _styles()
 
@@ -382,42 +541,37 @@ def receipt_pdf(payment, *, note: str = "") -> bytes:
 
 def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
                   scope=None) -> bytes:
-    """Render a statement of account for ``customer`` over the given period.
+    """The statement of account a customer is emailed, in the printable design.
 
     ``scope`` narrows it to a reader's branches, as
     :func:`vs_finance.reports.customer_statement` does; ``None`` is the whole account.
     """
-    from vs_config.display import format_date
+    from .documents import statement_document_context
 
-    from .documents import _customer_block, _issuer_block, statement_period
-    from .money import format_naira
-    from .reports import customer_statement
-
-    statement = customer_statement(
+    context = statement_document_context(
         customer, start_date=start_date, end_date=end_date, scope=scope,
     )
-    issuer = _issuer_block(customer.entity, branch=customer.branch)
-    tenant = customer.entity.tenant
+    pdf = _html_document_pdf("vs_finance/statement_document.html", context, note=note)
+    return pdf if pdf is not None else _plain_statement_pdf(context, note=note)
+
+
+def _plain_statement_pdf(context, *, note: str = "") -> bytes:
+    """The statement drawn with ReportLab, for a server without WeasyPrint's libraries."""
+    issuer, customer, stmt = context["issuer"], context["customer"], context["statement"]
     styles = _styles()
 
     widths = [CONTENT_WIDTH * 0.13, CONTENT_WIDTH * 0.17, CONTENT_WIDTH * 0.26,
               CONTENT_WIDTH * 0.14, CONTENT_WIDTH * 0.14, CONTENT_WIDTH * 0.16]
-    rows = [[
-        format_date(entry.date, tenant),
-        entry.document_number,
-        entry.description or entry.doc_type,
-        _bare(format_naira(entry.debit)) if entry.debit else "",
-        _bare(format_naira(entry.credit)) if entry.credit else "",
-        _bare(format_naira(entry.balance)),
-    ] for entry in statement.entries]
+    rows = [[row["date"], row["document_number"], row["description"],
+             _bare(row["debit"]), _bare(row["credit"]), _bare(row["balance"])]
+            for row in stmt["rows"]]
 
-    period = statement_period(statement, tenant)
     story = [
         _letterhead(issuer, "Statement of account", "", styles),
         Spacer(1, 6 * mm),
-        _party_and_meta(_customer_block(customer), [
-            ("Period", period),
-            ("Opening balance", format_naira(statement.opening_balance)),
+        _party_and_meta(customer, [
+            ("Period", stmt["period"]),
+            ("Opening balance", stmt["opening_balance"]),
         ], styles),
         Spacer(1, 6 * mm),
     ]
@@ -431,10 +585,10 @@ def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
     story.extend([
         Spacer(1, 4 * mm),
         _totals([
-            ("Opening balance", format_naira(statement.opening_balance)),
-            ("Total charges", format_naira(statement.total_debits)),
-            ("Total payments and credits", format_naira(statement.total_credits)),
-            ("Closing balance", format_naira(statement.closing_balance)),
+            ("Opening balance", stmt["opening_balance"]),
+            ("Total charges", stmt["total_debits"]),
+            ("Total payments and credits", stmt["total_credits"]),
+            ("Closing balance", stmt["closing_balance"]),
         ], styles),
     ])
 
@@ -448,7 +602,7 @@ def statement_pdf(customer, *, start_date=None, end_date=None, note: str = "",
                   styles["Centre"]),
     ])
 
-    return _build(story, title=f"Statement of account {statement.customer_code}")
+    return _build(story, title=f"Statement of account {stmt['customer_code']}")
 
 
 # --------------------------------------------------------------------------- #
