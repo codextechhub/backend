@@ -682,6 +682,43 @@ class SchoolDefaultsReachCopiesOnceTests(TestCase):
         for role in (self.lekki_admin, self.lekki_teacher, self.sunrise_branch_admin):
             self.assertFalse(self.holds(role, "gradebook.hold.view"))
 
+    def test_the_billing_keys_reach_every_finance_admin_copy(self):
+        """Billing a class reads its list, the term it is billed for and the
+        school's fee rules. Both schools opened before Finance Admin held those
+        keys; on the next run each school's Finance Admin can read the roll,
+        the classes and the sessions, and read and change the fee rules.
+        """
+        keys = (
+            "school.students.view", "academics.classes.view",
+            "academics.session.view", "school.fees.view", "school.fees.update",
+        )
+        finance = (self.bright_finance, self.sunrise_finance)
+        PrebuiltRolePermission.objects.filter(
+            prebuilt_role__key="finance_admin", permission_id__in=keys,
+        ).delete()
+        TenantRolePermission.objects.filter(
+            role__in=finance, permission_id__in=keys,
+        ).delete()
+
+        _run_school_seed()
+
+        for role in finance:
+            for key in keys:
+                self.assertTrue(self.holds(role, key), f"{role.name} lacks {key}")
+
+    def test_finance_admin_reads_no_medical_field_by_default(self):
+        """Reading the roll does not open a child's medical record: blood group,
+        allergies and conditions are sensitive, so no role reads them until a
+        school turns the switch on.
+        """
+        from vs_rbac.field_registry import get_declaration
+
+        specs = {s.name: s for s in get_declaration("school", "students").fields}
+        for name in ("blood_group", "allergies", "conditions", "status_reason"):
+            spec = specs[name]
+            self.assertTrue(spec.sensitive, name)
+            self.assertNotIn("finance_admin", spec.read_by, name)
+
     def test_nobody_holds_the_enter_any_key_by_default(self):
         _run_school_seed()
         self.assertEqual(self.holders("gradebook.sheet.enter_any"), set())

@@ -89,8 +89,12 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "branches", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("school", "branches", "delete",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
-    ("school", "students", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
-    ("school", "students", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # Finance Admin reads the roll because billing a class is choosing pupils
+    # from its class list. A child's medical fields and the reasons behind a
+    # status change stay closed to it: they are sensitive Field Access fields
+    # and open only where a school turns the switch on.
+    ("school", "students", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN)),
+    ("school", "students", "create",          _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "transition",       _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "transfer",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
@@ -195,8 +199,11 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "administrators", "suspend",    _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "administrators", "reactivate", _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
-    ("school", "fees", "view",                 _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    ("school", "fees", "update",               _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # The school's own fee rules: when a bill falls due and whether pupils may
+    # pay their own fees. They sit in Finance Settings beside the finance
+    # console's own sections, so the role that runs the money holds both.
+    ("school", "fees", "view",                 _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_FINANCE_ADMIN)),
+    ("school", "fees", "update",               _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_FINANCE_ADMIN)),
 
     ("school", "settings", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "settings", "update",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -250,7 +257,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "impersonation", "view",        _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
 
     # module: academics
-    ("academics", "session", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    # Finance Admin reads sessions and classes for the same reason it reads
+    # the roll: a fee structure is linked to a term, and a class is billed
+    # from its list.
+    ("academics", "session", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN)),
     ("academics", "session", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "session", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "session", "activate",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -262,7 +272,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "calendar", "update",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "calendar", "delete",        _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
-    ("academics", "classes", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "classes", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN)),
     ("academics", "classes", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "classes", "archive",        _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
