@@ -144,14 +144,25 @@ def _bank_or_404(request, pk, *, entity=None, active_only=False):
 class BankAccountListCreateView(_FinanceBase):
     """GET (list) / POST (create) bank accounts for an entity.
 
+    Reading is open to ``finance.bankaccount.view`` and to whoever may raise a
+    supplier payment, because the payment form's Pay from picker is this list:
+    a Procurement Admin holding no finance key could otherwise record a bill
+    and never pay it. What each account shows is still its Field Access
+    switches' to decide. Creating one needs ``finance.bankaccount.create``.
+
     docstring-name: Bank accounts
     """
 
     @property
-    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.bankaccount.create" if self.request.method == "POST" \
-            else "finance.bankaccount.view"
+        """The create key for a write; the bank or supplier payment grants for a read."""
+        if self.request.method == "POST":
+            return "finance.bankaccount.create"
+        return [
+            "finance.bankaccount.view",
+            "procurement.vendor_payment.create",
+            "procurement.vendor_payment.update",
+        ]
 
     # Handle GET requests for this endpoint.
     def get(self, request):

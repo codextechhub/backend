@@ -90,16 +90,16 @@ def _upsert_by_code(model, lookup, body, fields, *, check=None):
 class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) currencies - **global** reference data (no entity).
 
-    Reading is open to anyone holding a finance key: a currency is a code, a
-    name and a symbol, and the currency picker on invoices and bills reads this
-    list. Creating one still needs ``finance.currency.create``.
+    Reading is open to anyone holding a finance or procurement key: a currency
+    is a code, a name and a symbol, and the currency picker on invoices, bills
+    and purchase orders reads this list. Creating one still needs ``finance.currency.create``.
 
     docstring-name: Currencies
     """
 
     shared_subject = "the currencies"
 
-    rbac_modules = ["finance"]
+    rbac_modules = ["finance", "procurement"]
     rbac_permission = "finance.currency.create"
 
     def get_permissions(self):
@@ -185,18 +185,19 @@ class FxRateListCreateView(WholeTenantWriteMixin, _FinanceBase):
 class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
     """GET (list) / POST (create) tax codes for an entity.
 
-    Reading is open to anyone holding a finance key: a tax code is a name, a
-    rate and the accounts it posts to, and the tax picker on every invoice and
-    bill line reads this list. Gating it on ``finance.taxcode.view`` left a
-    bursar who may raise an invoice unable to choose its VAT. Creating one still
-    needs ``finance.taxcode.create``.
+    Reading is open to anyone holding a finance or procurement key: a tax code
+    is a name, a rate and the accounts it posts to, and the tax picker on every
+    invoice and bill line reads this list, as does the withholding tax picker on
+    a supplier payment. Gating it on ``finance.taxcode.view`` left a bursar who
+    may raise an invoice unable to choose its VAT. Creating one still needs
+    ``finance.taxcode.create``.
 
     docstring-name: Tax codes
     """
 
     shared_subject = "the tax codes"
 
-    rbac_modules = ["finance"]
+    rbac_modules = ["finance", "procurement"]
     rbac_permission = "finance.taxcode.create"
 
     def get_permissions(self):

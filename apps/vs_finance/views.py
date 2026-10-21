@@ -412,7 +412,11 @@ class EntityListCreateView(generics.ListCreateAPIView):
     stricter than everything that consumes it - a caller holding, say,
     ``finance.concession.view`` could be refused the very picker that gets them
     to concessions. Module membership matches the real authority: anyone already
-    working in finance is entitled to see which books their tenant has.
+    working in finance or procurement is entitled to see which books their
+    tenant has. Procurement is named because every procurement screen resolves
+    its books through this list first, so a head of department who may raise a
+    requisition, or a Procurement Admin holding no finance key, would otherwise
+    be refused every procurement screen.
 
     docstring-name: Ledger entities
     """
@@ -422,7 +426,7 @@ class EntityListCreateView(generics.ListCreateAPIView):
         if self.request.method == "POST":
             self.rbac_permission = "finance.entity.create"
             return [(IsAuthenticatedAndActive & HasRBACPermission)()]
-        self.rbac_modules = ["finance"]
+        self.rbac_modules = ["finance", "procurement"]
         return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle the get serializer class workflow.
@@ -472,10 +476,11 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
 
     * The plain list and the tagged tree are a code, a name and a role per
       account, for books the caller is already entitled to. Anyone holding a
-      finance key may read them, as with fiscal periods and cost centres;
-      gating them on ``finance.account.view`` left a bursar who may build a
-      budget with no account to put on a line, and one who may add a customer
-      with no receivable account to choose.
+      finance or procurement key may read them, as with fiscal periods and
+      cost centres; gating them on ``finance.account.view`` left a bursar who
+      may build a budget with no account to put on a line, one who may add a
+      customer with no receivable account to choose, and a buyer with no
+      expense account for an order line.
     * The balances are the ledger, so ``with_balance`` keeps
       ``finance.account.view``, and a branch-bound reader's balances are the
       journals of their own branches only, read through
@@ -497,7 +502,7 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
         elif self._with_balance():
             self.rbac_permission = "finance.account.view"
         else:
-            self.rbac_modules = ["finance"]
+            self.rbac_modules = ["finance", "procurement"]
             return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
         return [(IsAuthenticatedAndActive & HasRBACPermission)()]
 
@@ -902,9 +907,9 @@ class AccountActivityView(APIView):
 class FiscalPeriodListView(_BranchStatesListMixin, EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/periods/?entity= - the entity's fiscal periods.
 
-    Open to anyone holding a finance key, the same rule as the entity list and
-    the posting window. Every finance report offers a period filter built from
-    this list, and a period is a name, two dates and a status for books the
+    Open to anyone holding a finance or procurement key, the same rule as the
+    entity list and the posting window. Every finance report offers a period
+    filter built from this list, procurement forms date their documents in it, and a period is a name, two dates and a status for books the
     caller is already entitled to. Gating it on ``finance.period.view`` left a
     bursar who may run reports unable to pick which month to run them for.
     That key still gates the Fiscal Periods setup screen, and closing,
@@ -923,7 +928,7 @@ class FiscalPeriodListView(_BranchStatesListMixin, EntityScopedListMixin, generi
 
     serializer_class = FiscalPeriodSerializer
     permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
-    rbac_modules = ["finance"]
+    rbac_modules = ["finance", "procurement"]
 
     def list(self, request, *args, **kwargs):
         """Return one complete year when ``?all=true&year=``; paginate otherwise."""
@@ -1021,9 +1026,10 @@ class FiscalYearListView(
     ``POST`` accepts ``year``, ``start_month``, ``fiscal_start_day`` and
     ``frequency`` (MONTHLY/QUARTERLY), then provisions the complete set of periods.
 
-    Reading is open to anyone holding a finance key, the rule the period list
-    follows: a year is a label, two dates and a status for books the caller is
-    already entitled to, and the New budget form picks its year from this list.
+    Reading is open to anyone holding a finance or procurement key, the rule
+    the period list follows: a year is a label, two dates and a status for
+    books the caller is already entitled to. The New budget form picks its year
+    from this list, and a requisition's budget check reads it.
     Gating it on ``finance.period.view`` left a bursar who may create budgets
     unable to choose a year. Opening a year keeps ``finance.period.create``.
 
@@ -1039,7 +1045,7 @@ class FiscalYearListView(
         if self.request.method == "POST":
             self.rbac_permission = "finance.period.create"
             return [(IsAuthenticatedAndActive & HasRBACPermission)()]
-        self.rbac_modules = ["finance"]
+        self.rbac_modules = ["finance", "procurement"]
         return [(IsAuthenticatedAndActive & HasAnyModuleAccess)()]
 
     # Handle the entity qs workflow.
