@@ -27,7 +27,10 @@ wins and the rest is corrected.
 8. Text only in the first release. Attachments, SMS and scheduled sending are
    later work (SMS is never planned: channels are in-app, email and push).
 
-## 2. Decisions taken in the build (reported to the owner for confirmation)
+## 2. Decisions taken in the build (confirmed by the owner, 21 October 2026)
+
+The owner confirmed all seven on 21 October 2026, so they stand beside the
+decisions of section 1 and are not reopened.
 
 - **Who a family can reach about a child.** The child's class teacher this
   year, the teachers with a teaching assignment for the child's class this year
