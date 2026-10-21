@@ -289,8 +289,8 @@ class Command(BaseCommand):
                 prebuilt, keys, branch_copies=True, tenant_kind="SCHOOL",
             )
             self.stdout.write(
-                f"  {prebuilt_key}: attached {len(attached)} new default(s), "
-                f"{grown} grant(s) added to schools' copies."
+                f"  {prebuilt_key}: attached {counted(len(attached), 'new default')}, "
+                f"{counted(grown, 'grant')} added to schools' copies."
                 if attached else f"  {prebuilt_key}: defaults already attached."
             )
 

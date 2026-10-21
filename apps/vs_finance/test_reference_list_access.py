@@ -4,8 +4,10 @@ Accounts, tax codes, currencies, fiscal years, fiscal periods, cost centres and
 dimensions are the options behind the report filters, the pickers on invoice,
 bill and budget lines, and the New budget form. Each is a name and a code
 for books the caller is already entitled to, so reading them follows module
-membership: anyone holding a finance key may read them, nobody else may, and
-creating one still needs its own key. The chart's tagged tree (which account is
+membership: anyone holding a finance key may read them, and so may anyone
+holding a procurement key for the accounts, tax codes, currencies, years and
+periods a purchasing form picks from. Nobody else may, and creating one still
+needs its own key. The chart's tagged tree (which account is
 a receivable control) is readable the same way; account balances are the
 entity's whole ledger and stay behind ``finance.account.view``.
 """
@@ -89,11 +91,20 @@ class FinanceReferenceListAccessTests(TestCase):
         response.render()
         return response
 
-    def test_caller_without_a_finance_key_is_refused_every_list(self):
-        user = self.user_holding("procurement.vendor.view", email="no-finance@test.com")
+    def test_caller_outside_finance_and_procurement_is_refused_every_list(self):
+        user = self.user_holding("school.students.view", email="no-finance@test.com")
         for path, view in self.ENDPOINTS:
             with self.subTest(path=path):
                 self.assertEqual(self.call(view, path, user).status_code, 403)
+
+    def test_a_procurement_reader_reads_what_a_purchasing_form_picks_from(self):
+        user = self.user_holding("procurement.vendor.view", email="buyer-lists@test.com")
+        opened = {"/v1/finance/accounts/", "/v1/finance/tax-codes/",
+                  "/v1/finance/fiscal-years/", "/v1/finance/periods/"}
+        for path, view in self.ENDPOINTS:
+            with self.subTest(path=path):
+                expected = 200 if path in opened else 403
+                self.assertEqual(self.call(view, path, user).status_code, expected)
 
     def test_another_tenants_books_stay_unreachable(self):
         foreign = Tenant.objects.create(
@@ -125,12 +136,15 @@ class FinanceReferenceListAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([row["year"] for row in response.data["data"]], [2026])
 
-    def test_currencies_are_read_on_any_finance_key_and_created_on_their_own(self):
+    def test_currencies_are_read_on_any_finance_or_procurement_key_and_created_on_their_own(self):
         path = "/v1/finance/currencies/"
         reader = self.user_holding("finance.invoice.create", email="currency-reader@test.com")
         self.assertEqual(self.call(CurrencyListCreateView, path, reader).status_code, 200)
 
-        outsider = self.user_holding("procurement.vendor.view", email="currency-outsider@test.com")
+        buyer = self.user_holding("procurement.vendor.view", email="currency-buyer@test.com")
+        self.assertEqual(self.call(CurrencyListCreateView, path, buyer).status_code, 200)
+
+        outsider = self.user_holding("school.students.view", email="currency-outsider@test.com")
         self.assertEqual(self.call(CurrencyListCreateView, path, outsider).status_code, 403)
 
         writer = self.call(CurrencyListCreateView, path, reader, method="post", data={"code": "XQX"})
