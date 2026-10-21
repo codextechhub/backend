@@ -69,6 +69,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("confirm",    "Finalise a pending action (confirm enrolment, confirm booking)."),
     ("process",    "Move a record through a workflow step (admissions, applications)."),
     ("generate",   "Produce a document or report on demand (ID cards, report cards)."),
+    ("inspect",    "Read a conversation you take no part in, read-only, with every opening recorded."),
+    ("office",     "Act as the school office for the branches in reach (the contact families write to)."),
 
     # ── Communication ─────────────────────────────────────────────────────────
     ("send",       "Dispatch a message - SMS, email, or push notification."),

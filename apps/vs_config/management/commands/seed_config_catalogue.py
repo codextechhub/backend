@@ -313,6 +313,26 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "messages.families_enabled", "Parents Can Message Staff",
+        "Whether parents may message the staff of their children. Off, "
+        "existing conversations stay readable and nobody starts a new one or "
+        "writes in one.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "messages.pupils_enabled", "Pupils Can Message Staff",
+        "Whether pupils may message their teachers and the school office. "
+        "Off, existing conversations stay readable and nobody starts a new "
+        "one or writes in one.",
+        "BOOLEAN", True, {},
+    ),
+    (
+        "messages.family_reach_subject_teachers", "Families Can Reach Subject Teachers",
+        "Whether a family may message every teacher of their child's class "
+        "this year, not only the class teacher and the school office.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "students.portal.session_days", "Student App Sign-In Length",
         "How many days a student stays signed in to the student app on their "
         "phone or tablet without opening it. Each use starts the count again, "

@@ -131,6 +131,21 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "notices", "post",              _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "class_notices", "post",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_TEACHER)),
 
+    # Messaging. Taking part is for current staff: the inbox, writing, and the
+    # staff end of conversations with families. A school leader may read a
+    # group, a broadcast or a pupil's conversation without joining it; each
+    # opening is recorded. See docs/messaging/messaging-design.md.
+    ("school", "messages", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN)),
+    ("school", "messages", "send",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER, ROLE_FINANCE_ADMIN)),
+    ("school", "messages", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "family_messages", "send",      _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("school", "family_messages", "office",    _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "message_groups", "create",     _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "message_broadcasts", "send",   _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "message_groups", "inspect",    _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "message_broadcasts", "inspect", _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "message_welfare", "inspect",   _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+
     # The staff directory and every staff record, read as the role allows. A
     # teacher does not hold it: a teacher reads a colleague's profile as far as
     # the school's staff profile policy shows colleagues and line managers
@@ -425,6 +440,11 @@ RESOURCE_LABELS: dict[tuple[str, str], str] = {
     ("school", "portal_access"): "Pupil portal access",
     ("school", "notices"): "Notices",
     ("school", "class_notices"): "Class notices",
+    ("school", "messages"): "Messages",
+    ("school", "family_messages"): "Messages with families",
+    ("school", "message_groups"): "Staff message groups",
+    ("school", "message_broadcasts"): "Staff broadcasts",
+    ("school", "message_welfare"): "Pupil conversations (welfare oversight)",
     ("academics", "electives"): "Who takes what",
     ("academics", "department"): "Departments",
     # The keys say ``teachers`` because ``Permission.key`` is a primary key
@@ -449,6 +469,11 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "portal_access"):  "Pupils' and guardians' own sign-in accounts for the pupil and parent portals",
     ("school", "notices"):        "Notices the school posts to its pupils",
     ("school", "class_notices"):  "Notices a teacher posts to the classes they teach",
+    ("school", "messages"):       "Conversations between staff: the inbox, writing, and downloading a conversation",
+    ("school", "family_messages"): "The staff end of conversations with parents and pupils, and being the school office",
+    ("school", "message_groups"): "Staff group chats: making one, and reading any in reach read-only",
+    ("school", "message_broadcasts"): "One-to-many messages to staff: sending one, and reading any in reach read-only",
+    ("school", "message_welfare"): "Reading a pupil's conversation with staff read-only, with every opening recorded",
     # Fields only: a guardian is read and corrected with the student keys.
     ("school", "guardians"):      "Parents and guardians, and the details the school reaches them on",
     # "Staff" rather than "Teacher": this resource governs the bursar and the

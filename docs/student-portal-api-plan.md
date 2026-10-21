@@ -36,13 +36,16 @@ permission module.
 > 2. **A pupil may start a payment**, behind a per-school setting
 >    (`fees.student_payment_enabled`, default on) and a per-school minimum part
 >    payment (`fees.min_part_payment`, default ₦1,000.00).
-> 3. **Notices are built now; Messages and Assignments wait** (owner
->    decision, 16 October 2026, revising the 15 October one to build all
->    three). No staff design prompt is issued for them. Notices are built from
->    the student design, with the staff side written here (section 13). When
->    Messages are built, no staff-pupil thread is private: every one is
+> 3. **Notices are built now; Messages are built by Module 32; Assignments
+>    wait** (owner decision, 16 October 2026, revising the 15 October one to
+>    build all three). No staff design prompt is issued for Notices or
+>    Assignments. Notices are built from the student design, with the staff
+>    side written here (section 13). Messages are built by Module 32
+>    (`schools.vs_messages`) at `/v1/portal/student/messages/...`, designed in
+>    `docs/messaging/messaging-design.md`, and they implement the 15 October
+>    2026 owner decision: no staff-pupil thread is private, and every one is
 >    readable by the pupil's primary guardian and, read-only and audited, by
->    staff holding a welfare oversight key (owner decision, 15 October 2026).
+>    staff holding the welfare oversight key (`school.message_welfare.inspect`).
 > 4. **The promotion pass mark is a per-school staff setting**
 >    (`students.promotion_pass_mark`) shown to staff on the promotion screen,
 >    for information only: it decides nothing. The student portal does not
@@ -76,6 +79,9 @@ permission module.
    were removed from Module 8's scope because nothing implements them, and
    Module 29 "Tasks & Assignments" is CodeX's internal tracker, not homework.
    These are three new modules, and whether to build them now is decision 3.
+   Since then (21 October 2026) Messages are built as Module 32
+   (`schools.vs_messages`, MRD v2.109) behind `/v1/portal/student/messages/...`
+   and Notices are built; only Assignments remain unowned and parked.
 4. **Paying is the one place the design reverses a recorded decision.** The
    FAL's port design says the student portal gets the read port only and is
    "structurally incapable" of starting a payment (`schools/core/fal/ports.py:48`).
@@ -107,7 +113,7 @@ the caller, so there is no identifier to guess.
 | **Receipt** | Receipt number, date, reference, payer, class and admission number, invoice and part or final, amount, method, balance after this payment; Download PDF | **Wrong shape** (balance after is live, no PDF route) | `GET me/fees/payments/{ref}/receipt/` (JSON) and `?format=pdf` |
 | **Profile** | Read-only: full name, admission number, class and session, date of birth, school email, primary guardian with relationship and phone. Editable: phone, personal email, photo | **Absent** | `GET/PATCH me/profile/` · `POST/DELETE me/profile/photo/` |
 | **Notices** | Feed of school-wide and class notices (title, date, scope, body, unread); open one; mark read; mark all read | **Absent, no owning module** | decision 3 |
-| **Messages** | Threads with a teacher or the office (name, role, last message, time, unread); a thread; send | **Absent, no owning module** | decision 3 |
+| **Messages** | Threads with a teacher or the office (name, role, last message, time, unread); a thread; send | **Built by Module 32** (`schools.vs_messages`) | `GET, POST /v1/portal/student/messages/conversations/`, `conversations/<id>/messages/`, `conversations/<id>/read/`, `unread-count/`, `contacts/`; see `docs/messaging/messaging-design.md` |
 | **Assignments** | List (subject, title, teacher, due, status, due-soon); detail with teacher's attachments; submit text and or one file once; submitted and graded states (score of total, feedback) | **Absent, no owning module** | decision 3 |
 
 **Served today once a student has an account:** the notification inbox
@@ -338,11 +344,13 @@ default to `school_admin` and `branch_admin`, with a backfill phase in
 
 ## 7. Not ours to invent
 
-Messages, Notices and Assignments have no owning module. If decision 3 says
-build, each becomes its own module with its own FRD and MRD entry, designed
-from the staff side as well (a teacher has to post a notice, set homework and
-mark it, and answer a message, and none of those staff screens are designed).
-The portal plan does not invent their endpoints.
+Messages are built by Module 32 (`schools.vs_messages`, design in
+`docs/messaging/messaging-design.md`), which owns their endpoints, so this plan
+does not invent them. Notices are built (section 13). Assignments still have no
+owning module and stay parked: if built, they become their own module with its
+own FRD and MRD entry, designed from the staff side as well (a teacher has to
+set homework and mark it, and none of those staff screens are designed). The
+portal plan does not invent their endpoints.
 
 ## 8. Dead API
 
@@ -366,6 +374,8 @@ its own read switch under the student record.
 1. How does a pupil get their first password? (section 3.1 R3)
 2. May a pupil start a payment at all? (reverses the FAL port decision)
 3. Messages, Notices, Assignments: build now as new modules, or park?
+   (Answered: Notices built; Messages built by Module 32 on 21 October 2026;
+   Assignments parked.)
 4. The pass mark on the promotion tile.
 
 ## 11. Build order (after approval)
@@ -377,7 +387,9 @@ its own read switch under the student record.
    fees and payment history, receipts with the frozen balance and the PDF.
 3. **Money (if decision 2):** student pay bridge, payer and channel capture,
    the minimum-part-payment setting, payer notification.
-4. **New modules (if decision 3):** each from its own plan.
+4. **New modules (if decision 3):** each from its own plan. Messages: built
+   by Module 32, `docs/messaging/messaging-design.md`. Notices: built
+   (section 13). Assignments: parked.
 5. **Seeder:** `seed_student_portal_scenarios`, driven through the real
    services: Chiamaka with every term released, a classmate with a held third
    term, a pupil with no portal access, one with an unpublished timetable, one
@@ -600,8 +612,10 @@ savepoint of its own:
 
 Every block carries `available`. A block whose read raises is logged and
 answered `{"available": false, "message": ...}` with a sentence to show, never
-a zero, and the others still arrive. Assignments and messages have no block,
-because neither is built.
+a zero, and the others still arrive. Assignments have no block because they
+are not built. Messages are built by Module 32, and the home does not yet carry
+a messages block: the pupil's unread count is
+`GET /v1/portal/student/messages/unread-count/`.
 
 ### 13.9 Student app sessions (installable app, owner decisions of 16 October)
 
@@ -727,5 +741,32 @@ tells a pupil with an account that their term's result is ready (in-app and
 push). Keys: `WEB_PUSH_VAPID_PUBLIC_KEY` / `_PRIVATE_KEY` / `WEB_PUSH_CONTACT`
 per environment; without them push is off.
 
-Messages and Assignments when their turn comes. For the installable app: applying transfers to open bills
+Messages are built by Module 32 (`docs/messaging/messaging-design.md`); Assignments wait for their turn. For the installable app: applying transfers to open bills
 (per-school switch, default on), and push.
+
+### 13.10 Messages (Module 32, 21 October 2026)
+
+Messages are built by Module 32, `schools.vs_messages`, and mounted in this
+portal by one `include` line at `/v1/portal/student/messages/`. The contract and
+the owner decisions are in `docs/messaging/messaging-design.md`; this note
+records only what touches the pupil.
+
+- The pupil starts a conversation with one of their own teachers (the class
+  teacher, the teachers of their class this year while
+  `messages.family_reach_subject_teachers` is on) or the school office, and
+  reads and writes in their own conversations. Contacts and rows carry a
+  label ("Class teacher, JSS1 B", the subjects taught, "School office").
+- The 15 October decision is implemented: no staff-pupil conversation is
+  private. Every one is readable, read-only, by the pupil's primary guardian
+  (who is not alerted to it), and by staff holding
+  `school.message_welfare.inspect` within reach of the child's branch, each
+  opening of which is audited. The list and the contacts page carry
+  `oversight_notice`: "Your parent or guardian and the school can read your
+  messages."
+- `messages.pupils_enabled` (default on) switches pupil messaging: off, existing
+  conversations stay readable and nobody starts or writes in one.
+- A new message alerts the pupil through Module 8 (`messages.new_message_pupil`,
+  in-app, email and push; no message text); a push opens
+  `/student/messages/<id>`, and reading the conversation clears its alert.
+- The pupil's payload is a fixed narrow shape: no Field Access switch of a staff
+  role reaches it.

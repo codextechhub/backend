@@ -71,6 +71,7 @@ class AuditModuleKey(models.TextChoices):
     ATTENDANCE = "ATTENDANCE", "Attendance Management"
     GRADEBOOK = "GRADEBOOK", "Gradebook and Assessments"
     NOTICES = "NOTICES", "Notices"
+    MESSAGES = "MESSAGES", "Messages and Conversations"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
@@ -242,6 +243,16 @@ class AuditActionType(models.TextChoices):
     # and correcting use CREATE and UPDATE.
     NOTICE_PUBLISHED = "NOTICE_PUBLISHED", "Notice Published"
     NOTICE_WITHDRAWN = "NOTICE_WITHDRAWN", "Notice Withdrawn"
+
+    # Messaging. Inspecting and exporting a conversation, and the changes to a
+    # group's name and members, are recorded; the messages themselves are the
+    # record and are not audited one by one.
+    CONVERSATION_INSPECTED = "CONVERSATION_INSPECTED", "Conversation Inspected"
+    CONVERSATION_EXPORTED = "CONVERSATION_EXPORTED", "Conversation Exported"
+    MESSAGE_GROUP_CREATED = "MESSAGE_GROUP_CREATED", "Message Group Created"
+    MESSAGE_GROUP_RENAMED = "MESSAGE_GROUP_RENAMED", "Message Group Renamed"
+    MESSAGE_GROUP_MEMBERS_CHANGED = "MESSAGE_GROUP_MEMBERS_CHANGED", "Message Group Members Changed"
+    MESSAGE_BROADCAST_SENT = "MESSAGE_BROADCAST_SENT", "Message Broadcast Sent"
 
     # Staff management. Ordinary creates, edits and deletes use CREATE, UPDATE
     # and DELETE with entity_type naming the model; only the acts those three

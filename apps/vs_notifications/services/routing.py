@@ -52,6 +52,7 @@ class RecordFamily:
     HEALTH_INCIDENT = "health_incident"
     TODO_TASK = "todo_task"
     NOTICE = "notice"
+    CONVERSATION = "conversation"
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,15 @@ RECORD_DESTINATIONS = (
         keys=EventKeys(keys=_NOTICE_PARENT_KEYS),
         id_key="notice_id",
         route="/notices/{id}",
+    ),
+    # A message alert opens the conversation. Staff, parents and pupils all
+    # reach it at /messages/{id} inside their own app, so one entry serves the
+    # whole prefix, and reading the conversation clears every alert about it.
+    RecordDestination(
+        family=RecordFamily.CONVERSATION,
+        keys=EventKeys(prefix="messages."),
+        id_key="conversation_id",
+        route="/messages/{id}",
     ),
     RecordDestination(
         family=RecordFamily.TICKET,

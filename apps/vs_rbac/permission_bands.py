@@ -108,6 +108,11 @@ RESOURCE_BANDS = {
     ("school", "portal_access"): CORE,
     ("school", "notices"): CORE,
     ("school", "class_notices"): CORE,
+    ("school", "messages"): CORE,
+    ("school", "family_messages"): CORE,
+    ("school", "message_groups"): CORE,
+    ("school", "message_broadcasts"): CORE,
+    ("school", "message_welfare"): CORE,
     ("school", "leave"): PLUS,
     ("school", "staff_records"): PLUS,
     # Core, because an ORGANOGRAM approval stage climbs this chart: a school

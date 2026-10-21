@@ -3,7 +3,7 @@
 ``notices/read-all/`` is declared before ``notices/<int:pk>/`` so it resolves
 as itself.
 """
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     ParentAppIconView,
@@ -97,4 +97,5 @@ urlpatterns = [
         "notices/<int:pk>/read/", NoticeReadView.as_view(),
         name="parent-portal-notice-read",
     ),
+    path("messages/", include("schools.vs_messages.portal_urls_parent")),
 ]

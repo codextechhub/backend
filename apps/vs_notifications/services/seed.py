@@ -840,6 +840,102 @@ def _build_default_templates() -> dict:
             "body": "Open the parent app to read it.",
         },
 
+        # ── messages.* ──────────────────────────────────────────────────────
+        # An alert says who wrote and where, and never what was said: the
+        # words are read in the conversation, by whoever is signed in. The
+        # subject names the sender or the group, which the sender's Field
+        # Access may have already turned into "a colleague" or "a staff group".
+        ("messages.new_message", C.IN_APP): {
+            "subject": (
+                "{% if conversation_label %}New message in {{ conversation_label }}"
+                "{% else %}New message from {{ sender_label }}{% endif %}"
+            ),
+            "body": "Open Messages to read it.",
+        },
+        ("messages.new_message", C.PUSH): {
+            "subject": (
+                "{% if conversation_label %}New message in {{ conversation_label }}"
+                "{% else %}New message from {{ sender_label }}{% endif %}"
+            ),
+            "body": "Open Messages to read it.",
+        },
+        ("messages.new_message", C.EMAIL): {
+            "subject": (
+                "{% if conversation_label %}New message in {{ conversation_label }}"
+                "{% else %}New message from {{ sender_label }}{% endif %}"
+            ),
+            "body": (
+                "Hello,\n\n"
+                "{% if conversation_label %}There is a new message in {{ conversation_label }}"
+                "{% else %}You have a new message from {{ sender_label }}{% endif %} "
+                "at {{ tenant_name }}. Open Messages to read it."
+                "{% if conversation_url %}\n\n{{ conversation_url }}{% endif %}"
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+            "cta_label": "Open Messages",
+            "cta_url": "{{ conversation_url }}",
+        },
+        ("messages.new_broadcast", C.IN_APP): {
+            "subject": "{{ sender_label|capfirst }} sent a broadcast",
+            "body": "Open Messages to read it.",
+        },
+        ("messages.new_broadcast", C.PUSH): {
+            "subject": "{{ sender_label|capfirst }} sent a broadcast",
+            "body": "Open Messages to read it.",
+        },
+        ("messages.new_broadcast", C.EMAIL): {
+            "subject": "{{ sender_label|capfirst }} sent a broadcast",
+            "body": (
+                "Hello,\n\n"
+                "You have a new broadcast from {{ sender_label }} at {{ tenant_name }}. "
+                "Open Messages to read it."
+                "{% if conversation_url %}\n\n{{ conversation_url }}{% endif %}"
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+            "cta_label": "Open Messages",
+            "cta_url": "{{ conversation_url }}",
+        },
+        ("messages.new_message_parent", C.IN_APP): {
+            "subject": "New message from {{ sender_label }} about {{ child_first_name }}",
+            "body": "Open the parent app to read it.",
+        },
+        ("messages.new_message_parent", C.PUSH): {
+            "subject": "New message from {{ sender_label }} about {{ child_first_name }}",
+            "body": "Open the parent app to read it.",
+        },
+        ("messages.new_message_parent", C.EMAIL): {
+            "subject": "New message from {{ sender_label }} about {{ child_first_name }}",
+            "body": (
+                "Dear Parent or Guardian,\n\n"
+                "You have a new message from {{ sender_label }} at {{ tenant_name }} "
+                "about {{ child_first_name }}. Open the parent app to read it."
+                "{% if conversation_url %}\n\n{{ conversation_url }}{% endif %}"
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+            "cta_label": "Read the message",
+            "cta_url": "{{ conversation_url }}",
+        },
+        ("messages.new_message_pupil", C.IN_APP): {
+            "subject": "New message from {{ sender_label }}",
+            "body": "Open the app to read it.",
+        },
+        ("messages.new_message_pupil", C.PUSH): {
+            "subject": "New message from {{ sender_label }}",
+            "body": "Open the app to read it.",
+        },
+        ("messages.new_message_pupil", C.EMAIL): {
+            "subject": "New message from {{ sender_label }}",
+            "body": (
+                "Hello,\n\n"
+                "You have a new message from {{ sender_label }} at {{ tenant_name }}. "
+                "Open the student app to read it."
+                "{% if conversation_url %}\n\n{{ conversation_url }}{% endif %}"
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+            "cta_label": "Read the message",
+            "cta_url": "{{ conversation_url }}",
+        },
+
         # ── gradebook.result_released ───────────────────────────────────────
         # To the pupil, in the app and as a push: that the term's result is
         # there, never a figure from it.

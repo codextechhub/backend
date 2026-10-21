@@ -30,7 +30,10 @@ Inputs:
 3. Giving a guardian an account (issue, resend, revoke) is Student Management
    (M11), mirroring pupil portal access, under `school.portal_access.issue`.
    A teacher who is also a parent keeps one account.
-4. Messages and Assignments are deferred. Neither has an owning module.
+4. Assignments are deferred; they have no owning module. Messages are built
+   by Module 32 (`schools.vs_messages`, 21 October 2026) at
+   `/v1/portal/parent/messages/...`, designed in
+   `docs/messaging/messaging-design.md`.
 5. "Pay all" across children is one checkout per child, one after another.
    The payments engine charges one child's account per checkout; a single
    split checkout would be a Payments-module build of its own.
@@ -43,14 +46,14 @@ Inputs:
 |---|---|---|---|
 | Login | email, password; school from the subdomain | platform sign-in (tenant-aware) | Served |
 | Shell and child switcher | parent name, children (name, class, branch where several), unread counts | `GET me/` | Absent, built |
-| Home | per-child cards (fee status, attendance rate, average, top results), combined outstanding, latest notice, unread counts, follow-ups | `GET home/` | Absent, built (follow-ups and messages count wait, decision 4) |
+| Home | per-child cards (fee status, attendance rate, average, top results), combined outstanding, latest notice, unread counts, follow-ups | `GET home/` | Absent, built (follow-ups wait, decision 4; the messages count is served by Module 32's `messages/unread-count/` and is not yet a home block) |
 | Timetable | one child's week and today | `GET children/<id>/timetable/` | Wrong scope: reuses the pupil service |
 | Attendance | one child's term counts, grid, notes | `GET children/<id>/attendance/` | Wrong scope: reuses |
 | Results | term result, year, report card | `GET children/<id>/results/`, `results/session/`, `results/report-card/` | Wrong scope: reuses |
 | Assignments | rows, status, graded feedback | none | Absent, not ours (decision 4) |
 | Fees | combined and per-child totals, invoices with lines, history with receipts, pay single / pay all, card / transfer / USSD, outcome states | `GET fees/`, `GET fees/payments/`, receipt, `POST fees/invoices/<ref>/pay/`, per-child transfer account | Wrong scope plus one aggregator |
 | Notices | feed across the children, unread, read / read all, which child each is for | `GET notices/` and three siblings | Wrong scope: `guardian_notices` beside `pupil_notices` |
-| Messages | threads with teachers, compose | none | Absent, not ours (decision 4) |
+| Messages | threads with teachers, compose | `GET, POST messages/conversations/` and siblings, `messages/contacts/`, `messages/unread-count/` | Built by Module 32, `schools.vs_messages` (decision 4) |
 | Profile | linked children; editable email, phone, alternate phone, address | `GET, PATCH profile/` | Absent, built (decision 2) |
 
 All routes live under `/v1/portal/parent/`, with a trailing slash and
@@ -85,7 +88,8 @@ the caller's own children answers the same 404 as one that does not exist.
 ### Design asks for what the code cannot serve
 
 - One checkout across two children: decided as one checkout per child.
-- Messages and Assignments: no owning module; deferred.
+- Messages: served by Module 32 (`/v1/portal/parent/messages/`), not by this
+  module. Assignments: no owning module; deferred.
 
 ### FRD requires it, design does not show it (kept, unchanged)
 
@@ -103,7 +107,9 @@ Implemented as section 9 records.
 
 ## 3. Not ours
 
-- Messages module (parent and teacher threads): no owner.
+- Messages module (parent and teacher threads): Module 32,
+  `schools.vs_messages` (21 October 2026); the parent routes are
+  `/v1/portal/parent/messages/...`. See `docs/messaging/messaging-design.md`.
 - Assignments module: no owner; would sit with the gradebook.
 - A single checkout split across children: Payments (M18) and the FAL.
 
@@ -177,9 +183,39 @@ collection status route by `reference`.
   parents; the pupils-may-pay switch does not. The shared amount rule refuses
   a fractional or boolean amount for pupils too.
 - The parent's email is read-only (owner decision, 19 October 2026).
-- Home has no assignments, follow-ups or messages block, and no route answers
-  for them: neither module exists.
+- Home has no assignments, follow-ups or messages block, and no home route
+  answers for them. Messages exist (Module 32) and serve their own unread
+  count, but the home does not yet carry the block; assignments and follow-ups
+  are not built.
 - Parent reads are not audited, as pupil reads are not; profile edits are
   audited through `update_guardian`, payments by the payments module.
 - The parent notification's in-app destination is `/notices/{id}` inside the
   parent app; the parent app's router must match it.
+
+### 9.5 Messages (Module 32, 21 October 2026)
+
+Messages are built by Module 32, `schools.vs_messages`, and mounted in this
+portal by one `include` line at `/v1/portal/parent/messages/`. The contract and
+the owner decisions are in `docs/messaging/messaging-design.md`; this note
+records only what touches a parent.
+
+- A parent lists their family conversations and, read-only, the pupil
+  conversations of children they are primary guardian of (the 15 October 2026
+  decision that no staff-pupil thread is private, implemented). A guardian who
+  is not primary cannot open a pupil conversation. A watched conversation
+  answers 409 `CONVERSATION_READ_ONLY` to a write, and opening it changes
+  nothing for anyone and alerts nobody.
+- A parent starts a conversation about one linked child with a member of staff
+  from `GET contacts/?child=<id>`: the class teacher, the teachers of the class
+  while `messages.family_reach_subject_teachers` is on, and the school office
+  for the child's branch. A child that is not theirs answers this portal's own
+  404. `messages.families_enabled` (default on) switches parent messaging.
+- A new message alerts the parent through Module 8
+  (`messages.new_message_parent`, in-app, email and push; no message text); a
+  push opens `/parent/messages/<id>`, and reading the conversation clears its
+  alert.
+- Access is re-derived on every request: unlinking the guardian, unsetting
+  `Guardian.user` or taking the child off the roll ends it at once.
+- The parent's payload is a fixed narrow shape: no Field Access switch of a
+  staff role reaches it, so a teacher who is also a parent keeps her own child's
+  conversation.

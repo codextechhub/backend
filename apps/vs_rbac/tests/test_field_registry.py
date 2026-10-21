@@ -105,6 +105,7 @@ EXPECTED_RESOURCES = {
     ("procurement", "approval"),
     ("school", "branches"),
     ("school", "guardians"),
+    ("school", "messages"),
     ("school", "notices"),
     ("school", "profile"),
     ("school", "students"),
@@ -175,6 +176,18 @@ WRITE_PATH_ALLOWLIST = {
             "The body of a request for a correction, a surface of attendance.correction; "
             "the register's own switches govern a mark taken on the register itself."
         for name in ("to_mark", "arrived_at", "reason_code", "note")
+    },
+    **{
+        (f"schools.vs_messages.portal_serializers.{serializer}", name):
+            "What a parent or a pupil types in the portal. Their accounts hold no role, so "
+            "no Field Access switch can reach them; the payload is a fixed narrow shape, "
+            "and a teacher who is also a parent is not bound here by her staff role."
+        for serializer, name in (
+            ("PortalSendSerializer", "body"),
+            ("ParentStartSerializer", "body"),
+            ("ParentStartSerializer", "child"),
+            ("StudentStartSerializer", "body"),
+        )
     },
     ("vs_import_data.serializers.ImportBatchUploadSerializer", "file"):
         "The upload is the only way a file enters a batch, and no key guards writing one.",

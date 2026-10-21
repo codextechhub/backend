@@ -524,6 +524,59 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
 
+    # ── Messages (vs_messages) ─────────────────────────────────────────────
+    {
+        "key": "messages.new_message",
+        "label": "New message",
+        "description": (
+            "Fires when somebody writes to a member of staff in a conversation, "
+            "and is sent to each person in it who has nothing unread there yet. "
+            "It says who wrote and where, never what was said: no message text "
+            "is carried in the app, by email or as a push."
+        ),
+        "source_module": "vs_messages",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "default_enabled": True,
+    },
+    {
+        "key": "messages.new_broadcast",
+        "label": "New broadcast",
+        "description": (
+            "Fires when a member of staff sends a broadcast, and is sent to each "
+            "recipient. It says who sent a broadcast, never what it says: no "
+            "message text is carried in the app, by email or as a push."
+        ),
+        "source_module": "vs_messages",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "default_enabled": True,
+    },
+    {
+        "key": "messages.new_message_parent",
+        "label": "New message about your child",
+        "description": (
+            "Fires when a member of staff writes to a parent about their child, "
+            "and is sent to that parent while they have nothing unread in the "
+            "conversation. It names the member of staff and the child, never what "
+            "was said. As a push it opens the conversation in the parent app."
+        ),
+        "source_module": "vs_messages",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "default_enabled": True,
+    },
+    {
+        "key": "messages.new_message_pupil",
+        "label": "New message for you",
+        "description": (
+            "Fires when a member of staff writes to a pupil, and is sent to the "
+            "pupil while they have nothing unread in the conversation. It names "
+            "the member of staff, never what was said. As a push it opens the "
+            "conversation in the student app."
+        ),
+        "source_module": "vs_messages",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL, ChannelChoices.PUSH],
+        "default_enabled": True,
+    },
+
     # ── Workflow Approval (vs_workflow) ────────────────────────────────────
     # Wired lifecycle points (services/routing.py): stage_activated → the
     # stage's approvers; returned / rejected / final_approved → the requester.

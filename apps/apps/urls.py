@@ -43,6 +43,7 @@ urlpatterns = [
     path("v1/attendance/", include("schools.vs_attendance.urls")),
     path("v1/gradebook/", include("schools.vs_gradebook.urls")),
     path("v1/notices/", include("schools.vs_notices.urls")),
+    path("v1/messages/", include("schools.vs_messages.urls")),
     path("v1/portal/student/", include("schools.vs_student_portal.urls")),
     path("v1/portal/parent/", include("schools.vs_parent_portal.urls")),
     # The FAL's front door. It bridges the school's academic structure to the

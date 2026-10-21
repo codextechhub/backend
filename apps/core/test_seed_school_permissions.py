@@ -127,6 +127,11 @@ class SeedSchoolPermissionsKeyTests(TestCase):
           account, and ``school.notices`` and ``school.class_notices`` are the
           school end of the pupil portal: an administrator posts to any
           audience in reach, a teacher to the classes they teach.
+        * ``school.messages``, ``school.family_messages``,
+          ``school.message_groups``, ``school.message_broadcasts`` and
+          ``school.message_welfare`` are messaging: taking part is for current
+          staff, and the three ``inspect`` keys read a group, a broadcast or a
+          pupil's conversation without joining it, with every opening audited.
         * There is no key for a child's medical details. Blood group, allergies
           and conditions are registered fields of ``school.students``, so who
           reads and corrects them is a switch on the role, set on the Field
@@ -134,7 +139,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         """
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            101,
+            111,
         )
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
@@ -245,7 +250,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every school and academics key (101), every
+        """A school admin holds every school and academics key (111), every
         attendance key but ``attendance.register.mark`` (10), which is the class
         teacher's own-class key and is superseded for an administrator by
         ``attendance.register.mark_any``, and fourteen gradebook keys: everything
@@ -254,7 +259,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         ``gradebook.sheet.enter_any``, which no role holds by default.
         """
         keys = self._defaults("school_admin")
-        self.assertEqual(len(keys), 125)
+        self.assertEqual(len(keys), 135)
         self.assertEqual(
             {k for k in keys if k.startswith("gradebook.")},
             {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
@@ -337,14 +342,14 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         key and moves nobody.
         """
         branch_admin = self._defaults("branch_admin")
-        # 58 school and academics keys (pupil portal access, and reading and
-        # posting notices, among them), plus the nine attendance keys a branch
+        # 64 school and academics keys (pupil portal access, reading and
+        # posting notices, and the six messaging keys among them), plus the nine attendance keys a branch
         # administrator holds (everything but settings and the own-class mark),
         # plus nine gradebook keys: the hub, reading and reminding on sheets,
         # the release list, a student's results, reading assessment setup,
         # asking for a correction to a published result, and the analytics and
         # their export.
-        self.assertEqual(len(branch_admin), 76)
+        self.assertEqual(len(branch_admin), 82)
         self.assertEqual(
             {k for k in branch_admin if k.startswith("gradebook.")},
             {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
@@ -407,8 +412,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        # 16 school and academics keys (reading notices, and posting them to
-        # the classes they teach, among them), plus the three attendance keys a teacher
+        # 19 school and academics keys (reading notices, posting them to
+        # the classes they teach, and the three messaging keys among them), plus the three attendance keys a teacher
         # holds: reading a register, taking their own class's, and asking for
         # a correction. Taking any class, reminding and deciding are the
         # administrators'. Plus five gradebook keys: reading sheets, entering
@@ -416,7 +421,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         # spreadsheet, moderating as a head of department and submitting the
         # class they lead; which sheet, subject or class is the service's rule,
         # not the key's.
-        self.assertEqual(len(keys), 24)
+        self.assertEqual(len(keys), 27)
         self.assertEqual(
             {k for k in keys if k.startswith("gradebook.")},
             {"gradebook.sheet.view", "gradebook.sheet.enter", "gradebook.sheet.import",
@@ -489,7 +494,7 @@ class SeedSchoolBackfillTests(TestCase):
         # school_admin defaults are every school and academics key, every
         # attendance key but the class teacher's own-class mark, and fourteen
         # gradebook keys.
-        self.assertEqual(len(keys), 125)
+        self.assertEqual(len(keys), 135)
         self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
@@ -542,7 +547,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 24)
+        self.assertEqual(len(keys), 27)
         self.assertNotIn("school.teachers.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)

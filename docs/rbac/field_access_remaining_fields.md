@@ -10,6 +10,10 @@ Recorded: 12 October 2026, from an audit of the code changed between
 (how switches work) and to the `field_access.py` module of each app (what is
 registered).
 
+Area F (messages, section 7A) was added on 21 October 2026 with the Module 32
+build. It records a resource that registered its fields with the feature, so it
+adds no open work.
+
 ---
 
 ## 1. Purpose and how to use this ledger
@@ -1369,6 +1373,55 @@ school save (`platform_customer.py`), so the same value sits under
 
 ---
 
+## 7A. Area F: messages (`school.messages`, registered with the feature)
+
+Module 32 (`schools.vs_messages`) registered its Field Access decisions in the
+same change that built it, so nothing in this area is open work: every row is
+`registered` or deliberately left without a switch. The resource is
+`school.messages`, declared in `schools/vs_messages/field_access.py`, tenant
+scope, every field open by default, across ten serializer surfaces. Routes:
+`/v1/messages/` (staff), `/v1/messages/oversight/` (inspection, which follows the
+same switches) and the portal routes `/v1/portal/parent/messages/` and
+`/v1/portal/student/messages/`. Design: `docs/messaging/messaging-design.md`,
+sections 12 and 14.2.
+
+| Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `body`, `preview`, `last_message.preview`, the export's `message` column, body search | the text of a message | Stored | POST `conversations/<id>/messages/`, the first message of POST `conversations/`, `groups/` and `broadcasts/`, POST `broadcasts/<id>/reply/` | `school.messages.body` | Message | RW | open | registered |
+| `title`, `name`, `display_name` where it is a title, the alert's `conversation_label` | what a group or a broadcast is called | Stored | POST `groups/` and `broadcasts/`, PATCH `groups/<id>/` | `school.messages.title` | Group or broadcast name | RW | open; open on create | registered |
+| `counterpart`, `participants`, `sender`, `sender_name`, `members`, `display_name` where it is a person, the export's `sender` column, the alert's `sender_label`, name search, `recipient` and `guardian` on write | who is in a conversation and who wrote | Stored (chosen on write), Computed (read) | POST `conversations/` (`recipient`, `guardian`), POST `groups/` (`members`), POST `groups/<id>/members/`, DELETE `groups/<id>/members/<user_id>/` for another member, POST `.../owner/` | `school.messages.participants` | People in the conversation | RW | open; open on create | registered |
+| `recipients`, `recipient_count` | who a broadcast went to, and how many | Stored | POST `broadcasts/` | `school.messages.recipients` | Broadcast recipients | RW | open | registered |
+| `child`, `student` on write, child-name search | the pupil a family or pupil conversation is about | Stored | POST `conversations/` (`student`) | `school.messages.child` | Pupil the conversation is about | RW | open | registered |
+| `reply_mode` | whether a broadcast takes private replies | Stored | POST `broadcasts/` | `school.messages.reply_mode` | Broadcast reply setting | RW | open | registered |
+| `sent_at`, `last_activity_at`, `last_message.sent_at`, the export's `sent_at` column | when messages were sent | Computed | none | `school.messages.sent_at` | Sent times | RO | open | registered |
+| `unread_count`, the totals of `unread-count/` | unread messages per conversation and in total | Computed | none (`read/` moves server state, never a client value) | `school.messages.read_status` | Read status and unread counts | RO | open | registered |
+| `kind`, `kind_label` | what sort of conversation | Stored | POST `conversations/` (`kind`) | - | - | - | - | no switch: identifier |
+| `branch` on a group or broadcast row (a multi-branch school only), `branch` on create | the branch a group or broadcast belongs to | Stored | POST `groups/` and `broadcasts/` | - | - | - | decided by branch reach alone (owner decision of 12 October 2026: no branch switches) | no switch: owner decision |
+| `id`, `user_id`, the cursor (`has_more`, `next_before`), page fields, `member_count` (a count of children), `role`, `mine`, `can_send`, `read_only`, `read_only_reason`, `inspection` | ids, paging, counts of children and action flags | Computed | none | - | - | - | - | no switch: transport |
+| every field of the portal routes `/v1/portal/parent/messages/` and `/v1/portal/student/messages/` | the parent's and the pupil's own payloads | Computed | the portals' send and start routes | - | - | - | parents and pupils hold no role, so a switch cannot reach them; the payload is a fixed narrow shape (`portal_serializers.py`), and its input serializers are on the write-path allowlist of `vs_rbac.tests.test_field_registry` with that reason | no switch: owner decision |
+
+Rules the registration settles:
+
+* Write off on Message refuses sending, on Broadcast recipients refuses
+  addressing a broadcast, on Child refuses naming a child on a new family or
+  pupil conversation, and on Broadcast reply setting refuses choosing it (a
+  broadcast sent without one is one way). Title and People are open on create,
+  so whoever may make a group names it and chooses its first members; the Write
+  switch then decides who may rename it or change its members.
+* `display_name` has no switch of its own. It follows Group or broadcast name
+  where it is a title and People in the conversation where it is a person,
+  decided in code by the serializers.
+* A label never carries a hidden name: a guardian reads "Mother of Tunde Bello"
+  only while the Child switch is readable, otherwise "Mother".
+* Leaving a group is not a change of members the Write switch can refuse;
+  removing another member, adding members and making an owner are.
+* Alerts follow each staff recipient's own switches: hidden People gives "a
+  colleague", "a parent" or "a pupil", and a hidden group or broadcast name gives
+  "a staff group" or "a broadcast". Tests: `schools.vs_messages.tests.test_field_access`,
+  `test_field_access_deep_payload` and `test_alerts` (`FieldAccessInAlertsTests`).
+
+---
+
 ## 8. Open product questions
 
 Each question is one the registration cannot settle alone. The example shows
@@ -1800,7 +1853,8 @@ one area, so the total is two lower than the sum of the areas.
 | C. Procurement | 193 | 4 | 4 | 13 | 10 |
 | D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
 | E. Receipts, petty cash, issuer, entitlements | 45 | 2 | 3 | 8 | 3 |
-| Total | 471 | 22 | 13 | 49 | 29 |
+| F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
+| Total | 471 | 30 | 14 | 50 | 31 |
 
 Where the new switches sit:
 
@@ -1821,6 +1875,9 @@ Where the new switches sit:
   `finance.settings` 36.
 * Area E: `finance.payment` 12, `finance.pettycash` 11,
   `finance.pettycashvoucher` 10, `platform.profile` 10, `platform.entitlements` 2.
+* Area F: none recorded. `school.messages` registers 8 switches with the feature
+  (`body`, `title`, `participants`, `recipients`, `child`, `reply_mode`, `sent_at`,
+  `read_status`), counted under the registered column.
 
 Sensitive by recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and

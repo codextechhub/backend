@@ -311,6 +311,9 @@ REST_FRAMEWORK = {
         # A pupil asking for their bank-transfer account: each issue is a
         # provider call, and one account lasts for good.
         "portal_transfer_account": "10/hour",
+        # Every route that stores a message shares this budget, per person and
+        # school. Reads are never counted; see schools.vs_messages.throttles.
+        "message_send":       "20/minute",
     },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
     "DATE_FORMAT":     "%Y-%m-%d",
@@ -384,6 +387,10 @@ INSTALLED_APPS = [
     # Notices to pupils. After vs_academics and vs_students: an audience names
     # a class, a level or a branch, and reaches the pupils placed in them.
     "schools.vs_notices",
+    # Conversations between staff, and between staff and families. After
+    # vs_students and vs_staff: a conversation names a pupil, a guardian and
+    # the staff member at the other end.
+    "schools.vs_messages",
     # The pupil portal. Owns no table: it reads every school app above it.
     "schools.vs_student_portal",
     # The parent portal. Owns no table: it reads through the pupil portal's
