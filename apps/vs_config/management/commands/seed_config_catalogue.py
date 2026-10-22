@@ -333,6 +333,14 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "messages.read_receipts", "Show Read Receipts In Messages",
+        "Whether people see if their messages have been read: one tick once a "
+        "message is sent and two once it is read, or \"Read by 12 of 40\" in a "
+        "group or broadcast. Off, nobody at the school sees receipts, in the "
+        "staff app, the parent app or the student app.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "students.portal.session_days", "Student App Sign-In Length",
         "How many days a student stays signed in to the student app on their "
         "phone or tablet without opening it. Each use starts the count again, "

@@ -33,6 +33,7 @@ from .constants import (
     FIELD_RESOURCE,
     MESSAGE_PAGE_DEFAULT,
     MESSAGE_PAGE_MAX,
+    POLL_LIMIT,
     PERM_BROADCAST_INSPECT,
     PERM_BROADCAST_SEND,
     PERM_EXPORT,
@@ -69,6 +70,7 @@ from .services import (
     messages,
     oversight,
     people,
+    receipts,
     visibility,
 )
 from .throttles import SendLimited
@@ -121,10 +123,29 @@ class _MessagesView(APIView):
             raise ConversationNotFound()
         return serializer(found, context=self.context()).data
 
-    def message_data(self, message):
+    def receipts_for(self, access):
+        """The receipts the caller is shown in the conversation *access* was resolved for."""
+        return receipts.Receipts(
+            access, self.request.user, self.context()["settings"],
+            allowed=_may(self.request, "read_receipts"),
+        )
+
+    def message_data(self, message, shown=None):
+        """*message* as the caller sees it, with its entry of the ``shown`` receipts if any."""
         return MessageSerializer(
-            message, context={"request": self.request, "user": self.request.user},
+            message,
+            context={"request": self.request, "user": self.request.user, "receipts": shown or {}},
         ).data
+
+    def own_message_data(self, conversation_id, message):
+        """A message the caller just stored, with its receipt, or None when nothing was stored."""
+        if message is None:
+            return None
+        access = visibility.resolve(
+            self.tenant, self.request.user, conversation_id, surface=SURFACE_STAFF,
+            settings=self.context()["settings"], keys=self.context()["keys"],
+        )
+        return self.message_data(message, self.receipts_for(access)([message]))
 
 
 def _int_param(request, name, default=None):
@@ -202,7 +223,7 @@ class ConversationListCreateView(SendLimited, _MessagesView):
             "Conversation started." if created else "Conversation found.",
             data={
                 "conversation": self.row(conversation.pk),
-                "message": self.message_data(message) if message else None,
+                "message": self.own_message_data(conversation.pk, message),
             },
             status=201 if created else 200,
         )
@@ -225,7 +246,10 @@ class MessageListCreateView(SendLimited, _MessagesView):
     """GET, POST /v1/messages/conversations/<id>/messages/
 
     GET pages the messages the caller may read, newest first, with a
-    ``before`` cursor: ``{"results", "has_more", "next_before"}``. POST writes
+    ``before`` cursor: ``{"results", "has_more", "next_before"}``. With
+    ``?after=<message id>`` it instead polls: the newer messages oldest first
+    (at most 100) and the refreshed receipts of the caller's own recent ones
+    (see :func:`page_of_messages`). POST writes
     a message: 201, or 200 with the stored message when ``client_token`` was
     already used. A conversation the caller can read but not write in answers
     409 ``CONVERSATION_READ_ONLY`` with the reason.
@@ -242,7 +266,9 @@ class MessageListCreateView(SendLimited, _MessagesView):
 
     def get(self, request, pk):
         access = visibility.resolve(self.tenant, request.user, pk, surface=SURFACE_STAFF)
-        return success_response(data=page_of_messages(request, access, self.message_data))
+        return success_response(data=page_of_messages(
+            request, access, self.message_data, receipts=self.receipts_for(access),
+        ))
 
     def post(self, request, pk):
         access = visibility.resolve(
@@ -257,17 +283,31 @@ class MessageListCreateView(SendLimited, _MessagesView):
             client_token=data.get("client_token"),
         )
         return success_response(
-            "Message sent.", data=self.message_data(message), status=201 if created else 200,
+            "Message sent.",
+            data=self.message_data(message, self.receipts_for(access)([message])),
+            status=201 if created else 200,
         )
 
 
-def page_of_messages(request, access, render, *, limit_default=MESSAGE_PAGE_DEFAULT):
-    """One cursor page of the messages *access* may read, newest first.
+def page_of_messages(request, access, render, *, receipts=None, limit_default=MESSAGE_PAGE_DEFAULT):
+    """One page of the messages *access* may read.
 
-    ``?before=<id>`` returns messages older than that id; ``?limit=`` is
-    clamped to 1 through 100. ``next_before`` is the id to ask for the next
-    older page, or null on the last.
+    ``?before=<id>`` returns messages older than that id, newest first;
+    ``?limit=`` is clamped to 1 through 100. ``next_before`` is the id to ask
+    for the next older page, or null on the last.
+
+    ``?after=<id>`` is the polling form, served only where *receipts* is given:
+    the messages newer than that id, oldest first, at most 100, with
+    ``has_more`` when there are more. See :func:`poll_after`.
+
+    *render* turns one message and the page's receipts into its payload.
+    *receipts* is a :class:`services.receipts.Receipts`: each of the caller's
+    own messages on the page is rendered with its receipt, computed once for
+    the page. Without it (an inspection) no message carries one.
     """
+    after = _int_param(request, "after")
+    if after is not None and receipts is not None:
+        return poll_after(access, render, receipts, after)
     limit = _int_param(request, "limit", limit_default)
     limit = max(1, min(limit, MESSAGE_PAGE_MAX))
     before = _int_param(request, "before")
@@ -277,11 +317,40 @@ def page_of_messages(request, access, render, *, limit_default=MESSAGE_PAGE_DEFA
     rows = list(qs[: limit + 1])
     has_more = len(rows) > limit
     rows = rows[:limit]
+    shown = receipts(rows) if receipts is not None else {}
     return {
-        "results": [render(m) for m in rows],
+        "results": [render(m, shown) for m in rows],
         "has_more": has_more,
         "next_before": rows[-1].pk if has_more and rows else None,
     }
+
+
+def poll_after(access, render, receipts, after):
+    """What changed in a conversation since message *after*: new messages and fresh receipts.
+
+    ``results`` are the visible messages with a greater id, oldest first, at
+    most 100, each own message carrying its receipt. ``receipts`` lists
+    ``{"id", "state", "read_count", "recipient_count"}`` for the caller's own
+    messages among the latest 100 visible ones (and among the results), so a
+    tick that turned since the last poll turns on screen. The list is left out
+    entirely when the caller is shown no receipts (setting off, hidden by Field
+    Access, inspecting, or watching), exactly as a message then has no
+    ``receipt``. The same visibility gate as a page applies, so a person who
+    joined a group late never receives what came before.
+    """
+    visible = visibility.visible_messages(access)
+    rows = list(visible.filter(id__gt=after).select_related("sender").order_by("id")[: POLL_LIMIT + 1])
+    has_more = len(rows) > POLL_LIMIT
+    rows = rows[:POLL_LIMIT]
+    recent = (
+        list(visible.order_by("-id").only("id", "sender_id")[:POLL_LIMIT])
+        if receipts.enabled else []
+    )
+    shown = receipts([*rows, *recent])
+    data = {"results": [render(m, shown) for m in rows], "has_more": has_more}
+    if receipts.enabled:
+        data["receipts"] = [{"id": pk, **shown[pk]} for pk in sorted(shown)]
+    return data
 
 
 class ConversationReadView(_MessagesView):
@@ -609,7 +678,10 @@ class BroadcastReplyView(SendLimited, _MessagesView):
         )
         return success_response(
             "Reply sent.",
-            data={"conversation": self.row(thread.pk), "message": self.message_data(message)},
+            data={
+                "conversation": self.row(thread.pk),
+                "message": self.own_message_data(thread.pk, message),
+            },
             status=201 if created else 200,
         )
 

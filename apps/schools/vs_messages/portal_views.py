@@ -31,12 +31,13 @@ from .constants import OVERSIGHT_NOTICE, SURFACE_PARENT, SURFACE_STUDENT
 from .exceptions import ConversationNotFound
 from .portal_serializers import (
     ParentStartSerializer,
+    PortalConversationDetailSerializer,
     PortalConversationSerializer,
     PortalMessageSerializer,
     PortalSendSerializer,
     StudentStartSerializer,
 )
-from .services import config, conversations, inbox, messages, people, visibility
+from .services import config, conversations, inbox, messages, people, receipts, visibility
 from .throttles import SendLimited
 from .views import page_of_messages
 
@@ -76,20 +77,33 @@ class _Portal:
             "settings": self.school_settings, "labels": self.labels_for(rows),
         }
 
-    def render_rows(self, rows):
+    def render_rows(self, rows, serializer=PortalConversationSerializer):
         rows = list(rows)
-        return PortalConversationSerializer(
-            rows, many=True, context=self.render_context(rows),
-        ).data
+        return serializer(rows, many=True, context=self.render_context(rows)).data
 
     def row(self, pk):
+        """Conversation *pk* opened: the list row plus whether the app draws read ticks."""
         found = inbox.prepare(self.visible().filter(pk=pk), self.request.user).first()
         if found is None:
             raise ConversationNotFound()
-        return self.render_rows([found])[0]
+        return self.render_rows([found], PortalConversationDetailSerializer)[0]
 
-    def message_data(self, message):
-        return PortalMessageSerializer(message, context={"user": self.request.user}).data
+    def receipts_for(self, access):
+        """The receipts the caller is shown in the conversation *access* was resolved for."""
+        return receipts.Receipts(access, self.request.user, self.school_settings)
+
+    def message_data(self, message, shown=None):
+        """*message* as the caller reads it, with its entry of the ``shown`` receipts if any."""
+        return PortalMessageSerializer(
+            message, context={"user": self.request.user, "receipts": shown or {}},
+        ).data
+
+    def own_message_data(self, conversation_id, message):
+        """A message the caller just stored, with its receipt, or None when nothing was stored."""
+        if message is None:
+            return None
+        access = self.access(conversation_id)
+        return self.message_data(message, self.receipts_for(access)([message]))
 
     def access(self, pk):
         return visibility.resolve(
@@ -132,8 +146,17 @@ class _Portal:
             client_token=data.get("client_token"),
         )
         return success_response(
-            "Message sent.", data=self.message_data(message), status=201 if created else 200,
+            "Message sent.",
+            data=self.message_data(message, self.receipts_for(access)([message])),
+            status=201 if created else 200,
         )
+
+    def messages_response(self, request, pk):
+        """A page of messages, or the polling answer when ``?after=`` is sent."""
+        access = self.access(pk)
+        return success_response(data=page_of_messages(
+            request, access, self.message_data, receipts=self.receipts_for(access),
+        ))
 
     def read_response(self, request, pk):
         access = self.access(pk)
@@ -153,7 +176,7 @@ class _Portal:
             "Conversation started." if created else "Conversation found.",
             data={
                 "conversation": self.row(conversation.pk),
-                "message": self.message_data(message) if message else None,
+                "message": self.own_message_data(conversation.pk, message),
             },
             status=201 if created else 200,
         )
@@ -276,7 +299,9 @@ class ParentMessagesView(SendLimited, _ParentMessages):
     """GET, POST /v1/portal/parent/messages/conversations/<id>/messages/
 
     GET pages the messages, newest first, with a ``before`` cursor:
-    ``{"results", "has_more", "next_before"}``. POST writes a message: 201, or
+    ``{"results", "has_more", "next_before"}``; ``?after=<message id>`` polls
+    instead, answering the newer messages and the refreshed receipts of the
+    parent's own recent ones. POST writes a message: 201, or
     200 with the stored message when ``client_token`` was already used. A
     conversation the parent can only watch answers 409 ``CONVERSATION_READ_ONLY``.
 
@@ -284,8 +309,7 @@ class ParentMessagesView(SendLimited, _ParentMessages):
     """
 
     def get(self, request, pk):
-        access = self.access(pk)
-        return success_response(data=page_of_messages(request, access, self.message_data))
+        return self.messages_response(request, pk)
 
     def post(self, request, pk):
         return self.send_response(request, pk)
@@ -410,7 +434,8 @@ class StudentConversationView(_StudentMessages):
 class StudentMessagesView(SendLimited, _StudentMessages):
     """GET, POST /v1/portal/student/messages/conversations/<id>/messages/
 
-    GET pages the messages, newest first, with a ``before`` cursor. POST writes
+    GET pages the messages, newest first, with a ``before`` cursor, or polls
+    with ``?after=<message id>`` (see the parent route). POST writes
     a message: 201, or 200 with the stored message when ``client_token`` was
     already used. 409 ``CONVERSATION_READ_ONLY`` when the member of staff has
     left or the school has switched pupil messaging off.
@@ -419,8 +444,7 @@ class StudentMessagesView(SendLimited, _StudentMessages):
     """
 
     def get(self, request, pk):
-        access = self.access(pk)
-        return success_response(data=page_of_messages(request, access, self.message_data))
+        return self.messages_response(request, pk)
 
     def post(self, request, pk):
         return self.send_response(request, pk)

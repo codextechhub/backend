@@ -16,7 +16,14 @@ One resource, ``school.messages``. Every field is included and open by default.
 * **Pupil the conversation is about** (``child``) is the child of a family or
   pupil conversation, wherever the child is named or searched.
 * **Broadcast reply setting** (``reply_mode``) is whether replies are allowed.
-* **Sent times** and **read status** are recorded by the system and read-only.
+* **Sent times**, **read status** and **read receipts** are recorded by the
+  system and read-only. Read receipts (``receipt`` on a message, ``receipts``
+  on a conversation and on a polling answer) are the ticks a sender sees on
+  their own messages; they are separate from read status, which counts what the
+  caller has not read themselves. The counts inside a receipt travel with it,
+  so no name of their own is registered: ``recipient_count`` already belongs to
+  Broadcast recipients, and a polling answer, which is built by hand, leaves its
+  ``receipts`` list out whole when the caller may not read them.
 
 ``title`` and ``participants`` are open on create: whoever may make a group
 names it and chooses its first members, and the Write switch decides who may
@@ -84,5 +91,10 @@ def register():
             FieldSpec("read_status", "Read status and unread counts", group="Status",
                       scope=_TENANT, writable=False, sort_order=20, api_names=("unread_count",),
                       description="How many messages are unread, per conversation and in total."),
+            FieldSpec("read_receipts", "Read receipts", group="Status",
+                      scope=_TENANT, writable=False, sort_order=30,
+                      api_names=("receipt", "receipts"),
+                      description="Whether the people a message was sent to have read it, "
+                                  "shown to the sender on their own messages."),
         ),
     )

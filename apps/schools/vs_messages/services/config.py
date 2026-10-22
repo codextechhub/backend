@@ -3,29 +3,37 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..constants import CFG_FAMILIES_ENABLED, CFG_PUPILS_ENABLED, CFG_SUBJECT_TEACHERS
+from ..constants import (
+    CFG_FAMILIES_ENABLED,
+    CFG_PUPILS_ENABLED,
+    CFG_READ_RECEIPTS,
+    CFG_SUBJECT_TEACHERS,
+)
 
 
 @dataclass(frozen=True)
 class MessagingSettings:
-    """The three whole-school switches, each defaulting to on.
+    """The whole-school switches, each defaulting to on.
 
     ``families_enabled`` and ``pupils_enabled`` stop new family and pupil
     conversations and writing in existing ones; reading is never switched off.
     ``subject_teachers`` lets a family reach every teacher of the child's class
     this year, not only the class teacher and the school office.
+    ``read_receipts`` shows each sender whether their messages have been read;
+    off, no receipt is computed or served to anybody.
     """
 
     families_enabled: bool = True
     pupils_enabled: bool = True
     subject_teachers: bool = True
+    read_receipts: bool = True
 
 
 def load_settings(tenant) -> MessagingSettings:
-    """Read the three settings for *tenant* in one pass."""
+    """Read the settings for *tenant* in one pass."""
     from schools.vs_students.services.rules import resolve_many
 
-    keys = (CFG_FAMILIES_ENABLED, CFG_PUPILS_ENABLED, CFG_SUBJECT_TEACHERS)
+    keys = (CFG_FAMILIES_ENABLED, CFG_PUPILS_ENABLED, CFG_SUBJECT_TEACHERS, CFG_READ_RECEIPTS)
     found = resolve_many(keys, tenant=tenant)
 
     def on(key):
@@ -36,6 +44,7 @@ def load_settings(tenant) -> MessagingSettings:
         families_enabled=on(CFG_FAMILIES_ENABLED),
         pupils_enabled=on(CFG_PUPILS_ENABLED),
         subject_teachers=on(CFG_SUBJECT_TEACHERS),
+        read_receipts=on(CFG_READ_RECEIPTS),
     )
 
 

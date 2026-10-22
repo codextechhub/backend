@@ -1395,6 +1395,7 @@ sections 12 and 14.2.
 | `reply_mode` | whether a broadcast takes private replies | Stored | POST `broadcasts/` | `school.messages.reply_mode` | Broadcast reply setting | RW | open | registered |
 | `sent_at`, `last_activity_at`, `last_message.sent_at`, the export's `sent_at` column | when messages were sent | Computed | none | `school.messages.sent_at` | Sent times | RO | open | registered |
 | `unread_count`, the totals of `unread-count/` | unread messages per conversation and in total | Computed | none (`read/` moves server state, never a client value) | `school.messages.read_status` | Read status and unread counts | RO | open | registered |
+| `receipt` on each of the caller's own messages (`state`, `read_count`, `recipient_count`), the polling route's `receipts` list, the detail's `receipts` flag | whether the people who could see a message the caller sent have read it (one tick sent, two read; "Read by n of m" in a group or broadcast) | Computed | none (worked out from the readers' read watermarks) | `school.messages.read_receipts` | Read receipts | RO | open; absent everywhere while the school setting `messages.read_receipts` is off, and never shown to an inspector or a watching parent | registered |
 | `kind`, `kind_label` | what sort of conversation | Stored | POST `conversations/` (`kind`) | - | - | - | - | no switch: identifier |
 | `branch` on a group or broadcast row (a multi-branch school only), `branch` on create | the branch a group or broadcast belongs to | Stored | POST `groups/` and `broadcasts/` | - | - | - | decided by branch reach alone (owner decision of 12 October 2026: no branch switches) | no switch: owner decision |
 | `id`, `user_id`, the cursor (`has_more`, `next_before`), page fields, `member_count` (a count of children), `role`, `mine`, `can_send`, `read_only`, `read_only_reason`, `inspection` | ids, paging, counts of children and action flags | Computed | none | - | - | - | - | no switch: transport |
@@ -1875,9 +1876,10 @@ Where the new switches sit:
   `finance.settings` 36.
 * Area E: `finance.payment` 12, `finance.pettycash` 11,
   `finance.pettycashvoucher` 10, `platform.profile` 10, `platform.entitlements` 2.
-* Area F: none recorded. `school.messages` registers 8 switches with the feature
+* Area F: none recorded. `school.messages` registers 9 switches with the feature
   (`body`, `title`, `participants`, `recipients`, `child`, `reply_mode`, `sent_at`,
-  `read_status`), counted under the registered column.
+  `read_status`, and `read_receipts` from 22 October 2026), counted under the
+  registered column.
 
 Sensitive by recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and

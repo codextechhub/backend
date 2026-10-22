@@ -122,14 +122,35 @@ class PortalConversationSerializer(serializers.Serializer):
         return data
 
 
+class PortalConversationDetailSerializer(PortalConversationSerializer):
+    """One conversation opened: the row, and whether the app draws read ticks.
+
+    ``receipts`` is true while the school shows receipts and the caller takes
+    part in the conversation; a parent only watching a pupil conversation is
+    shown none.
+    """
+
+    receipts = serializers.SerializerMethodField()
+
+    def get_receipts(self, obj):
+        if getattr(obj, "watching", False):
+            return False
+        return bool(getattr(self.context.get("settings"), "read_receipts", True))
+
+
 class PortalMessageSerializer(serializers.Serializer):
-    """One message, as a parent or a pupil reads it."""
+    """One message, as a parent or a pupil reads it.
+
+    The context may carry ``receipts``, a dictionary of ``{message id: receipt}``
+    computed once for the page; a message with no entry has no ``receipt`` key.
+    """
 
     id = serializers.IntegerField(read_only=True)
     body = serializers.CharField(read_only=True)
     sender = serializers.SerializerMethodField()
     sent_at = serializers.DateTimeField(source="created_at", read_only=True)
     mine = serializers.SerializerMethodField()
+    receipt = serializers.SerializerMethodField()
 
     def get_sender(self, obj):
         if obj.sender is None:
@@ -138,6 +159,15 @@ class PortalMessageSerializer(serializers.Serializer):
 
     def get_mine(self, obj):
         return obj.sender_id == self.context["user"].pk
+
+    def get_receipt(self, obj):
+        return (self.context.get("receipts") or {}).get(obj.pk)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get("receipt") is None:
+            data.pop("receipt", None)
+        return data
 
 
 class PortalSendSerializer(serializers.Serializer):

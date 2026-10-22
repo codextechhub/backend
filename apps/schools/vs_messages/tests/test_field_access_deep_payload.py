@@ -79,7 +79,10 @@ class MessagesDeepPayloadTests(DeepPayloadChecks, MessagesFixture):
                 "id": 1, "preview": "Welcome", "sender_name": "Funke Adeyemi",
                 "sent_at": dt.datetime(2026, 10, 21, 9, 0), "mine": True,
             }),
-            Sample(_S + "MessageSerializer", self.message, context={"user": self.funke}),
+            Sample(_S + "MessageSerializer", self.message, context={
+                "user": self.funke,
+                "receipts": {self.message.pk: {"state": "sent", "read_count": 0, "recipient_count": 2}},
+            }),
             Sample(_S + "OversightRowSerializer",
                    self.oversight_row(self.team, "inspect_group"), context=oversight_context),
             Sample(_S + "OversightDetailSerializer",

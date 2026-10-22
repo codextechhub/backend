@@ -27,6 +27,7 @@ PERM_WELFARE_INSPECT = "school.message_welfare.inspect"
 CFG_FAMILIES_ENABLED = "messages.families_enabled"
 CFG_PUPILS_ENABLED = "messages.pupils_enabled"
 CFG_SUBJECT_TEACHERS = "messages.family_reach_subject_teachers"
+CFG_READ_RECEIPTS = "messages.read_receipts"
 
 #: The Field Access resource every payload of this module answers to.
 FIELD_RESOURCE = "school.messages"
@@ -56,6 +57,8 @@ PREVIEW_MAX = 120
 RECIPIENTS_MAX = 1000
 MESSAGE_PAGE_DEFAULT = 50
 MESSAGE_PAGE_MAX = 100
+#: Messages one polling call returns, and the latest messages whose receipts it refreshes.
+POLL_LIMIT = 100
 
 
 class ConversationKind(models.TextChoices):

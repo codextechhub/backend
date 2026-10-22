@@ -221,7 +221,10 @@ class ConversationDetailSerializer(ConversationRowSerializer):
     """One conversation opened: the row, who is in it, and who a broadcast went to.
 
     Everyone sees ``recipient_count`` of a broadcast; only its sender sees
-    ``recipients``.
+    ``recipients``. ``receipts`` says whether the app draws ticks on the
+    caller's own messages: it follows the school setting, and sits behind the
+    Read receipts switch with the receipts themselves, so a role that may not
+    read them is not told they exist.
     """
 
     field_access_detail = True
@@ -229,6 +232,7 @@ class ConversationDetailSerializer(ConversationRowSerializer):
     participants = serializers.SerializerMethodField()
     recipients = serializers.SerializerMethodField()
     recipient_count = serializers.SerializerMethodField()
+    receipts = serializers.SerializerMethodField()
 
     def get_participants(self, obj):
         if obj.kind == ConversationKind.BROADCAST:
@@ -245,6 +249,9 @@ class ConversationDetailSerializer(ConversationRowSerializer):
             return None
         return max(getattr(obj, "member_total", 1) - 1, 0)
 
+    def get_receipts(self, obj):
+        return bool(getattr(self.context.get("settings"), "read_receipts", True))
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         for name in ("participants", "recipients", "recipient_count"):
@@ -254,7 +261,13 @@ class ConversationDetailSerializer(ConversationRowSerializer):
 
 
 class MessageSerializer(FieldAccessMixin, serializers.Serializer):
-    """One message in a conversation."""
+    """One message in a conversation.
+
+    The context may carry ``receipts``, a dictionary of ``{message id: receipt}``
+    computed once for the page (see :mod:`services.receipts`); a message with
+    no entry has no ``receipt`` key, and the key follows the Read receipts
+    switch.
+    """
 
     field_resource = FIELD_RESOURCE
 
@@ -263,6 +276,7 @@ class MessageSerializer(FieldAccessMixin, serializers.Serializer):
     sender = serializers.SerializerMethodField()
     sent_at = serializers.DateTimeField(source="created_at", read_only=True)
     mine = serializers.SerializerMethodField()
+    receipt = serializers.SerializerMethodField()
 
     def get_sender(self, obj):
         if obj.sender is None:
@@ -272,6 +286,15 @@ class MessageSerializer(FieldAccessMixin, serializers.Serializer):
     def get_mine(self, obj):
         user = self.context.get("user")
         return user is not None and obj.sender_id == user.pk
+
+    def get_receipt(self, obj):
+        return (self.context.get("receipts") or {}).get(obj.pk)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get("receipt") is None:
+            data.pop("receipt", None)
+        return data
 
 
 class OversightRowSerializer(FieldAccessMixin, serializers.Serializer):

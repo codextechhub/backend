@@ -221,6 +221,7 @@ notification templates and delivery, not conversations, and gate nothing here.
 | `messages.families_enabled` | True | Parents may message staff about their children. Off: existing conversations stay readable, nobody starts or writes in one |
 | `messages.pupils_enabled` | True | Pupils may message staff. Off: as above for pupil conversations |
 | `messages.family_reach_subject_teachers` | True | Families may reach the teachers of the child's class, not only the class teacher and the school office |
+| `messages.read_receipts` | True | People see whether their messages have been read. Off: no receipt is computed or served to anybody (section 14.7) |
 
 ## 9. API
 
@@ -368,6 +369,7 @@ Resource `school.messages`, every field open by default, TENANT scope.
 | `reply_mode` | Broadcast reply setting | RW | `reply_mode` |
 | `sent_at` | Sent times | R | `sent_at`, `last_activity_at`, `last_message.sent_at`, the export's `sent_at` column |
 | `read_status` | Read status and unread counts | R | `unread_count`, `unread-count/` totals |
+| `read_receipts` | Read receipts | R | `receipt` on a message, `receipts` on a conversation detail, the `receipts` list of a polling answer |
 
 - **Open on create:** `title` and `participants` (whoever may create a group
   names it and chooses its first members; the Write switch decides who may
@@ -637,3 +639,68 @@ Owner decision: **20 messages a minute per person.**
   `error.detail.retry_after` in whole seconds. No other route's 429 changes.
   The client keeps the draft and its `client_token`, shows the sentence and
   lets the next tap send.
+
+### 14.7 Read receipts
+
+Owner decisions (22 October 2026): two ticks in a group or broadcast only when
+everyone who could see the message has read it, with "Read by n of m" for the
+sender; a whole-school setting, default on; a read-only Field Access switch; no
+receipts for a watching parent or an inspector. No model change: a receipt is
+computed from the read watermarks that already exist.
+
+- **Setting.** `messages.read_receipts` (BOOLEAN, default True, whole tenant),
+  read with the other messaging settings (`MessagingSettings.read_receipts`).
+  Off: no receipt is computed or served to anybody at that school.
+- **The receipt.** On each message the caller sent:
+  `"receipt": {"state": "sent" | "read", "read_count": n, "recipient_count": n}`.
+  Messages from others carry no `receipt` key. `services/receipts.py` judges one
+  conversation per call from one query: the open participants other than the
+  sender, current by the rules of `services/visibility.py` (current staff for a
+  staff role, the guardian of a family conversation only while the link to the
+  child holds and the child is served by the portal, the pupil of a pupil
+  conversation only while on the roll with a working account), whose
+  `after_message_id` is below the message. A reader has read it when
+  `last_read_message_id >= message id`. `read` when `read_count ==
+  recipient_count` and `recipient_count > 0`, otherwise `sent`. A person who
+  joined later, left, was removed, was deactivated or is off the roll is not
+  counted. A direct kind has one reader; a group or broadcast counts everyone.
+  A broadcast's private reply is a separate `BROADCAST_REPLY` conversation with
+  its own direct receipts. A conversation with no current reader answers
+  `sent` with `0` of `0`.
+- **Where it travels.** The staff message list, the send response, the start
+  and the broadcast-reply responses (`message.receipt`), and the same on the
+  parent and student message lists, sends and starts. Never in an export, an
+  alert or an audit event.
+- **No receipt at all (the key is absent)** when the setting is off; the caller
+  is inspecting (the oversight routes pass no receipt source); the caller is a
+  parent watching a pupil conversation; or, on the staff surface, the caller's
+  role cannot read the Read receipts field.
+- **`receipts` on a conversation detail** (staff and portal) is a boolean the
+  apps use to decide whether to draw ticks. It is `false` when the setting is
+  off, and for a parent watching a pupil conversation; on the staff surface it
+  is absent, like the receipts, when the role cannot read the field. List rows
+  do not carry it. The portal flag is on the detail serializer only, which is
+  also what start responses return.
+- **Polling.** `GET conversations/<id>/messages/?after=<message id>` on the
+  staff route and both portal routes answers `{"results": [messages with an id
+  greater than after, oldest first, at most 100], "has_more": bool, "receipts":
+  [{"id", "state", "read_count", "recipient_count"}, ...]}`. `receipts` covers
+  the caller's own messages among the latest 100 visible ones and among the
+  results, ordered by id, and is left out whole (not served empty) under the
+  same conditions as the message `receipt`. The same visibility gate applies,
+  so a late member never receives what came before they joined, and anything
+  unreachable is the same 404. A GET never counts against the send limit
+  (section 14.6). Without `after` the `before` cursor behaves as before. The
+  oversight route ignores `after`.
+- **Field Access.** Resource `school.messages`, field `read_receipts` ("Read
+  receipts", group Status, tenant scope, read-only, open by default). Its
+  `api_names` are `receipt` and `receipts`; the counts inside a receipt travel
+  with it and register no name of their own (`recipient_count` already belongs
+  to Broadcast recipients, and the registry requires every registered name to be
+  a serializer key). The polling route and the send, start and reply responses
+  check the switch with `can_read`. The portals hold no role, so the switch does
+  not reach them (14.2).
+- **Cost.** One query for the conversation's participants per page or poll,
+  compared in memory; a polling call adds one more for the latest 100 ids.
+  A page costs the same for a direct conversation and a group of forty.
+

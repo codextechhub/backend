@@ -475,10 +475,12 @@ class MessageTests(MessagesFixture):
 
     def test_a_message_carries_sender_time_and_mine(self):
         row = self.page(self.funke)["results"][0]
-        self.assertEqual(set(row), {"id", "body", "sender", "sent_at", "mine"})
+        self.assertEqual(set(row), {"id", "body", "sender", "sent_at", "mine", "receipt"})
         self.assertEqual(row["sender"]["name"], "Funke Adeyemi")
         self.assertTrue(row["mine"])
-        self.assertFalse(self.page(self.ibrahim)["results"][0]["mine"])
+        theirs = self.page(self.ibrahim)["results"][0]
+        self.assertFalse(theirs["mine"])
+        self.assertNotIn("receipt", theirs)
 
     def test_a_non_participant_cannot_read_or_write(self):
         for user in (self.tola, self.admin):
