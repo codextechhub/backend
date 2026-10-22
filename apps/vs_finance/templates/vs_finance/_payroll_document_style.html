@@ -1,0 +1,94 @@
+<style>
+  /* Shared by the payslip and the tax summary. The typefaces and the page itself are
+     declared by the stylesheet pdf.py lays over the page. */
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ background:#fff; }
+  body{ font-family:"Hanken Grotesk",sans-serif; color:#14201f; font-variant-numeric:tabular-nums; }
+  .mono{ font-family:"IBM Plex Mono",monospace; }
+
+  /* Footer, drawn in the bottom margin of every page. */
+  .foot{ position:running(page-foot); display:flex; justify-content:space-between;
+    font-size:11px; color:#5b6b6a; padding-top:14px; border-top:1px solid #e3e8e7; }
+
+  /* Continuation header, drawn in the top margin of every page after the first. */
+  .page-head{ position:running(page-head); font-size:11px; color:#5b6b6a; }
+
+  .top{ display:flex; justify-content:space-between; align-items:flex-start; }
+  .top-left{ flex:1 1 auto; padding-right:24px; }
+  .issuer{ font-size:20px; font-weight:700; letter-spacing:-0.01em; }
+  .branch{ font-size:12px; color:#5b6b6a; margin-top:4px; }
+  .top-right{ text-align:right; }
+  .kind{ font-size:12px; font-weight:600; letter-spacing:0.12em; text-transform:uppercase; color:#0f5c63; }
+  .ref{ font-family:"IBM Plex Mono",monospace; font-size:11px; color:#5b6b6a; margin-top:4px; }
+
+  .section{ margin-top:28px; }
+  .keep{ break-inside:avoid; }
+
+  .hero{ background:#eef4f3; border-radius:10px; padding:28px 32px; display:flex;
+    justify-content:space-between; align-items:flex-end; break-inside:avoid; }
+  .hero-main{ flex:1 1 auto; padding-right:24px; }
+  .hero-line{ font-size:13px; color:#3d4b4a; }
+  .hero-figure{ display:flex; align-items:baseline; margin-top:8px; }
+  .hero-unit{ font-size:18px; font-weight:600; color:#0f5c63; margin-right:10px; }
+  .hero-amount{ font-size:52px; font-weight:700; letter-spacing:-0.02em; line-height:1; color:#0f5c63; }
+  .hero-paid{ font-size:13px; color:#3d4b4a; margin-top:8px; }
+  table.mini{ flex:none; border-collapse:collapse; font-size:13px; white-space:nowrap; }
+  table.mini td{ padding:0 0 6px; }
+  table.mini tr:last-child td{ padding-bottom:0; }
+  table.mini .k{ color:#3d4b4a; padding-right:20px; }
+  table.mini .v{ text-align:right; font-weight:500; }
+  table.mini tr.total td{ border-top:1px solid #c9d6d4; padding-top:6px; }
+  table.mini tr.total .v{ font-weight:700; }
+
+  .bar{ display:flex; height:12px; border-radius:6px; overflow:hidden; }
+  .bar .seg{ height:12px; margin-left:2px; }
+  .bar .seg:first-child{ margin-left:0; }
+  .legend{ display:flex; flex-wrap:wrap; margin-top:10px; font-size:11px; color:#3d4b4a; }
+  .legend .item{ display:flex; align-items:center; margin-right:20px; }
+  .legend .dot{ width:8px; height:8px; border-radius:2px; margin-right:6px; }
+  .legend .share-note{ margin-left:auto; margin-right:0; color:#5b6b6a; }
+  .net{ background:#0f5c63; }
+  .c1{ background:#5fa3a8; }
+  .c2{ background:#c98a4b; }
+  .c3{ background:#a9c9cb; }
+  .c4{ background:#7f9c9a; }
+  .c5{ background:#d9b48a; }
+
+  .pair{ display:grid; grid-template-columns:1fr 1fr; column-gap:40px; }
+  .head{ display:flex; justify-content:space-between; font-size:11px; font-weight:600;
+    letter-spacing:0.08em; text-transform:uppercase; color:#5b6b6a; padding-bottom:8px;
+    border-bottom:1.5px solid #14201f; break-after:avoid; }
+  .row{ display:flex; justify-content:space-between; font-size:13px; padding:8px 0;
+    border-bottom:1px solid #e3e8e7; break-inside:avoid; }
+  .row .name{ padding-right:12px; }
+  .row .amt{ white-space:nowrap; }
+  .lg .row{ font-size:14px; padding:10px 0; }
+  .rows .row:last-child{ border-bottom:0; }
+  .row.strong{ font-weight:700; break-before:avoid; }
+  .sub{ font-size:11px; color:#5b6b6a; padding-top:6px; }
+  .sub .row{ display:flex; justify-content:space-between; font-size:11px; padding:0; border:0; margin-top:4px; }
+  .sub .row .name{ padding-right:12px; }
+
+  .facts{ display:grid; grid-template-columns:repeat(3,1fr); column-gap:24px; row-gap:16px;
+    padding:20px 0; border-top:1px solid #e3e8e7; border-bottom:1px solid #e3e8e7; break-inside:avoid; }
+  .fact .label{ display:block; font-size:11px; color:#5b6b6a; }
+  .fact .value{ display:block; font-size:13px; font-weight:500; margin-top:3px; }
+  .fact .value.mono{ font-family:"IBM Plex Mono",monospace; }
+
+  table.months{ width:100%; border-collapse:collapse; }
+  table.months th{ font-size:11px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase;
+    color:#5b6b6a; text-align:right; vertical-align:bottom; padding:0 0 8px; border-bottom:1.5px solid #14201f; }
+  table.months th:first-child, table.months td:first-child{ text-align:left; }
+  table.months th small{ display:block; font-size:10px; font-weight:500; letter-spacing:0.08em; margin-top:2px; }
+  table.months td{ font-size:13px; text-align:right; padding:9px 0; border-bottom:1px solid #e3e8e7; white-space:nowrap; }
+  table.months tr{ break-inside:avoid; }
+  table.months tr.before td{ color:#3d4b4a; }
+  table.months tr.total td{ font-weight:700; border-top:1.5px solid #14201f; border-bottom:0; }
+
+  /* The tax summary carries a full year on one page, so its spacing is tighter. */
+  body.tax .section{ margin-top:20px; }
+  body.tax .hero{ padding:22px 32px; }
+  body.tax .facts{ padding:14px 0; row-gap:0; }
+  body.tax table.months td{ padding:6px 0; }
+  body.tax .row{ padding:5px 0; }
+</style>

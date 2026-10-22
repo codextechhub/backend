@@ -37,6 +37,7 @@ from __future__ import annotations
 from vs_finance.wording import counted
 
 import logging
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import transaction
 from django.db.models import Q
@@ -123,6 +124,37 @@ def opening_of(line) -> dict | None:
     }
 
 
+def gross_shares(line, deductions) -> list[dict]:
+    """The stacked bar of where a payslip's gross pay went: net pay, then each deduction.
+
+    One entry per slice, ``{"name", "percent", "width"}``, for the bar and its
+    legend. ``percent`` is the share of gross as a one-decimal label ("83.3")
+    and ``width`` the same share to two decimals for the bar's CSS ("83.33").
+    Net pay comes first and the deduction items follow, largest first, with
+    zero amounts left out. Every share is worked from the kobo amounts, never
+    from formatted text, and a negative amount counts as nothing. A line with
+    no gross pay has nothing to divide, so the bar is empty.
+    """
+    gross = line.gross_amount
+    if gross <= 0:
+        return []
+    slices = [("Net pay", max(line.net_amount, 0))]
+    slices += sorted(
+        ((i.label or i.get_code_display(), i.amount) for i in deductions if i.amount > 0),
+        key=lambda part: -part[1],
+    )
+
+    def share(amount, places):
+        return str((Decimal(amount) * 100 / Decimal(gross)).quantize(
+            Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP,
+        ))
+
+    return [
+        {"name": name, "percent": share(amount, 1), "width": share(amount, 2)}
+        for name, amount in slices
+    ]
+
+
 def payslip_context(line) -> dict:
     """Everything a payslip shows, as formatted text and kobo figures.
 
@@ -135,11 +167,18 @@ def payslip_context(line) -> dict:
     A person who joined mid-year also has ``brought_forward``: the previous
     employer's figures their PAYE counted (:func:`brought_forward_of`),
     printed apart and never added to this employer's year to date.
+
+    ``show_branch`` is true when the tenant owns several branches, where the
+    branch a person was paid from says something; a tenant with one prints no
+    branch line. ``employer_total`` is the employer contributions together,
+    and ``gross_shares`` is the bar of :func:`gross_shares`.
     """
+    from vs_config.display import format_date
+    from vs_rbac.scoping import only_branch_id_or_several
+
     run = line.run
     entity = run.entity
     tenant = entity.tenant
-    from vs_config.display import format_date
 
     items = list(line.items.all())
     deductions = [i for i in items if i.kind == PayrollItemKind.DEDUCTION]
@@ -169,6 +208,7 @@ def payslip_context(line) -> dict:
         "period_label": run.period_label or format_date(run.pay_date, tenant, month="long"),
         "pay_date": format_date(run.pay_date, tenant),
         "branch": line.branch.name if line.branch_id else "",
+        "show_branch": only_branch_id_or_several(tenant) is None,
         "tax_id": line.tax_id,
         "tax_state": line.tax_state.name if line.tax_state_id else "",
         "pfa": line.pfa.name if line.pfa_id else "",
@@ -183,9 +223,11 @@ def payslip_context(line) -> dict:
         "employer": [
             {"name": i.label or i.get_code_display(), "amount": money(i.amount)} for i in employer
         ],
+        "employer_total": money(line.employer_contributions_amount),
         "gross": money(line.gross_amount),
         "total_deductions": money(line.gross_amount - line.net_amount),
         "net": money(line.net_amount),
+        "gross_shares": gross_shares(line, deductions),
         "paye_source": line.get_paye_source_display(),
         "tax_table": line.tax_table.name if line.tax_table_id else "",
         "ytd": {k: money(v) for k, v in ytd.items()},

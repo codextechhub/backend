@@ -1,25 +1,29 @@
 """Branded PDF copies of the customer-facing finance documents.
 
 These are the files attached to a customer email and the copies a parent or pupil
-downloads from their app.
+downloads from their app, and the payslip and tax summary an employee is sent.
 
-**The invoice, the receipt and the statement are HTML templates rendered to PDF.**
-WeasyPrint renders ``vs_finance/invoice_document.html``, ``receipt_document.html`` and
+**Every document is an HTML template rendered to PDF.** WeasyPrint renders
+``vs_finance/invoice_document.html``, ``receipt_document.html`` and
 ``statement_document.html``; the first two are the templates a member of staff prints
 from the browser, so Mrs Bello sees one design whether the bursar printed her invoice,
 emailed it or she downloaded it herself, and her statement shares their letterhead.
-Rendering is sealed off from the network: the school's logo is read from storage and
-embedded, the typeface is the Noto Serif bundled in ``fonts/`` (so the naira sign has
-a glyph on any server), and every other address in the page is refused rather than
+The payslip and the tax summary (``payslip_document.html``,
+``tax_summary_document.html``) share a second design: a sans-serif page with a
+tinted summary band, set in the Hanken Grotesk and IBM Plex Mono faces bundled in
+``fonts/``, with its footer drawn in the page margin so it sits at the foot of every
+page. Rendering is sealed off from the network: the school's logo is read from storage
+and embedded, the typefaces are the bundled ones (so the page does not depend on what
+a server has installed), and every other address in the page is refused rather than
 fetched. Where WeasyPrint's native libraries are missing the document still goes out,
 drawn by the ReportLab layout below, and the failure is logged as an error.
 
-The payslip and the tax summary, and the plain fallback invoice, receipt and
-statement, are drawn with ReportLab. Three rules shaped that layout:
+The plain fallback layouts are drawn with ReportLab. Three rules shaped them:
 
 * **One source of truth for the content.** Every renderer is driven by the *same*
   context dict the printable HTML uses (:func:`vs_finance.documents.invoice_document_context`,
-  :func:`~vs_finance.documents.receipt_document_context`), so a change to how an
+  :func:`~vs_finance.documents.receipt_document_context`,
+  :func:`vs_finance.payslips.payslip_context`), so a change to how an
   amount or a line is presented reaches the PDF without anyone remembering to. The
   renderers here decide layout only; they never compute a figure.
 * **One look across the ReportLab documents.** They share a letterhead, a party
@@ -76,6 +80,16 @@ _FACES = (
     ("NotoSerif-Regular.ttf", 400, "normal"),
     ("NotoSerif-Bold.ttf", 700, "normal"),
     ("NotoSerif-Italic.ttf", 400, "italic"),
+)
+
+# The payslip and tax summary faces, as (file, family, weight).
+_PAYROLL_FACES = (
+    ("HankenGrotesk-Regular.ttf", "Hanken Grotesk", 400),
+    ("HankenGrotesk-Medium.ttf", "Hanken Grotesk", 500),
+    ("HankenGrotesk-SemiBold.ttf", "Hanken Grotesk", 600),
+    ("HankenGrotesk-Bold.ttf", "Hanken Grotesk", 700),
+    ("IBMPlexMono-Regular.ttf", "IBM Plex Mono", 400),
+    ("IBMPlexMono-Medium.ttf", "IBM Plex Mono", 500),
 )
 
 
@@ -310,6 +324,46 @@ def _pdf_stylesheet() -> str:
     """
 
 
+def _payroll_stylesheet() -> str:
+    """Faces and page rules for the payslip and the tax summary.
+
+    The typefaces are declared here, as absolute ``file:`` addresses, because a
+    stylesheet inside the template has no way to name the bundled files. The page
+    is A4 with the design's margins plus room beneath the content for the footer,
+    which the template marks as the running element ``page-foot``: it is drawn in
+    the bottom margin of every page, anchored to the foot of the sheet. A flex
+    column with an auto margin above the footer would instead spread the sections
+    apart in WeasyPrint, and a long payslip could not continue onto a second page.
+
+    Every page after the first carries a slim header in the top margin: the
+    running element ``page-head`` on the left, naming whose document it is, and
+    the page count on the right. The words come from the template, escaped there,
+    and never from this string, so a name containing a quote or a backslash cannot
+    break the stylesheet. The first page already opens with the document's own
+    header, so ``:first`` clears the margin boxes there.
+    """
+    faces = "".join(
+        f'@font-face{{font-family:"{family}";src:url("{(FONT_DIR / name).as_uri()}");'
+        f"font-weight:{weight};font-style:normal;}}"
+        for name, family, weight in _PAYROLL_FACES
+    )
+    return faces + """
+      @page{ size:A4 portrait; margin:56px 56px 100px;
+        @bottom-left{ content:element(page-foot); width:682px; vertical-align:bottom;
+          padding-bottom:44px; }
+        @top-left{ content:element(page-head); width:482px; vertical-align:bottom;
+          padding-bottom:10px; border-bottom:1px solid #e3e8e7; margin-bottom:8px;
+          font:400 11px "Hanken Grotesk"; color:#5b6b6a; }
+        @top-right{ content:"Page " counter(page) " of " counter(pages); width:200px;
+          vertical-align:bottom; text-align:right; padding-bottom:10px;
+          border-bottom:1px solid #e3e8e7; margin-bottom:8px;
+          font:400 11px "Hanken Grotesk"; color:#5b6b6a; } }
+      @page :first{
+        @top-left{ content:none; border:0; }
+        @top-right{ content:none; border:0; } }
+    """
+
+
 def _embedded_logo(issuer) -> str:
     """The issuer's stored logo as a ``data:`` URI, or ``""`` to draw the initials crest.
 
@@ -344,7 +398,7 @@ def _weasyprint():
         from weasyprint.text.fonts import FontConfiguration
         from weasyprint.urls import URLFetcher
     except (ImportError, OSError):
-        logger.exception("WeasyPrint could not load; invoices and receipts use the plain layout")
+        logger.exception("WeasyPrint could not load; finance documents use the plain layout")
         return None
     return SimpleNamespace(HTML=HTML, CSS=CSS, FontConfiguration=FontConfiguration,
                            URLFetcher=URLFetcher)
@@ -371,24 +425,41 @@ def _local_only_fetcher(base):
     return LocalOnlyFetcher(allowed_protocols=("data", "file"))
 
 
+def _engine_for(template_name: str):
+    """WeasyPrint's renderer classes, or ``None`` after logging that ``template_name`` cannot use them.
+
+    A server without the native libraries logs an error naming the template, and the
+    caller draws the plain layout instead.
+    """
+    engine = _weasyprint()
+    if engine is None:
+        logger.error("WeasyPrint is unavailable; %s went out in the plain layout", template_name)
+    return engine
+
+
+def _template_pdf(engine, template_name: str, context: dict, stylesheet: str) -> bytes:
+    """``template_name`` rendered with ``context`` and laid out under ``stylesheet``."""
+    html = render_to_string(template_name, context)
+    fonts = engine.FontConfiguration()
+    fetcher = _local_only_fetcher(engine.URLFetcher)
+    return engine.HTML(string=html, url_fetcher=fetcher).write_pdf(
+        stylesheets=[engine.CSS(string=stylesheet, font_config=fonts, url_fetcher=fetcher)],
+        font_config=fonts,
+    )
+
+
 def _html_document_pdf(template_name: str, context: dict, *, note: str) -> bytes | None:
     """Render a printable document template to PDF, or ``None`` when WeasyPrint cannot load.
 
     ``note`` is the sender's covering note on an emailed copy; the templates print it
     in place of the invoice's narration.
     """
-    engine = _weasyprint()
+    engine = _engine_for(template_name)
     if engine is None:
-        logger.error("WeasyPrint is unavailable; %s went out in the plain layout", template_name)
         return None
-
     issuer = {**context["issuer"], "logo": _embedded_logo(context["issuer"])}
-    html = render_to_string(template_name, {**context, "issuer": issuer, "note": note})
-    fonts = engine.FontConfiguration()
-    fetcher = _local_only_fetcher(engine.URLFetcher)
-    return engine.HTML(string=html, url_fetcher=fetcher).write_pdf(
-        stylesheets=[engine.CSS(string=_pdf_stylesheet(), font_config=fonts, url_fetcher=fetcher)],
-        font_config=fonts,
+    return _template_pdf(
+        engine, template_name, {**context, "issuer": issuer, "note": note}, _pdf_stylesheet(),
     )
 
 
@@ -609,6 +680,108 @@ def _plain_statement_pdf(context, *, note: str = "") -> bytes:
 # Payslip and yearly tax summary                                              #
 # --------------------------------------------------------------------------- #
 
+def _previous_heading(brought) -> str:
+    """The heading over a previous employer's figures, naming the employer where known."""
+    name = (brought.get("employer_name") or "").strip()
+    return f"Earlier this tax year with {name}" if name else "Earlier this tax year elsewhere"
+
+
+PAYSLIP_TEMPLATE = "vs_finance/payslip_document.html"
+TAX_SUMMARY_TEMPLATE = "vs_finance/tax_summary_document.html"
+
+
+def _bare_figures(figures: dict, *, keep=()) -> dict:
+    """``figures`` with the currency stripped from every value except those named in ``keep``."""
+    return {k: v if k in keep else _bare(v) for k, v in figures.items()}
+
+
+def _payslip_template_context(context) -> dict:
+    """The payslip context as its template prints it: money bare, the currency named in headings.
+
+    The template does no arithmetic and no formatting. Everything it needs beyond the
+    payslip context is the heading over a previous employer's table.
+    """
+    def rows(items):
+        return [{**row, "amount": _bare(row["amount"])} for row in items]
+
+    brought = context.get("brought_forward")
+    opening = context.get("opening")
+    return {
+        **context,
+        "gross": _bare(context["gross"]),
+        "total_deductions": _bare(context["total_deductions"]),
+        "net": _bare(context["net"]),
+        "employer_total": _bare(context["employer_total"]),
+        "earnings": rows(context["earnings"]),
+        "deductions": rows(context["deductions"]),
+        "employer": rows(context["employer"]),
+        "ytd": _bare_figures(context["ytd"]),
+        "opening": _bare_figures(opening) if opening else None,
+        "brought_forward": _bare_figures(brought, keep=("employer_name",)) if brought else None,
+        "brought_heading": _previous_heading(brought) if brought else "",
+    }
+
+
+def payslip_pdf(context) -> bytes:
+    """Render one person's payslip from :func:`vs_finance.payslips.payslip_context`.
+
+    The year to date is this employer's; a previous employer's figures the
+    PAYE counted print in their own table beneath it. The branch line shows only
+    where the tenant owns several branches (``show_branch``).
+    """
+    engine = _engine_for(PAYSLIP_TEMPLATE)
+    if engine is None:
+        return _plain_payslip_pdf(context)
+    return _template_pdf(
+        engine, PAYSLIP_TEMPLATE, _payslip_template_context(context), _payroll_stylesheet(),
+    )
+
+
+def _tax_summary_template_context(summary) -> dict:
+    """The tax summary as its template prints it: kobo formatted as bare naira figures."""
+    from .money import format_naira
+
+    def naira(figures: dict, keys) -> dict:
+        return {key: _bare(format_naira(figures[key])) for key in keys}
+
+    figures = ("gross", "taxable_pay", "paye", "pension")
+    opening, brought = summary.get("opening"), summary.get("brought_forward")
+    return {
+        "year": summary["year"],
+        "issuer": summary["issuer"],
+        "employee_name": summary["employee_name"],
+        "tax_id": summary["tax_id"],
+        "tax_states": ", ".join(summary["tax_states"]),
+        "months": [
+            {"label": row["period_label"] or row["pay_date"], **naira(row, (*figures, "net"))}
+            for row in summary["months"]
+        ],
+        "opening": naira(opening, figures) if opening else None,
+        "totals": naira(summary["totals"], (*figures, "net")),
+        "brought_forward": naira(brought, figures) if brought else None,
+        "brought_heading": _previous_heading(brought) if brought else "",
+    }
+
+
+def tax_summary_pdf(summary) -> bytes:
+    """Render a person's yearly tax summary from :func:`vs_finance.payslips.tax_summary`.
+
+    This employer's own months from before its payroll ran here head the
+    table, inside the totals; their net is left blank, as it is not known. A
+    previous employer's figures print in their own table beneath.
+    """
+    engine = _engine_for(TAX_SUMMARY_TEMPLATE)
+    if engine is None:
+        return _plain_tax_summary_pdf(summary)
+    return _template_pdf(
+        engine, TAX_SUMMARY_TEMPLATE, _tax_summary_template_context(summary), _payroll_stylesheet(),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Payslip and tax summary, plain layout                                       #
+# --------------------------------------------------------------------------- #
+
 def _facts(pairs, styles):
     """A two-column block of labelled facts, skipping the empty ones."""
     rows = [[Paragraph(_text(label), styles["Label"]), Paragraph(f"<b>{_text(value)}</b>", styles["Small"])]
@@ -624,14 +797,8 @@ def _facts(pairs, styles):
     return table
 
 
-def _previous_heading(brought) -> str:
-    """The heading over a previous employer's figures, naming the employer where known."""
-    name = (brought.get("employer_name") or "").strip()
-    return f"Earlier this tax year with {name}" if name else "Earlier this tax year elsewhere"
-
-
-def payslip_pdf(context) -> bytes:
-    """Render one person's payslip from :func:`vs_finance.payslips.payslip_context`.
+def _plain_payslip_pdf(context) -> bytes:
+    """The payslip drawn with ReportLab, for a server without WeasyPrint's libraries.
 
     The year to date is this employer's; a previous employer's figures the
     PAYE counted print in their own table beneath it.
@@ -708,8 +875,8 @@ def payslip_pdf(context) -> bytes:
     return _build(story, title=f"Payslip {context['document_number']}")
 
 
-def tax_summary_pdf(summary) -> bytes:
-    """Render a person's yearly tax summary from :func:`vs_finance.payslips.tax_summary`.
+def _plain_tax_summary_pdf(summary) -> bytes:
+    """The yearly tax summary drawn with ReportLab, for a server without WeasyPrint's libraries.
 
     This employer's own months from before its payroll ran here head the
     table, inside the totals; their net is left blank, as it is not known. A

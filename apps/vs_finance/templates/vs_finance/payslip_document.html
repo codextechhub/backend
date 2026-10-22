@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Payslip {{ document_number }} - {{ employee_name }} - {{ period_label }}</title>
+{% include "vs_finance/_payroll_document_style.html" %}
+</head>
+<body>
+
+<div class="page-head">{{ employee_name }} · Payslip {{ document_number }}</div>
+
+<div class="foot">
+  <span>PAYE: {{ paye_source }}{% if tax_table %} ({{ tax_table }}){% endif %}.</span>
+  <span>All amounts in NGN</span>
+</div>
+
+<div class="top">
+  <div class="top-left">
+    <div class="issuer">{{ issuer }}</div>
+    {% if show_branch and branch %}<div class="branch">{{ branch }}</div>{% endif %}
+  </div>
+  <div class="top-right">
+    <div class="kind">Payslip</div>
+    <div class="ref">{{ document_number }}</div>
+  </div>
+</div>
+
+<div class="section hero">
+  <div class="hero-main">
+    <div class="hero-line">{{ employee_name }} · Net pay for {{ period_label }}</div>
+    <div class="hero-figure"><span class="hero-unit">NGN</span><span class="hero-amount">{{ net }}</span></div>
+    <div class="hero-paid">Paid {{ pay_date }}</div>
+  </div>
+  <table class="mini">
+      <tr><td class="k">Gross pay</td><td class="v">{{ gross }}</td></tr>
+      <tr><td class="k">Total deductions</td><td class="v">&minus; {{ total_deductions }}</td></tr>
+      <tr class="total"><td class="k">Net pay</td><td class="v">{{ net }}</td></tr>
+  </table>
+</div>
+
+{% if gross_shares %}
+<div class="section keep">
+  <div class="bar">
+    {% for share in gross_shares %}<div class="seg {% if forloop.first %}net{% else %}{% cycle 'c1' 'c2' 'c3' 'c4' 'c5' %}{% endif %}" style="width:{{ share.width }}%"></div>{% endfor %}
+  </div>
+  <div class="legend">
+    {% for share in gross_shares %}<span class="item"><span class="dot {% if forloop.first %}net{% else %}{% cycle 'c1' 'c2' 'c3' 'c4' 'c5' %}{% endif %}"></span>{{ share.name }} {{ share.percent }}%</span>{% endfor %}
+    <span class="item share-note">Share of gross pay</span>
+  </div>
+</div>
+{% endif %}
+
+<div class="section pair lg">
+  <div>
+    <div class="head"><span>Earnings</span><span>NGN</span></div>
+    <div class="rows">
+      {% for row in earnings %}<div class="row"><span class="name">{{ row.name }}</span><span class="amt">{{ row.amount }}</span></div>{% endfor %}
+      <div class="row strong"><span>Gross pay</span><span class="amt">{{ gross }}</span></div>
+    </div>
+  </div>
+  <div>
+    <div class="head"><span>Deductions</span><span>NGN</span></div>
+    <div class="rows">
+      {% for row in deductions %}<div class="row"><span class="name">{{ row.name }}</span><span class="amt">{{ row.amount }}</span></div>
+      {% empty %}<div class="row"><span class="name">None</span><span class="amt">0.00</span></div>{% endfor %}
+      <div class="row strong"><span>Total deductions</span><span class="amt">{{ total_deductions }}</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="section facts">
+  {% if show_branch and branch %}<div class="fact"><span class="label">Branch</span><span class="value">{{ branch }}</span></div>{% endif %}
+  {% if tax_id %}<div class="fact"><span class="label">Tax ID</span><span class="value mono">{{ tax_id }}</span></div>{% endif %}
+  {% if tax_state %}<div class="fact"><span class="label">PAYE state</span><span class="value">{{ tax_state }}</span></div>{% endif %}
+  {% if pfa %}<div class="fact"><span class="label">Pension administrator</span><span class="value">{{ pfa }}</span></div>{% endif %}
+  {% if pension_pin %}<div class="fact"><span class="label">Pension PIN</span><span class="value mono">{{ pension_pin }}</span></div>{% endif %}
+  {% if period_label %}<div class="fact"><span class="label">Pay period</span><span class="value">{{ period_label }}</span></div>{% endif %}
+</div>
+
+<div class="section pair">
+  {% if employer %}
+  <div>
+    <div class="head">Paid by your employer on top of your pay</div>
+    <div class="rows">
+      {% for row in employer %}<div class="row"><span class="name">{{ row.name }}</span><span class="amt">{{ row.amount }}</span></div>{% endfor %}
+      <div class="row strong"><span>Total</span><span class="amt">{{ employer_total }}</span></div>
+    </div>
+  </div>
+  {% endif %}
+  <div>
+    <div class="head"><span>Year to date</span><span>NGN</span></div>
+    <div class="rows">
+      <div class="row"><span class="name">Gross pay</span><span class="amt">{{ ytd.gross }}</span></div>
+      <div class="row"><span class="name">PAYE</span><span class="amt">{{ ytd.paye }}</span></div>
+      <div class="row"><span class="name">Pension</span><span class="amt">{{ ytd.pension }}</span></div>
+      <div class="row"><span class="name">{% if opening %}Net pay through this payroll{% else %}Net pay{% endif %}</span><span class="amt">{{ ytd.net }}</span></div>
+    </div>
+    {% if opening %}
+    <div class="sub">
+      <div class="row"><span class="name">Of which gross brought forward from before this payroll</span><span class="amt">{{ opening.gross }}</span></div>
+      <div class="row"><span class="name">Of which PAYE brought forward from before this payroll</span><span class="amt">{{ opening.paye }}</span></div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if brought_forward %}
+<div class="section pair keep">
+  <div>
+    <div class="head"><span>{{ brought_heading }}</span><span>NGN</span></div>
+    <div class="rows">
+      <div class="row"><span class="name">Gross pay</span><span class="amt">{{ brought_forward.gross }}</span></div>
+      <div class="row"><span class="name">Taxable pay</span><span class="amt">{{ brought_forward.taxable_pay }}</span></div>
+      <div class="row"><span class="name">PAYE</span><span class="amt">{{ brought_forward.paye }}</span></div>
+      <div class="row"><span class="name">Pension</span><span class="amt">{{ brought_forward.pension }}</span></div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+</body>
+</html>
