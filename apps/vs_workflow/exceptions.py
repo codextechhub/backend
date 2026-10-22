@@ -254,6 +254,20 @@ class ApproverOutOfReachError(ReassignmentError):
     default_message = "This person cannot approve requests here."
 
 
+class ApproverNotStaffError(TemplateInvalidError):
+    """Naming somebody as an approver who is not an active member of staff here.
+
+    A 400 on the one value chosen. A template error too, so a Dynamic Role rule
+    naming such a person is refused on ``rules`` like any other bad rule. The message is the same for an unknown id,
+    another tenant's account and an account that is not staff, so it says
+    nothing about which ids exist elsewhere.
+    """
+
+    error_code = "APPROVER_NOT_STAFF"
+    default_message = "Choose a member of staff."
+    http_status = 400
+
+
 class StageEmptyError(ReassignmentError):
     """A list that would leave a stage with too few people to finish it."""
 

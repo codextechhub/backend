@@ -147,10 +147,15 @@ def _resolve_target(raw: dict, tenant, where: str) -> dict:
                 "role, or put these people in an approver group.")
         return target | {"role_key": role.key, "role": role}
     if kind == DynamicRoleTargetKind.USER:
+        from vs_workflow.exceptions import ApproverNotStaffError
+        from vs_workflow.services.approvers import NOT_STAFF, staff_ids_or_refuse
+
+        # One message for unknown, other tenant and not staff alike.
         user = _tenant_user(tenant, raw.get("user"))
-        if user is None:
-            raise TemplateInvalidError(
-                f"{where}: there is no active user with that id.")
+        try:
+            staff_ids_or_refuse([user.pk] if user else [None], tenant)
+        except ApproverNotStaffError:
+            raise ApproverNotStaffError(f"{where}: {NOT_STAFF}")
         return target | {"user": user}
     if kind == DynamicRoleTargetKind.GROUP:
         from vs_workflow.models import WorkflowApproverGroup

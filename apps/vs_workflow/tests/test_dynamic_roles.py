@@ -141,6 +141,8 @@ class _Fixture(TestCase):
         cls.adebayo = make_school_admin(cls.branch, email=f"dr-adebayo-{n}@test.com")
         make_assignment(cls.tenant, cls.bursar, cls.bursar_role)
         make_assignment(cls.tenant, cls.principal, cls.principal_role)
+        # Adebayo is named in person, so he holds staff standing: a keyless role.
+        make_assignment(cls.tenant, cls.adebayo, make_role(cls.tenant, name="Science teacher"))
         cls.science = WorkflowApproverGroup.objects.create(
             tenant=cls.tenant, code="dr-science", name="Science approvers")
         WorkflowApproverGroupMember.objects.create(
@@ -249,7 +251,7 @@ class DynamicRoleRuleCheckTests(_Fixture):
 
     def test_a_person_in_another_tenant_cannot_be_named(self):
         self._refused([_otherwise(target_kind="USER", user=str(self.outsider.pk))],
-                      "no active user")
+                      "Choose a member of staff.")
 
     def test_another_tenants_group_cannot_be_named(self):
         self._refused([_otherwise(target_kind="GROUP", group_code="dr-theirs")],

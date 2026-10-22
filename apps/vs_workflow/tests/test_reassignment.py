@@ -595,7 +595,8 @@ class ReplaceApproverTests(_Fixture):
              "instance_ids": [request.pk], "reason": "Away"}, format="json",
         )
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["error"]["code"], "APPROVER_OUT_OF_REACH")
+        self.assertEqual([str(m) for m in response.data["error"]["detail"]["to_user"]],
+                         ["Choose a member of staff."])
 
 
 # ── The administrators' list ────────────────────────────────────────────────

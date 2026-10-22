@@ -57,6 +57,13 @@ def _grant(user, keys):
     return role
 
 
+def _staff(user):
+    """Give *user* staff standing: one role with no keys, at their home branch."""
+    role = make_role(user.tenant, name=f"grp-staff-{next(_counter)}")
+    make_assignment(user.tenant, user, role, branch=user.branch)
+    return user
+
+
 def _call(view, method, path, user, tenant, data=None, **view_kwargs):
     """Issue one authenticated request with the tenant context the auth layer sets."""
     request = getattr(factory, method)(path, data, format="json")
@@ -281,7 +288,7 @@ class ApproverGroupApiTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_add_and_remove_user_member(self):
-        member_user = make_school_admin(self.branch, email="grp-member@test.com")
+        member_user = _staff(make_school_admin(self.branch, email="grp-member@test.com"))
         add = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
                     {"kind": "USER", "user": str(member_user.pk)}, pk=self.group.pk)
         self.assertEqual(add.status_code, status.HTTP_201_CREATED)
@@ -348,7 +355,7 @@ class ApproverGroupApiTests(TestCase):
         self.assertIn("role_key", str(resp.data))
 
     def test_adding_same_member_twice_is_idempotent(self):
-        member_user = make_school_admin(self.branch, email="grp-twice@test.com")
+        member_user = _staff(make_school_admin(self.branch, email="grp-twice@test.com"))
         body = {"kind": "USER", "user": str(member_user.pk)}
         first = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
                       body, pk=self.group.pk)

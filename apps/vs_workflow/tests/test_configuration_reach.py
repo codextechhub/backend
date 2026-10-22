@@ -229,6 +229,9 @@ class ApproverGroupReachTests(_BrightStar):
             branch=cls.lekki,
         )
         cls.tunde = make_staff_user(cls.lekki, email="tunde@workflow-reach.test")
+        # Staff standing: a role with no keys at the home branch.
+        make_assignment(cls.tenant, cls.tunde, make_role(cls.tenant, name="Staff tunde"),
+                        branch=cls.lekki)
         cls.member = WorkflowApproverGroupMember.objects.create(
             group=cls.shared, kind="USER", user=cls.tunde,
         )

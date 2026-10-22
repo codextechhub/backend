@@ -52,6 +52,7 @@ from vs_workflow.serializers import (
     CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer,
     WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
+    require_staff,
     WorkflowStageApproverOverrideSerializer,
     WorkflowInstanceAdminRowSerializer, WorkflowInstanceDetailSerializer,
     WorkflowInstanceListSerializer, ReplaceApproverSerializer,
@@ -1032,7 +1033,8 @@ class WorkflowInstanceViewSet(
         for when it opens. Answers with the same body as GET. Refusals carry
         ``APPROVER_ALREADY_VOTED``, ``APPROVER_CONFLICT``,
         ``APPROVER_OUT_OF_REACH``, ``STAGE_EMPTY``, ``STAGE_NOT_CHANGEABLE``,
-        ``INSTANCE_NOT_OPEN`` or ``REASON_REQUIRED``.
+        ``INSTANCE_NOT_OPEN`` or ``REASON_REQUIRED``; a person who is not an
+        active member of staff here is a 400 on ``approvers``.
 
         docstring-name: Approval request approvers
         """
@@ -1040,6 +1042,7 @@ class WorkflowInstanceViewSet(
         if request.method == "POST":
             body = StageApproversWriteSerializer(data=request.data)
             body.is_valid(raise_exception=True)
+            require_staff(body.validated_data["approvers"], self.get_tenant(), "approvers")
             reassignment_svc.set_stage_approvers(
                 instance.pk, stage_id=body.validated_data["stage"],
                 user_ids=body.validated_data["approvers"],
@@ -1071,12 +1074,14 @@ class WorkflowInstanceViewSet(
         Each request is changed on its own: one that cannot be changed (the
         person has already decided it, the new person cannot approve it, it is
         out of the caller's reach) is skipped with the reason, never failing
-        the rest.
+        the rest. A ``to_user`` who is not an active member of staff here
+        fails the whole call with a 400 on ``to_user``.
 
         docstring-name: Replace an approver across requests
         """
         body = ReplaceApproverSerializer(data=request.data)
         body.is_valid(raise_exception=True)
+        require_staff([body.validated_data["to_user"]], self.get_tenant(), "to_user")
         ids = [str(i) for i in body.validated_data["instance_ids"]]
         reachable = set(self._reachable().filter(pk__in=ids).values_list("pk", flat=True))
         outcome = reassignment_svc.replace_approver(

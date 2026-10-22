@@ -14,6 +14,7 @@ from vs_rbac.serializers.tenant import (
 from vs_workflow.constants import (
     ApproverScope, ApproverSource, GroupMemberKind, OrganogramTarget,
 )
+from vs_workflow.services.approvers import NOT_STAFF
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
     WorkflowDynamicRole, WorkflowDynamicRoleRule,
@@ -947,10 +948,22 @@ class ReverseActionSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
-#: The one refusal for a delegate who cannot hold approvals: an id that does
-#: not exist, one in another tenant and an account that is not staff all read
-#: alike, so the field cannot be walked to learn which ids exist where.
-DELEGATE_NOT_STAFF = "Choose a member of staff."
+def require_staff(values, tenant, field: str) -> list:
+    """*values* as user ids, when each is an active member of *tenant*'s staff.
+
+    Otherwise a 400 on *field* carrying
+    :data:`vs_workflow.services.approvers.NOT_STAFF`, identical for an unknown
+    id, another tenant's account and an account that is not staff. Every write
+    that names an approver (a delegate, a group member, a stage's people, a
+    replacement) passes through here.
+    """
+    from vs_workflow.exceptions import ApproverNotStaffError
+    from vs_workflow.services.approvers import staff_ids_or_refuse
+
+    try:
+        return staff_ids_or_refuse(values, tenant)
+    except ApproverNotStaffError:
+        raise serializers.ValidationError({field: [NOT_STAFF]})
 
 
 class ApprovalDelegationSerializer(
@@ -977,13 +990,13 @@ class ApprovalDelegationSerializer(
     delegator's seats on every request waiting on them, so a parent's or a
     pupil's account named here would be shown, and could decide, a school's
     purchases. All three refusals (absent, foreign, not staff) carry
-    :data:`DELEGATE_NOT_STAFF`.
+    :data:`vs_workflow.services.approvers.NOT_STAFF`.
     """
 
     delegate = TenantScopedRelatedField(
         queryset=get_user_model().objects.all(),
         tenant_lookup="tenant",
-        not_found=DELEGATE_NOT_STAFF,
+        not_found=NOT_STAFF,
     )
     # Optional, and only on create: the caller is the delegator unless they
     # name somebody else, which the view allows only an administrator.
@@ -1043,19 +1056,14 @@ class ApprovalDelegationSerializer(
         is the live one. Both raise the message the lookup does, so no route
         reveals that an id exists somewhere else.
         """
-        from vs_rbac.evaluator import is_tenant_staff
-
         tenant = self._tenant()
         if tenant is None:
             raise serializers.ValidationError({"tenant": "Tenant context is required."})
 
         delegate = attrs.get("delegate") or getattr(self.instance, "delegate", None)
         naming_delegate = self.instance is None or "delegate" in attrs
-        if naming_delegate and delegate is not None and (
-            getattr(delegate, "tenant_id", None) != tenant.pk
-            or not is_tenant_staff(delegate, tenant)
-        ):
-            raise serializers.ValidationError({"delegate": DELEGATE_NOT_STAFF})
+        if naming_delegate and delegate is not None:
+            require_staff([delegate.pk], tenant, "delegate")
 
         # Whose approvals a delegation hands over is fixed once it exists.
         if self.instance is not None:
@@ -1294,14 +1302,10 @@ class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
 
         if kind == GroupMemberKind.USER:
             from django.contrib.auth import get_user_model
-            user = get_user_model().objects.filter(
-                pk=attrs["user"], tenant=tenant, is_active=True).first()
-            if user is None:
-                # Same message for "not found" and "other tenant" - the API must
-                # not confirm that a user id exists elsewhere.
-                raise serializers.ValidationError(
-                    {"user": "There is no active user with that id."})
-            attrs["resolved_target"] = user
+
+            # One message for unknown, other tenant and not staff alike.
+            (user_id,) = require_staff([attrs["user"]], tenant, "user")
+            attrs["resolved_target"] = get_user_model().objects.get(pk=user_id)
         elif kind == GroupMemberKind.ROLE:
             from vs_rbac.models import TenantRoleTemplate
             role = TenantRoleTemplate.objects.filter(

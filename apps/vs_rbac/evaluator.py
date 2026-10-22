@@ -317,31 +317,80 @@ def has_all_permissions(user, permission_keys, tenant=None, branch=ANY_BRANCH) -
     )
 
 
-def is_tenant_staff(user, tenant=None) -> bool:
-    """Whether *user* is a member of *tenant*'s staff right now.
+def tenant_staff_ids(user_ids, tenant) -> Set[int]:
+    """Which of *user_ids* are members of *tenant*'s staff right now, in two queries.
 
     Staff is whoever the tenant has granted something: an active role, or a
     personal ALLOW override in force. The name of the role and the keys it
     carries do not matter. An account that belongs to the tenant only as
     somebody's parent, or as a pupil, holds neither: its reach comes from a
-    link to that record, never from a grant.
+    link to that record, never from a grant. Only accounts of *tenant* itself
+    are answered for, so another tenant's staff are never this one's.
 
     The role rules are :func:`_active_role_ids`', and the override rules are
     :func:`get_user_override_keys`', so a revoked assignment, a suspended role,
     a role whose branches are all out of service, a lapsed override and an
     unapproved restricted one count for nothing here, exactly as they confer
-    nothing anywhere else. An account asserting a tenant other than its own is
-    not that tenant's staff.
+    nothing anywhere else.
+
+    *tenant* may be a tenant or its id. Answering a whole list at once is what
+    lets approver resolution hold every candidate to this rule without a query
+    per person.
+    """
+    if tenant is None:
+        return set()
+    if not hasattr(tenant, "pk"):
+        from vs_tenants.models import Tenant
+
+        tenant = Tenant.objects.filter(pk=tenant).first()
+        if tenant is None:
+            return set()
+    ids = set()
+    for value in user_ids:
+        try:
+            ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return set()
+
+    staff = set(
+        TenantUserRoleAssignment.objects.filter(
+            tenant=tenant,
+            user_id__in=ids,
+            user__tenant=tenant,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            role__status="ACTIVE",
+        )
+        .filter(_assignment_branch_q(ANY_BRANCH))
+        .values_list("user_id", flat=True)
+    )
+    rest = ids - staff
+    if rest:
+        staff |= set(
+            _active_override_qs(tenant)
+            .filter(
+                user_id__in=rest, user__tenant=tenant,
+                mode=UserPermissionOverride.Mode.ALLOW, **_holdable_filter(tenant),
+            )
+            .exclude(permission__is_restricted=True)
+            .values_list("user_id", flat=True)
+        )
+    return staff
+
+
+def is_tenant_staff(user, tenant=None) -> bool:
+    """Whether *user* is a member of *tenant*'s staff right now.
+
+    One person's answer to :func:`tenant_staff_ids`, which holds the rule. An
+    account asserting a tenant other than its own is not that tenant's staff.
     """
     tenant = _normalize_tenant(user, tenant=tenant)
     if not user or not getattr(user, "is_authenticated", False) or tenant is None:
         return False
     if getattr(user, "tenant_id", None) != tenant.pk:
         return False
-    if _active_role_ids(user, tenant, ANY_BRANCH).exists():
-        return True
-    allows, _denies = get_user_override_keys(user, tenant)
-    return bool(allows)
+    return user.pk in tenant_staff_ids([user.pk], tenant)
 
 
 def resolve_users_with_permission(tenant, branch, permission_key: str):

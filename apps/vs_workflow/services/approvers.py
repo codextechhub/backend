@@ -133,6 +133,12 @@ def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     return _users_for_role_key(stage_role_key(stage), instance.tenant, branch_arg)
 
 
+#: The refusal for naming somebody who cannot hold approval authority here:
+#: an unknown id, another tenant's account and an account that is not staff
+#: all read alike, so no route can be walked to learn which ids exist where.
+NOT_STAFF = "Choose a member of staff."
+
+
 # Keep only active users belonging to the resolving tenant.
 def _tenant_members(users, tenant_id) -> list:
     """De-dupe and enforce tenant containment on a resolved user list.
@@ -146,11 +152,46 @@ def _tenant_members(users, tenant_id) -> list:
     must never route approval authority to somebody outside that tenant. The
     same reasoning covers a delegation row, whose tenant column scopes the row
     and says nothing about the user it names.
+
+    Staff standing is held at the doors instead: every write that names a
+    person (a group member, a Dynamic Role rule, a stage's people, a
+    replacement, a delegate) refuses anybody off the tenant's staff with
+    :data:`NOT_STAFF` (:func:`staff_ids_or_refuse`), and a role or a post
+    only ever names staff. The queue and the decision routes refuse a
+    non-staff account whatever seat it holds.
     """
     return list({
         u.pk: u for u in users
         if u is not None and u.is_active and u.tenant_id == tenant_id
     }.values())
+
+
+def staff_ids_or_refuse(user_ids, tenant) -> list:
+    """*user_ids* as ints, when every one is an active member of *tenant*'s staff.
+
+    Raises :class:`vs_workflow.exceptions.ApproverNotStaffError` carrying
+    :data:`NOT_STAFF` otherwise, the same for an id nobody holds, another
+    tenant's account, a closed account and an account that is not staff. The
+    write-time half of :func:`_tenant_members`.
+    """
+    from django.contrib.auth import get_user_model
+    from vs_rbac.evaluator import tenant_staff_ids
+    from vs_workflow.exceptions import ApproverNotStaffError
+
+    ids = []
+    for value in user_ids:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            raise ApproverNotStaffError(NOT_STAFF)
+    active = set(
+        get_user_model().objects.filter(
+            pk__in=ids, tenant=tenant, is_active=True,
+        ).values_list("pk", flat=True)
+    )
+    if not set(ids) <= (active & tenant_staff_ids(active, tenant)):
+        raise ApproverNotStaffError(NOT_STAFF)
+    return ids
 
 
 # Resolve the mixed membership of a named approver group.
