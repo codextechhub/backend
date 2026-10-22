@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the Module 32 Messaging and Conversations FRD and reconcile the MRD to it.
+"""Create or revise the Module 32 Messaging and Conversations FRD and MRD.
 
 Two documents come out of one run: the first Module 32 FRD, built on the page
 furniture of an existing FRD, and the next MRD, patched from the latest one.
@@ -12,10 +12,10 @@ FRD, its status key, its traceability and the MRD text all follow.
 Usage::
 
     ./cx/bin/python docs/frd/tools/create_messaging_frd.py \\
-        --reference-frd docs/frd/functional-requirements/28-parent-portal/XVS_M28_Parent_Portal_Functional_Requirements_Document_v1.3.docx \\
-        --frd-output docs/frd/functional-requirements/32-messaging-and-conversations/XVS_M32_Messaging_and_Conversations_Functional_Requirements_Document_v1.0.docx \\
-        --mrd-source docs/frd/module-requirements/XVS_Module_Requirements_Document_v2.108.docx \\
-        --mrd-output docs/frd/module-requirements/XVS_Module_Requirements_Document_v2.109.docx
+        --reference-frd docs/frd/functional-requirements/32-messaging-and-conversations/XVS_M32_Messaging_and_Conversations_Functional_Requirements_Document_v1.0.docx \\
+        --frd-output docs/frd/functional-requirements/32-messaging-and-conversations/XVS_M32_Messaging_and_Conversations_Functional_Requirements_Document_v1.1.docx \\
+        --mrd-source docs/frd/module-requirements/XVS_Module_Requirements_Document_v2.109.docx \\
+        --mrd-output docs/frd/module-requirements/XVS_Module_Requirements_Document_v2.110.docx
 """
 
 from __future__ import annotations
@@ -59,22 +59,22 @@ from generate_requirements_documents import (
 
 REVIEW_DATE = "21 October 2026"
 CHANGE_DATE = "21 Oct 2026"
-MRD_SOURCE_VERSION = "2.108"
-MRD_TARGET_VERSION = "2.109"
-FRD_VERSION = "1.0"
+MRD_SOURCE_VERSION = "2.109"
+MRD_TARGET_VERSION = "2.110"
+FRD_VERSION = "1.1"
 CODE_BASELINE = (
-    "Backend main at 408bb201 plus the uncommitted schools/vs_messages app and its "
-    "seams in vs_notifications, vs_audit, vs_config, vs_rbac and core (21 October 2026)"
+    "Backend main at 42252192 with schools/vs_messages and its seams in "
+    "vs_notifications, vs_audit, vs_config, vs_rbac and core (21 October 2026)"
 )
 
 BACKEND = "Implemented"
-FRONTEND_REVIEW = "Implemented (frontend, pending owner review)"
+FRONTEND_REVIEW = "Implemented (frontend, staging)"
 SPECIFIED = "Specified"
 
 #: The status of every requirement. Backend requirements are Implemented on
 #: backend evidence. FR-024 to FR-026 are the three frontends: Implemented
-#: (frontend, pending owner review) only where the screens exist in the app's
-#: source, Specified otherwise. Flip a value and rerun to follow the frontends.
+#: (frontend, staging) where the screens are committed on main and present on
+#: staging, Specified otherwise. Flip a value and rerun to follow the frontends.
 REQUIREMENT_STATUS = {
     "FR-001": BACKEND,
     "FR-002": BACKEND,
@@ -324,7 +324,7 @@ REQUIREMENTS = [
             "the count as member_count. The sender may follow up in their own broadcast when they hold "
             "school.messages.send. A retry with the same token sends once."
         ),
-        "limit": "A broadcast's reply setting is fixed when it is sent. This is a build decision awaiting owner confirmation.",
+        "limit": "A broadcast's reply setting is fixed when it is sent, as confirmed by the owner on 21 October 2026.",
     },
     {
         "id": "FR-010",
@@ -676,9 +676,8 @@ REQUIREMENTS = [
             "lets the viewer read them."
         ),
         "limit_review": (
-            "Awaiting owner review. At the review date the screens are uncommitted in the school app's "
-            "repository. Frontend delivery is recorded separately from the backend: nothing here claims "
-            "deployment or production use."
+            "The screens are committed on main and present on staging. Frontend delivery is recorded "
+            "separately from the backend: nothing here claims production deployment or adoption."
         ),
         "limit_specified": "No screen is built. Specified means the requirement is agreed and unbuilt.",
     },
@@ -710,8 +709,8 @@ REQUIREMENTS = [
             "Staff contact details beyond the label are never shown."
         ),
         "limit_review": (
-            "Awaiting owner review. At the review date the screens are uncommitted in the parent app's "
-            "repository and still changing. Nothing here claims deployment or production use."
+            "The screens are committed on main and present on staging. Nothing here claims production "
+            "deployment or adoption."
         ),
         "limit_specified": "No screen is built. Specified means the requirement is agreed and unbuilt.",
     },
@@ -741,8 +740,8 @@ REQUIREMENTS = [
             "about them."
         ),
         "limit_review": (
-            "Awaiting owner review. At the review date the screens are uncommitted in the student app's "
-            "repository and still changing. Nothing here claims deployment or production use."
+            "The screens are committed on main and present on staging. Nothing here claims production "
+            "deployment or adoption."
         ),
         "limit_specified": "No screen is built. Specified means the requirement is agreed and unbuilt.",
     },
@@ -779,8 +778,7 @@ def frontend_summary() -> str:
     if built:
         many = len(built) > 1
         parts.append(
-            f"{_join(built)} {'have their' if many else 'has its'} screens and "
-            f"{'await' if many else 'awaits'} owner review"
+            f"{_join(built)} {'have their' if many else 'has its'} screens committed on main and staging"
         )
     if unbuilt:
         parts.append(f"{_join(unbuilt)} {'is' if len(unbuilt) == 1 else 'are'} not built")
@@ -803,9 +801,9 @@ def frontend_gap() -> tuple[str, str]:
             f"{'app is' if len(unbuilt) == 1 else 'apps are'} built to FR-024 to FR-026." + tail,
         )
     return (
-        "Frontend delivery awaits review",
-        "The owner reviews the staff, parent and student apps, whose screens are uncommitted in their "
-        "repositories and nothing is deployed." + tail,
+        "Frontend home integration is incomplete",
+        "The staff, parent and student screens are committed on main and present on staging. Production "
+        "deployment is not claimed." + tail,
     )
 
 
@@ -847,7 +845,7 @@ WHITE_FILL = "FFFFFF"
 def add_status_key(doc) -> None:
     rows = [
         [BACKEND, "The stated backend path is present in the inspected code. No frontend, deployment or adoption is implied."],
-        [FRONTEND_REVIEW, "The screens exist in the app's source and await the owner's review. Nothing is claimed as deployed."],
+        [FRONTEND_REVIEW, "The screens are committed on main and present on staging. Production deployment is not claimed."],
         [SPECIFIED, "The requirement is agreed and nothing is built. It is a contract for the work, not a record of it."],
     ]
     table = add_table(doc, ["State", "Meaning"], rows, [2.35, 4.92], font_size=8.5)
@@ -936,8 +934,8 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ),
             (
                 "Status",
-                "Backend built and uncommitted. Backend requirements are Implemented on backend evidence; "
-                "frontend delivery is recorded separately.",
+                "Backend committed on main and staging. Backend requirements are Implemented on backend "
+                "evidence; frontend delivery is recorded separately.",
             ),
             ("Owner", "CodeX Team"),
         ],
@@ -946,8 +944,8 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         doc,
         "Evidence boundary",
         [
-            "Implemented means the stated backend path is present in the inspected, uncommitted code. It does not prove frontend completion, deployment, production adoption, worker availability or delivery by an external provider.",
-            "Implemented (frontend, pending owner review) means the screens exist in the app's source and the owner has not yet reviewed them. Specified means the requirement is agreed and nothing is built.",
+            "Implemented means the stated backend path is present in committed code. It does not prove production deployment, adoption, worker availability or delivery by an external provider.",
+            "Implemented (frontend, staging) means the screens are committed on main and present on staging. Specified means the requirement is agreed and nothing is built.",
             "The MRD and this FRD have independent versions. A change can require one or both documents to advance.",
         ],
         kind="info",
@@ -960,7 +958,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         ["Section", "Purpose"],
         [
             ["Document Control", "Version, ownership, source baseline, and evidence rules"],
-            ["1. Purpose and Scope", "What the module owns, the owner decisions and the build decisions awaiting confirmation"],
+            ["1. Purpose and Scope", "What the module owns and the confirmed product and build decisions"],
             ["2. Context and Status Model", "Requirement states and the six conversation kinds"],
             ["3. Actors, Permissions, and Ownership", "The ten keys, default roles, tenant and branch scope"],
             ["4. Functional Requirements", "Testable behavior, evidence, acceptance, and limits"],
@@ -1040,10 +1038,10 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         ],
     )
     add_page_break(doc)
-    add_heading(doc, "1.4 Build Decisions Awaiting Owner Confirmation", level=2)
+    add_heading(doc, "1.4 Confirmed Build Decisions", level=2)
     add_callout(
         doc,
-        "Decisions taken during the build",
+        "Decisions confirmed by the owner on 21 October 2026",
         [
             "Who a family can reach about a child: the class teacher this year, the teachers with a teaching assignment for the class this year (a school setting, default on), and the child's branch's school office, being staff holding school.family_messages.office with the branch in reach. Each must also hold the send and view keys and be current staff.",
             "Staff may start family conversations too, under the same reach rule read the other way.",
@@ -1084,7 +1082,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         "Current module decision",
         [
             "Module 32 is Backend Complete in MRD v" + MRD_TARGET_VERSION + " with fourteen capability entries, and In use Partial because the pupil and parent home/ responses carry no unread-messages block.",
-            "The module is built and uncommitted. Nothing in this document is deployed.",
+            "The module is committed on main and present on staging. Production deployment is not claimed.",
             "Frontend delivery is recorded apart from the backend: " + frontend_summary() + ".",
         ],
         kind="attention",
@@ -1463,8 +1461,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         doc,
         ["Priority", "Current gap", "Required completion", "FR"],
         [
-            ["P1", "Seven build decisions are unconfirmed", "The owner confirms or changes the decisions in section 1.4: family reach, staff-started family conversations, no guardian-to-staff inspection, removal ending all access, a fixed reply setting, a recipient count without names, and the primary guardian's silent read-only view.", "FR-003, FR-007, FR-009, FR-012"],
-            ["P1", "Nothing is committed or deployed", "Commit the module, run the migrations and seeds in section 10.1, and keep a Celery worker running. Until then no school has the module and no alert is delivered.", "FR-016"],
+            ["P1", "Production deployment is not evidenced", "Run the migrations and seeds in section 10.1 during deployment and keep a Celery worker running. Repository and staging evidence do not establish production deployment or adoption.", "FR-016"],
             ["P2", frontend_gap()[0], frontend_gap()[1], "FR-024 to FR-026"],
             ["P2", "Staff reach follows the staff record's branch only", "Consult additional postings when judging staff reach, or record that a home branch is the whole answer.", "FR-012"],
             ["P2", "A leaver's family conversations are not handed over", "Decide how a family conversation moves to the child's new class teacher, or the family must start a new conversation and the old one stays read-only with a departed teacher.", "FR-013"],
@@ -1538,7 +1535,12 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             [
                 FRD_VERSION,
                 CHANGE_DATE,
-                f"First functional baseline for Module 32. Records the eight owner decisions of 21 October 2026 and the seven build decisions awaiting confirmation, the six conversation kinds, the single visibility gate, revocation, groups and broadcasts, audited inspection, alerts through Module 8, the CSV export, ten keys, three settings, the school.messages Field Access resource, and traceability to MRD v{MRD_TARGET_VERSION}. Backend evidence only; nothing here is committed or deployed.",
+                f"Records the owner's confirmation of all build decisions, committed main and staging state, the 20 message writes per account per minute throttle, and traceability to MRD v{MRD_TARGET_VERSION}. Production deployment and adoption are not claimed.",
+            ],
+            [
+                "1.0",
+                "21 Oct 2026",
+                "First functional baseline for Module 32. Records the eight owner decisions and seven implementation decisions awaiting confirmation, the six conversation kinds, visibility and revocation, groups and broadcasts, audited inspection, Module 8 alerts, CSV export, ten keys, three settings, Field Access, and traceability to MRD v2.109. Backend evidence only; nothing was then committed or deployed.",
             ],
         ],
         [0.75, 1.15, 5.37],
@@ -1618,19 +1620,11 @@ MODULE32_CAPABILITIES = [
 ]
 
 MRD_CHANGE_SUMMARY = (
-    "Adds Module 32 Messaging & Conversations: staff direct conversations, family and pupil "
-    "conversations, staff groups with a later-join boundary, staff broadcasts with private replies, "
-    "audited oversight, one visibility gate with immediate revocation, body-free alerts through Module 8, "
-    "a guarded CSV export, ten keys, three settings and the school.messages Field Access resource. "
-    "Modules rise from 31 to 32 and capability entries from 513 to 527. Module 8 now delivers the four "
-    "new-message alerts and no longer carries conversation threads in its Needs Attention; Modules 27 "
-    "and 28 stop parking Messages and point at Module 32. Adds one P2 priority gap for the unread-messages "
-    "block missing from both portals' home/ responses. Repairs what v2.108 left drifted: the Module 27 and 28 header rows "
-    "(stale Planned and Not started cells), this change log's header row and the blue styling its own "
-    "entry took, the Document Control label colours, and the banding and Partial colours of the module "
-    "index rows. Reconciled to the new Module 32 FRD v" + FRD_VERSION + "; the Module 8, 27, "
-    "28, 4 and 5 FRDs are queued for revision. Verified by schools.vs_messages (386 tests, OK); the full repository suite was not run. "
-    "Backend evidence only; the module is uncommitted and nothing here is deployed. " + "Frontends: " + frontend_summary() + "."
+    "Reconciles the owner's confirmed Messaging decisions, the 20-per-minute send throttle, committed "
+    "backend and frontend main branches, and staging evidence. Aligns Modules 4, 5, 6 and 8 with the "
+    "Messaging permission, Field Access, audit, settings and delivery contracts; aligns Modules 27 and 28 "
+    "with mounted portal messaging and debit-note fee status; and records Module 18's daily virtual-account "
+    "standing check and idempotent family-notified replacement. Production deployment is not claimed."
 )
 
 
@@ -1772,7 +1766,56 @@ def whiten_labels(table) -> None:
                 run.font.color.rgb = RGBColor.from_string("FFFFFF")
 
 
+def revise_existing_mrd(source_path: Path, output_path: Path) -> None:
+    """Advance the existing 32-module MRD without inserting Module 32 again."""
+    doc = Document(str(source_path))
+    doc.core_properties.title = f"XVS Module Requirements Document v{MRD_TARGET_VERSION}"
+    doc.core_properties.version = MRD_TARGET_VERSION
+    replacements = {
+        f"v{MRD_SOURCE_VERSION}": f"v{MRD_TARGET_VERSION}",
+        "built and uncommitted": "committed on main and staging",
+        "Seven build decisions await the owner's confirmation":
+            "Seven build decisions were confirmed by the owner on 21 October 2026",
+        "unconfirmed build decisions, nothing committed or deployed,": "production deployment,",
+        "Documented by M27 FRD v1.0, which predates Module 32 and is queued for revision.":
+            "Documented by M27 FRD v1.1.",
+        "Documented by M28 FRD v1.3, which predates Module 32 and is queued for revision.":
+            "Documented by M28 FRD v1.4.",
+    }
+    for text_node in doc.element.body.iter(qn("w:t")):
+        if not text_node.text:
+            continue
+        for old, new in replacements.items():
+            text_node.text = text_node.text.replace(old, new)
+    control = doc.tables[1]
+    for row in control.rows:
+        label = row.cells[0].text.strip()
+        if label == "Version":
+            set_paragraph_text(row.cells[1].paragraphs[0], MRD_TARGET_VERSION)
+        elif label == "Review date":
+            set_paragraph_text(row.cells[1].paragraphs[0], REVIEW_DATE)
+        elif label == "Source scope":
+            set_paragraph_text(
+                row.cells[1].paragraphs[0],
+                "Backend main at 42252192, 21 October 2026. Frontend main and staging evidence "
+                "is recorded separately; no production deployment is claimed.",
+            )
+    log = doc.tables[-1]
+    template = next(row for row in log.rows if row.cells[0].text.strip() == MRD_SOURCE_VERSION)
+    log._tbl.insert(1, copy.deepcopy(template._tr))
+    set_row_texts(log.rows[1], [MRD_TARGET_VERSION, REVIEW_DATE, MRD_CHANGE_SUMMARY])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    update_extended_title(output_path, f"XVS Module Requirements Document v{MRD_TARGET_VERSION}")
+    shrink_inherited_media(output_path)
+    assert_no_em_dash(output_path)
+    assert_vocabulary(output_path)
+
+
 def patch_mrd(source_path: Path, output_path: Path) -> None:
+    if MRD_SOURCE_VERSION == "2.109":
+        revise_existing_mrd(source_path, output_path)
+        return
     doc = Document(str(source_path))
     # Bind every table by its position in the source before anything is inserted.
     T = list(doc.tables)
@@ -1797,8 +1840,8 @@ def patch_mrd(source_path: Path, output_path: Path) -> None:
         elif label == "Source scope":
             set_paragraph_text(
                 value.paragraphs[0],
-                "Backend main at 408bb201 plus the uncommitted Module 32 build, 21 October 2026. "
-                "Backend evidence only; no frontend or deployment is claimed.",
+                "Backend main at 42252192 with Module 32 committed, 21 October 2026. "
+                "Frontend staging evidence is recorded separately; no production deployment is claimed.",
             )
         elif label == "Modules":
             set_paragraph_text(value.paragraphs[0], "32")
@@ -1939,15 +1982,15 @@ def patch_mrd(source_path: Path, output_path: Path) -> None:
         box_row.cells[0],
         [
             "CURRENT DECISION",
-            "• Module 32 is Backend Complete and In use Partial with fourteen capability entries, reconciled to M32 FRD v" + FRD_VERSION + ". The code is built and uncommitted, and nothing here is deployed.",
+            "• Module 32 is Backend Complete and In use Partial with fourteen capability entries, reconciled to M32 FRD v" + FRD_VERSION + ". The code is committed on main and present on staging; production deployment is not claimed.",
             "• Conversations were never part of Module 8. Module 8 delivers four new-message events and their templates through the CONVERSATION record family, and no message text appears in any channel or stored notification.",
             "• The eight owner decisions of 21 October 2026 stand: staff direct conversations are visible to their two participants only; every pupil conversation is readable by the primary guardian and inspectable read-only and audited under the welfare key; groups and broadcasts are staff only; text only.",
-            "• Seven build decisions await the owner's confirmation and are recorded in M32 FRD v" + FRD_VERSION + " section 1.4: family reach, staff-started family conversations, no guardian-to-staff inspection, removal ending all access to a group, a fixed broadcast reply setting, a recipient count without names, and the primary guardian's silent read-only view.",
+            "• The owner confirmed the seven build decisions recorded in M32 FRD v" + FRD_VERSION + " section 1.4 on 21 October 2026: family reach, staff-started family conversations, no guardian-to-staff inspection, removal ending all access to a group, a fixed broadcast reply setting, a recipient count without names, and the primary guardian's silent read-only view.",
             "• In use is Partial because the pupil and parent home/ responses carry no unread-messages block; each portal serves its own unread-count route instead.",
             "• Frontend delivery is separate from the backend: " + frontend_summary() + ". No frontend, deployment or adoption is inferred.",
             "• Verified by schools.vs_messages (386 tests, OK, 21 October 2026); the seed and registry checks in other apps and the full repository suite were not run.",
             "• Field Access: school.messages registers eight fields, open by default; portal payloads are a fixed narrow shape that no role switch reaches. Audit gains the MESSAGES module key and six action types; RBAC gains ten school keys and the verbs inspect and office; configuration gains three school settings.",
-            "• Needs Attention is recorded in the FRD: unconfirmed build decisions, nothing committed or deployed, frontend delivery, staff reach by home branch only, no hand-over of a leaver's family conversations, and no redispatch of a lost alert.",
+            "• Needs Attention is recorded in the FRD: production deployment, the missing portal-home unread blocks, staff reach by home branch only, no hand-over of a leaver's family conversations, and no redispatch of a lost alert.",
         ],
     )
 
