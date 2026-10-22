@@ -1,4 +1,13 @@
 """Expense claims.
+
+A claim reimburses one claimant. By default that is a member of staff picked
+from the staff list the host app offers, sent as ``claimant`` (their account
+id) and resolved inside the entity's own tenant (:func:`_claimant`); their name
+is copied into ``claimant_name``, so the claim reads the same wherever it is
+shown and stays findable by person through ``claimant_id``. Somebody who is not
+on the staff list, such as a parent volunteer, is named by typing
+``claimant_name`` with no ``claimant``. Either way the claimant is the
+``finance.expenseclaim.claimant`` switch (:mod:`vs_finance.field_access`).
 """
 from __future__ import annotations
 
@@ -7,7 +16,8 @@ from vs_workflow.services.approval_filter import (
     filter_by_approval_param, filter_by_stored_status, filter_by_status_word, returned_condition,
 )
 from django.db import transaction
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.field_enforcement import assert_writable, readable_lookups
 from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
@@ -35,8 +45,60 @@ from .base import (
     _resolve_bank_account,
     _resolve_cost_center,
     _resolve_currency,
+    _resolve_person,
     _resolve_tax,
 )
+
+#: The Field Access resource of an expense claim.
+CLAIM_FIELDS = "finance.expenseclaim"
+
+#: Room for a claimant's name, as :class:`~vs_finance.models.ExpenseClaim` stores it.
+CLAIMANT_NAME_MAX = 160
+
+#: What a claim with no claimant is refused with.
+CLAIMANT_REQUIRED = (
+    "Choose the claimant from the staff list, or type the name of somebody who is "
+    "not on it."
+)
+
+
+def _claimant(request, entity, body):
+    """The person a new claim reimburses and the name it reads under, as ``(user, name)``.
+
+    ``claimant`` (an account id) picks a member of staff and wins over any
+    typed name: Ngozi records Tolu Fashola's claim for lab chemicals, and the
+    claim is tied to Tolu's account and reads "Tolu Fashola" even if the form
+    also sent what was typed before she chose. Without one, ``claimant_name``
+    is required: Mrs Okafor, a PTA volunteer with no staff record, is typed.
+
+    A person from another school, an unknown id and one that is not a number
+    are refused alike, as every finance person reference is
+    (:func:`~vs_finance.views_ops.base._resolve_person`). The write switch is
+    judged first, so a caller who may not set the claimant learns nothing
+    about the id they sent. Neither key is open on create, and a claim needs a
+    claimant, so such a caller cannot raise a claim at all.
+    """
+    raw = body.get("claimant")
+    typed = str(body.get("claimant_name") or "").strip()
+    submitted = {}
+    if "claimant" in body:
+        submitted["claimant"] = None if raw in (None, "", 0, "0") else str(raw)
+    if "claimant_name" in body:
+        submitted["claimant_name"] = typed
+    assert_writable(
+        request, CLAIM_FIELDS, submitted, creating=True,
+        current={"claimant": None, "claimant_name": ""},
+    )
+    person = _resolve_person(entity, raw, "claimant")
+    if person is not None:
+        return person, (person.full_name or person.email or "")[:CLAIMANT_NAME_MAX]
+    if not typed:
+        raise ValidationError({"claimant_name": CLAIMANT_REQUIRED})
+    if len(typed) > CLAIMANT_NAME_MAX:
+        raise ValidationError({
+            "claimant_name": f"Keep the name to {CLAIMANT_NAME_MAX} characters.",
+        })
+    return None, typed
 
 # --------------------------------------------------------------------------- #
 # Expense claims                                                              #
@@ -74,11 +136,16 @@ class ExpenseClaimListCreateView(_FinanceBase):
         )
         if (search := request.query_params.get("q")):
             from django.db.models import Q
-            qs = qs.filter(
-                Q(claimant_name__icontains=search)
-                | Q(title__icontains=search)
-                | Q(document_number__icontains=search)
-            )
+            # A claimant the caller may not read is not searched either.
+            lookups = readable_lookups(request, CLAIM_FIELDS, {
+                "claimant_name__icontains": "claimant_name",
+                "title__icontains": None,
+                "document_number__icontains": None,
+            })
+            match = Q(pk__in=[])
+            for lookup in lookups:
+                match |= Q(**{lookup: search})
+            qs = qs.filter(match)
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer,
@@ -92,11 +159,13 @@ class ExpenseClaimListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        claimant, claimant_name = _claimant(request, entity, body)
         lines = _require_lines(body)
         claim = ExpenseClaim.objects.create(
             entity=entity,
             branch=_transaction_branch(request, entity, body),
-            claimant_name=body.get("claimant_name", ""),
+            claimant=claimant,
+            claimant_name=claimant_name,
             claim_date=_date(body.get("claim_date"), "claim_date", required=True),
             title=body.get("title", ""),
             narration=body.get("narration", ""),

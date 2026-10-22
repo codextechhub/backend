@@ -69,6 +69,7 @@ EXPECTED_RESOURCES = {
     ("finance", "dashboard"),
     ("finance", "deferredincome"),
     ("finance", "deposit"),
+    ("finance", "expenseclaim"),
     ("finance", "fiscalyear"),
     ("finance", "interbranch"),
     ("finance", "payer_link"),

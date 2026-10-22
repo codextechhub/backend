@@ -23,13 +23,16 @@ from vs_rbac.field_enforcement import FieldAccessMixin, can_read, visible
 
 RESOURCE = "finance.dashboard"
 
-#: Dashboard rows that repeat a field of another resource, by card: the key of
-#: each row and the registered field it copies. A card is the dashboard's own
-#: figure, but a bank's name is a field of the bank account, and a caller who
-#: may not read it there must not recover it from a card.
+#: Dashboard rows that repeat a field of another resource, by the path of the
+#: list of rows inside the payload (a card's name, then any key within it): the
+#: key of each row and the registered field it copies. A card is the
+#: dashboard's own figure, but a bank's name is a field of the bank account and
+#: a claimant is a field of the expense claim, and a caller who may not read
+#: either there must not recover it from a card.
 _COPIED_FIELDS = {
-    "bank_accounts": (("bank_name", "finance.bankaccount.bank_name"),),
-    "reconciliation": (("bank_name", "finance.bankaccount.bank_name"),),
+    ("bank_accounts",): (("bank_name", "finance.bankaccount.bank_name"),),
+    ("reconciliation",): (("bank_name", "finance.bankaccount.bank_name"),),
+    ("claims", "oldest"): (("claimant", "finance.expenseclaim.claimant"),),
 }
 
 
@@ -54,17 +57,33 @@ class _KeepOtherKeys:
         request = self.context.get("request")
         extras = {key: value for key, value in instance.items() if key not in self.fields}
         data.update(visible(request, RESOURCE, extras))
-        for card, copies in _COPIED_FIELDS.items():
-            rows = data.get(card)
-            if not isinstance(rows, list):
-                continue
+        for path, copies in _COPIED_FIELDS.items():
             hidden = [key for key, field_key in copies if not can_read(request, field_key)]
             if hidden:
-                data[card] = [
-                    {k: v for k, v in row.items() if k not in hidden} if isinstance(row, dict) else row
-                    for row in rows
-                ]
+                _drop_from_rows(data, path, hidden)
         return data
+
+
+def _drop_from_rows(data, path, hidden):
+    """Remove the *hidden* keys from every row of the list at *path* inside *data*, in place.
+
+    The card at the head of *path* is replaced by a copy on the way down, so the
+    payload the dashboard computed is never changed underneath another reader.
+    A path that does not lead to a list (a card the caller's keys withhold, a
+    card with nothing in it) is left alone.
+    """
+    head, *rest = path
+    value = data.get(head) if isinstance(data, dict) else None
+    if rest:
+        if isinstance(value, dict):
+            data[head] = dict(value)
+            _drop_from_rows(data[head], tuple(rest), hidden)
+        return
+    if isinstance(value, list):
+        data[head] = [
+            {k: v for k, v in row.items() if k not in hidden} if isinstance(row, dict) else row
+            for row in value
+        ]
 
 
 class FinanceKpisSerializer(_KeepOtherKeys, FieldAccessMixin, serializers.Serializer):

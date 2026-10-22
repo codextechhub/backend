@@ -1675,7 +1675,21 @@ class ExpenseClaimLineSerializer(serializers.ModelSerializer):
         return signed_url(obj.receipt.name, absolute_for=request) or None
 
 
-class ExpenseClaimSerializer(ApprovalStateMixin, serializers.ModelSerializer):
+class ExpenseClaimSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.ModelSerializer):
+    """An expense claim with its lines, filtered by the ``finance.expenseclaim`` switches.
+
+    The claimant travels as ``claimant_id`` (the staff member's account, or
+    null for a name typed for somebody not on the staff list) and
+    ``claimant_name``, and one switch governs both, so a caller who may not
+    read the claimant learns neither who it is nor whether they are staff. A
+    detail response lists ``claimant`` in ``_read_only_fields`` beside the two
+    when the caller may read the claimant and not change it.
+    """
+
+    field_resource = "finance.expenseclaim"
+    field_access_detail = True
+    field_write_aliases = True
+
     lines = ExpenseClaimLineSerializer(many=True, read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()

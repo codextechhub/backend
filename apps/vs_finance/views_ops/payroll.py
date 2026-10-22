@@ -52,6 +52,7 @@ from .base import (
     _resolve_bank_account,
     _resolve_cost_center,
     _resolve_currency,
+    _resolve_person,
     _transaction_branch,
 )
 from vs_rbac.scoping import only_branch_id, transaction_branch_scope
@@ -840,30 +841,16 @@ def _resolve_salary(request, entity, pk):
 def _resolve_employee(entity, raw):
     """Resolve an account id to the person a roster row is for, or None.
 
-    Deliberately a USER id and not a staff-record id. This app is
-    domain-neutral: it knows about entities, employees and money, and nothing
-    about schools or staff profiles, so a school module cannot be imported here
-    to resolve one. A user is the identity every domain already shares, and it
-    is what ``EmployeeSalary.employee`` has always pointed at.
-
-    Scoped to the entity's own tenant, so a crafted id cannot attach another
-    customer's account to this roster.
+    The tenant-scoped person resolver every finance record naming a person
+    uses (:func:`~vs_finance.views_ops.base._resolve_person`), under the body
+    key ``employee``.
 
     Optional on purpose, and it stays optional. A school may legitimately pay
     somebody who has no account at all - a contractor, a visiting examiner - so
     ``name`` remains the required field and this only ever adds certainty where
     it is available.
     """
-    if raw in (None, "", 0, "0"):
-        return None
-    from django.contrib.auth import get_user_model
-
-    user = get_user_model().objects.filter(
-        pk=raw, tenant=entity.tenant,
-    ).first() if str(raw).isdigit() else None
-    if user is None:
-        raise ValidationError({"employee": "No such person at this customer."})
-    return user
+    return _resolve_person(entity, raw, "employee")
 
 
 def _resolve_jurisdiction(raw, where="residence_state"):

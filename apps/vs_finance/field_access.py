@@ -168,6 +168,18 @@ keys of their own. The endpoints that reach them are guarded by
 ``finance.pettycash.view`` (returns), and ``seed_finance_permissions`` mints the
 resources.
 
+``finance.expenseclaim`` carries one switch so far, the claimant, open to every
+role until a school closes it. Who a claim reimburses is one fact however it is
+recorded: a member of staff picked from the staff list (``claimant_id``, with
+their name copied into ``claimant_name``) or a name typed for somebody who is
+not on it, such as a parent volunteer. Both travel under the one switch, as
+does the ``claimant`` body key that picks the person (a write alias), the
+claimant's email in the claims export, the claimant named on the claim's
+approval card and on the spending dashboard's oldest claims, and a search of the
+claims list by claimant. The switch is not open on create: a claim cannot be
+raised without a claimant, so a role that may not write it raises no claims and
+is not offered the New claim form.
+
 The finance dashboards, the month-end close, the sealed figures and the year
 archive present figures the books work out and nobody types. Every field below
 is therefore read-only, and open to every role until a school closes it, so a
@@ -1031,6 +1043,18 @@ def register():
                       api_names=("created_by_id", "created_by_name", "created_by_is_exited")),
         ),
         write_aliases={"bank_account": "bank_account", "counted_by": "counted_by"},
+    )
+    register_fields(
+        "finance",
+        "expenseclaim",
+        surfaces=("vs_finance.serializers.ExpenseClaimSerializer",),
+        fields=(
+            FieldSpec("claimant", "Claimant", group="Claim", scope=_TENANT, sort_order=10,
+                      description="Who the claim reimburses: a member of staff from the "
+                                  "staff list, or a name typed for somebody not on it.",
+                      api_names=("claimant_id", "claimant_name")),
+        ),
+        write_aliases={"claimant": "claimant"},
     )
     register_fields(
         "finance",

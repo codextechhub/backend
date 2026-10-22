@@ -593,6 +593,13 @@ class BankReconciliation(TimeStampedModel):
 class ExpenseClaim(FinanceDocument):
     """A staff expense claim - staff acts as a one-off 'vendor' to be reimbursed.
 
+    The claimant is a member of staff picked from the staff list
+    (``claimant``, their account in this tenant) or, for somebody not on it
+    such as a parent volunteer, a typed name alone. ``claimant_name`` is the
+    name the claim reads under either way: copied from the person when the claim
+    is raised for one, typed otherwise. A claim with no ``claimant`` is a typed
+    name, including every claim raised before the staff list was offered.
+
     Posting raises ``Dr expense(s) (+ Dr input VAT), Cr accrued reimbursement`` - the
     liability owed to the employee. Settling it later (:func:`vs_finance.expenses.
     settle_expense_claim`) pays the employee: ``Dr accrued reimbursement, Cr bank``.
@@ -606,11 +613,12 @@ class ExpenseClaim(FinanceDocument):
     claimant = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_expense_claims", null=True, blank=True,
-        help_text="The employee being reimbursed.",
+        help_text="The member of staff being reimbursed; empty for somebody not on the staff list.",
     )
     claimant_name = models.CharField(
         max_length=160, blank=True, default="",
-        help_text="Free-text name when the claimant isn't a platform user.",
+        help_text="The name the claim reads under: copied from the claimant when one is "
+                  "linked, typed for somebody not on the staff list.",
     )
     claim_date = models.DateField()
     currency = models.ForeignKey(

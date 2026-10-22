@@ -143,6 +143,31 @@ def _resolve_account(request, entity, ref, field, *, required=False,
     return acc  # Return resolved account.
 
 
+def _resolve_person(entity, raw, field):
+    """Resolve an account id to a person of the entity's own tenant, or None for a blank value.
+
+    Deliberately a USER id and not a staff-record id. This app is
+    domain-neutral: it knows about entities, employees and money, and nothing
+    about schools or staff profiles, so a school module cannot be imported here
+    to resolve one. A user is the identity every domain already shares, and it
+    is what the staff list a host app offers names each person by.
+
+    Scoped to the entity's own tenant, so a crafted id cannot attach another
+    customer's account to this entity's books: an id from another school, an
+    unknown id and one that is not a number are refused alike, naming *field*.
+    """
+    if raw in (None, "", 0, "0"):
+        return None
+    from django.contrib.auth import get_user_model
+
+    user = get_user_model().objects.filter(
+        pk=raw, tenant=entity.tenant,
+    ).first() if str(raw).isdigit() else None
+    if user is None:
+        raise ValidationError({field: "No such person at this customer."})
+    return user
+
+
 # Resolve tax code reference from request data.
 def _resolve_tax(entity, ref, field="tax_code", *, usage=None):
     """Resolve an entity tax code and, when requested, validate its posting side.

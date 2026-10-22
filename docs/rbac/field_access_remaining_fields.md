@@ -1331,7 +1331,8 @@ registered field closed to an approver is still read in the card.
 | `finance.inter_branch_transfer` | Date, Amount, From, To | Kind, bank accounts, Purpose, Repay by, Reference | `finance.interbranch` | recorded |
 | `finance.doubtful_debt_provision` | Aged to, Allowance required, Change to the allowance | Narration; table By branch (Required, Held, Change) | `finance.provision` | recorded |
 | `finance.refund` | Date, Customer, Amount | Method, Reference, Narration, Payment account | `finance.refund` (recorded) | recorded |
-| `finance.write_off`, `finance.concession`, `finance.credit_note`, `finance.customer_credit_transfer`, `finance.journal`, `finance.expense_claim` | amounts, customer codes, claimant name | reasons, narrations, lines | unregistered | recorded |
+| `finance.write_off`, `finance.concession`, `finance.credit_note`, `finance.customer_credit_transfer`, `finance.journal` | amounts, customer codes | reasons, narrations, lines | unregistered | recorded |
+| `finance.expense_claim` | Claimant (marked with `finance.expenseclaim.claimant`); Date, Total | Purpose, Narration, Subtotal, Tax, claim items | `finance.expenseclaim` (claimant only) | registered for the claimant; recorded for the rest |
 | `procurement.requisition`, `.purchase_order`, `.vendor_invoice`, `.vendor_payment`, `.vendor_credit_note` | Amount, Vendor | prices, payment terms, WHT, net payment, bill total and balance | unregistered (vendor name is an identifier) | recorded |
 | `payments.payout_batch` | Items, Total | Provider, Source account; Beneficiaries table with markers on `beneficiary` and `account` | `payments.payout` (the model to copy) | registered |
 | `school.leave` | title is the staff name; subtitle is the leave kind; Dates, Over allowance | Days, Resumption date, Job title, Reason | `school.teachers` | recorded |
@@ -1346,6 +1347,24 @@ Recommended fix at the choke point: let summary `fields` carry an `access` key,
 pass the request into `summary_for_reader`, mark every registered figure in the
 finance handlers (about forty entries) and in `school.hire` and `school.leave`,
 and keep titles to a document number and kind, except that a person's name or job title in a title is a label and always shows (Q-E9, answered in 8.1).
+
+### 7.5a Expense claims (`finance.expenseclaim`, claimant registered)
+
+The claimant is picked from the staff list (`claimant`, an account id in the
+entity's own tenant) or typed for somebody not on it (`claimant_name` alone).
+Both are one fact, so they share one switch. Every other claim field is still
+unregistered and open.
+
+| Response field(s) | What it is | Kind | Write paths | Switch | Label | RO/RW | Default | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `claimant_id`, `claimant_name`; body key `claimant` (write alias); export `claimant_name`, `claimant_email`; approval card Claimant; spending dashboard `claims.oldest[].claimant`; list search `q` on the claimant | who the claim reimburses | Stored | create (`assert_writable`, not open on create) | `finance.expenseclaim.claimant` | Claimant | RW | open | registered |
+| `title`, `narration`, `claim_date`, totals, `lines[]`, `payment_status` | the rest of the claim | Stored and computed | create | - | - | - | - | recorded |
+
+Tests: `vs_finance.tests_expense_claim_claimant` (hidden, read-only and
+writable on the list, detail, search, create, `/me` map, approval card and
+dashboard; the export link), `ExpenseClaimDeepPayloadTests` in
+`vs_finance.tests_field_access_deep_payload`. Screen:
+`FinPro/src/pages/finance/expenses/claimant-field.tsx`.
 
 ### 7.6 Other restating paths: exports, search, overview
 
@@ -1853,9 +1872,9 @@ one area, so the total is two lower than the sum of the areas.
 | B. Receivables, ledger and banking documents | 103 | 16 | 3 | 17 | 12 |
 | C. Procurement | 193 | 4 | 4 | 13 | 10 |
 | D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
-| E. Receipts, petty cash, issuer, entitlements | 45 | 2 | 3 | 8 | 3 |
+| E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 471 | 30 | 14 | 50 | 31 |
+| Total | 471 | 31 | 14 | 50 | 31 |
 
 Where the new switches sit:
 

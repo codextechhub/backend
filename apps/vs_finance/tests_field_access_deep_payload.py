@@ -10,6 +10,10 @@ off, and the whole payload is walked.
 Two tenants: one with two branches, whose rows are posted to a branch, and one
 with a single branch, whose rows are shared across it.
 
+An expense claim (``finance.expenseclaim``) is rendered by
+:class:`ExpenseClaimDeepPayloadTests`, with a claimant picked from the staff list
+in one school and a typed one in the other.
+
 The dashboards, the month and year close, the sealed-figures verification and the
 fiscal year (``finance.dashboard``, ``finance.period``, ``finance.seal`` and
 ``finance.fiscalyear``) are rendered by :class:`DashboardCloseSealDeepPayloadTests`.
@@ -909,5 +913,56 @@ class CustomerAndBankAccountDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
                        tenant=tenant),
                 Sample(_SURFACE + "BankReconciliationSerializer", reconciliation,
                        tenant=tenant),
+            ]
+        return samples
+
+
+class ExpenseClaimDeepPayloadTests(DeepPayloadChecks, TestCase):
+    """A claim for a member of staff in a school with several branches, and a typed one in a school with one."""
+
+    resources = frozenset({"finance.expenseclaim"})
+    covers = frozenset({_SURFACE + "ExpenseClaimSerializer"})
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import ExpenseClaim, ExpenseClaimLine
+        from vs_finance.tests_branch_scope import _FinanceBranchFixture
+
+        seed_currencies()
+        cls.school = make_school(slug="deep-claims", name="Deep Claims", status="ACTIVE")
+        cls.tenant = cls.school.tenant
+        ikeja = make_branch(cls.school, name="Ikeja Branch")
+        make_branch(cls.school, name="Lekki Branch", is_main=False)
+        cls.solo_school = make_school(slug="deep-claims-solo", name="Deep Claims Solo",
+                                      status="ACTIVE")
+        cls.solo_tenant = cls.solo_school.tenant
+        solo_main = make_branch(cls.solo_school, name="Main Branch")
+        tolu = get_user_model().objects.create_user(
+            email="tolu@deep-claims.test", password="pw", tenant=cls.tenant,
+            status="ACTIVE", first_name="Tolu", last_name="Fashola",
+        )
+        cls.claims = []
+        for tenant, code, branch, claimant, name in (
+            (cls.tenant, "DEEPCLM", ikeja, tolu, "Tolu Fashola"),
+            (cls.solo_tenant, "DEEPCLMS", solo_main, None, "Mrs Okafor"),
+        ):
+            books = _FinanceBranchFixture.build_books(code, tenant)
+            claim = ExpenseClaim.objects.create(
+                entity=books, branch=branch, claimant=claimant, claimant_name=name,
+                claim_date=datetime.date(2026, 1, 10), title="Lab chemicals",
+            )
+            ExpenseClaimLine.objects.create(
+                claim=claim, line_no=1, description="Reagents", unit_price=12_500_00,
+                net_amount=12_500_00,
+                expense_account=Account.objects.get(entity=books, code="5300"),
+            )
+            cls.claims.append((tenant, claim))
+
+    def samples(self):
+        samples = []
+        for tenant, claim in self.claims:
+            samples += [
+                Sample(_SURFACE + "ExpenseClaimSerializer", claim, tenant=tenant),
+                Sample(_SURFACE + "ExpenseClaimSerializer", [claim], many=True, tenant=tenant),
             ]
         return samples

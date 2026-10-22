@@ -1379,11 +1379,11 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
         return {
             "title": document.document_number or str(document.pk),
             "subtitle": "Expense claim",
-            "fields": [
-                {"label": "Date", "value": document.claim_date.isoformat()},
-                {"label": "Claimant", "value": document.claimant_name or "-"},
-                {"label": "Total", "value": format_naira(document.total)},
-            ],
+            "fields": summary_fields([
+                ("Date", document.claim_date.isoformat()),
+                ("Claimant", document.claimant_name or "-", _key("expenseclaim", "claimant")),
+                ("Total", format_naira(document.total)),
+            ]),
             "link": _console_document_id_link("/finance/expenses/claims", document),
         }
 

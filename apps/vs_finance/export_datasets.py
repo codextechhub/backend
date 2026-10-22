@@ -423,7 +423,8 @@ def register_datasets():
         default_columns=("document_number", "claimant_name", "claim_date", "total", "status"),
         fields=(
             Field("document_number", "Claim number", "Claim", KIND_TEXT, locked=True),
-            Field("claimant_name", "Claimant", "Claim", KIND_TEXT),
+            Field("claimant_name", "Claimant", "Claim", KIND_TEXT,
+                  access="finance.expenseclaim.claimant"),
             Field("claim_date", "Claim date", "Claim", KIND_DATE),
             Field("title", "Purpose", "Claim", KIND_TEXT),
             Field("narration", "Narration", "Claim", KIND_TEXT),
@@ -441,6 +442,7 @@ def register_datasets():
                   source="journal__document_number"),
             Field("claimant_email", "Claimant email", "Claim", KIND_TEXT,
                   source="claimant__email", sensitive=True,
+                  access="finance.expenseclaim.claimant",
                   description="Restricted: personal contact data."),
             Field("created_at", "Created", "Record", KIND_DATETIME),
         ),
