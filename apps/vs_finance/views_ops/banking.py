@@ -1189,7 +1189,11 @@ class BankStatementImportWizardView(_FinanceBase):
     rbac_permission = "finance.bankaccount.import"
 
     def post(self, request, pk):
-        from vs_import_data.models import ImportTemplate, TemplateStatusChoices
+        from vs_import_data.models import (
+            DatasetTypeChoices,
+            ImportTemplate,
+            TemplateStatusChoices,
+        )
         from vs_import_data.serializers import (
             ImportBatchDetailSerializer,
             ImportBatchUploadSerializer,
@@ -1233,7 +1237,11 @@ class BankStatementImportWizardView(_FinanceBase):
                 "header_row_index": values.get("header_row_index", 1),
                 "notes": values.get("notes", ""),
             },
-            context={"request": request, "branch": statement_branch},
+            context={
+                "request": request,
+                "branch": statement_branch,
+                "module_entry": DatasetTypeChoices.BANK_STATEMENTS,
+            },
         )
         upload.is_valid(raise_exception=True)
 

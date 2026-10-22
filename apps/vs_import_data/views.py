@@ -79,6 +79,7 @@ from .services.validation_service import validate_import_batch
 # platform-only set instead let the two drift: a dataset removed from
 # TENANT_DATASETS was refused on upload but still offered in the picker.
 from .datasets import (  # noqa: E402 - grouped with the module's own helpers
+    MODULE_ENTRY_DATASETS,
     REFUSAL_MESSAGE,
     TENANT_DATASETS,
     may_import,
@@ -236,7 +237,9 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
-            ).filter(dataset_type__in=TENANT_DATASETS)
+            ).filter(
+                dataset_type__in=TENANT_DATASETS - MODULE_ENTRY_DATASETS,
+            )
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:

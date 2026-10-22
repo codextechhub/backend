@@ -814,6 +814,11 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
     (:func:`vs_rbac.scoping.inherited_branch_id`). ``None`` stays a real answer
     - the batch belongs to the school as a whole - but it has to be chosen
     rather than fallen into.
+
+    ``module_entry`` in the context names the dataset an owning module's own
+    endpoint is uploading for. A dataset in
+    :data:`~vs_import_data.datasets.MODULE_ENTRY_DATASETS` is refused without
+    it, because its batch needs context only that endpoint attaches.
     """
     file = serializers.FileField(write_only=True)
     template_id = serializers.IntegerField(write_only=True)
@@ -863,12 +868,23 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         # the view, because this is where the template id becomes a template. The
         # list endpoint withholds them, but a request naming the id directly
         # reaches this and nothing else. See datasets.py.
-        from .datasets import REFUSAL_MESSAGE, may_import
+        from .datasets import (
+            MODULE_ENTRY_DATASETS,
+            MODULE_ENTRY_MESSAGE,
+            REFUSAL_MESSAGE,
+            may_import,
+        )
 
         request = self.context.get("request")
         actor = getattr(request, "user", None)
         if not may_import(actor, template.dataset_type):
             raise serializers.ValidationError(REFUSAL_MESSAGE)
+        # Only the owning module's endpoint may open these; see datasets.py.
+        if (
+            template.dataset_type in MODULE_ENTRY_DATASETS
+            and self.context.get("module_entry") != template.dataset_type
+        ):
+            raise serializers.ValidationError(MODULE_ENTRY_MESSAGE)
 
         self._validated_template = template
         return value

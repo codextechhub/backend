@@ -14,6 +14,7 @@ from __future__ import annotations
 from django.test import TestCase
 
 from vs_import_data.datasets import (
+    MODULE_ENTRY_DATASETS,
     PLATFORM_ONLY_DATASETS,
     TENANT_DATASETS,
     may_import,
@@ -49,8 +50,8 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_the_school_datasets_are_the_six_a_school_arrives_with(self):
-        """The six datasets a school may import, and no others.
+    def test_the_school_datasets_are_the_seven_argued_for(self):
+        """The seven datasets a school may import, and no others.
 
         Written the day ``calendar_events`` was added, replacing a test that
         asserted no school dataset existed at all, and updated again as
@@ -75,6 +76,11 @@ class DatasetOwnershipRuleTests(TestCase):
         catastrophic - a handler that forces the platform tenant - has no
         equivalent here.
 
+        ``bank_statements`` is the school's own ledger. The school already keys
+        statement lines in by hand on ``finance.bankaccount.import``, and the
+        batch is opened only from one of its own bank accounts, on that key and
+        within the uploader's branch reach (``MODULE_ENTRY_DATASETS``).
+
         Every other dataset here is CodeX's.
 
         This is meant to fail the day the next one lands. That is the point.
@@ -85,6 +91,7 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.SUBJECTS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.GUARDIANS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.STAFF))
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.BANK_STATEMENTS))
 
         school_datasets = {
             dataset for dataset in DatasetTypeChoices.values
@@ -99,10 +106,12 @@ class DatasetOwnershipRuleTests(TestCase):
                 DatasetTypeChoices.SUBJECTS,
                 DatasetTypeChoices.GUARDIANS,
                 DatasetTypeChoices.STAFF,
+                DatasetTypeChoices.BANK_STATEMENTS,
             },
             "A dataset became a school import. Argue for it in datasets.py the "
             "way calendar_events, students, academic_structure, subjects, "
-            "guardians and staff are argued for, then update this test.",
+            "guardians, staff and bank_statements are argued for, then update "
+            "this test.",
         )
 
     def test_the_calendar_import_creates_nothing_but_school_rows(self):
@@ -180,11 +189,17 @@ class DatasetOwnershipRuleTests(TestCase):
         and they drifted the first time a dataset moved: branches was refused on
         upload and still offered in the picker. A reader saw a template, chose
         it, filled it in, and was refused at the end.
+
+        A module-entry dataset is the one deliberate gap: a school may import
+        it, but from its own screen (a bank statement from its bank account),
+        so the generic picker leaves it out rather than offer an upload the
+        generic endpoint refuses.
         """
         for dataset in DatasetTypeChoices.values:
-            offered = dataset in TENANT_DATASETS
+            offered = dataset in TENANT_DATASETS - MODULE_ENTRY_DATASETS
             self.assertEqual(
-                offered, may_import(SCHOOL, dataset),
+                offered,
+                may_import(SCHOOL, dataset) and dataset not in MODULE_ENTRY_DATASETS,
                 f"the picker and the rule disagree about {dataset}",
             )
 

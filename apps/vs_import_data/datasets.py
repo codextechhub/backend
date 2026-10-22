@@ -58,9 +58,6 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.ORG_UNITS,
     DatasetTypeChoices.POSITIONS,
     DatasetTypeChoices.MATRIX_REPORTS,
-    # Reconciliation data, loaded by whoever runs the ledger. Not something a
-    # school is asked for during onboarding, and not on this checklist.
-    DatasetTypeChoices.BANK_STATEMENTS,
     # Listed rather than left to the fail-closed default, because this one is a
     # DECISION and not an oversight. A branch looks like a school's own data;
     # creating one is CodeX's. See TENANT_DATASETS below for why.
@@ -100,9 +97,7 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 #: A school still administers the branches it HAS. ``school.branches.view``
 #: and ``.delete`` are its own keys; opening and editing branches is not.
 #:
-#: The remaining onboarding datasets, staff and parents, have no template
-#: and no model to import into. When one lands, adding it here is the only
-#: change needed.
+#: Each entry below carries its own three-count argument.
 TENANT_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.CALENDAR_EVENTS,
     DatasetTypeChoices.STUDENTS,
@@ -133,7 +128,40 @@ TENANT_DATASETS: frozenset[str] = frozenset({
     # tenant, and the student import carries only ONE guardian per child - so
     # every second parent is typed in by hand, one drawer at a time.
     DatasetTypeChoices.GUARDIANS,
+    # A bank account's statement. Argued the same three ways: a school runs
+    # its own ledger, and already keys statement lines in one at a time through
+    # POST /v1/finance/bank-accounts/<id>/statement-lines/ on
+    # finance.bankaccount.import, a finance key school roles hold; the batch is
+    # created only from one of the uploading tenant's own bank accounts, within
+    # the uploader's branch reach, and publishing writes nothing but that
+    # account's statement and lines; and a month of a busy collection account
+    # is hundreds of lines the bank already hands over as a file. It enters
+    # through its bank account only, never the generic upload: see
+    # MODULE_ENTRY_DATASETS.
+    DatasetTypeChoices.BANK_STATEMENTS,
 })
+
+#: Datasets whose batches only the owning module's own upload endpoint creates.
+#:
+#: A bank statement batch is meaningless without the bank account, statement
+#: date and balances it is filed against, and the generic upload carries none
+#: of them: a batch made there could never validate. More to the point, the
+#: account is what the finance endpoint checks the caller may reach, on the
+#: finance key the manual import uses, so the generic upload, which asks only
+#: for the engine's ``import.batches.create``, would be a way to start a
+#: statement import without either check. The generic template list therefore
+#: withholds these from a school, and :class:`ImportBatchUploadSerializer`
+#: refuses them unless the owning endpoint names the dataset in its context as
+#: ``module_entry``.
+MODULE_ENTRY_DATASETS: frozenset[str] = frozenset({
+    DatasetTypeChoices.BANK_STATEMENTS,
+})
+
+#: What a generic upload of a module-entry dataset is told.
+MODULE_ENTRY_MESSAGE = (
+    "Upload this file from the screen it belongs to. A bank statement is "
+    "imported from its bank account."
+)
 
 
 def platform_only(dataset_type: str | None) -> bool:

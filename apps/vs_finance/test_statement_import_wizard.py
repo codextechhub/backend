@@ -36,6 +36,7 @@ from .models import (
     FinanceAuditLog,
 )
 from .tests import _Phase4FixtureMixin
+from .tests_bank_account_reach import _BankAccountsFixture, _bank
 
 
 HEADERS = (
@@ -914,3 +915,143 @@ class ImportFileParserSafetyTests(SimpleTestCase):
         with mock.patch("vs_import_data.services.file_parser.MAX_IMPORT_ROWS", 2):
             with self.assertRaisesRegex(ValueError, "more than 2 data rows"):
                 parse_csv(raw)
+
+
+class SchoolStatementImportTests(_BankAccountsFixture):
+    """A school imports its own bank statement file, and nobody else's.
+
+    Corona runs Ikeja, Lekki and Yaba, with a collection account at Ikeja and
+    at Lekki and a GTBank operations account not yet given a branch. Ikeja's
+    bursar holds ``finance.bankaccount.import``, the key she already keys
+    statement lines in with by hand. She takes a file for Ikeja's account
+    through the wizard and publishes it, and is refused Lekki's account, the
+    unplaced one and a rival school's, each as an account that does not exist,
+    with no batch left behind. A single-branch school does the same with no
+    branch to choose.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.rival_bank = _bank(cls.rival_books, "Rival Collections", cls.rival_branch, "34")
+        cls.solo_bank = _bank(cls.solo_books, "Solo Collections", cls.solo_main, "35")
+        call_command(
+            "seed_import", dataset_type=DatasetTypeChoices.BANK_STATEMENTS, verbosity=0,
+        )
+
+    def _upload(self, client, bank, books=None):
+        books = books or self.books
+        return client.post(
+            f"/v1/finance/bank-accounts/{bank.pk}/statement-imports/?entity={books.code}",
+            {
+                "file": SimpleUploadedFile(
+                    "statement.csv",
+                    (
+                        HEADERS
+                        + "2026-01-02,Fees received,RCPT-1,500.00,,TX-1,1500.00\n"
+                        + "2026-01-03,Bank charge,FEE-1,,50.00,TX-2,1450.00\n"
+                    ).encode(),
+                    content_type="text/csv",
+                ),
+                "statement_date": "2026-01-31",
+                "opening_balance": "1000.00",
+                "closing_balance": "1450.00",
+            },
+            format="multipart",
+        )
+
+    def assertRefusedWithNoBatch(self, response):
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertFalse(ImportBatch.all_objects.filter(dataset_type="bank_statements").exists())
+
+    def test_a_school_bursar_imports_a_statement_into_their_own_account(self):
+        client = self.bursar("finance.bankaccount.import")
+
+        upload = self._upload(client, self.ikeja_bank)
+
+        self.assertEqual(upload.status_code, 201, upload.content)
+        data = upload.json()["data"]
+        self.assertEqual(data["validation_summary"]["error_count"], 0, data)
+        batch = ImportBatch.all_objects.get(pk=data["id"])
+        self.assertEqual(batch.tenant, self.tenant)
+        self.assertEqual(batch.branch, self.ikeja)
+
+        publish = client.post(
+            f"/v1/import/batches/{batch.pk}/start-import/", {"run_async": False}, format="json",
+        )
+
+        self.assertEqual(publish.status_code, 200, publish.content)
+        self.assertEqual(
+            list(BankStatementLine.objects.values_list("bank_account_id", "amount")
+                 .order_by("txn_date")),
+            [(self.ikeja_bank.pk, 50000), (self.ikeja_bank.pk, -5000)],
+        )
+
+    def test_a_single_branch_school_imports_without_choosing_a_branch(self):
+        client = TenantAPIClient(user=self.grant(
+            self.user_for(self.solo_tenant, "solo-statement@corona.test"),
+            "finance.bankaccount.import", tenant=self.solo_tenant,
+            role_key="solo-statement", branch=self.solo_main,
+        ))
+
+        upload = self._upload(client, self.solo_bank, books=self.solo_books)
+
+        self.assertEqual(upload.status_code, 201, upload.content)
+        self.assertEqual(
+            ImportBatch.all_objects.get(pk=upload.json()["data"]["id"]).tenant,
+            self.solo_tenant,
+        )
+
+    def test_an_account_outside_the_bursars_branch_reach_is_refused(self):
+        client = self.bursar("finance.bankaccount.import")
+        for bank in (self.lekki_bank, self.shared_bank):
+            with self.subTest(bank=bank.name):
+                self.assertRefusedWithNoBatch(self._upload(client, bank))
+
+    def test_another_schools_account_is_refused(self):
+        """Named by id under the bursar's own books, or under the rival's."""
+        client = self.bursar("finance.bankaccount.import")
+
+        self.assertRefusedWithNoBatch(self._upload(client, self.rival_bank))
+        response = self._upload(client, self.rival_bank, books=self.rival_books)
+        self.assertIn(response.status_code, (403, 404), response.content)
+        self.assertFalse(ImportBatch.all_objects.filter(dataset_type="bank_statements").exists())
+
+    def test_a_role_without_the_finance_import_key_is_refused(self):
+        """Reading the account and holding the engine's upload key is not enough."""
+        client = self.bursar("finance.bankaccount.view", "import.batches.create")
+
+        response = self._upload(client, self.ikeja_bank)
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(ImportBatch.all_objects.exists())
+
+    def test_the_generic_upload_refuses_a_bank_statement(self):
+        """A statement batch is opened from its bank account, never around it.
+
+        The generic upload asks only for ``import.batches.create`` and names no
+        account, so a batch made there would skip the account's reach check
+        and the finance key both.
+        """
+        from vs_import_data.datasets import MODULE_ENTRY_MESSAGE
+
+        client = self.bursar("import.batches.create", "import.templates.view")
+        template = ImportTemplate.objects.get(code="bank_statements_v1")
+
+        listed = client.get("/v1/import/system-import-templates/")
+        response = client.post(
+            "/v1/import/batches/",
+            {
+                "template_id": template.pk,
+                "file": SimpleUploadedFile(
+                    "statement.csv", HEADERS.encode(), content_type="text/csv",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(listed.status_code, 200, listed.content)
+        self.assertNotIn("bank_statements_v1", str(listed.content))
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn(MODULE_ENTRY_MESSAGE, str(response.content))
+        self.assertFalse(ImportBatch.all_objects.exists())
