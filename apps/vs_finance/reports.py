@@ -1090,6 +1090,30 @@ def _budget_actuals(budget):
     )
 
 
+def _headline_type(slots) -> str:
+    """The kind of account a budget's headline totals measure.
+
+    Income and spending run in opposite directions, so adding them gives a
+    figure that means neither: a plan for ₦10m of spending that has spent
+    ₦738k and received ₦185k of fees is not "₦923k consumed". The totals, and
+    the "consumed" share built from them, therefore count one kind. A plan
+    that budgets any spending is measured on spending; a plan of income lines
+    alone is measured on income. Rows of the other kind stay in the report,
+    each with its own figures.
+    """
+    from .constants import AccountType
+
+    budgeted = {s["account_type"] for s in slots.values() if _slot_budget(s)}
+    if AccountType.EXPENSE in budgeted or AccountType.INCOME not in budgeted:
+        return AccountType.EXPENSE
+    return AccountType.INCOME
+
+
+def _slot_budget(slot) -> int:
+    budget = slot["budget"]
+    return sum(budget.values()) if isinstance(budget, dict) else budget
+
+
 def _plan_vs_actual(budget_lines, balances) -> tuple[list, int, int]:
     """Variance rows and totals for planned ``budget_lines`` against ``balances``.
 
@@ -1132,11 +1156,13 @@ def _plan_vs_actual(budget_lines, balances) -> tuple[list, int, int]:
 
     rows: list[BudgetVarianceRow] = []
     total_budget = total_actual = 0
+    headline = _headline_type(slots)
     for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
         if slot["budget"] == 0 and slot["actual"] == 0:
             continue
-        total_budget += slot["budget"]
-        total_actual += slot["actual"]
+        if slot["account_type"] == headline:
+            total_budget += slot["budget"]
+            total_actual += slot["actual"]
         rows.append(BudgetVarianceRow(
             account_id=account_id, code=slot["code"], name=slot["name"],
             account_type=slot["account_type"],
@@ -1349,6 +1375,7 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
 
     rows: list[BudgetMatrixRow] = []
     grand_budget = grand_actual = 0
+    headline = _headline_type(slots)
     for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
         cells = [
             {"period_no": n, "budget": slot["budget"][n], "actual": slot["actual"][n]}
@@ -1358,8 +1385,9 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
         a_total = sum(slot["actual"].values())
         if b_total == 0 and a_total == 0:
             continue
-        grand_budget += b_total
-        grand_actual += a_total
+        if slot["account_type"] == headline:
+            grand_budget += b_total
+            grand_actual += a_total
         rows.append(BudgetMatrixRow(
             account_id=account_id, code=slot["code"], name=slot["name"],
             account_type=slot["account_type"], cells=cells,

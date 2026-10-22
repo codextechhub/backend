@@ -3663,6 +3663,51 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(report.total_budget, 60000)
         self.assertEqual(report.total_actual, 50000)
 
+    def test_fee_income_is_not_counted_as_spending(self):
+        """Lagoon View plans ₦600 of salaries, spends ₦500 and takes ₦300 in fees.
+
+        The fees still show, as an unbudgeted income row, but the plan's totals
+        and its "consumed" share count the spending alone: ₦500, not ₦800.
+        """
+        entity, year, periods = self.books
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
+        salaries = Account.objects.get(entity=entity, code="5200")
+        add_budget_line(budget, account=salaries, period_no=1, amount=60000)
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 50000, 0), ("1100", 0, 50000)],
+            date=datetime.date(2026, 1, 15),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
+            date=datetime.date(2026, 1, 20),
+        ))
+
+        report = budget_vs_actual(budget)
+        matrix = budget_monthly_matrix(budget)
+
+        self.assertEqual(next(r for r in report.rows if r.code == "4100").actual, 30000)
+        self.assertEqual((report.total_budget, report.total_actual), (60000, 50000))
+        self.assertEqual((matrix.total_budget, matrix.total_actual), (60000, 50000))
+
+    def test_an_income_only_plan_is_measured_on_income(self):
+        """A fees target with no spending lines reads its own progress: ₦300 of ₦1,000."""
+        entity, year, periods = self.books
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Fees target")
+        fees = Account.objects.get(entity=entity, code="4100")
+        add_budget_line(budget, account=fees, period_no=1, amount=100000)
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
+            date=datetime.date(2026, 1, 20),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 50000, 0), ("1100", 0, 50000)],
+            date=datetime.date(2026, 1, 15),
+        ))
+
+        report = budget_vs_actual(budget)
+
+        self.assertEqual((report.total_budget, report.total_actual), (100000, 30000))
+
     # Verify budget vs actual scoped to period behavior.
     def test_budget_vs_actual_scoped_to_period(self):
         entity, year, periods = self.books
