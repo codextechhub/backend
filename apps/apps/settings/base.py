@@ -257,6 +257,8 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    # A file view is never refused over the Accept header. See core.negotiation.
+    "DEFAULT_CONTENT_NEGOTIATION_CLASS": "core.negotiation.FallbackContentNegotiation",
     # JWT auth that also resolves request.tenant + the thread-local tenant
     # context (Django middleware runs too early to see JWT users).
     "DEFAULT_AUTHENTICATION_CLASSES": (
