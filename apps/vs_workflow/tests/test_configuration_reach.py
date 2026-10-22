@@ -405,6 +405,12 @@ class DelegationReachTests(_BrightStar):
             None, email="nwankwo@workflow-reach.test", tenant=cls.tenant,
         )
         cls.sade = make_staff_user(cls.lekki, email="sade@workflow-reach.test")
+        # A keyless role at each home branch: staff standing, and nothing more.
+        for person in (cls.tunde, cls.nwankwo, cls.sade):
+            make_assignment(
+                cls.tenant, person, make_role(cls.tenant, name=f"Staff {person.email}"),
+                branch=person.branch,
+            )
 
     def setUp(self):
         now = timezone.now()

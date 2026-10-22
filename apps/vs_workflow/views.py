@@ -15,7 +15,7 @@ from rest_framework.viewsets import GenericViewSet, ModelViewSet
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import (
-    HasRBACPermission, IsAuthenticatedAndActive, is_vision_super_admin,
+    HasRBACPermission, IsAuthenticatedAndActive, IsTenantStaff, is_vision_super_admin,
 )
 # ``include_shared=True`` spelled out at each call site below. A workflow row
 # with no branch is shared across the school - a tenant-wide template, a group
@@ -1661,8 +1661,10 @@ class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
 class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     """Hand one's approvals to somebody else for a period.
 
-    Open to every signed-in member of the tenant, since anybody who approves
-    may be away. ``document-types/`` lists what a delegation may be narrowed
+    Open to every member of the tenant's staff (:class:`IsTenantStaff`),
+    since anybody who approves may be away, and to nobody else: a parent's or
+    a pupil's account holds no grant, approves nothing, and has nothing to
+    hand over. Staff who approve nothing read an empty list. ``document-types/`` lists what a delegation may be narrowed
     to, by name, so the person filling the form picks "Leave request" rather
     than typing ``leave.request``.
 
@@ -1679,7 +1681,7 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     docstring-name: Approval delegations
     """
     serializer_class = ApprovalDelegationSerializer
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
 
     def get_serializer_context(self):
         # The tenant every reference on the serializer resolves inside. Without

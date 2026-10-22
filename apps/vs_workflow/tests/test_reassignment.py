@@ -58,9 +58,15 @@ class _Handler(BaseWorkflowHandler):
 
 
 def _person(tenant, email, first, last, branch=None):
+    """A member of staff holding a role with no keys, at their home branch.
+
+    The role makes them staff and confers nothing else; pinning it to the home
+    branch keeps their reach exactly what the posting alone would give.
+    """
     user = make_school_admin(None, email=email, tenant=tenant)
     user.first_name, user.last_name, user.branch = first, last, branch
     user.save()
+    make_assignment(tenant, user, make_role(tenant, name=f"Staff {email}"), branch=branch)
     return user
 
 
@@ -745,6 +751,27 @@ class DelegationReachTests(_Fixture):
             f"{BASE}/delegations/", self.body(delegator=self.funke.pk), format="json")
         self.assertEqual(response.status_code, 403)
         self.assertFalse(ApprovalDelegation.objects.filter(delegator=self.funke).exists())
+
+    def test_an_account_holding_no_grant_is_refused_the_list_and_the_save(self):
+        """A parent's or a pupil's account is this shape: in the tenant, granted nothing."""
+        outsider = make_school_admin(None, email="parent@green.test", tenant=self.tenant)
+        client = TenantAPIClient(outsider)
+        self.assertEqual(client.get(f"{BASE}/delegations/").status_code, 403)
+        response = client.post(f"{BASE}/delegations/", self.body(), format="json")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(ApprovalDelegation.objects.filter(created_by=outsider).exists())
+
+    def test_another_tenants_staff_are_refused(self):
+        client = TenantAPIClient(self.stranger, tenant_slug=self.tenant.slug)
+        self.assertIn(client.get(f"{BASE}/delegations/").status_code, (403, 404))
+        response = client.post(f"{BASE}/delegations/", self.body(), format="json")
+        self.assertIn(response.status_code, (403, 404))
+
+    def test_staff_who_approve_nothing_read_an_empty_list(self):
+        listed = TenantAPIClient(self.okafor).get(f"{BASE}/delegations/")
+        self.assertEqual(listed.status_code, 200, listed.data)
+        rows = listed.data["data"] if "data" in listed.data else listed.data
+        self.assertEqual(rows, [])
 
     def test_a_person_still_delegates_their_own_approvals(self):
         response = TenantAPIClient(self.funke).post(
