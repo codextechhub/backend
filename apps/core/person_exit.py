@@ -4,7 +4,9 @@ Each product registers the employment record that owns this fact. A tenant's
 account status cannot answer it: a suspended account may belong to someone
 still employed, and a departed person's name remains on historical records.
 Callers pass the user ids already present in a response, so one lookup serves
-the whole response without opening another tenant's employment records.
+the whole response without opening another tenant's employment records. The
+same lookup keeps each person's display name (:func:`person_name_in`), so a
+response that flags its people can name them without another query.
 """
 
 from collections.abc import Callable, Iterable
@@ -58,7 +60,10 @@ def prime_exit_states(context: dict, user_ids: Iterable[int]) -> dict[int, bool]
     from vs_user.models import User
 
     ids = {int(user_id) for user_id in user_ids if user_id is not None}
+    from core.attribution import person_label
+
     cached = context.setdefault("person_exit_states", {})
+    names = context.setdefault("person_names", {})
     missing = ids - cached.keys()
     if not missing:
         return cached
@@ -67,6 +72,7 @@ def prime_exit_states(context: dict, user_ids: Iterable[int]) -> dict[int, bool]
     for user in User.objects.filter(pk__in=missing).select_related("tenant"):
         groups[user.tenant_id].add(user.pk)
         tenants[user.tenant_id] = user.tenant
+        names[user.pk] = person_label(user)
     cached.update({user_id: False for user_id in missing})
     groups_by_kind = defaultdict(list)
     for tenant_id, group in groups.items():
@@ -91,6 +97,22 @@ def person_is_exited(context: dict, user_id: int | None) -> bool | None:
     if user_id is None:
         return None
     return prime_exit_states(context, (user_id,)).get(int(user_id), False)
+
+
+def person_name_in(context: dict, user_id: int | str | None) -> str | None:
+    """A primed person's name and nothing else about them; ``None`` for no person.
+
+    Resolves a lone person once when the response did not prime them. An id
+    that names no account reads "Unknown user" rather than the id.
+    """
+    if user_id is None or user_id == "":
+        return None
+    key = int(user_id)
+    names = context.get("person_names") or {}
+    if key not in names:
+        prime_exit_states(context, (key,))
+        names = context["person_names"]
+    return names.get(key, "Unknown user")
 
 
 def mark_named_people(people: Iterable[dict | None]) -> None:

@@ -3,7 +3,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
-from core.person_exit import person_is_exited, prime_exit_states
+from core.person_exit import person_is_exited, person_name_in, prime_exit_states
 
 from vs_workflow.conditions.describe import ConditionDescriber, ConditionNames
 from vs_workflow.conditions.fields import document_type_label
@@ -499,17 +499,36 @@ class _ProxyAttributionFields(serializers.Serializer):
 
 class WorkflowStageActionReadSerializer(_ProxyAttributionFields, serializers.ModelSerializer):
     """One vote or reversal. ``actor`` is the approver whose vote it is;
-    ``proxied_by`` is the real person when the vote was cast under a proxy."""
+    ``proxied_by`` is the real person when the vote was cast under a proxy.
+
+    Each person comes with their name (``actor_name`` and so on) and nothing
+    else about them: the trail is read by everyone who may open the document,
+    most of whom may not read the staff list the ids would otherwise need.
+    """
 
     class Meta:
         model = WorkflowStageAction
         fields = [
-            "id", "action", "actor", "on_behalf_of", "comment", "attempt",
-            "acted_at", "reversed_at", "reversed_by", "reversal_reason", "is_reversal_of",
+            "id", "action", "actor", "actor_name", "on_behalf_of", "on_behalf_of_name",
+            "comment", "attempt", "acted_at", "reversed_at", "reversed_by", "reversed_by_name",
+            "reversal_reason", "is_reversal_of",
             "proxied_by", "real_actor_name", "proxied_user_name", "acted_label",
             "actor_is_exited", "on_behalf_of_is_exited", "proxied_by_is_exited",
             "reversed_by_is_exited",
         ]
+
+    actor_name = serializers.SerializerMethodField()
+    on_behalf_of_name = serializers.SerializerMethodField()
+    reversed_by_name = serializers.SerializerMethodField()
+
+    def get_actor_name(self, obj):
+        return person_name_in(self.context, obj.actor_id)
+
+    def get_on_behalf_of_name(self, obj):
+        return person_name_in(self.context, obj.on_behalf_of_id)
+
+    def get_reversed_by_name(self, obj):
+        return person_name_in(self.context, obj.reversed_by_id)
 
     actor_is_exited = serializers.SerializerMethodField()
     on_behalf_of_is_exited = serializers.SerializerMethodField()
@@ -535,19 +554,29 @@ class WorkflowStageActionReadSerializer(_ProxyAttributionFields, serializers.Mod
         return person_is_exited(self.context, obj.reversed_by_id)
 
     def attribution(self, obj) -> dict:
-        from core.attribution import vote_attribution
+        from core.attribution import person_label, vote_attribution
 
-        return vote_attribution(obj)
+        return vote_attribution(obj, name=person_label)
 
 
 class WorkflowStageApproverReadSerializer(serializers.ModelSerializer):
+    """One person a stage waits on, named for everyone who may read the trail."""
+
+    user_name = serializers.SerializerMethodField()
+    on_behalf_of_name = serializers.SerializerMethodField()
     user_is_exited = serializers.SerializerMethodField()
     on_behalf_of_is_exited = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkflowStageApprover
-        fields = ["id", "user", "on_behalf_of", "user_is_exited",
-                  "on_behalf_of_is_exited", "attempt", "recorded_at"]
+        fields = ["id", "user", "user_name", "on_behalf_of", "on_behalf_of_name",
+                  "user_is_exited", "on_behalf_of_is_exited", "attempt", "recorded_at"]
+
+    def get_user_name(self, obj):
+        return person_name_in(self.context, obj.user_id)
+
+    def get_on_behalf_of_name(self, obj):
+        return person_name_in(self.context, obj.on_behalf_of_id)
 
     def to_representation(self, obj):
         prime_exit_states(self.context, (obj.user_id, obj.on_behalf_of_id))
@@ -586,17 +615,21 @@ class WorkflowAuditLogReadSerializer(_ProxyAttributionFields, serializers.ModelS
 
     class Meta:
         model = WorkflowAuditLog
-        fields = ["id", "event_type", "actor", "stage_instance",
+        fields = ["id", "event_type", "actor", "actor_name", "stage_instance",
                   "context", "message", "occurred_at",
                   "effective_user", "real_actor_name", "proxied_user_name", "acted_label",
                   "actor_is_exited", "effective_user_is_exited"]
 
+    actor_name = serializers.SerializerMethodField()
     actor_is_exited = serializers.SerializerMethodField()
     effective_user_is_exited = serializers.SerializerMethodField()
 
     def to_representation(self, obj):
         prime_exit_states(self.context, (obj.actor_id, obj.effective_user_id))
         return super().to_representation(obj)
+
+    def get_actor_name(self, obj):
+        return person_name_in(self.context, obj.actor_id)
 
     def get_actor_is_exited(self, obj):
         return person_is_exited(self.context, obj.actor_id)
@@ -605,9 +638,9 @@ class WorkflowAuditLogReadSerializer(_ProxyAttributionFields, serializers.ModelS
         return person_is_exited(self.context, obj.effective_user_id)
 
     def attribution(self, obj) -> dict:
-        from core.attribution import audit_row_attribution
+        from core.attribution import audit_row_attribution, person_label
 
-        return audit_row_attribution(obj)
+        return audit_row_attribution(obj, name=person_label)
 
 
 class WorkflowListSerializer(serializers.ListSerializer):
@@ -634,6 +667,7 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
     current_stage_label = serializers.CharField(source="current_stage.label", read_only=True, default=None)
     document_type_label = serializers.SerializerMethodField()
     document_title      = serializers.SerializerMethodField()
+    requested_by_name = serializers.SerializerMethodField()
     requested_by_is_exited = serializers.SerializerMethodField()
 
     class Meta:
@@ -644,8 +678,12 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
             "document_object_id",
             "template_code",
             "status", "current_stage_code", "current_stage_label",
-            "requested_by", "requested_by_is_exited", "submitted_at", "completed_at", "updated_at",
+            "requested_by", "requested_by_name", "requested_by_is_exited",
+            "submitted_at", "completed_at", "updated_at",
         ]
+
+    def get_requested_by_name(self, obj):
+        return person_name_in(self.context, obj.requested_by_id)
 
     def get_requested_by_is_exited(self, obj):
         return person_is_exited(self.context, obj.requested_by_id)

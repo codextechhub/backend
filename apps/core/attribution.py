@@ -41,6 +41,24 @@ def person_name(user, default: str = "System") -> str:
     return full or getattr(user, "email", "") or default
 
 
+def person_label(user, default: str = "System") -> str:
+    """A person's name and nothing else about them, for history anyone on a document reads.
+
+    An approval trail is shown to everybody who may open the document, most of
+    whom may not read the staff list, so the label never falls back to the
+    email address the way :func:`person_name` does.
+    """
+    if user is None:
+        return default
+    full = (getattr(user, "full_name", "") or "").strip()
+    if not full:
+        full = (
+            f"{getattr(user, 'first_name', '') or ''} "
+            f"{getattr(user, 'last_name', '') or ''}"
+        ).strip()
+    return full or "Unknown user"
+
+
 def proxy_attribution(performer, principal=None, *, name=person_name) -> dict:
     """The three attribution fields for one action.
 

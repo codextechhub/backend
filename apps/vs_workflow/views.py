@@ -1167,7 +1167,7 @@ class PendingApprovalsView(TenantScopedMixin, APIView):
         # Which snapshots are actionable lives in services/my_queue so the console
         # landing screen counts this queue by exactly the rules it lists it by.
         snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_tenant())
-        from core.person_exit import prime_exit_states
+        from core.person_exit import person_name_in, prime_exit_states
 
         context = {"request": request}
         states = prime_exit_states(context, (
@@ -1184,6 +1184,7 @@ class PendingApprovalsView(TenantScopedMixin, APIView):
                 "awaiting_on_stage": snap.stage_instance.stage.label,
                 "awaiting_since": snap.stage_instance.activated_at,
                 "on_behalf_of": str(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
+                "on_behalf_of_name": person_name_in(context, snap.on_behalf_of_id),
                 "on_behalf_of_is_exited": states.get(snap.on_behalf_of_id)
                 if snap.on_behalf_of_id else None,
             })
