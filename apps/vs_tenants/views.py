@@ -13,7 +13,7 @@ from rest_framework import generics
 from rest_framework.response import Response
 
 from core.response import success_response
-from vs_rbac.permissions import IsAuthenticatedAndActive
+from vs_rbac.permissions import IsAuthenticatedAndActive, IsTenantStaff
 from vs_rbac.scoping import caller_branch_ids
 
 from .models import Branch
@@ -23,12 +23,16 @@ from .serializers import BranchOptionSerializer
 class BranchOptionListView(generics.GenericAPIView):
     """``GET /v1/tenants/branches/`` - the branches the caller may work in.
 
-    No RBAC key. The list is not a capability of its own: it is a projection of
-    grants the caller already holds, and it says nothing they could not learn by
-    naming a branch on a create and reading the refusal. Gating it on a key
-    would mean inventing one that every branch-scoped screen then has to be
-    granted, and a platform key such as ``platform.branches.view`` stands
-    between a school's own bursar and the sites she assigns staff to.
+    Open to every member of the tenant's staff (:class:`IsTenantStaff`), and
+    to no one else. The list is not a capability of its own: it is a
+    projection of grants the caller already holds, and it says nothing they
+    could not learn by naming a branch on a create and reading the refusal.
+    Gating it on a key would mean inventing one that every branch-scoped screen
+    then has to be granted, and a platform key such as
+    ``platform.branches.view`` stands between a school's own bursar and the
+    branches she assigns staff to. A parent's or a pupil's account holds no
+    grant, files nothing, and is refused. Platform staff read their own
+    tenant's branches here, through the same rule.
 
     Three shapes of caller are answered differently:
 
@@ -49,7 +53,7 @@ class BranchOptionListView(generics.GenericAPIView):
 
     docstring-name: Branches I can work in
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
     serializer_class = BranchOptionSerializer
 
     def get(self, request, *args, **kwargs) -> Response:

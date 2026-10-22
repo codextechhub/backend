@@ -19,8 +19,10 @@ thing that works:
 * **No permission key.** What your own school bought is not a secret kept from
   its staff, and every screen needs the answer, including a teacher's. Gating
   it on any key would mean the nav renders differently depending on a role
-  question that has nothing to do with the plan. It answers for the caller's
-  own tenant and no other, which is what makes that safe.
+  question that has nothing to do with the plan. It is open to every member of
+  staff, whatever their role, and to nobody else: an account holding no grant
+  at the school (a parent's, a pupil's) is refused. It answers for the
+  caller's own tenant and no other.
 * **Open before go-live**, because a school configures itself while PENDING
   and a nav that renders nothing during onboarding is a nav that is broken
   exactly when it is first seen.
@@ -35,7 +37,11 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from vs_rbac.tests.helpers import (
+    make_assignment,
     make_branch,
+    make_platform_assignment,
+    make_platform_role,
+    make_role,
     make_school,
     make_school_admin,
     make_staff_user,
@@ -75,8 +81,16 @@ class MyCapabilitiesTests(TestCase):
         cls.admin = make_school_admin(
             None, email="admin@bright-star.test", tenant=cls.tenant,
         )
+        make_assignment(
+            cls.school, cls.admin, make_role(cls.school, name="School Admin"),
+            branch=None,
+        )
         # Holds no configuration key, and no school role ever will.
         cls.teacher = make_staff_user(cls.branch, email="teacher@bright-star.test")
+        make_assignment(
+            cls.school, cls.teacher, make_role(cls.school, name="Teacher"),
+            branch=cls.branch,
+        )
 
         cls.other = make_school(slug="green-field", name="Green Field")
         make_branch(cls.other, name="Main Branch")
@@ -144,6 +158,14 @@ class MyCapabilitiesTests(TestCase):
         response = self._get(self.admin)
         self.assertEqual(response.status_code, 200, response.data)
 
+    def test_an_account_holding_no_grant_is_refused(self):
+        """A parent's or a pupil's account: it belongs to the school, holds
+        nothing there, and draws no staff navigation."""
+        parent = make_school_admin(
+            None, email="parent@bright-star.test", tenant=self.tenant,
+        )
+        self.assertEqual(self._get(parent).status_code, 403)
+
     def test_it_answers_for_the_caller_and_nobody_else(self):
         # The tenant comes from the assertion the auth layer already validated,
         # so naming a rival's slug is refused before the view is reached.
@@ -168,6 +190,12 @@ class MyCapabilitiesTests(TestCase):
         response = self._client(operator).get(reverse("config-my-capabilities"))
         self.assertEqual(response.status_code, 200, response.data)
 
+    def test_platform_staff_without_the_bypass_read_it_too(self):
+        operator = make_vision_user(email="support@codexng.test")
+        make_platform_assignment(operator, make_platform_role(name="Support"))
+        response = self._client(operator).get(reverse("config-my-capabilities"))
+        self.assertEqual(response.status_code, 200, response.data)
+
 
 class MyCapabilitiesSubscriptionTests(TestCase):
     """An expired subscription closes the doors it paid for."""
@@ -177,6 +205,10 @@ class MyCapabilitiesSubscriptionTests(TestCase):
         make_branch(self.school, name="Main Branch")
         self.admin = make_school_admin(
             None, email="admin@lapsed.test", tenant=self.school.tenant,
+        )
+        make_assignment(
+            self.school, self.admin, make_role(self.school, name="School Admin"),
+            branch=None,
         )
         self.finance = Capability.objects.create(key="finance", label="Finance")
         Capability.objects.create(

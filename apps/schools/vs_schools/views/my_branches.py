@@ -8,16 +8,17 @@ branches. So this is the read half only, in the shape ``/v1/i/me/profile/`` and
 ``/v1/i/me/staff/`` established.
 
 **Every member of the school's staff may read it.** The gate is
-:class:`vs_rbac.permissions.HoldsTenantRole`: an account holding any active role
-at the school, whether a library role or one the school made itself, such as a
-bursar or an admissions officer. Every form that files a record under a branch
-decides whether to ask for one, and offers the choices, from this list. A key
+:class:`vs_rbac.permissions.IsTenantStaff`: an account holding an active role
+at the school, whether a library role or one the school made itself (a bursar,
+an admissions officer), or a personal grant there. Every form that files a
+record under a branch decides whether to ask for one, and offers the choices,
+from this list. A key
 for it would have to be granted to every role a school ever creates, and the
 role somebody forgot would leave its holder at a two-branch school unable to
 file an expense claim, because the form never asks and the server refuses a
 claim that names no branch.
 
-A parent's or a pupil's account holds no role and is refused; the parent app
+A parent's or a pupil's account holds no grant and is refused; the parent app
 and the pupil portal answer from their own endpoints. ``school.branches.view``
 remains the key of the Branches screen itself, not of this list.
 
@@ -54,7 +55,7 @@ from rest_framework.exceptions import NotFound
 
 from core.pagination import XVSPagination
 from core.response import success_response
-from vs_rbac.permissions import HoldsTenantRole, IsAuthenticatedAndActive
+from vs_rbac.permissions import IsTenantStaff, IsAuthenticatedAndActive
 from vs_tenants.models import Branch
 
 from ..serializers import SchoolBranchSerializer
@@ -63,7 +64,7 @@ from ..serializers import SchoolBranchSerializer
 class _MyBranchBase:
     """Shared wiring: this school's branches, for any member of its staff."""
 
-    permission_classes = [IsAuthenticatedAndActive & HoldsTenantRole]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
     serializer_class = SchoolBranchSerializer
 
     def get_queryset(self):

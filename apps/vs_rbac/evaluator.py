@@ -317,25 +317,31 @@ def has_all_permissions(user, permission_keys, tenant=None, branch=ANY_BRANCH) -
     )
 
 
-def holds_any_role(user, tenant=None) -> bool:
-    """Whether *user* holds an active role in *tenant* right now.
+def is_tenant_staff(user, tenant=None) -> bool:
+    """Whether *user* is a member of *tenant*'s staff right now.
 
-    This is what makes an account a member of a tenant's staff, whatever the
-    role is called and whichever keys it carries. An account that belongs to
-    the tenant only as somebody's parent, or as a pupil, holds no role: its
-    reach comes from a link to that record, never from a grant.
+    Staff is whoever the tenant has granted something: an active role, or a
+    personal ALLOW override in force. The name of the role and the keys it
+    carries do not matter. An account that belongs to the tenant only as
+    somebody's parent, or as a pupil, holds neither: its reach comes from a
+    link to that record, never from a grant.
 
-    The assignment rules are :func:`_active_role_ids`', so a revoked
-    assignment, a suspended role and a role whose branches are all out of
-    service count for nothing here, exactly as they confer nothing anywhere
-    else. An account asserting a tenant other than its own holds no role in it.
+    The role rules are :func:`_active_role_ids`', and the override rules are
+    :func:`get_user_override_keys`', so a revoked assignment, a suspended role,
+    a role whose branches are all out of service, a lapsed override and an
+    unapproved restricted one count for nothing here, exactly as they confer
+    nothing anywhere else. An account asserting a tenant other than its own is
+    not that tenant's staff.
     """
     tenant = _normalize_tenant(user, tenant=tenant)
     if not user or not getattr(user, "is_authenticated", False) or tenant is None:
         return False
     if getattr(user, "tenant_id", None) != tenant.pk:
         return False
-    return _active_role_ids(user, tenant, ANY_BRANCH).exists()
+    if _active_role_ids(user, tenant, ANY_BRANCH).exists():
+        return True
+    allows, _denies = get_user_override_keys(user, tenant)
+    return bool(allows)
 
 
 def resolve_users_with_permission(tenant, branch, permission_key: str):

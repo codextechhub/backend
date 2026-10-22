@@ -286,6 +286,59 @@ class WhoMayReadTests(TestCase):
         self.assertNotIn("data", response.data)
 
 
+class TenantReferenceListsTests(WhoMayReadTests):
+    """The other lists every member of staff needs, behind the same rule.
+
+    ``/v1/tenants/branches/`` is the branch picker a payroll or procurement
+    form files under, and ``/v1/config/my-capabilities/`` is what the school's
+    plan includes, which draws the staff navigation. Both are open to every
+    member of Lagoon View's staff and to nobody else.
+    """
+
+    LISTS = ("/v1/tenants/branches/", "/v1/config/my-capabilities/")
+
+    def get(self, user, url, tenant=None):
+        return TenantAPIClient(
+            user=user, tenant_slug=tenant.slug if tenant else None,
+        ).get(url)
+
+    def test_every_member_of_staff_reads_them(self):
+        for user in (self.ngozi, self.tunde, self.kemi):
+            for url in self.LISTS:
+                with self.subTest(user=user.email, url=url):
+                    response = self.get(user, url)
+                    self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_parent_and_a_pupil_are_refused(self):
+        for user in (self.parent_account, self.pupil_account):
+            for url in self.LISTS:
+                with self.subTest(user=user.email, url=url):
+                    self.assertEqual(self.get(user, url).status_code, 403)
+
+    def test_another_schools_staff_are_refused(self):
+        for url in self.LISTS:
+            with self.subTest(url=url):
+                response = self.get(self.greenfield_bursar, url, tenant=self.tenant)
+                self.assertIn(response.status_code, (403, 404), response.data)
+                self.assertNotIn("data", response.data)
+
+    def test_staff_with_only_a_personal_grant_read_them(self):
+        """Staff standing comes from any grant, not only from a role."""
+        from vs_rbac.models import UserPermissionOverride
+
+        covering = make_school_admin(
+            None, email="covering@lagoon-view.example.com", tenant=self.tenant,
+        )
+        UserPermissionOverride.objects.create(
+            tenant=self.tenant, user=covering,
+            permission=make_permission("finance.payroll.view"),
+            mode=UserPermissionOverride.Mode.ALLOW, reason="Covering payroll.",
+        )
+        for url in (*self.LISTS, reverse("my-branch-list")):
+            with self.subTest(url=url):
+                self.assertEqual(self.get(covering, url).status_code, 200)
+
+
 class NonAdminFieldAccessTests(TestCase):
     """Field Access over address and email holds for a reader without the key.
 

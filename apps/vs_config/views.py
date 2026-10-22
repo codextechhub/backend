@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
 from vs_rbac.field_enforcement import can_read
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsTenantStaff
 from vs_rbac.plan_grants import unsettled_roles_note
 
 from . import labels as config_labels
@@ -1003,10 +1003,12 @@ class MyCapabilitiesView(APIView):
     Why no key of its own. The answer is not a secret kept from a school's
     staff, and every screen needs it, a teacher's included. Requiring any key
     would make the navigation render differently for two people on the same
-    plan, for a reason unrelated to the plan. What makes that safe is the
-    scope, not a permission: the tenant comes from the assertion the
-    authentication layer has already validated against the caller, so naming a
-    rival school's slug is refused before this view runs.
+    plan, for a reason unrelated to the plan. It is open to every member of
+    the tenant's staff (:class:`IsTenantStaff`) and to nobody else: a parent's
+    or a pupil's account holds no grant and draws no staff navigation. The
+    tenant comes from the assertion the authentication layer has already
+    validated against the caller, so naming a rival school's slug is refused
+    before this view runs.
 
     It reports states and nothing else. The entitlement rows, the overrides and
     the depth grants that produce them stay on the platform endpoint.
@@ -1014,7 +1016,7 @@ class MyCapabilitiesView(APIView):
     docstring-name: My capabilities
     """
 
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
     # The caller's own tenant, which they may always assert. Optional so the
     # platform layer answers for a CodeX operator who asserts nothing.
     tenant_param_required = False

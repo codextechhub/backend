@@ -10,7 +10,7 @@ from .evaluator import (
     get_effective_permissions,
     has_permission,
     has_all_permissions,
-    holds_any_role,
+    is_tenant_staff,
 )
 
 
@@ -492,21 +492,25 @@ def holds_any_module_key(user, tenant, modules) -> bool:
 
 
 # Admit any member of the tenant's staff, whatever their role.
-class HoldsTenantRole(BasePermission):
-    """DRF permission that passes for anybody holding an active role in the tenant.
+class IsTenantStaff(BasePermission):
+    """DRF permission that passes for any member of the tenant's staff.
 
     For reads of a tenant's own reference data that every member of its staff
-    needs to do their job, whichever job that is. The list of a tenant's
-    branches is the case in point: every form that files a record under a
-    branch picks from it, so a key for it would have to be granted to every
-    role the tenant ever creates, and a role created without it would leave
-    its holder unable to file anything at a tenant with several branches.
+    needs to do their job, whichever job that is: its branches, the branches a
+    caller may file under, what its plan includes. A key for each would have to
+    be granted to every role a tenant ever creates, and a role created without
+    it would leave its holder facing a form that cannot ask the question it
+    needs answered.
 
-    Holding a role is what makes an account staff (:func:`holds_any_role`). A
-    parent's or a pupil's account holds none, so it is refused here; its reach
-    is decided from its link to a guardian or pupil record by the portals'
-    own permission classes. A member of staff whose child attends the same
-    school keeps their role and is admitted.
+    Staff is :func:`is_tenant_staff`: an active role or a personal grant at
+    the tenant. A parent's or a pupil's account holds neither, so it is refused
+    here; its reach is decided from its link to a guardian or pupil record by
+    the portals' own permission classes. A member of staff whose child attends
+    the same school keeps their grants and is admitted.
+
+    Platform staff pass at the platform tenant, where their roles live. A
+    CodeX operator asserting a school is not that school's staff, and is
+    admitted only as the Vision super admin.
 
     Weaker than :class:`HasRBACPermission` by design, so use it only for reads
     whose payload is fit for every member of staff. Field Access still governs
@@ -532,7 +536,7 @@ class HoldsTenantRole(BasePermission):
             or getattr(request, "tenant", None)
             or getattr(u, "tenant", None)
         )
-        return holds_any_role(u, tenant)
+        return is_tenant_staff(u, tenant)
 
 
 # Permit safe HTTP methods on read-only endpoints.

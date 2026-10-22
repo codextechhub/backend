@@ -20,12 +20,16 @@ from __future__ import annotations
 from django.test import TestCase
 
 from core.test_utils import TenantAPIClient
+from vs_rbac.models import TenantUserRoleAssignment, UserPermissionOverride
 from vs_rbac.tests.helpers import (
     make_assignment,
     make_branch,
+    make_permission,
     make_role,
     make_school,
     make_school_admin,
+    make_platform_assignment,
+    make_platform_role,
     make_vision_user,
 )
 
@@ -59,6 +63,13 @@ class _Fixture:
         self.assertEqual(response.status_code, expect, response.data)
         return sorted(row["name"] for row in response.data["data"])
 
+    def staff(self, email, tenant=None):
+        """A whole-tenant member of staff: an account with one unpinned role."""
+        tenant = tenant or self.tenant
+        user = make_school_admin(None, email=email, tenant=tenant)
+        make_assignment(tenant, user, make_role(tenant, name=f"Staff {email}"), branch=None)
+        return user
+
     def pin(self, user, branch, role_key):
         """Pin a caller to one branch through a real branch-scoped grant."""
         role = make_role(self.tenant, name=role_key)
@@ -75,14 +86,14 @@ class BranchOptionsTests(_Fixture, TestCase):
     def test_a_whole_tenant_caller_sees_every_site(self):
         """No RBAC key is required. The list is a projection of grants already
         held, not a capability of its own."""
-        bursar = make_school_admin(None, email="bursar@corona.test", tenant=self.tenant)
+        bursar = self.staff("bursar@corona.test")
 
         self.assertEqual(self.names_for(bursar), ["Ikeja", "Lekki", "Yaba"])
 
     def test_the_main_branch_comes_first(self):
         """Ordering is part of the contract: a picker's default should be the
         site most people mean, and everything after it alphabetical."""
-        bursar = make_school_admin(None, email="order@corona.test", tenant=self.tenant)
+        bursar = self.staff("order@corona.test")
         client = TenantAPIClient(user=bursar)
 
         rows = client.get(URL).data["data"]
@@ -105,21 +116,67 @@ class BranchOptionsTests(_Fixture, TestCase):
 
         self.assertEqual(self.names_for(officer), ["Ikeja", "Yaba"])
 
-    def test_a_home_posting_pins_a_caller_with_no_grants(self):
-        """The fallback that predates branch grants: somebody's own branch still
-        decides when nothing else speaks for them."""
+    def test_a_home_posting_pins_a_caller_with_no_role_grants(self):
+        """Somebody's own branch decides when no role speaks for them.
+
+        Their staff standing comes from a personal grant, which carries no
+        branch of its own, so the home posting is what narrows them.
+        """
         teacher = make_school_admin(
             self.yaba, email="posted@corona.test", tenant=self.tenant,
+        )
+        UserPermissionOverride.objects.create(
+            tenant=self.tenant, user=teacher,
+            permission=make_permission("finance.payroll.view"),
+            mode=UserPermissionOverride.Mode.ALLOW, reason="Covering payroll.",
         )
 
         self.assertEqual(self.names_for(teacher), ["Yaba"])
 
     # ── the boundary ────────────────────────────────────────────────────────
 
+    def test_an_account_holding_no_grant_is_refused(self):
+        """A parent's or a pupil's account is this shape: it belongs to the
+        tenant and holds nothing there. It files nothing, so it is offered
+        nothing to file under."""
+        parent = make_school_admin(None, email="parent@corona.test", tenant=self.tenant)
+
+        self.assertEqual(TenantAPIClient(user=parent).get(URL).status_code, 403)
+
+    def test_a_revoked_role_no_longer_admits(self):
+        bursar = self.staff("revoked@corona.test")
+        TenantUserRoleAssignment.objects.filter(user=bursar).update(
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.REVOKED,
+        )
+
+        self.assertEqual(TenantAPIClient(user=bursar).get(URL).status_code, 403)
+
+    def test_platform_staff_read_their_own_tenants_branches(self):
+        """The console's payroll screen reads this list for the platform tenant."""
+        operator = make_vision_user(email="payroll@codexng.test")
+        role = make_platform_role(name="Platform payroll")
+        make_platform_assignment(operator, role)
+        lagos = make_branch(operator.tenant, name="CodeX Lagos", is_main=False)
+
+        response = TenantAPIClient(user=operator).get(URL)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        ids = {row["id"] for row in response.data["data"]}
+        self.assertIn(lagos.pk, ids)
+        self.assertEqual(
+            ids, set(Branch.all_objects.filter(pk__in=ids, tenant=operator.tenant)
+                     .values_list("pk", flat=True)),
+        )
+
+    def test_the_vision_super_admin_reads_their_own_tenants_branches(self):
+        vision = make_vision_user(email="super@codexng.test", super_admin=True)
+
+        self.assertEqual(TenantAPIClient(user=vision).get(URL).status_code, 200)
+
     def test_another_tenants_branches_are_never_listed(self):
         """The rival has a branch called Ikeja too, so a leak would be legible
         rather than obvious."""
-        bursar = make_school_admin(None, email="rival@rival.test", tenant=self.rival_tenant)
+        bursar = self.staff("rival@rival.test", tenant=self.rival_tenant)
 
         self.assertEqual(self.names_for(bursar), ["Ikeja"])
 
@@ -153,14 +210,14 @@ class BranchOptionsTests(_Fixture, TestCase):
         it."""
         self.yaba.status = BranchStatus.CLOSED
         self.yaba.save(update_fields=["status"])
-        bursar = make_school_admin(None, email="closed@corona.test", tenant=self.tenant)
+        bursar = self.staff("closed@corona.test")
 
         self.assertEqual(self.names_for(bursar), ["Ikeja", "Lekki"])
 
     def test_a_suspended_branch_is_not_offered(self):
         self.lekki.status = BranchStatus.SUSPENDED
         self.lekki.save(update_fields=["status"])
-        bursar = make_school_admin(None, email="susp@corona.test", tenant=self.tenant)
+        bursar = self.staff("susp@corona.test")
 
         self.assertNotIn("Lekki", self.names_for(bursar))
 
@@ -172,9 +229,7 @@ class BranchOptionsTests(_Fixture, TestCase):
             with self.subTest(status=status):
                 self.ikeja.status = status
                 self.ikeja.save(update_fields=["status"])
-                bursar = make_school_admin(
-                    None, email=f"oos-{status.lower()}@corona.test", tenant=self.tenant,
-                )
+                bursar = self.staff(f"oos-{status.lower()}@corona.test")
 
                 self.assertNotIn("Ikeja", self.names_for(bursar))
 
@@ -183,7 +238,7 @@ class BranchOptionsTests(_Fixture, TestCase):
     def test_the_row_carries_what_a_picker_needs_and_no_more(self):
         """Narrower than the School Management list on purpose: a payroll screen
         must not become a second, unaudited window onto a school's estate."""
-        bursar = make_school_admin(None, email="shape@corona.test", tenant=self.tenant)
+        bursar = self.staff("shape@corona.test")
         client = TenantAPIClient(user=bursar)
 
         row = client.get(URL).data["data"][0]
