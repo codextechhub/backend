@@ -342,11 +342,12 @@ class TenantReferenceListsTests(_LagoonView):
 
 
 class DelegationsAreForStaffTests(_LagoonView):
-    """Handing over one's approvals is a member of staff's act, and only theirs.
+    """Approvals are handed over by staff, to staff, and shown only to staff.
 
     Ngozi approves Lagoon View's expense claims and hands them to Tunde while
-    she is on leave. Mrs. Okafor and Emeka approve nothing and are refused
-    the screen's list and its save alike.
+    she is on leave. Mrs. Okafor and Emeka approve nothing: they are refused
+    the screen's list, its save and the approvals queue, and neither can be
+    named to cover for Ngozi. Nor can Greenfield's bursar.
     """
 
     URL = "/v1/workflow/delegations/"
@@ -362,10 +363,15 @@ class DelegationsAreForStaffTests(_LagoonView):
             "reason": "Annual leave",
         }
 
-    def post(self, user, tenant=None):
+    def post(self, user, tenant=None, delegate=None):
         return TenantAPIClient(
             user=user, tenant_slug=tenant.slug if tenant else None,
-        ).post(self.URL, self.body(self.tunde), format="json")
+        ).post(self.URL, self.body(delegate or self.tunde), format="json")
+
+    def assert_delegate_refused(self, response):
+        self.assertEqual(response.status_code, 400, response.data)
+        detail = response.data.get("error", {}).get("detail", response.data)
+        self.assertEqual([str(m) for m in detail["delegate"]], ["Choose a member of staff."])
 
     def test_a_parent_and_a_pupil_are_refused_the_list_and_the_save(self):
         from vs_workflow.models import ApprovalDelegation
@@ -388,6 +394,25 @@ class DelegationsAreForStaffTests(_LagoonView):
         self.assertEqual(response.data["delegator"], self.ngozi.pk)
         listed = self.get(self.ngozi, self.URL)
         self.assertEqual(listed.status_code, 200, listed.data)
+
+    def test_a_parent_cannot_be_named_as_the_delegate(self):
+        self.assert_delegate_refused(self.post(self.ngozi, delegate=self.parent_account))
+
+    def test_a_pupil_cannot_be_named_as_the_delegate(self):
+        self.assert_delegate_refused(self.post(self.ngozi, delegate=self.pupil_account))
+
+    def test_another_schools_staff_cannot_be_named_as_the_delegate(self):
+        self.assert_delegate_refused(self.post(self.ngozi, delegate=self.greenfield_bursar))
+
+    def test_a_member_of_staff_is_accepted_as_the_delegate(self):
+        response = self.post(self.ngozi, delegate=self.kemi)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["delegate"], self.kemi.pk)
+
+    def test_a_parent_is_refused_the_approvals_queue(self):
+        for url in ("/v1/workflow/dashboard/pending/", "/v1/procurement/approvals/"):
+            with self.subTest(url=url):
+                self.assertEqual(self.get(self.parent_account, url).status_code, 403)
 
     def test_staff_who_approve_nothing_read_an_empty_list(self):
         response = self.get(self.kemi, self.URL)

@@ -767,6 +767,26 @@ class DelegationReachTests(_Fixture):
         response = client.post(f"{BASE}/delegations/", self.body(), format="json")
         self.assertIn(response.status_code, (403, 404))
 
+    def test_an_account_holding_no_grant_cannot_be_named_as_the_delegate(self):
+        outsider = make_school_admin(None, email="pupil@green.test", tenant=self.tenant)
+        response = TenantAPIClient(self.funke).post(
+            f"{BASE}/delegations/", self.body(delegate=outsider.pk), format="json")
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(ApprovalDelegation.objects.filter(delegate=outsider).exists())
+
+    def test_an_account_holding_no_grant_is_refused_the_queue_even_with_a_seat(self):
+        """Whatever put a non-staff account on a stage, it is never shown the request."""
+        from vs_workflow.services.my_queue import pending_approval_snapshots
+
+        outsider = make_school_admin(None, email="seated@green.test", tenant=self.tenant)
+        request = self.raise_request()
+        self.set(request, self.hod, self.funke, outsider)
+        response = TenantAPIClient(outsider).get(f"{BASE}/dashboard/pending/")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(pending_approval_snapshots(outsider, self.tenant), [])
+        detail = TenantAPIClient(outsider).get(f"{BASE}/instances/{request.pk}/")
+        self.assertEqual(detail.status_code, 403)
+
     def test_staff_who_approve_nothing_read_an_empty_list(self):
         listed = TenantAPIClient(self.okafor).get(f"{BASE}/delegations/")
         self.assertEqual(listed.status_code, 200, listed.data)

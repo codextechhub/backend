@@ -7714,6 +7714,10 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         entity, _, _, _, _ = self.build_p2p()
         req, instance, _ = self._park(entity)
         approver = self._user("late-approver@t.com", tenant=entity.tenant)
+        # Staff already, with no approving role yet.
+        from vs_rbac.tests.helpers import make_assignment, make_role
+
+        make_assignment(entity.tenant, approver, make_role(entity.tenant, name="Staff"))
         client = TenantAPIClient(user=approver)
         queue_url = f"/v1/procurement/approvals/?entity={entity.code}"
 
@@ -9093,13 +9097,17 @@ class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
     """The Procurement inbox narrows generic workflows to actor + ledger entity."""
 
     def _user(self, entity, email, first_name):
+        """A member of staff: an account holding one role with no keys."""
         from django.contrib.auth import get_user_model
+        from vs_rbac.tests.helpers import make_assignment, make_role
 
-        return get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
             status="ACTIVE",
             first_name=first_name, last_name="Tester",
         )
+        make_assignment(entity.tenant, user, make_role(entity.tenant, name=f"Staff {email}"))
+        return user
 
     def _pending(self, entity, *, requester, approver, document_type, document,
                  on_behalf_of=None, code="queue-test"):

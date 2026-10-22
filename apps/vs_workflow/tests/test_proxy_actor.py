@@ -382,8 +382,11 @@ class ProxySeparationOfDutiesTests(TestCase):
         self.assertEqual(si.status, WorkflowStageStatus.APPROVED)
 
     def test_the_queue_drops_a_step_ada_already_voted_on_by_proxy(self):
+        from vs_rbac.tests.helpers import make_platform_assignment, make_platform_role
         from vs_workflow.services.my_queue import pending_approval_snapshots
 
+        # The queue is staff-only, so Ada holds a role with no keys.
+        make_platform_assignment(self.ada, make_platform_role(name="Approver"))
         instance, si = self.submitted(self.bola)
         _make_approver(si, self.ada)
         self.assertEqual(len(pending_approval_snapshots(self.ada)), 1)

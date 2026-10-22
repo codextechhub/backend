@@ -56,6 +56,14 @@ class ResumedFromApprovalsTests(_SingleSourcingFixture):
         TenantRoleTemplate.objects.filter(tenant=tenant, key="proc-signer").update(
             is_system_role=True)
 
+    def setUp(self):
+        super().setUp()
+        from vs_rbac.tests.helpers import make_assignment, make_role
+
+        # Resuming is a staff route; keys are patched, staff standing is not.
+        tenant = self.school.tenant
+        make_assignment(tenant, self.bello.test_user, make_role(tenant, name="Staff"))
+
     def return_and_resume(self, document):
         instance = WorkflowInstance.all_objects.filter(
             document_object_id=str(document.pk), document_type=document.workflow_document_type,

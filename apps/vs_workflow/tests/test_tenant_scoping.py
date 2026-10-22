@@ -47,6 +47,8 @@ factory = APIRequestFactory()
 def _grant(user, keys, branch=None):
     """Grant *keys* to *user*, whole tenant by default or pinned to *branch*.
 
+    With no keys it gives staff standing and nothing more.
+
     The default is deliberate: a whole-tenant grant reaches the whole tenant
     however the holder's staff record is filled in, so a caller who must be
     narrowed to one site has to be *granted* at that site. Passing the user's
@@ -177,6 +179,7 @@ class InstanceScopingTests(_TwoTenants):
         approver = make_school_admin(
             self.mine_branch, email="scope-approver@test.com",
         )
+        _grant(approver, [], branch=self.mine_branch)
         instance = self._instance(
             self.mine.tenant, self.admin, self._template(self.mine.tenant, "decision"),
         )
@@ -207,6 +210,7 @@ class InstanceScopingTests(_TwoTenants):
         outsider = make_school_admin(
             self.mine_branch, email="scope-outsider@test.com",
         )
+        _grant(outsider, [], branch=self.mine_branch)
         instance = self._instance(
             self.mine.tenant, self.admin, self._template(self.mine.tenant, "private"),
         )
@@ -220,6 +224,7 @@ class InstanceScopingTests(_TwoTenants):
         requester = make_school_admin(
             self.mine_branch, email="scope-requester@test.com",
         )
+        _grant(requester, [], branch=self.mine_branch)
         instance = self._instance(
             self.mine.tenant, requester, self._template(self.mine.tenant, "own"),
         )
@@ -393,6 +398,7 @@ class DelegationWriteBoundaryTests(_TwoTenants):
     def test_can_delegate_to_a_user_in_our_own_tenant(self):
         """The counterweight: scoping the field must not break delegating at all."""
         colleague = make_school_admin(self.mine_branch, email="deleg-mine@test.com")
+        _grant(colleague, [], branch=self.mine_branch)
 
         resp = self._create(colleague.pk)
 
@@ -450,6 +456,7 @@ class DelegationDocumentTypeTests(_TwoTenants):
 
     def _create_for(self, document_type):
         colleague = make_school_admin(self.mine_branch, email=f"deleg-{next(_counter)}@test.com")
+        _grant(colleague, [], branch=self.mine_branch)
         view = ApprovalDelegationViewSet.as_view({"post": "create"})
         return _call(view, "post", self.admin, self.mine.tenant,
                      self._payload(colleague.pk) | {"document_type": document_type})

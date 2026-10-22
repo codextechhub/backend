@@ -21,7 +21,7 @@ from core.attribution import audit_row_attribution, vote_attribution
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsTenantStaff
 from vs_rbac.field_enforcement import FieldAccessMixin
 from vs_tenants.models import Branch
 from vs_workflow.models import (
@@ -567,10 +567,11 @@ class ProcurementApprovalListView(APIView):
 
     Ordinary resource RBAC is intentionally not the authorization rule here.
     Being frozen into the active workflow stage is the narrower, instance-level
-    eligibility grant. Completed history is limited to decisions the actor made;
+    eligibility grant, and only the tenant's staff (:class:`IsTenantStaff`)
+    reach it, here and on the detail and action views beside it. Completed history is limited to decisions the actor made;
     after a branch move, only a narrow receipt remains visible.
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
 
     def get(self, request):
         """Return entity-verified pending work or this actor's decision history."""
@@ -645,7 +646,7 @@ class ProcurementApprovalDetailView(APIView):
     The same eligibility lookup as the list is repeated here; possession of a
     workflow UUID is never enough to read another approver's decision evidence.
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
 
     def get(self, request, workflow_id):
         """Return the prefetched stage timeline for an eligible entity document."""
@@ -681,7 +682,7 @@ class ProcurementApprovalActionView(APIView):
     shared workflow service rechecks active attempt, quorum, and transition
     rules under its own locks when it records the decision.
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
 
     def post(self, request, workflow_id):
         """Validate a decision payload and delegate the state transition atomically."""

@@ -656,6 +656,12 @@ class WorkflowInstanceViewSet(
 ):
     """Read and act on approval instances. Read-only as a collection, by design.
 
+    The requester's and the approvers' own routes (detail, vote, and the
+    other actor-level actions) need no key, since object-level access and the
+    service's eligibility rules decide them, but they are for the tenant's
+    staff only: a seat on a stage never makes a parent's or a pupil's account
+    an approver.
+
     There is deliberately no generic ``POST /instances/``. One used to exist,
     taking a content type id and an object id and loading the document with its
     ordinary manager - which meant it could load any tenant's row, and
@@ -683,13 +689,11 @@ class WorkflowInstanceViewSet(
         elif self.action in ("approvers", "reset_approvers", "replace_approver"):
             self.rbac_permission = PERM_APPROVERS_ASSIGN
         elif self.action == "retrieve":
-            # Object-level access below also admits the requester and the frozen
-            # approver snapshot. Those people need the decision surface without
-            # being granted the tenant-wide approval-history permission.
-            return [IsAuthenticatedAndActive()]
+            # Requester and approvers, staff only: see the object-level check.
+            return [IsAuthenticatedAndActive(), IsTenantStaff()]
         else:
-            # Actor-level actions are guarded by ownership/eligibility in the service layer.
-            return [IsAuthenticatedAndActive()]
+            # Actor-level actions: staff only, then eligibility in the service.
+            return [IsAuthenticatedAndActive(), IsTenantStaff()]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_serializer_class(self):
@@ -1159,9 +1163,13 @@ class ReverseActionView(TenantScopedMixin, APIView):
 class PendingApprovalsView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/pending/ - instances where the user is eligible to act.
 
+    For the tenant's staff only (:class:`IsTenantStaff`): a parent's or a
+    pupil's account is refused rather than shown an empty queue, the same
+    answer every other staff surface gives it.
+
     docstring-name: My pending approvals
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive & IsTenantStaff]
 
     def get(self, request):
         # Which snapshots are actionable lives in services/my_queue so the console

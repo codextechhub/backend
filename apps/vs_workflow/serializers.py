@@ -947,6 +947,12 @@ class ReverseActionSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
+#: The one refusal for a delegate who cannot hold approvals: an id that does
+#: not exist, one in another tenant and an account that is not staff all read
+#: alike, so the field cannot be walked to learn which ids exist where.
+DELEGATE_NOT_STAFF = "Choose a member of staff."
+
+
 class ApprovalDelegationSerializer(
     TenantScopedSerializerMixin, serializers.ModelSerializer,
 ):
@@ -965,12 +971,19 @@ class ApprovalDelegationSerializer(
     so this surface cannot be walked to learn which user ids exist in other
     tenants. A local check written to say "that user is in another tenant" would
     be the enumeration oracle that field exists to close.
+
+    The delegate must be a member of the tenant's staff
+    (:func:`vs_rbac.evaluator.is_tenant_staff`). A delegate holds the
+    delegator's seats on every request waiting on them, so a parent's or a
+    pupil's account named here would be shown, and could decide, a school's
+    purchases. All three refusals (absent, foreign, not staff) carry
+    :data:`DELEGATE_NOT_STAFF`.
     """
 
     delegate = TenantScopedRelatedField(
         queryset=get_user_model().objects.all(),
         tenant_lookup="tenant",
-        not_found=USER_NOT_FOUND,
+        not_found=DELEGATE_NOT_STAFF,
     )
     # Optional, and only on create: the caller is the delegator unless they
     # name somebody else, which the view allows only an administrator.
@@ -1021,21 +1034,28 @@ class ApprovalDelegationSerializer(
         return person_is_exited(self.context, obj.delegate_id)
 
     def validate(self, attrs):
-        """Fallback tenancy check on the delegate, and a real document type.
+        """A delegate on the tenant's staff, and a real document type.
 
-        The delegate check is unreachable through the API - the field above already resolves inside the
-        tenant - and kept as the backstop for a binding that could not reach one
-        (the mixin refuses those outright, so this covers a future field-level
-        change too). It raises the identical message the lookup does, so neither
-        route reveals that an id exists somewhere else.
+        The delegate is checked whenever one is named: on create, and on a
+        change that names a new one. The tenancy half is unreachable through
+        the API, since the field above already resolves inside the tenant; it
+        is kept as the backstop for a future field-level change. The staff half
+        is the live one. Both raise the message the lookup does, so no route
+        reveals that an id exists somewhere else.
         """
+        from vs_rbac.evaluator import is_tenant_staff
+
         tenant = self._tenant()
         if tenant is None:
             raise serializers.ValidationError({"tenant": "Tenant context is required."})
 
         delegate = attrs.get("delegate") or getattr(self.instance, "delegate", None)
-        if delegate is not None and getattr(delegate, "tenant_id", None) != tenant.pk:
-            raise serializers.ValidationError({"delegate": USER_NOT_FOUND})
+        naming_delegate = self.instance is None or "delegate" in attrs
+        if naming_delegate and delegate is not None and (
+            getattr(delegate, "tenant_id", None) != tenant.pk
+            or not is_tenant_staff(delegate, tenant)
+        ):
+            raise serializers.ValidationError({"delegate": DELEGATE_NOT_STAFF})
 
         # Whose approvals a delegation hands over is fixed once it exists.
         if self.instance is not None:

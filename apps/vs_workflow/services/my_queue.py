@@ -37,7 +37,16 @@ def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]
     document type the same treatment - the alternative is each app remembering to
     do it, which is how payout batches went without it. On healthy data it is one
     indexed query that matches nothing and takes no locks.
+
+    Empty for anybody who is not on the tenant's staff
+    (:func:`vs_rbac.evaluator.is_tenant_staff`). Holding a seat is not enough:
+    a parent's or a pupil's account must never be shown a school's requests,
+    whichever group or delegation put it there.
     """
+    from vs_rbac.evaluator import is_tenant_staff
+
+    if not is_tenant_staff(user, tenant):
+        return []
     # Scope the repair to the books being read, never system-wide: one person
     # opening their queue must not do work on behalf of other tenants.
     repair_tenant = tenant if tenant is not None else getattr(user, "tenant", None)

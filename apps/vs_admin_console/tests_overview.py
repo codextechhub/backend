@@ -268,6 +268,8 @@ class OverviewWorklistTests(OverviewTestBase):
         from django.contrib.contenttypes.models import ContentType
         from vs_workflow.models import WorkflowStage, WorkflowTemplate
 
+        # The approvals queue is staff-only: a role with no keys.
+        grant(self.user)
         self.requester = make_vision_user(email="ov-requester@codex.test")
         self.requester.first_name = "Rita"
         self.requester.last_name = "Requester"
@@ -873,6 +875,8 @@ class OverviewDelegationAndExportTests(OverviewTestBase):
         from django.contrib.contenttypes.models import ContentType
         from vs_workflow.models import WorkflowStage, WorkflowTemplate
 
+        # The approvals queue is staff-only: a role with no keys.
+        grant(self.user)
         self.requester = make_vision_user(email="ov-del-req@codex.test")
         self.template = WorkflowTemplate.objects.create(
             document_type="TEST_DOC", code="default", name="Delegation Template",
