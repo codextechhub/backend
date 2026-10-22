@@ -10,6 +10,7 @@ from .evaluator import (
     get_effective_permissions,
     has_permission,
     has_all_permissions,
+    holds_any_role,
 )
 
 
@@ -488,6 +489,50 @@ def holds_any_module_key(user, tenant, modules) -> bool:
     keys = get_effective_permissions(user, tenant=tenant)
     prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
     return any(key.startswith(prefixes) for key in keys)
+
+
+# Admit any member of the tenant's staff, whatever their role.
+class HoldsTenantRole(BasePermission):
+    """DRF permission that passes for anybody holding an active role in the tenant.
+
+    For reads of a tenant's own reference data that every member of its staff
+    needs to do their job, whichever job that is. The list of a tenant's
+    branches is the case in point: every form that files a record under a
+    branch picks from it, so a key for it would have to be granted to every
+    role the tenant ever creates, and a role created without it would leave
+    its holder unable to file anything at a tenant with several branches.
+
+    Holding a role is what makes an account staff (:func:`holds_any_role`). A
+    parent's or a pupil's account holds none, so it is refused here; its reach
+    is decided from its link to a guardian or pupil record by the portals'
+    own permission classes. A member of staff whose child attends the same
+    school keeps their role and is admitted.
+
+    Weaker than :class:`HasRBACPermission` by design, so use it only for reads
+    whose payload is fit for every member of staff. Field Access still governs
+    each field, and tenant scoping is still the view's.
+
+    Like :class:`HasAnyModuleAccess`, this can be the only gate on a view, so
+    it carries the pending-tenant surface check and the super-admin bypass.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+
+        # Raises rather than returning False, hence the discarded result.
+        TenantSurfaceAllowed().has_permission(request, view)
+
+        if is_vision_super_admin(u):
+            return True
+
+        tenant = (
+            getattr(request, "rbac_tenant", None)
+            or getattr(request, "tenant", None)
+            or getattr(u, "tenant", None)
+        )
+        return holds_any_role(u, tenant)
 
 
 # Permit safe HTTP methods on read-only endpoints.
