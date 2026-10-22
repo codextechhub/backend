@@ -251,8 +251,8 @@ def check_new_approver(user, instance: WorkflowInstance, conflicts=None) -> None
     """Refuse *user* as a new approver on *instance*, naming why.
 
     Membership is the same rule every approver source is held to
-    (``approvers._tenant_members``): an active account in the request's own
-    tenant. Branch reach is the same answer every screen narrows by
+    (``approvers._tenant_members``): an active member of the staff of the
+    request's own tenant. Branch reach is the same answer every screen narrows by
     (:func:`vs_rbac.scoping.visible_branch_ids`): a person who works across the
     whole tenant reaches every branch.
     """

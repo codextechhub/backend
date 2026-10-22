@@ -479,20 +479,34 @@ class RoleSourceResolveApproversTests(TestCase):
         self.assertEqual(pairs, {(approver.pk, None), (delegate.pk, approver.pk)})
 
 
+def _staff(user):
+    """Make *user* a member of their tenant's staff and nothing more.
+
+    The resolver seats only staff, so an approver needs standing at their
+    tenant. A role with no keys, pinned to the home branch, gives that without
+    widening what they reach.
+    """
+    from vs_rbac.tests.helpers import make_assignment, make_role
+
+    make_assignment(user.tenant, user, make_role(user.tenant, name=f"Staff {user.email}"),
+                    branch=user.branch)
+    return user
+
+
 def _make_active_user(email):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+    return _staff(get_user_model().objects.create_user(tenant=_platform_tenant(),
         email=email, status="ACTIVE",
         first_name="Test", last_name="User",
-    )
+    ))
 
 
 def _make_user_in_branch(email, branch):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.create_user(
+    return _staff(get_user_model().objects.create_user(
         email=email, status="ACTIVE",
         first_name="Branch", last_name="User", branch=branch,
-    )
+    ))
 
 
 # ── publish_template with ROLE stages ────────────────────────────────────────
@@ -1496,10 +1510,10 @@ class OrganogramSourceResolutionTests(TestCase):
         """An active CX staff member, whose home tenant is the codex PLATFORM one."""
         from django.contrib.auth import get_user_model
 
-        return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+        return _staff(get_user_model().objects.create_user(tenant=_platform_tenant(),
             email=email, status="ACTIVE",
             first_name="Platform", last_name="Staff",
-        )
+        ))
 
     def test_a_school_requester_never_climbs_the_platform_chart(self):
         """A school user seated on the CX chart is not climbed through it.

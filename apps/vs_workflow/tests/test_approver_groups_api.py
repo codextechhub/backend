@@ -383,7 +383,7 @@ class ApproverGroupApiTests(TestCase):
     # ── Live resolution preview ──────────────────────────────────────────────
 
     def test_resolve_reports_per_member_and_total(self):
-        person = make_school_admin(self.branch, email="grp-person@test.com")
+        person = _staff(make_school_admin(self.branch, email="grp-person@test.com"))
         role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         role_holder = make_school_admin(self.branch, email="grp-bursar@test.com")
         make_assignment(self.tenant, role_holder, role)

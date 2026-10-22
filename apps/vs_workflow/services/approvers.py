@@ -139,13 +139,14 @@ def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
 NOT_STAFF = "Choose a member of staff."
 
 
-# Keep only active users belonging to the resolving tenant.
+# Keep only active staff belonging to the resolving tenant.
 def _tenant_members(users, tenant_id) -> list:
-    """De-dupe and enforce tenant containment on a resolved user list.
+    """De-dupe a resolved user list down to the tenant's active staff.
 
     The single definition of "this person may hold approval authority here", so
-    every door into the eligible list runs through this one function and the two
-    conditions cannot drift apart between them.
+    every door into the eligible list runs through this one function and its
+    three conditions (active, of this tenant, on its staff) cannot drift apart
+    between them.
 
     Containment is applied at resolution rather than trusted from the stored
     rows: organogram positions are platform-global seats, so a tenant's group
@@ -153,17 +154,28 @@ def _tenant_members(users, tenant_id) -> list:
     same reasoning covers a delegation row, whose tenant column scopes the row
     and says nothing about the user it names.
 
-    Staff standing is held at the doors instead: every write that names a
-    person (a group member, a Dynamic Role rule, a stage's people, a
-    replacement, a delegate) refuses anybody off the tenant's staff with
-    :data:`NOT_STAFF` (:func:`staff_ids_or_refuse`), and a role or a post
-    only ever names staff. The queue and the decision routes refuse a
-    non-staff account whatever seat it holds.
+    Staff standing is :func:`vs_rbac.evaluator.tenant_staff_ids`, the rule the
+    queue and the decision routes hold every account to. Every write that names
+    a person (a group member, a Dynamic Role rule, a stage's people, a
+    replacement, a delegate) already refuses anybody off the tenant's staff with
+    :data:`NOT_STAFF` (:func:`staff_ids_or_refuse`). This holds it again at
+    resolution for the rows those checks never saw: a member, rule or
+    delegation that predates them, or a person who has since lost every role. A
+    parent's account left in an approver group therefore resolves to nobody,
+    and a stage it was the only approver of resolves empty, which
+    skip_if_no_approvers then decides on exactly as for a role nobody holds.
+    It does not become a seat that can see nothing and decide nothing.
     """
-    return list({
+    from vs_rbac.evaluator import tenant_staff_ids
+
+    members = {
         u.pk: u for u in users
         if u is not None and u.is_active and u.tenant_id == tenant_id
-    }.values())
+    }
+    if not members:
+        return []
+    staff = tenant_staff_ids(members, tenant_id)
+    return [u for pk, u in members.items() if pk in staff]
 
 
 def staff_ids_or_refuse(user_ids, tenant) -> list:
@@ -172,7 +184,8 @@ def staff_ids_or_refuse(user_ids, tenant) -> list:
     Raises :class:`vs_workflow.exceptions.ApproverNotStaffError` carrying
     :data:`NOT_STAFF` otherwise, the same for an id nobody holds, another
     tenant's account, a closed account and an account that is not staff. The
-    write-time half of :func:`_tenant_members`.
+    write-time half of :func:`_tenant_members`, which holds the same rule
+    again when a stage resolves.
     """
     from django.contrib.auth import get_user_model
     from vs_rbac.evaluator import tenant_staff_ids
@@ -687,8 +700,9 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     not been taught must never be able to produce one. Adding a source means
     adding a branch below.
 
-    Every source is then contained to ``instance.tenant`` and the document's
-    conflict identities are excluded. Submitters are the default conflict; a
+    Every source is then contained to the active staff of ``instance.tenant``
+    (:func:`_tenant_members`) and the document's conflict identities are
+    excluded. Submitters are the default conflict; a
     leave request excludes the person taking leave even when another approver
     filed it for them. Both rules run once after source dispatch and apply to
     delegates too. Organogram positions in particular are platform-global

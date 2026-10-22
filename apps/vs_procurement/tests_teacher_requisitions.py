@@ -188,6 +188,7 @@ class RequisitionRouteStartsAtTheLineManagerTests(OrganogramFixture):
         self.hod = self.make_staff("hod-route@brightfield.test", "Ngozi", "Okafor", branch=self.ikeja)
         self.appoint(self.hod, self.ikeja_hod)
         self.appoint(self.ikeja_teacher, self.ikeja_teacher_post)
+        self.stand_as_staff(self.registrar, self.hod)
 
     @staticmethod
     def routes(results):

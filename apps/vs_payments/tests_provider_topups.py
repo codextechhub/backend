@@ -72,7 +72,9 @@ class _TopUpFixture(_HeldFixture):
         cls.group = group
         cls.approvers = []
         for email in ("chioma@codex.test", "bola@codex.test"):
-            user = cls.user_for(codex, email)
+            # Staff standing: a role with no keys, so the group seat is theirs.
+            user = cls.grant(cls.user_for(codex, email), tenant=codex,
+                             role_key=f"staff-{email.split('@')[0]}")
             WorkflowApproverGroupMember.objects.create(
                 group=group, kind=GroupMemberKind.USER, user=user)
             cls.approvers.append(user)

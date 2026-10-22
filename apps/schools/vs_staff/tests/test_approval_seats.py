@@ -7,6 +7,11 @@ school. Every route that names a person to approve (a delegate, a group
 member, a stage's people, a replacement, a Dynamic Role rule) refuses all
 three with one 400 on the field that named them, "Choose a member of staff.",
 and accepts Chidi Okafor, who is on Greenfield's staff.
+
+A seat those checks never saw (a group member, a delegation or anything else
+written before them) is dropped again when a stage opens, so Mrs. Okafor
+never holds a seat she cannot use. A stage left with nobody parks, or skips
+when the stage allows it, exactly as a role nobody holds does.
 """
 from __future__ import annotations
 
@@ -17,8 +22,15 @@ from django.utils import timezone
 from core.test_utils import TenantAPIClient
 from schools.vs_students.constants import Gender, StudentStatus
 from schools.vs_students.models import Guardian, Student
-from vs_workflow.constants import PERM_GROUP_CREATE, PERM_GROUP_UPDATE
-from vs_workflow.models import ApprovalDelegation, WorkflowApproverGroup
+from vs_workflow.constants import (
+    PERM_GROUP_CREATE, PERM_GROUP_UPDATE, AuditEventType, WorkflowInstanceStatus,
+)
+from vs_workflow.models import (
+    ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowAuditLog, WorkflowStage, WorkflowStageInstance,
+)
+from vs_workflow.services import parking
+from vs_workflow.services.approvers import describe_group_members
 from vs_workflow.tests.test_reassignment import _Fixture, _grant
 
 BASE = "/v1/workflow"
@@ -32,19 +44,7 @@ class ApprovalSeatsAreForStaffTests(_Fixture):
         super().setUpTestData()
         _grant(cls.admin, [PERM_GROUP_CREATE, PERM_GROUP_UPDATE])
 
-        cls.parent = _account(cls.tenant, "mrs.okafor@example.ng")
-        Guardian.all_objects.create(
-            tenant=cls.tenant, first_name="Ada", last_name="Okafor",
-            phone="08030000000", email=cls.parent.email, user=cls.parent,
-        )
-        cls.pupil = _account(cls.tenant, "emeka.okafor@example.ng")
-        Student.all_objects.create(
-            tenant=cls.tenant, branch=cls.ikeja, first_name="Emeka",
-            last_name="Okafor", student_number="GF/0001",
-            date_of_birth=dt.date(2014, 3, 2), gender=Gender.MALE,
-            status=StudentStatus.ACTIVE, enrolment_date=dt.date(2025, 9, 8),
-            user=cls.pupil,
-        )
+        cls.parent, cls.pupil = _parent_and_pupil(cls.tenant, cls.ikeja)
         cls.cover = WorkflowApproverGroup.objects.create(
             tenant=cls.tenant, code="cover", name="Cover",
         )
@@ -149,6 +149,107 @@ class ApprovalSeatsAreForStaffTests(_Fixture):
         self.assertEqual(self.delegate(self.okafor).status_code, 201)
         self.assertEqual(self.add_member(self.okafor).status_code, 201)
         self.assertEqual(self.rule(self.okafor, "refund-cover").status_code, 201)
+
+
+class SeatsTheWriteChecksNeverSawTests(_Fixture):
+    """Mrs. Okafor and Emeka were seated before any route checked standing."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.parent, cls.pupil = _parent_and_pupil(cls.tenant, cls.ikeja)
+
+    def seat_in_group(self, group, *people):
+        """Group members written straight to the table, as older rows were."""
+        for person in people:
+            WorkflowApproverGroupMember.objects.create(group=group, kind="USER", user=person)
+
+    def only_parents_approve_the_first_stage(self, *, skip_if_no_approvers=False):
+        parents = WorkflowApproverGroup.objects.create(
+            tenant=self.tenant, code="parents", name="Parents",
+        )
+        self.seat_in_group(parents, self.parent, self.pupil)
+        WorkflowStage.objects.filter(pk=self.hod.pk).update(
+            approver_group=parents, skip_if_no_approvers=skip_if_no_approvers,
+        )
+        return parents
+
+    def test_non_staff_group_members_are_dropped_when_the_stage_opens(self):
+        group = self.hod.approver_group
+        self.seat_in_group(group, self.parent, self.pupil)
+
+        request = self.raise_request()
+
+        self.assertEqual(self.seats(request), {(self.funke.pk, None)})
+        # The group screen's preview agrees with the stage.
+        rows = describe_group_members(group, self.tenant)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({u["id"] for row in rows for u in row["resolved_users"]},
+                         {str(self.funke.pk)})
+
+    def test_a_delegation_to_a_non_staff_account_seats_nobody_and_removes_nobody(self):
+        now = timezone.now()
+        ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=self.funke, delegate=self.parent,
+            starts_at=now - dt.timedelta(days=1), ends_at=now + dt.timedelta(days=5),
+            exclusive=True, reason="Leave",
+        )
+
+        request = self.raise_request()
+
+        self.assertEqual(self.seats(request), {(self.funke.pk, None)})
+
+    def test_a_stage_whose_only_seats_are_not_staff_parks_with_nobody_on_it(self):
+        parents = self.only_parents_approve_the_first_stage()
+
+        request = self.raise_request()
+
+        self.assertEqual(request.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(request.current_stage_id, self.hod.pk)
+        self.assertEqual(self.seats(request), set())
+        si = WorkflowStageInstance.objects.get(instance=request, stage=self.hod)
+        self.assertIn(si, parking.empty_active_stages())
+        self.assertTrue(WorkflowAuditLog.objects.filter(
+            instance=request, event_type=AuditEventType.STAGE_ACTIVATED,
+            context__warning="stage_active_with_no_approvers",
+        ).exists())
+
+        # The repair resolves the same way: it seats nobody until staff join.
+        self.assertEqual(parking.repair_workflows(instance_id=request.pk), 0)
+        self.assertEqual(self.seats(request), set())
+        self.seat_in_group(parents, self.funke)
+        self.assertEqual(parking.repair_workflows(instance_id=request.pk), 1)
+        self.assertEqual(self.seats(request), {(self.funke.pk, None)})
+
+    def test_a_stage_that_may_skip_is_skipped_when_its_only_seats_are_not_staff(self):
+        self.only_parents_approve_the_first_stage(skip_if_no_approvers=True)
+
+        request = self.raise_request()
+
+        self.assertEqual(request.current_stage_id, self.bursar.pk)
+        self.assertEqual(self.seats(request), {(self.tunde.pk, None)})
+        self.assertTrue(WorkflowAuditLog.objects.filter(
+            instance=request, event_type=AuditEventType.STAGE_SKIPPED_NO_APPROVER,
+            stage_instance__stage=self.hod,
+        ).exists())
+
+
+def _parent_and_pupil(tenant, branch):
+    """Mrs. Okafor with her guardian record, and Emeka with his pupil record."""
+    parent = _account(tenant, "mrs.okafor@example.ng")
+    Guardian.all_objects.create(
+        tenant=tenant, first_name="Ada", last_name="Okafor",
+        phone="08030000000", email=parent.email, user=parent,
+    )
+    pupil = _account(tenant, "emeka.okafor@example.ng")
+    Student.all_objects.create(
+        tenant=tenant, branch=branch, first_name="Emeka",
+        last_name="Okafor", student_number="GF/0001",
+        date_of_birth=dt.date(2014, 3, 2), gender=Gender.MALE,
+        status=StudentStatus.ACTIVE, enrolment_date=dt.date(2025, 9, 8),
+        user=pupil,
+    )
+    return parent, pupil
 
 
 def _account(tenant, email):

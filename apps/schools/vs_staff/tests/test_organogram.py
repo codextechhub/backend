@@ -31,6 +31,7 @@ from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
     make_assignment,
     make_permission,
+    make_role,
     make_role_permission,
     make_school_admin,
 )
@@ -117,6 +118,19 @@ class OrganogramFixture(StaffFixture):
 
     def appoint(self, staff, position, **kwargs):
         return StaffOrganogramService.assign_position(staff, position, **kwargs)
+
+    @staticmethod
+    def stand_as_staff(*profiles):
+        """Give each person a role with no keys at their home branch.
+
+        A post on the chart does not make its holder staff; a role does, and
+        approval seats go to staff only. The role confers nothing else, so what
+        each person reaches is unchanged.
+        """
+        for profile in profiles:
+            user = profile.user
+            role = make_role(user.tenant, name=f"Staff {user.email}")
+            make_assignment(user.tenant, user, role, branch=profile.branch)
 
 
 # ── Refusals ────────────────────────────────────────────────────────────────
@@ -715,6 +729,7 @@ class WorkflowClimbTests(OrganogramFixture):
         )
         self.appoint(self.hod, self.ikeja_hod)
         self.appoint(self.ikeja_teacher, self.ikeja_teacher_post)
+        self.stand_as_staff(self.registrar, self.hod)
 
     def test_direct_manager(self):
         self.assertEqual(
@@ -818,6 +833,7 @@ class WorkflowNamedPostTests(OrganogramFixture):
             "hod@brightfield.test", "Ngozi", "Okafor", branch=self.ikeja,
         )
         self.appoint(self.hod, self.ikeja_hod)
+        self.stand_as_staff(self.registrar, self.hod)
 
     # ── builders ───────────────────────────────────────────────────────────
 

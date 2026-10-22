@@ -781,7 +781,9 @@ class DelegationReachTests(_Fixture):
 
         outsider = make_school_admin(None, email="seated@green.test", tenant=self.tenant)
         request = self.raise_request()
-        self.set(request, self.hod, self.funke, outsider)
+        # A seat written before any route checked standing: no route seats one now.
+        si = WorkflowStageInstance.objects.get(instance=request, stage=self.hod)
+        WorkflowStageApprover.objects.create(stage_instance=si, user=outsider, attempt=si.attempt)
         response = TenantAPIClient(outsider).get(f"{BASE}/dashboard/pending/")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(pending_approval_snapshots(outsider, self.tenant), [])
