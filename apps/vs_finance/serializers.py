@@ -2911,7 +2911,8 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     fields changed"); ``metadata`` is an internal bag (ids, request context)
     with no reader value and is not exposed.
 
-    ``actor`` is the email of the person who really acted. An action taken under
+    ``actor`` is the email of the person who really acted, and ``actor_name``
+    their name, which is what a reader is shown. An action taken under
     a proxy also names whom they acted as: ``real_actor_name``,
     ``proxied_user_name`` and the ready ``acted_label`` ("Ada Obi for Chioma
     Okafor") come from :mod:`core.attribution`. Querysets feeding this
@@ -2944,6 +2945,7 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
     """
 
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
+    actor_name = serializers.SerializerMethodField()
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     action_display = serializers.CharField(source="get_action_display", read_only=True)
     real_actor_name = serializers.SerializerMethodField()
@@ -2957,7 +2959,7 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         model = FinanceAuditLog
         list_serializer_class = FinanceAuditPeopleListSerializer
         fields = [
-            "id", "action", "action_display", "status", "actor", "target_type",
+            "id", "action", "action_display", "status", "actor", "actor_name", "target_type",
             "target_id", "document_number", "message", "reason", "before", "after", "created_at",
             "real_actor_name", "proxied_user_name", "acted_label", "branch_id", "branch_name",
             "actor_is_exited", "effective_user_is_exited",
@@ -2967,6 +2969,11 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         from core.person_exit import person_is_exited
 
         return person_is_exited(self.context, obj.actor_id)
+
+    def get_actor_name(self, obj):
+        from core.attribution import person_name
+
+        return person_name(obj.actor) if obj.actor_id else None
 
     def get_effective_user_is_exited(self, obj):
         from core.person_exit import person_is_exited

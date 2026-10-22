@@ -117,9 +117,9 @@ class FinanceAuditFacetsView(_FinanceBase):
 
         actors = (  # Distinct actors that appear in the audit trail.
             qs.filter(actor__isnull=False)
-            .values("actor_id", "actor__email")
+            .values("actor_id", "actor__email", "actor__first_name", "actor__last_name")
             .distinct()  # Collapse duplicate actors.
-            .order_by("actor__email")
+            .order_by("actor__first_name", "actor__last_name", "actor__email")
         )
         target_types = (  # Distinct target type strings.
             qs.exclude(target_type="")
@@ -139,7 +139,10 @@ class FinanceAuditFacetsView(_FinanceBase):
         return success_response(
             "Audit filters retrieved.",  # Response message.
             data={  # Filter options for UI controls.
-                "actors": [{"id": a["actor_id"], "email": a["actor__email"]} for a in actors],  # Actor options.
+                "actors": [{  # Actor options, named; the email tells two people of one name apart.
+                    "id": a["actor_id"], "email": a["actor__email"],
+                    "name": f"{a['actor__first_name']} {a['actor__last_name']}".strip() or a["actor__email"],
+                } for a in actors],
                 "target_types": list(target_types),  # Target type options.
                 "actions": actions,  # Action options.
             },

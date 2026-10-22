@@ -735,6 +735,18 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def full_name(self) -> str:
         return f'{self.first_name} {self.last_name}'.strip()
 
+    def get_full_name(self) -> str:
+        """The person's name, as Django's own user model names it.
+
+        Code across the platform asks a user for ``get_full_name()`` and falls
+        back to the email when the method is missing. Answering it keeps those
+        screens on "Ngozi Ibekwe" rather than "ngozi.ibekwe@...".
+        """
+        return self.full_name
+
+    def get_short_name(self) -> str:
+        return self.first_name or self.full_name
+
     @property
     def is_locked(self) -> bool:
         """Whether a brute-force lockout is running against this account now.
