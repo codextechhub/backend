@@ -1,7 +1,7 @@
 """Routes for the staff surface, mounted at ``/v1/i/me/staff/``.
 
 **Every literal segment is declared before ``<int:pk>``.** Django tries patterns
-in list order, so ``posting/``, ``roster/``, ``search/``, ``roles/bulk/``,
+in list order, so ``posting/``, ``roster/``, ``search/``, ``names/``, ``roles/bulk/``,
 ``rules/``, ``number-policy/``, ``teaching/coverage/``, ``organogram/`` and the
 four child-detail prefixes would each be swallowed by the pk pattern and answer a confusing 404 about a
 person who does not exist. The same trap inside ``teaching/`` is why
@@ -18,6 +18,7 @@ from .views.directory import (
     StaffSearchView,
 )
 from .views.leave import LeaveDetailView, StaffLeaveView
+from .views.names import StaffNamesView
 from .views.organogram import (
     AppointmentCloseView,
     AppointmentDetailView,
@@ -66,6 +67,7 @@ urlpatterns = [
     path("posting/", StaffBulkPostingView.as_view(), name="staff-bulk-posting"),
     path("roster/", StaffRosterView.as_view(), name="staff-roster"),
     path("search/", StaffSearchView.as_view(), name="staff-search"),
+    path("names/", StaffNamesView.as_view(), name="staff-names"),
     path("mine/", StaffMineView.as_view(), name="staff-mine"),
     path("roles/bulk/", StaffBulkRoleView.as_view(), name="staff-bulk-role"),
     path("rules/", StaffRulesView.as_view(), name="staff-rules"),

@@ -23,6 +23,7 @@ class LiteralSegmentTests(SimpleTestCase):
         "staff-bulk-posting": "/v1/i/me/staff/posting/",
         "staff-roster": "/v1/i/me/staff/roster/",
         "staff-search": "/v1/i/me/staff/search/",
+        "staff-names": "/v1/i/me/staff/names/",
         "staff-mine": "/v1/i/me/staff/mine/",
         "staff-bulk-role": "/v1/i/me/staff/roles/bulk/",
         "staff-rules": "/v1/i/me/staff/rules/",
@@ -136,6 +137,8 @@ class SurfaceTests(SimpleTestCase):
         "AppointmentCloseView", "CurrentAppointmentsView", "MyAppointmentsView",
         "MatrixReportListCreateView", "MatrixReportDetailView",
         "OrganogramSummaryView",
+        # Serves the finance, payroll and approval pickers, none of which opens before go-live.
+        "StaffNamesView",
     }
 
     def _views(self):
