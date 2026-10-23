@@ -559,6 +559,61 @@ def ensure_tenant_approval_templates(
     return results
 
 
+def ensure_tenant_journal_template(tenant, *, created_by=None):
+    """Publish the tenant's hand-journal approval route, carrying no steps.
+
+    Returns ``(template, created)``.
+
+    The route governs hand journals only: a direct entry, and a draft journal posted
+    or submitted by a person. A journal that a document raises (an invoice, a receipt,
+    a payroll posting) is posted by that document's own service and never asks
+    :func:`approval_required` about itself, so this route cannot hold it up.
+
+    The route is published empty because who reviews a hand journal is the tenant's
+    own answer. The empty row is not the same as no row: with none, a hand journal
+    posts straight to the ledger; with it, the post is approval-undecided rather than
+    approval-free, and is refused until somebody confirms it in as many words (see
+    :func:`guard_direct_post`). It also keeps the tenant off any shared platform rule
+    for journals.
+
+    Non-destructive: a tenant-scoped route that already exists is returned untouched,
+    steps included, so this is safe to run again for a second set of books and over
+    tenants whose administrators have already built a ladder.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.templates import publish_template
+
+    from .constants import WF_DEFAULT_TEMPLATE_CODE, WF_JOURNAL_DOCUMENT_TYPE
+
+    if tenant is None:
+        raise ValueError("A tenant is required to seed its journal approval route.")
+
+    existing = WorkflowTemplate.all_objects.filter(
+        tenant=tenant,
+        branch=None,
+        document_type=WF_JOURNAL_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE,
+    ).first()
+    if existing is not None:
+        return existing, False
+
+    template = publish_template(
+        tenant=tenant,
+        branch=None,
+        document_type=WF_JOURNAL_DOCUMENT_TYPE,
+        code=WF_DEFAULT_TEMPLATE_CODE,
+        name="Journal entry approval",
+        description=(
+            "Approval route for a hand journal, held by this tenant so its journals "
+            "are never governed by shared platform rules. The steps are the tenant's "
+            "own to add."
+        ),
+        created_by=created_by,
+        stages_payload=[],
+    )
+    return template, True
+
+
 def ensure_tenant_expense_claim_template(
     tenant,
     *,

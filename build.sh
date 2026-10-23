@@ -40,6 +40,10 @@ python manage.py seed_all_permissions
 # them for a new school: a school created before a route changed gains it here,
 # and a route somebody has configured is left alone.
 python manage.py provision_procurement_routes
+# Each school's own hand-journal approval route, published empty as books
+# provisioning does for a new school: a school created before it existed gains it
+# here, and a route somebody has configured is left alone.
+python manage.py provision_journal_routes
 # Each school's leave approval ladder (the person's line manager). Leave has no
 # platform fallback, so a school without one could not file leave; a ladder a
 # school already has, of any shape, is left alone.

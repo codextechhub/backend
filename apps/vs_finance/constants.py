@@ -1163,6 +1163,9 @@ WF_PAYROLL_APPROVER_GROUP = "finance-payroll-approver"
 #: The workflow document type of a payroll run.
 WF_PAYROLL_DOCUMENT_TYPE = "finance.payroll_run"
 
+#: The workflow document type of a hand journal.
+WF_JOURNAL_DOCUMENT_TYPE = "finance.journal"
+
 #: Kobo at or above which a concession or credit note needs a second person.
 #:
 #: ₦50,000. Deliberately far below procurement's ₦500,000 senior bar, because these
