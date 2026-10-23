@@ -127,6 +127,11 @@ urlpatterns = [
         views.TenantUserRoleAssignmentReplaceView.as_view(),
         name="rbac-assignment-replace",
     ),
+    path(
+        "tenants/<slug:tenant_slug>/role-grant-requests/",
+        views.TenantRoleGrantWaitingListView.as_view(),
+        name="rbac-grant-waiting-list",
+    ),
 
     # -------------------------------------------------------------------------
     # Tenant Role Change Requests (tenant-internal approval)

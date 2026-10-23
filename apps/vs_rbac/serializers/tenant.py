@@ -1181,6 +1181,24 @@ class TenantRoleGrantRequestSerializer(serializers.ModelSerializer):
         return obj.replaces.role.name if obj.replaces_id else None
 
 
+class TenantRoleGrantWaitingSerializer(serializers.ModelSerializer):
+    """Who is waiting for a role, and at which reach, as a role's screen shows it.
+
+    Only what tells a grant already asked for from one still to ask for: the
+    person, the role, the branch and when it was sent. The requester's reason
+    and name stay on the person's own profile and in Approvals, where the
+    decision is made.
+    """
+
+    role_key = serializers.CharField(source="role.key", read_only=True)
+    branch_id = serializers.IntegerField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = TenantRoleGrantRequest
+        fields = ["id", "status", "user_id", "role_key", "branch_id", "submitted_at"]
+        read_only_fields = fields
+
+
 # -----------------------------------------------------------------------------
 # Role change requests
 # -----------------------------------------------------------------------------

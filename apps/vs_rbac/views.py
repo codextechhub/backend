@@ -39,6 +39,7 @@ from .serializers import (
     PermissionSerializer,
     TenantRoleChangeRequestSerializer,
     TenantRoleGrantRequestSerializer,
+    TenantRoleGrantWaitingSerializer,
     TenantRoleTemplateDetailSerializer,
     TenantRoleTemplateListSerializer,
     TenantUserRoleAssignmentSerializer,
@@ -1343,6 +1344,44 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
             ).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+# List role grants still waiting for approval.
+class TenantRoleGrantWaitingListView(TenantScopedRBACMixin, generics.ListAPIView):
+    """
+    Tenant-facing:
+    - GET: grants raised for approval and not yet decided (filter by ?role=, ?user=)
+
+    The role's own screen reads this beside its holders, so a person whose
+    grant is already on the ladder shows as waiting rather than as somebody
+    still to be given the role. Read under the same keys and the same branch
+    reading as the holders list: anybody who may see who holds a role may see
+    who is waiting for it.
+
+    docstring-name: Role grants waiting for approval
+    """
+    serializer_class = TenantRoleGrantWaitingSerializer
+    pagination_class = XVSPagination
+    rbac_permission = ROLE_VIEW_KEYS
+
+    def get_permissions(self):
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        from .services import pending_grant_requests
+
+        tenant = self.get_tenant()
+        qs = _holders_in_caller_branches(
+            self.request.user, tenant, pending_grant_requests(tenant=tenant),
+        )
+        qp = self.request.query_params
+        if user_id := qp.get("user"):
+            if not user_id.isdigit():
+                raise ValidationError({"user": "Expected an account id."})
+            qs = qs.filter(user_id=user_id)
+        if role := qp.get("role"):
+            qs = qs.filter(role_id=role) if role.isdigit() else qs.filter(role__key=role)
+        return qs
 
 
 # -----------------------------------------------------------------------------
