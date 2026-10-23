@@ -906,6 +906,10 @@ class RequisitionLinesFreeToSourceView(_ProcBase):
 class RfqListCreateView(_ProcBase):
     """GET (list) / POST (create draft RFQ + lines).
 
+    List filters: ``?status=``, ``?search=`` (number or title), and
+    ``?has_responses=true`` for RFQs at least one vendor has replied to (a
+    non-draft quotation).
+
     docstring-name: RFQs
     """
 
@@ -922,6 +926,9 @@ class RfqListCreateView(_ProcBase):
         qs = qs.filter(_rfq_branch_q(request, entity, request.query_params)).distinct()
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(rfq_status=status_)
+        if request.query_params.get("has_responses") == "true":
+            # Only RFQs with a vendor's actual reply, which compare-quotes lists.
+            qs = qs.filter(response_count__gt=0)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
             qs = qs.filter(Q(document_number__icontains=q) | Q(title__icontains=q))
         return self.paginate(request, qs.order_by("-id"), RfqListSerializer)

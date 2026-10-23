@@ -130,6 +130,8 @@ urlpatterns = [
          name="proc-vendor-credit-note-post"),
     path("vendor-credit-notes/<int:pk>/allocate/", views.VendorCreditNoteAllocateView.as_view(),
          name="proc-vendor-credit-note-allocate"),
+    path("vendor-credit-notes/<int:pk>/open-bills/", views.VendorCreditNoteOpenBillsView.as_view(),
+         name="proc-vendor-credit-note-open-bills"),
     path("vendor-credit-notes/<int:pk>/void/", views.VendorCreditNoteVoidView.as_view(),
          name="proc-vendor-credit-note-void"),
 

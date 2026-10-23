@@ -577,6 +577,29 @@ def _require_note_branch_bills(note, bills) -> None:
 
 
 @transaction.atomic
+def credit_note_open_bills(note, *, bill_scope=None):
+    """The bills a note's leftover credit may settle, due first.
+
+    The vendor's posted bills of the note's branch that are not paid in full,
+    within ``bill_scope`` when a caller passes one (the reader's branch reach).
+    Applying the credit automatically settles these in this order, and the
+    apply drawer lists them from here, so what the reader is offered is what
+    the server would settle.
+    """
+    from vs_rbac.scoping import transaction_branch_match_q
+
+    from .models import VendorInvoice
+
+    bills = VendorInvoice.objects.filter(
+        transaction_branch_match_q(note.entity.tenant_id, note.branch_id),
+        entity_id=note.entity_id, vendor_id=note.vendor_id,
+        status=DocumentStatus.POSTED,
+    ).exclude(payment_status=InvoicePaymentStatus.PAID)
+    if bill_scope is not None:
+        bills = bills.filter(bill_scope)
+    return bills.order_by("due_date", "invoice_date", "id")
+
+
 def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill_scope=None):
     """Apply what a posted note left as vendor credit to later bills of its branch.
 
@@ -614,19 +637,7 @@ def allocate_vendor_credit_note(note, *, allocations=None, actor_user=None, bill
         _require_note_branch_bills(note, [bill for bill, _ in allocations])
         plan = [(bill, int(amount)) for bill, amount in allocations]
     else:
-        from vs_rbac.scoping import transaction_branch_match_q
-
-        candidates = VendorInvoice.objects.filter(
-            transaction_branch_match_q(note.entity.tenant_id, note.branch_id),
-            entity_id=note.entity_id, vendor_id=note.vendor_id,
-            status=DocumentStatus.POSTED,
-        ).exclude(payment_status=InvoicePaymentStatus.PAID)
-        if bill_scope is not None:
-            candidates = candidates.filter(bill_scope)
-        plan = [
-            (bill, bill.balance_due)
-            for bill in candidates.order_by("due_date", "invoice_date", "id")
-        ]
+        plan = [(bill, bill.balance_due) for bill in credit_note_open_bills(note, bill_scope=bill_scope)]
     plan = lock_settlement_targets(plan)
 
     settlements = []

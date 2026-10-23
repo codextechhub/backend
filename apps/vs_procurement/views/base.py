@@ -646,3 +646,34 @@ class _ProcBase(APIView):
         if page_context is not None:
             ser_kwargs["context"] = {**ser_kwargs.get("context", {}), **page_context(page)}
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
+
+
+#: How many open bills a settlement drawer is sent at once.
+OPEN_BILL_PAGE_SIZE = 100
+
+
+def _open_bill_page(request, bills):
+    """One page of a vendor's open bills, as a settlement drawer lists them.
+
+    ``bills`` is already narrowed and ordered due first. The page holds up to
+    :data:`OPEN_BILL_PAGE_SIZE` bills in the platform's paginated envelope, so
+    ``pagination.totalItems`` tells the drawer how many more wait behind the
+    ones it shows. Unlike :meth:`_ProcBase.paginate` it hides no archived
+    year: a bill still owed is offered wherever it is dated, as settling it
+    would reach it. Each row is the bill's figures a payment or a credit needs
+    (the subtotal for withholding tax, the branch for the bank it may use).
+    """
+    from core.pagination import XVSPagination
+
+    paginator = XVSPagination()
+    paginator.page_size = OPEN_BILL_PAGE_SIZE
+    page = paginator.paginate_queryset(bills.select_related("vendor"), request)
+    return paginator.get_paginated_response([{
+        "id": bill.id, "document_number": bill.document_number,
+        "vendor_id": bill.vendor_id, "vendor_code": bill.vendor.code,
+        "branch_id": bill.branch_id,
+        "invoice_date": bill.invoice_date, "due_date": bill.due_date,
+        "subtotal": bill.subtotal, "tax_total": bill.tax_total,
+        "total": bill.total, "amount_paid": bill.amount_paid,
+        "balance_due": bill.balance_due, "payment_status": bill.payment_status,
+    } for bill in page])

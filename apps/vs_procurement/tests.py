@@ -5436,6 +5436,21 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
         empty_q = client.get(f"/v1/procurement/quotations/?entity={entity.code}")
         self.assertIn(empty_q.data["data"], ({}, []))
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_has_responses_lists_only_rfqs_a_vendor_replied_to(self, _perm):
+        """Compare-quotes asks for RFQs with a reply, not the newest page of all of them."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        answered = self._issued_rfq(entity, lines=[("Switch", 5)])
+        self._submitted_quote(entity, answered, vendor)
+        self._issued_rfq(entity, lines=[("Cable", 2)])
+        client = self._client(entity)
+
+        rows = client.get(f"/v1/procurement/rfqs/?entity={entity.code}&has_responses=true").data["data"]
+
+        self.assertEqual([row["id"] for row in rows], [answered.pk])
+        self.assertEqual(
+            len(client.get(f"/v1/procurement/rfqs/?entity={entity.code}").data["data"]), 2)
+
     # --- cross-entity isolation -------------------------------------------- #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

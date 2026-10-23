@@ -42,6 +42,7 @@ from .base import (
     _date,
     _document_or_404,
     _inherited_branch_id,
+    _open_bill_page,
     _quantity,
     _strict_kobo,
     _text,
@@ -51,6 +52,7 @@ __all__ = [
     "GoodsReceiptReverseView",
     "VendorOpeningBillImportView",
     "VendorCreditNoteAllocateView",
+    "VendorCreditNoteOpenBillsView",
     "VendorCreditNoteDetailView",
     "VendorCreditNoteListCreateView",
     "VendorCreditNotePostView",
@@ -386,6 +388,31 @@ class VendorCreditNoteAllocateView(_ProcBase):
             if applied > 0 else f"No open bill could take {note.document_number}'s credit."
         )
         return success_response(message, data=VendorCreditNoteSerializer(note).data)
+
+
+class VendorCreditNoteOpenBillsView(_ProcBase):
+    """GET - the bills a posted note's leftover credit may settle, due first.
+
+    Exactly the bills applying it automatically would settle for this reader
+    (:func:`vs_procurement.corrections.credit_note_open_bills` within their
+    branch reach), paged as :func:`_open_bill_page` pages them. A note that is
+    not posted, or holds no credit, lists none.
+
+    docstring-name: Bills a vendor credit may settle
+    """
+
+    rbac_permission = "procurement.vendor_credit_note.allocate"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        note = _document_or_404(
+            request, VendorCreditNote.objects.filter(entity=entity), pk,
+            "No such vendor credit note in this entity.",
+        )
+        bills = corrections.credit_note_open_bills(note, bill_scope=_branch_q(request))
+        if note.status != DocumentStatus.POSTED or note.advance_remaining <= 0:
+            bills = bills.none()
+        return _open_bill_page(request, bills)
 
 
 class VendorCreditNoteVoidView(_ProcBase):

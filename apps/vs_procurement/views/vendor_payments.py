@@ -26,6 +26,7 @@ from ..constants import ProcApprovalState, VendorKycStatus, WhtSource
 from ..models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
 from .base import (
+    _open_bill_page,
     _ProcBase,
     _branch_q,
     _branch_scoped,
@@ -311,10 +312,13 @@ class VendorPaymentListCreateView(_ProcBase):
 
 
 class VendorPaymentEligibleInvoiceView(_ProcBase):
-    """List up to 100 posted, unpaid invoices eligible for allocation.
+    """List the posted, unpaid invoices a payment may settle, oldest due first.
 
-    The optional vendor reference is resolved inside the current entity before
-    filtering, so it cannot become a cross-tenant invoice-discovery channel.
+    Paged at :data:`OPEN_BILL_PAGE_SIZE` (:func:`_open_bill_page`), so a vendor
+    with more open bills than one page says how many more there are rather
+    than silently stopping. The optional vendor reference is resolved inside
+    the current entity before filtering, so it cannot become a cross-tenant
+    invoice-discovery channel.
     """
     rbac_permission = "procurement.vendor_payment.view"
 
@@ -328,18 +332,7 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
         if vendor := request.query_params.get("vendor"):
             resolved = _resolve_vendor(request, entity, vendor)
             qs = qs.filter(vendor=resolved)
-        rows = [{
-            "id": invoice.id, "document_number": invoice.document_number,
-            "vendor_id": invoice.vendor_id, "vendor_code": invoice.vendor.code,
-            # The payment inherits the bills' branch, which decides the bank it may use.
-            "branch_id": invoice.branch_id,
-            "invoice_date": invoice.invoice_date, "due_date": invoice.due_date,
-            # The bill net of tax is what a payment's WHT is worked out on.
-            "subtotal": invoice.subtotal, "tax_total": invoice.tax_total,
-            "total": invoice.total, "amount_paid": invoice.amount_paid,
-            "balance_due": invoice.balance_due, "payment_status": invoice.payment_status,
-        } for invoice in qs.select_related("vendor").order_by("due_date", "invoice_date", "id")[:100]]
-        return success_response("Eligible vendor invoices retrieved.", data=rows)
+        return _open_bill_page(request, qs.order_by("due_date", "invoice_date", "id"))
 
 
 class VendorPaymentDetailView(_ProcBase):
