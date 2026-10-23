@@ -81,4 +81,5 @@ def customer_aging_readable(request) -> bool:
     account standing (how late it is), so it is shown only when both are readable.
     """
     return (can_read(request, "finance.customer.balance")
-            and can_read(request, "finance.customer.account_status"))
+            and can_read(request, "finance.customer.account_status")
+            and can_read(request, "finance.report.aging_customers"))

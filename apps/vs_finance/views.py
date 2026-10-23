@@ -49,6 +49,12 @@ from .models import (
 )
 from .money import format_naira
 from .posting import posting_window
+from .report_access import (
+    balance_sections,
+    income_sections,
+    readable_report_sections,
+    require_report_sections,
+)
 from .serializers import (
     AccountSerializer,
     FiscalPeriodSerializer,
@@ -617,6 +623,8 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
     def list(self, request, *args, **kwargs):
         # Chart mode returns the full tree in one envelope (the tree needs every
         # node); the picker mode keeps the standard paginated response.
+        if self._with_balance():
+            require_report_sections(request, "trial_balance")
         if self._whole_tree():
             qs = self.filter_queryset(self.get_queryset())
             scope = _reader_scope(request)
@@ -2584,6 +2592,7 @@ class TrialBalanceView(APIView):
 
         from .exports import ReportTable
 
+        require_report_sections(request, "trial_balance")
         entity = resolve_entity(request)
         reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
@@ -2648,6 +2657,16 @@ class IncomeStatementView(APIView):
             entity, period=period, fiscal_year=_resolve_fiscal_year(entity, request),
             scope=reader_scope,
         )
+        sections = income_sections(request)
+        revenue = "income_revenue" in sections
+        expense = "income_expense" in sections
+        net = "income_net" in sections
+        budget_visible = "income_budget" in sections
+        prior_visible = "income_prior_year" in sections
+        budget_column = budget_visible and rep.has_budget
+        prior_column = prior_visible and rep.has_prior_year
+        if not (revenue or expense):
+            raise PermissionDenied("This report requires access to a statement section.")
 
         # Support the mon workflow.
         def _mon(v):
@@ -2655,47 +2674,53 @@ class IncomeStatementView(APIView):
 
         # Support the isline workflow.
         def _isline(line):
-            return {
+            data = {
                 "account_id": line.account_id, "code": line.code, "name": line.name,
                 "account_type": line.account_type, "amount": _money(line.amount),
-                "budget": _mon(line.budget), "variance": _mon(line.variance),
-                "prior_year": _mon(line.prior_year),
             }
+            if budget_visible:
+                data.update(budget=_mon(line.budget), variance=_mon(line.variance))
+            if prior_visible:
+                data["prior_year"] = _mon(line.prior_year)
+            return data
 
         # Support the istot workflow.
         def _istot(t):
-            return {
-                "amount": _money(t.amount), "budget": _mon(t.budget),
-                "variance": _mon(t.variance), "prior_year": _mon(t.prior_year),
-            }
+            data = {"amount": _money(t.amount)}
+            if budget_visible:
+                data.update(budget=_mon(t.budget), variance=_mon(t.variance))
+            if prior_visible:
+                data["prior_year"] = _mon(t.prior_year)
+            return data
 
         # Export columns mirror the comparison the data supports.
         cols = ["Section", "Code", "Account", "This period"]
-        if rep.has_budget:
+        if budget_column:
             cols += ["Budget", "Variance"]
-        if rep.has_prior_year:
+        if prior_column:
             cols += ["Prior year"]
 
         # Support the xrow workflow.
         def _xrow(section, line):
             row = [section, line.code, line.name, format_naira(line.amount)]
-            if rep.has_budget:
+            if budget_column:
                 row += [format_naira(line.budget or 0), format_naira(line.variance or 0)]
-            if rep.has_prior_year:
+            if prior_column:
                 row += [format_naira(line.prior_year or 0)]
             return row
 
         # Support the xtot workflow.
         def _xtot(label, t):
             row = ["", "", label, format_naira(t.amount)]
-            if rep.has_budget:
+            if budget_column:
                 row += [format_naira(t.budget or 0), format_naira(t.variance or 0)]
-            if rep.has_prior_year:
+            if prior_column:
                 row += [format_naira(t.prior_year or 0)]
             return row
 
-        rows = [_xrow("Revenue", r) for r in rep.income_rows]
-        rows += [_xrow("Expense", r) for r in rep.expense_rows]
+        rows = [_xrow("Revenue", r) for r in rep.income_rows] if revenue else []
+        if expense:
+            rows += [_xrow("Expense", r) for r in rep.expense_rows]
         scope = (_period_label(period, entity) if period is not None
                  else f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
         export = _maybe_export(request, ReportTable(
@@ -2703,11 +2728,11 @@ class IncomeStatementView(APIView):
             subtitle=f"{entity.code} · {scope}",
             columns=cols,
             rows=rows,
-            summary_rows=[
-                _xtot("Total revenue", rep.income_totals),
-                _xtot("Total expenses", rep.expense_totals),
-                _xtot("Net income", rep.net_totals),
-            ],
+            summary_rows=(
+                ([_xtot("Total revenue", rep.income_totals)] if revenue else [])
+                + ([_xtot("Total expenses", rep.expense_totals)] if expense else [])
+                + ([_xtot("Net income", rep.net_totals)] if net else [])
+            ),
         ), filename=f"income_statement_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
@@ -2720,15 +2745,15 @@ class IncomeStatementView(APIView):
                 "period": rep.period_name,
                 "period_label": _period_label(period, entity),
                 "fiscal_year": rep.fiscal_year,
-                "prior_fiscal_year": rep.prior_fiscal_year,
-                "has_budget": rep.has_budget,
-                "has_prior_year": rep.has_prior_year,
-                "income": [_isline(r) for r in rep.income_rows],
-                "expense": [_isline(r) for r in rep.expense_rows],
+                **({"prior_fiscal_year": rep.prior_fiscal_year,
+                    "has_prior_year": rep.has_prior_year} if prior_visible else {}),
+                **({"has_budget": rep.has_budget} if budget_visible else {}),
+                **({"income": [_isline(r) for r in rep.income_rows]} if revenue else {}),
+                **({"expense": [_isline(r) for r in rep.expense_rows]} if expense else {}),
                 "totals": {
-                    "income": _istot(rep.income_totals),
-                    "expense": _istot(rep.expense_totals),
-                    "net": _istot(rep.net_totals),
+                    **({"income": _istot(rep.income_totals)} if revenue else {}),
+                    **({"expense": _istot(rep.expense_totals)} if expense else {}),
+                    **({"net": _istot(rep.net_totals)} if net else {}),
                 },
             },
         )
@@ -2750,6 +2775,15 @@ class BalanceSheetView(APIView):
         reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")
         bs = balance_sheet_sections(entity, as_of=as_of, scope=reader_scope)
+        allowed = balance_sections(request)
+        section_switch = {
+            "non_current_assets": "balance_assets", "current_assets": "balance_assets",
+            "non_current_liabilities": "balance_liabilities",
+            "current_liabilities": "balance_liabilities", "equity": "balance_equity",
+        }
+        shown_sections = [s for s in bs.sections if section_switch[s.key] in allowed]
+        if not shown_sections:
+            raise PermissionDenied("This report requires access to a statement section.")
 
         # Support the group workflow.
         def _group(g):
@@ -2770,7 +2804,7 @@ class BalanceSheetView(APIView):
             }
 
         rows = []
-        for s in bs.sections:
+        for s in shown_sections:
             for g in s.groups:
                 rows.append([s.label, g.label, format_naira(g.amount)])
         export = _maybe_export(request, ReportTable(
@@ -2778,11 +2812,14 @@ class BalanceSheetView(APIView):
             subtitle=f"{entity.code} · as at {format_date(bs.as_of, entity.tenant)}",
             columns=["Section", "Line", "Amount"],
             rows=rows,
-            summary_rows=[
-                ["", "Total assets", format_naira(bs.total_assets)],
-                ["", "Total liabilities", format_naira(bs.total_liabilities)],
-                ["", "Total equity", format_naira(bs.total_equity)],
-            ],
+            summary_rows=(
+                ([["", "Total assets", format_naira(bs.total_assets)]]
+                 if "balance_assets" in allowed else [])
+                + ([["", "Total liabilities", format_naira(bs.total_liabilities)]]
+                   if "balance_liabilities" in allowed else [])
+                + ([["", "Total equity", format_naira(bs.total_equity)]]
+                   if "balance_equity" in allowed else [])
+            ),
         ), filename=f"balance_sheet_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
@@ -2793,13 +2830,16 @@ class BalanceSheetView(APIView):
                 "entity": entity.code,
                 "narrowed": reader_scope.is_narrowed,
                 "as_of": str(bs.as_of),
-                "sections": [_section(s) for s in bs.sections],
-                "total_assets": _money(bs.total_assets),
-                "total_liabilities": _money(bs.total_liabilities),
-                "total_equity": _money(bs.total_equity),
-                "retained_earnings": _money(bs.current_year_earnings),
-                "is_balanced": bs.is_balanced,
-                "difference": _money(bs.difference),
+                "sections": [_section(s) for s in shown_sections],
+                **({"total_assets": _money(bs.total_assets)}
+                   if "balance_assets" in allowed else {}),
+                **({"total_liabilities": _money(bs.total_liabilities)}
+                   if "balance_liabilities" in allowed else {}),
+                **({"total_equity": _money(bs.total_equity),
+                    "retained_earnings": _money(bs.current_year_earnings)}
+                   if "balance_equity" in allowed else {}),
+                **({"is_balanced": bs.is_balanced, "difference": _money(bs.difference)}
+                   if "balance_check" in allowed else {}),
             },
         )
 
@@ -2820,6 +2860,11 @@ class CashFlowView(APIView):
         reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
         cf = cash_flow_statement(entity, period=period, scope=reader_scope)
+        sections = readable_report_sections(request)
+        cash = "cashflow_cash" in sections
+        activities = "cashflow_activities" in sections
+        if not (cash or activities):
+            raise PermissionDenied("This report requires access to a statement section.")
         window = (_period_label(period, entity) if period is not None
                   else f"FY{cf.fiscal_year}" if cf.fiscal_year else "Year to date")
 
@@ -2829,21 +2874,22 @@ class CashFlowView(APIView):
             "financing": "Financing activities",
         }
         rows = []
-        for act in ("operating", "investing", "financing"):
-            for ln in cf.activity_lines[act]:
-                rows.append([_ACT_LABEL[act], ln.name, format_naira(ln.amount)])
-            rows.append([_ACT_LABEL[act], f"Net cash from {act}",
-                         format_naira(cf.by_activity[act])])
+        if activities:
+            for act in ("operating", "investing", "financing"):
+                for ln in cf.activity_lines[act]:
+                    rows.append([_ACT_LABEL[act], ln.name, format_naira(ln.amount)])
+                rows.append([_ACT_LABEL[act], f"Net cash from {act}",
+                             format_naira(cf.by_activity[act])])
         export = _maybe_export(request, ReportTable(
             title="Cash Flow Statement",
             subtitle=f"{entity.code} · {window}",
             columns=["Activity", "Line", "Amount"],
             rows=rows,
-            summary_rows=[
-                ["", "Net change in cash", format_naira(cf.net_change)],
-                ["", "Cash at start of period", format_naira(cf.opening_cash)],
-                ["", "Cash at end of period", format_naira(cf.closing_cash)],
-            ],
+            summary_rows=(
+                ([["", "Net change in cash", format_naira(cf.net_change)]] if activities else [])
+                + ([["", "Cash at start of period", format_naira(cf.opening_cash)],
+                    ["", "Cash at end of period", format_naira(cf.closing_cash)]] if cash else [])
+            ),
         ), filename=f"cash_flow_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
             return export
@@ -2861,14 +2907,14 @@ class CashFlowView(APIView):
                 "period": getattr(period, "name", None),
                 "period_label": _period_label(period, entity),
                 "fiscal_year": cf.fiscal_year,
-                "opening_cash": _money(cf.opening_cash),
-                "closing_cash": _money(cf.closing_cash),
-                "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
-                "activity_lines": {
-                    k: [_cfline(ln) for ln in v] for k, v in cf.activity_lines.items()
-                },
-                "net_change": _money(cf.net_change),
-                "is_reconciled": cf.is_reconciled,
+                **({"opening_cash": _money(cf.opening_cash),
+                    "closing_cash": _money(cf.closing_cash)} if cash else {}),
+                **({"by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
+                    "activity_lines": {
+                        k: [_cfline(ln) for ln in v] for k, v in cf.activity_lines.items()
+                    },
+                    "net_change": _money(cf.net_change)} if activities else {}),
+                **({"is_reconciled": cf.is_reconciled} if cash and activities else {}),
             },
         )
 
@@ -2893,6 +2939,7 @@ class AnalyticsSliceView(APIView):
 
         from .exports import ReportTable
 
+        require_report_sections(request, "analytics_slice")
         entity = resolve_entity(request)
         reader_scope = _reader_scope(request)
         axis = (request.query_params.get("axis") or "").strip()
@@ -2955,10 +3002,20 @@ class ChangesInEquityView(APIView):
 
         from .exports import ReportTable
 
+        require_report_sections(request, "equity_changes")
         entity = resolve_entity(request)
         reader_scope = _reader_scope(request)
         period = _resolve_period(entity, request)
         soce = statement_of_changes_in_equity(entity, period=period, scope=reader_scope)
+        sections = readable_report_sections(request)
+        income_net = "income_net" in income_sections(request)
+        shown_columns = [c for c in soce.columns
+                         if income_net or c.key != "retained_earnings"]
+        totals = {
+            key: sum(getattr(c, key) for c in shown_columns)
+            for key in ("opening", "profit", "contributions", "transfers", "closing")
+        }
+        reconciled_visible = income_net and "balance_equity" in sections
 
         export = _maybe_export(request, ReportTable(
             title="Statement of Changes in Equity",
@@ -2968,13 +3025,12 @@ class ChangesInEquityView(APIView):
             rows=[
                 [c.label, c.opening_naira, c.profit_naira, c.contributions_naira,
                  c.transfers_naira, c.closing_naira]
-                for c in soce.columns
+                for c in shown_columns
             ],
             summary_rows=[[
                 "TOTAL",
-                format_naira(soce.total_opening), format_naira(soce.total_profit),
-                format_naira(soce.total_contributions), format_naira(soce.total_transfers),
-                format_naira(soce.total_closing),
+                *(format_naira(totals[key]) for key in
+                  ("opening", "profit", "contributions", "transfers", "closing")),
             ]],
         ), filename=f"changes_in_equity_{entity.code}", narrowed=reader_scope.is_narrowed)
         if export is not None:
@@ -2996,15 +3052,15 @@ class ChangesInEquityView(APIView):
                         "contributions": _money(c.contributions),
                         "transfers": _money(c.transfers), "closing": _money(c.closing),
                     }
-                    for c in soce.columns
+                    for c in shown_columns
                 ],
-                "total_opening": _money(soce.total_opening),
-                "total_profit": _money(soce.total_profit),
-                "total_contributions": _money(soce.total_contributions),
-                "total_transfers": _money(soce.total_transfers),
-                "total_closing": _money(soce.total_closing),
-                "balance_sheet_equity": _money(soce.balance_sheet_equity),
-                "is_reconciled": soce.is_reconciled,
+                "total_opening": _money(totals["opening"]),
+                "total_profit": _money(totals["profit"]),
+                "total_contributions": _money(totals["contributions"]),
+                "total_transfers": _money(totals["transfers"]),
+                "total_closing": _money(totals["closing"]),
+                **({"balance_sheet_equity": _money(soce.balance_sheet_equity),
+                    "is_reconciled": soce.is_reconciled} if reconciled_visible else {}),
             },
         )
 
@@ -3068,6 +3124,11 @@ class StatutoryPackView(APIView):
 
         from .exports import ReportTable
 
+        require_report_sections(
+            request, "trial_balance", "income_revenue", "income_expense", "income_net",
+            "balance_assets", "balance_liabilities", "balance_equity", "balance_check",
+            "cashflow_cash", "cashflow_activities", "equity_changes",
+        )
         if _reader_scope(request).is_narrowed:
             raise PermissionDenied(
                 "The statutory pack covers the whole school, so it is available only "
@@ -3222,6 +3283,7 @@ class FinanceDashboardView(APIView):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
+        from .budget_access import filter_budget_cards
         from .dashboard import DashboardReader, finance_dashboard
         from .dashboard_serializers import FinanceDashboardSerializer
 
@@ -3235,7 +3297,9 @@ class FinanceDashboardView(APIView):
         )
         return success_response(
             message="Finance dashboard retrieved.",
-            data=FinanceDashboardSerializer(payload, context={"request": request}).data,
+            data=filter_budget_cards(
+                request, FinanceDashboardSerializer(payload, context={"request": request}).data,
+            ),
         )
 
 
@@ -3288,6 +3352,7 @@ class FinanceSpendDashboardView(APIView):
     rbac_modules = ["finance"]
 
     def get(self, request):
+        from .budget_access import filter_budget_cards
         from .dashboard import DashboardReader
         from .dashboard_serializers import SpendDashboardSerializer
         from .dashboard_spend import spend_view
@@ -3303,7 +3368,9 @@ class FinanceSpendDashboardView(APIView):
         )
         return success_response(
             message="Cash and spend dashboard retrieved.",
-            data=SpendDashboardSerializer(payload, context={"request": request}).data,
+            data=filter_budget_cards(
+                request, SpendDashboardSerializer(payload, context={"request": request}).data,
+            ),
         )
 
 
@@ -3332,13 +3399,18 @@ class ARAgingView(APIView):
         as_of = _resolve_date_param(request, "as_of")
         scope = _reader_scope(request)
         report = ar_aging(entity, as_of=as_of, scope=scope)
+        sections = readable_report_sections(request)
+        customers = "aging_customers" in sections
+        totals = "aging_totals" in sections
+        if not (customers or totals):
+            raise PermissionDenied("This report requires access to a statement section.")
 
         columns = ["Code", "Customer"] + list(AGING_BUCKETS) + ["Net"]
         rows = [
             [r.code, r.name] + [format_naira(r.buckets[b]) for b in AGING_BUCKETS]
             + [format_naira(r.net)]
             for r in report.rows
-        ]
+        ] if customers else []
         summary = ["", "TOTAL"] + [format_naira(report.bucket_totals[b]) for b in AGING_BUCKETS]
         summary += [format_naira(report.total_net)]
         export = _maybe_export(request, ReportTable(
@@ -3346,7 +3418,7 @@ class ARAgingView(APIView):
             subtitle=f"{entity.code} · as at {format_date(report.as_of, entity.tenant)}",
             columns=columns,
             rows=rows,
-            summary_rows=[summary],
+            summary_rows=[summary] if totals else [],
         ), filename=f"ar_aging_{entity.code}", narrowed=scope.is_narrowed)
         if export is not None:
             return export
@@ -3356,7 +3428,7 @@ class ARAgingView(APIView):
             data={
                 "entity": entity.code,
                 "as_of": str(report.as_of),
-                "rows": [
+                **({"rows": [
                     {
                         "customer_id": r.customer_id, "code": r.code, "name": r.name,
                         "buckets": {b: _money(v) for b, v in r.buckets.items()},
@@ -3365,9 +3437,9 @@ class ARAgingView(APIView):
                         "net": _money(r.net),
                     }
                     for r in report.rows
-                ],
-                "bucket_totals": {b: _money(v) for b, v in report.bucket_totals.items()},
-                "total_net": _money(report.total_net),
+                ]} if customers else {}),
+                **({"bucket_totals": {b: _money(v) for b, v in report.bucket_totals.items()},
+                    "total_net": _money(report.total_net)} if totals else {}),
                 "narrowed": scope.is_narrowed,
             },
         )
@@ -3383,6 +3455,7 @@ class ARReconciliationView(APIView):
     def get(self, request):
         from .reports import reconcile_ar
 
+        require_report_sections(request, "ar_reconciliation")
         entity = resolve_entity(request)
         reader_scope = _reader_scope(request)
         as_of = _resolve_date_param(request, "as_of")

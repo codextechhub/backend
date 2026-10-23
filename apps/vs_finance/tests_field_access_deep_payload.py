@@ -88,6 +88,7 @@ from vs_finance.receivables_policy import resolve_receivables_policy, serialize_
 from vs_finance.tests_accruals import _AccrualFixture
 from vs_finance.tests_bank_account_reach import _bank
 from vs_finance.tests_bank_document_rework import _ReworkFixture
+from vs_finance.tests_budget_branch import _BudgetFixture
 from vs_finance.tests_inter_branch import JAN_15, _InterBranchFixture
 from vs_finance.tests_payer_payments import _PayerFixture
 from vs_finance.tests_petty_cash_returns import FLOAT, JAN_10, _PettyCashReturnFixture
@@ -95,6 +96,31 @@ from vs_rbac.tests.deep_payload import DeepPayloadChecks, Sample
 from vs_rbac.tests.helpers import make_branch, make_school
 
 _SURFACE = "vs_finance.serializers."
+
+
+class BudgetReportDeepPayloadTests(DeepPayloadChecks, _BudgetFixture):
+    """Budget records and report aliases hide every registered field when closed."""
+
+    resources = frozenset({"finance.budget", "finance.report"})
+    covers = frozenset({
+        _SURFACE + "BudgetSerializer",
+        _SURFACE + "BudgetLineSerializer",
+        "vs_finance.budget_access.BudgetAccessSerializer",
+        "vs_finance.report_access.ReportSectionsSerializer",
+    })
+
+    def samples(self):
+        from vs_finance.budget_access import BUDGET_ALIASES
+        from vs_finance.report_access import REPORT_SECTIONS
+
+        return [
+            Sample(_SURFACE + "BudgetSerializer", self.ikeja_plan),
+            Sample(_SURFACE + "BudgetLineSerializer", self.ikeja_plan.lines.first()),
+            Sample("vs_finance.budget_access.BudgetAccessSerializer",
+                   {name: True for name in BUDGET_ALIASES}),
+            Sample("vs_finance.report_access.ReportSectionsSerializer",
+                   {name: True for name in REPORT_SECTIONS}),
+        ]
 
 
 class FinanceDeepPayloadTests(DeepPayloadChecks, TestCase):

@@ -65,6 +65,7 @@ EXPECTED_RESOURCES = {
     ("finance", "bankaccount"),
     ("finance", "banktransaction"),
     ("finance", "banktransfer"),
+    ("finance", "budget"),
     ("finance", "customer"),
     ("finance", "dashboard"),
     ("finance", "deferredincome"),
@@ -78,6 +79,7 @@ EXPECTED_RESOURCES = {
     ("finance", "period"),
     ("finance", "pettycash_return"),
     ("finance", "provision"),
+    ("finance", "report"),
     ("finance", "salary"),
     ("finance", "seal"),
     ("finance", "settings"),
@@ -138,6 +140,10 @@ ENDPOINT_GUARDED_RESOURCES = {
 #: Serializers that can write a registered name without carrying a rule for it,
 #: each with the reason that is safe. Every entry must still match a real hit.
 WRITE_PATH_ALLOWLIST = {
+    ("vs_finance.views_ops.banking._BankStatementCorrectionSerializer", "lines"):
+        "Statement correction lines belong to the bank statement, not a budget.",
+    ("vs_finance.serializers.DirectEntryCreateSerializer", "lines"):
+        "Direct journal lines belong to the journal, not a budget.",
     ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "reference"):
         "A statement correction reference belongs to the correction line, not an "
         "inter-branch document, and its endpoint has its own banking permission.",
@@ -349,6 +355,11 @@ NESTING_ONLY_SURFACES = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "finance.budget.amount": (
+        "A budget can include pay scenarios and other plans a viewer must not read "
+        "merely because they can open the budget. The owner chose separate Read and "
+        "Write grants, both closed by default."
+    ),
     "gradebook.hold.balance": (
         "What a pupil's family owes the school and since when, read from Finance "
         "beside a fee hold. It is the school's money position for a named family, "

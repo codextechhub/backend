@@ -20,7 +20,7 @@ from .wording import state_word
 def _ensure_editable(budget):
     if budget.is_locked:  # Approved budgets are frozen.
         raise BudgetError(
-            f"Budget '{budget.name}' is {state_word(budget)} and can no longer be edited.",
+            f"Budget {budget.code} is {state_word(budget)} and can no longer be edited.",
         )
 
 
@@ -192,13 +192,13 @@ def delete_budget(budget, *, actor_user=None):
     """
     _ensure_editable(budget)  # Refuse deletion once locked.
     entity = budget.entity  # Capture entity before deleting the row.
-    name = budget.name  # Capture name for audit message.
-    fiscal_year = budget.fiscal_year.year  # Capture fiscal year for audit message.
+    code = budget.code
+    fiscal_year = budget.fiscal_year.year
     budget_id = budget.id  # Capture id for structured audit metadata.
     record(  # Audit before deletion while target fields still exist.
         entity=entity, action=FinanceAuditAction.BUDGET_DELETED,  # Audit action for budget deletion.
         actor_user=actor_user, target=budget,  # Actor and target context.
-        message=f"Deleted budget '{name}' for FY{fiscal_year}.",  # Human-readable audit message.
+        message=f"Deleted budget {code} for FY{fiscal_year}.",
         budget_id=budget_id,  # Structured id for later traceability.
     )
     budget.delete()
@@ -211,7 +211,7 @@ def approve_budget(budget, *, actor_user=None):
     """Approve a draft budget, locking its lines against further edits."""
     if budget.status != BudgetStatus.DRAFT:  # Only draft budgets can enter approval.
         raise BudgetError(
-            f"Budget '{budget.name}' is {state_word(budget)}; only a draft can be approved.",
+            f"Budget {budget.code} is {state_word(budget)}; only a draft can be approved.",
         )
     budget.status = BudgetStatus.APPROVED  # Move budget to approved lifecycle state.
     budget.approved_at = timezone.now()
@@ -221,7 +221,7 @@ def approve_budget(budget, *, actor_user=None):
     record(  # Audit successful approval.
         entity=budget.entity, action=FinanceAuditAction.BUDGET_APPROVED,  # Audit action for approval.
         actor_user=actor_user, target=budget,  # Actor and target context.
-        message=f"Approved budget '{budget.name}' for FY{budget.fiscal_year.year}.",  # Human-readable audit message.
+        message=f"Approved budget {budget.code} for FY{budget.fiscal_year.year}.",
         budget_id=budget.id,  # Structured budget id.
     )
     return budget  # Return the approved budget.

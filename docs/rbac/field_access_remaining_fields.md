@@ -112,9 +112,9 @@ audit and they answer several of the questions the audit raised.
    the line set.
 6. **AR aging has its own switches, apart from customer balances.** A role can
    read a customer's balance without reading how late it is.
-7. **Statements, budget against actual, and report exports belong to the report
-   change.** They are recorded here with their recommended switches and are not
-   registered in the leak-closing change.
+7. **Statements, budget against actual, and report exports use section switches.**
+   The Area A switches are registered and enforced on JSON and exports. Other
+   areas retain their own pending decisions.
 8. **Defaults.** A stored or submitted field gets Read and Write. A computed,
    generated, status, audit or server-owned field gets Read only
    (`writable=False`). Transport values get nothing. Normal business fields ship
@@ -130,8 +130,8 @@ Module, Resource, Field.
 
 ## 3. Area A: budgets and financial statements
 
-Nothing in this area is registered. `finance.budget` and `finance.report` exist
-only as permission resources. Budgets are written by people; every statement is
+The 8 `finance.budget` and 17 `finance.report` fields in this area are registered.
+Budgets are written by people; every statement is
 computed from the ledger. Statements have no per-branch columns: a branch-bound
 reader sees only their own branches' journals (`narrowed`).
 
@@ -156,15 +156,15 @@ import path and no approval-inbox handler.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `lines[].id`, `budget_id`, `fiscal_year_id` | record, line and year ids | Transport | none | - | - | - | - | no switch: transport |
 | `code`, `budgets[].code` | budget number | Computed | none | - | - | - | - | no switch: owner decision |
-| `name`, `budget_name`, `budgets[].name`, names inside response and error sentences | budget title, free text typed per budget | Stored | create `name`; PATCH `name` | `finance.budget.name` | Budget name | RW | open (Q-A6) | recorded |
-| `fiscal_year` | fiscal year the plan covers | Stored, create only | create `fiscal_year` | `finance.budget.fiscal_year` | Fiscal year | RW (open on create) | open | recorded |
-| `status`, `is_locked` | draft or approved | Computed | approve action | `finance.budget.status` | Status | RO | open | recorded |
-| `approved_at` | date the plan was approved | Computed | approve action | `finance.budget.approved_at` | Approved on | RO | open (`approved_by` is not serialized and stays out) | recorded |
-| `lines` | the set of budget lines | Stored, nested | create `lines`; `budgets/<pk>/lines/` POST, PUT, DELETE | `finance.budget.lines` | Budget lines (account, cost centre, period) | RW | open (Q-A5) | recorded |
+| `name`, `budget_name`, `budgets[].name`, names inside response and error sentences | budget title, free text typed per budget | Stored | create `name`; PATCH `name` | `finance.budget.name` | Budget name | RW | open; the free-text title has its own switch (Q-A6 answered) | registered |
+| `fiscal_year` | fiscal year the plan covers | Stored, create only | create `fiscal_year` | `finance.budget.fiscal_year` | Fiscal year | RW (open on create) | open | registered |
+| `status`, `is_locked` | draft or approved | Computed | approve action | `finance.budget.status` | Status | RO | open | registered |
+| `approved_at` | date the plan was approved | Computed | approve action | `finance.budget.approved_at` | Approved on | RO | open (`approved_by` is not serialized and stays out) | registered |
+| `lines` | the set of budget lines | Stored, nested | create `lines`; `budgets/<pk>/lines/` POST, PUT, DELETE | `finance.budget.lines` | Budget lines (account, cost centre, period) | RW | open; coordinates have a separate switch from amounts (Q-A5 answered) | registered |
 | `lines[].account`, `lines[].account_id`, `lines[].cost_center`, `lines[].period_no` | cell coordinates | Stored | with `lines` | - | - | - | - | no switch: identifier |
-| `lines[].amount`, `budgeted_total`, variance `budget`, heatmap `cells[].budget`, `budget_total`, `total_budget`, roll-up `total_budget`, income statement `budget`, dashboard `plan` | planned amount | Stored | create `lines`; lines endpoints | `finance.budget.amount` | Planned amount | RW | open (Q-A4) | recorded |
-| `actual_ytd`, variance `actual`, `total_actual`, heatmap `cells[].actual`, `actual_total`, dashboard `used` | ledger actual against the plan | Computed | none | `finance.budget.actual` | Actual against the plan | RO | open; shown only if the matching statement section (revenue or expense lines) is readable | recorded |
-| `consumed_pct`, `variance`, `total_variance`, dashboard `pct`, `pct_of_plan`, `delta_pct`, heatmap colour class | share of plan used and the gap | Computed | none | `finance.budget.variance` | Variance and share used | RO | open; shown only if `amount` and `actual` are readable (a ratio plus one side reveals the other) | recorded |
+| `lines[].amount`, `budgeted_total`, variance `budget`, heatmap `cells[].budget`, `budget_total`, `total_budget`, roll-up `total_budget`, income statement `budget`, dashboard `plan` | planned amount | Stored | create `lines`; lines endpoints | `finance.budget.amount` | Planned amount | RW | sensitive (Q-A4 answered); separate from line coordinates (Q-A5 answered) | registered |
+| `actual_ytd`, variance `actual`, `total_actual`, heatmap `cells[].actual`, `actual_total`, dashboard `used` | ledger actual against the plan | Computed | none | `finance.budget.actual` | Actual against the plan | RO | open; shown only if the matching statement section (revenue or expense lines) is readable | registered |
+| `consumed_pct`, `variance`, `total_variance`, dashboard `pct`, `pct_of_plan`, `delta_pct`, heatmap colour class | share of plan used and the gap | Computed | none | `finance.budget.variance` | Variance and share used | RO | open; shown only if `amount` and `actual` are readable (a ratio plus one side reveals the other) | registered |
 | `branch_id`, `branch_name`, create `branch` | branch the plan belongs to | Stored, create only | create `branch` | - | - | - | - | no switch: owner decision |
 | `can_manage` | permission metadata, recomputed false for a field the caller may not write | Computed | none | - | - | - | - | no switch: transport |
 | `narrowed`, `filing.branches[]`, `next`, `previous`, `count`, `results` | reach flag, branch choices, pagination | Transport | none | - | - | - | - | no switch: transport |
@@ -186,29 +186,29 @@ the pack, aging and reconciliation) `?period=`. Routes under `/finance/reports/`
 `cash-flow-tab.tsx`, `equity-tab.tsx`, `analytics-slice-tab.tsx`,
 `statutory-pack-tab.tsx`). The AR aging report has no screen today and is
 reachable by API and by export. Money values are `{kobo, naira}` pairs. All rows
-are computed with no write path. The grouping of switches is open (Q-A1); the
-table records the recommended grouping, one switch per statement section.
+are computed with no write path. The grouping is settled (Q-A1): one switch per
+statement section or column.
 
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| trial balance `rows[].debit`, `rows[].credit`, `total_debit`, `total_credit`, `is_balanced` | trial balance figures and its footing check | Computed | none | `finance.report.trial_balance` | Trial balance | RO | open | recorded |
-| income statement `income[].amount`, `totals.income.amount` | revenue lines | Computed | none | `finance.report.income_revenue` | Revenue lines | RO | open | recorded |
-| income statement `expense[].amount`, `totals.expense.amount` | expense lines | Computed | none | `finance.report.income_expense` | Expense lines | RO | open | recorded |
-| income statement `totals.net.amount` | net income | Computed | none | `finance.report.income_net` | Net income | RO | open; shown only if revenue and expense lines are readable | recorded |
-| income statement `budget`, `variance`, `has_budget` on lines and totals | plan columns, roll-up of branch plans | Computed | none | `finance.report.income_budget` | Budget and variance columns | RO | open; shown only if `finance.budget.amount` is readable | recorded |
-| income statement `prior_year`, `has_prior_year`, `prior_fiscal_year` | prior-year column | Computed | none | `finance.report.income_prior_year` | Prior-year column | RO | open; also needs the matching revenue or expense switch | recorded |
-| balance sheet sections `non_current_assets`, `current_assets` (`total`, `groups[].amount`, `accounts[].amount`), `total_assets` | assets | Computed | none | `finance.report.balance_assets` | Assets | RO | open | recorded |
-| balance sheet sections `non_current_liabilities`, `current_liabilities`, `total_liabilities` | liabilities | Computed | none | `finance.report.balance_liabilities` | Liabilities | RO | open | recorded |
-| balance sheet section `equity`, `total_equity`, top-level `retained_earnings` (carries `current_year_earnings`) | equity and current-year earnings | Computed | none | `finance.report.balance_equity` | Equity and current-year earnings | RO | open; both keys go together | recorded |
-| balance sheet `is_balanced`, `difference` | whether the sheet balances | Computed | none | `finance.report.balance_check` | Whether the balance sheet balances | RO | open; shown only if assets, liabilities and equity are readable | recorded |
-| cash flow `opening_cash`, `closing_cash` | opening and closing cash | Computed | none | `finance.report.cashflow_cash` | Opening and closing cash | RO | open | recorded |
-| cash flow `by_activity.{operating,investing,financing}`, `activity_lines.*[].amount`, `net_change`, `is_reconciled` | cash by activity | Computed | none | `finance.report.cashflow_activities` | Cash by activity | RO | open; `is_reconciled` needs both cash switches | recorded |
-| changes in equity `columns[].opening`, `profit`, `contributions`, `transfers`, `closing`, `total_*`, `balance_sheet_equity`, `is_reconciled` | changes in equity | Computed | none | `finance.report.equity_changes` | Changes in equity | RO | open; the synthetic column's profit and transfers need `income_net` | recorded |
-| analytics slice `rows[].debit`, `credit`, `net`, `bucket_totals`, `total_net` | cost and dimension analysis | Computed | none | `finance.report.analytics_slice` | Cost and dimension analysis | RO | open (Q-A7: a cost centre with one salaried person reads as that person's pay) | recorded |
-| AR aging `rows[].buckets.*`, `outstanding`, `unallocated_credit`, `net` | amounts owed by each customer, by age | Computed | none | `finance.report.aging_customers` | Amounts owed by each customer | RO | open (Q-A3); a row is dropped, not blanked, when closed | recorded |
-| AR aging `bucket_totals.*`, `total_net` | receivables by age, totals | Computed | none | `finance.report.aging_totals` | Receivables by age, totals | RO | open (Q-A3) | recorded |
-| AR reconciliation `subledger_total`, `control_total`, `difference`, `is_reconciled` | receivables sub-ledger against control account | Computed | none | `finance.report.ar_reconciliation` | Receivables reconciliation | RO | open | recorded |
-| statutory pack: every figure of the four statements and the trial balance | the filing pack, whole school only | Computed | none | - | - | - | follows the section switches above; a pack with a closed section is refused (Q-A2) | recorded |
+| trial balance `rows[].debit`, `rows[].credit`, `total_debit`, `total_credit`, `is_balanced` | trial balance figures and its footing check | Computed | none | `finance.report.trial_balance` | Trial balance | RO | open | registered |
+| income statement `income[].amount`, `totals.income.amount` | revenue lines | Computed | none | `finance.report.income_revenue` | Revenue lines | RO | open | registered |
+| income statement `expense[].amount`, `totals.expense.amount` | expense lines | Computed | none | `finance.report.income_expense` | Expense lines | RO | open | registered |
+| income statement `totals.net.amount` | net income | Computed | none | `finance.report.income_net` | Net income | RO | open; shown only if revenue and expense lines are readable | registered |
+| income statement `budget`, `variance`, `has_budget` on lines and totals | plan columns, roll-up of branch plans | Computed | none | `finance.report.income_budget` | Budget and variance columns | RO | open; shown only if `finance.budget.amount` is readable | registered |
+| income statement `prior_year`, `has_prior_year`, `prior_fiscal_year` | prior-year column | Computed | none | `finance.report.income_prior_year` | Prior-year column | RO | open; also needs the matching revenue or expense switch | registered |
+| balance sheet sections `non_current_assets`, `current_assets` (`total`, `groups[].amount`, `accounts[].amount`), `total_assets` | assets | Computed | none | `finance.report.balance_assets` | Assets | RO | open | registered |
+| balance sheet sections `non_current_liabilities`, `current_liabilities`, `total_liabilities` | liabilities | Computed | none | `finance.report.balance_liabilities` | Liabilities | RO | open | registered |
+| balance sheet section `equity`, `total_equity`, top-level `retained_earnings` (carries `current_year_earnings`) | equity and current-year earnings | Computed | none | `finance.report.balance_equity` | Equity and current-year earnings | RO | open; both keys go together | registered |
+| balance sheet `is_balanced`, `difference` | whether the sheet balances | Computed | none | `finance.report.balance_check` | Whether the balance sheet balances | RO | open; shown only if assets, liabilities and equity are readable | registered |
+| cash flow `opening_cash`, `closing_cash` | opening and closing cash | Computed | none | `finance.report.cashflow_cash` | Opening and closing cash | RO | open | registered |
+| cash flow `by_activity.{operating,investing,financing}`, `activity_lines.*[].amount`, `net_change`, `is_reconciled` | cash by activity | Computed | none | `finance.report.cashflow_activities` | Cash by activity | RO | open; `is_reconciled` needs both cash switches | registered |
+| changes in equity `columns[].opening`, `profit`, `contributions`, `transfers`, `closing`, `total_*`, `balance_sheet_equity`, `is_reconciled` | changes in equity | Computed | none | `finance.report.equity_changes` | Changes in equity | RO | open; the synthetic column's profit and transfers need `income_net` | registered |
+| analytics slice `rows[].debit`, `credit`, `net`, `bucket_totals`, `total_net` | cost and dimension analysis | Computed | none | `finance.report.analytics_slice` | Cost and dimension analysis | RO | open (Q-A7 answered); a cost centre with one salaried person may reveal that person's pay, so the slice has its own switch | registered |
+| AR aging `rows[].buckets.*`, `outstanding`, `unallocated_credit`, `net` | amounts owed by each customer, by age | Computed | none | `finance.report.aging_customers` | Amounts owed by each customer | RO | open (Q-A3); a row is dropped, not blanked, when closed | registered |
+| AR aging `bucket_totals.*`, `total_net` | receivables by age, totals | Computed | none | `finance.report.aging_totals` | Receivables by age, totals | RO | open (Q-A3) | registered |
+| AR reconciliation `subledger_total`, `control_total`, `difference`, `is_reconciled` | receivables sub-ledger against control account | Computed | none | `finance.report.ar_reconciliation` | Receivables reconciliation | RO | open | registered |
+| statutory pack: every figure of the four statements and the trial balance | the filing pack, whole school only | Computed | none | - | - | - | follows the section switches above; a pack with a closed section is refused (Q-A2) | no switch: owner decision |
 | every report `entity`, `narrowed`, `period`, `period_label`, `fiscal_year`, `as_of`, `headings`, `axis`, `rows[].account_id`, `code`, `name`, `account_type`, `rows[].customer_id`, `code`, `name`, section, group and component labels, `rows[].bucket`, export subtitle | context, window echoes and reference labels | Computed | none | - | - | - | - | no switch: identifier |
 
 The AR aging switches are the single decision for per-customer aging wherever it
@@ -252,7 +252,8 @@ to finance synchronisation (`ensure_customer`, `platform_customer.py`) writes
 contact fields and `branch` as a system write and stays outside `assert_writable`.
 
 The master record is registered. The table lists it for context and for the
-decisions that change; the statement and aging rows are the unregistered part.
+decisions that change; the statement rows are registered already, and the aging
+row uses the Area A report switch.
 
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -268,7 +269,7 @@ decisions that change; the statement and aging rows are the unregistered part.
 | `balance`, `balance_naira` (also `current_balance`, `receivable`, `on_credit`, statement `opening_balance`, `closing_balance`, `total_debits`, `total_credits`, `entries[].balance`, refund availability `refundable_credit`, AR adjustments `kpis.refundable_credit`, credit note `credit_remaining`) | signed outstanding minus credit, scoped to the reader's branches | Computed | none | `finance.customer.balance` | Balance | RO | open (Q-B4) | registered |
 | `account_status` (also `overdue`, `status_counts`), `pays_for_count` | standing and payer count | Computed | none | `finance.customer.account_status`, `pays_for_count` | Account standing, Pays for | RO | open | registered |
 | detail `lifetime_paid`, `open_invoice_count`, `open_invoices`, `open_debit_notes`, `transactions`, `statement` | account detail blocks | Computed | none | `finance.customer.lifetime_paid`, `open_invoice_count`, `open_invoices`, `open_debit_notes`, `transactions`, `statement` | as labelled in the registry | RO | open; where a block restates an invoice or receipt total the stricter switch wins | registered |
-| customer statement `aging.*` (per-customer buckets) | the customer's age analysis | Computed | none | `finance.report.aging_customers` | Amounts owed by each customer | RO | open (Q-A3); shown only if `balance` is also readable | recorded |
+| customer statement `aging.*` (per-customer buckets) | the customer's age analysis | Computed | none | `finance.report.aging_customers` | Amounts owed by each customer | RO | open (Q-A3); shown only if `balance` is also readable | registered in area A |
 | customer statement `entries[]` (`date`, `doc_type`, `description`, `debit`, `credit`) and its export columns | statement of account lines | Computed | none | `finance.customer.statement` | Statement of account | RO | open | registered |
 
 `entries[].document_number`, `transactions[].reference` and
@@ -758,7 +759,7 @@ buyer who does not reach every participant branch. Frontend:
 | `lines[].expense_account_id`, `expense_code` | accounting coding | Stored | create, PATCH | `procurement.requisition.line_expense_account` | Line expense account | RW | open | recorded |
 | `lines[].tax_code_id` | tax code | Stored | create, PATCH | `procurement.requisition.line_tax_code` | Line tax code | RW | open | recorded |
 | free-line extras `request_date`, `requisition_number`, `branch_name` | labels and dates of the source requisition | Computed | none | - | - | - | - | no switch: identifier |
-| budget availability `has_budget`, `period` (budget name), `budget`, `committed`, `available` | plan against commitments at a cost centre | Computed | none | `finance.budget.amount` | Planned amount | RO | the plan figures need the budget switches (leaks A-L18, C-L10, C-L11) | recorded |
+| budget availability `has_budget`, `period` (budget name), `budget`, `committed`, `available` | plan against commitments at a cost centre | Computed | none | `finance.budget.amount` | Planned amount | RO | the plan figures need the budget switches (leaks A-L18, C-L10, C-L11) | registered in area A |
 | `shared_sourcing` (null for an ordinary RFQ) | branch shares of a shared RFQ | Computed | none | `procurement.rfq.shared_sourcing` | Branch shares | RO | open | recorded |
 | `allocations[]` (`rfq_line_id`, `requisition_line_id`, `quantity`) | quantity per branch on a shared RFQ | Stored | create `lines[].allocations` (PATCH refuses) | `procurement.rfq.branch_allocations` | Branch quantities | RW (create only) | open | recorded |
 | RFQ `rfq_status`, `version` | state | Computed | issue, close, cancel | `procurement.rfq.status` | Status | RO | open | recorded |
@@ -1468,60 +1469,17 @@ answered table (8.1) and updating the rows that cite it.
 | How finance trail sentences hide a figure (Q-E11) | The sentence is figure-free everywhere; the figures sit in the per-field filtered `before` and `after`. Built. A row written before the rule is rebuilt on read from the action and the document number; its stored text is untouched (E-L26). |
 | Do CodeX roles follow the school's profile switches (Q-E13) | No. CodeX roles follow platform keys only. The address and registration columns of the `platform.schools` export are not governed by `school.profile` switches. |
 | Document numbers, petty cash fund names and bank account names | Identifiers; no switch. |
+| Statement figure grouping (Q-A1) | One switch per statement section. Revenue lines, expense lines and net income are separate decisions; every JSON response and export follows the same section switches. |
+| Statutory pack with a closed section (Q-A2) | Refuse the pack with 403. A partial filing must not look complete. |
+| Customer aging rows and totals (Q-A3) | Separate `aging_customers` and `aging_totals` switches. |
+| Budget amount default (Q-A4) | Sensitive. Planned amounts start closed for both Read and Write; each grant is separate. |
+| Budget lines and amounts (Q-A5) | Separate switches for the line set and planned amounts. |
+| Budget title (Q-A6) | Switch the free-text name; the budget code remains an identifier. |
+| Aggregates of switched source figures (Q-A7) | Report section switches govern aggregates. Individual pay switches do not remove aggregate salary accounts from statements; `analytics_slice` has its own switch. |
 
 ### 8.2 Area A: budgets and statements
 
-**Q-A1. How coarsely are statement figures switched?** Bright Star School's Ikeja
-Branch bursar Mr Eze chases fees with the AR aging and should not read the
-school's payroll cost or net profit. One switch per report: he gets the income
-statement whole or not at all, so the proprietor must withhold the whole profit
-and loss and Mr Eze loses the revenue he needs. One switch per section: he keeps
-Revenue lines and Receivables by age; Expense lines and Net income vanish. One
-switch per shared figure family: the same, and closing "Expenses" also hides the
-Spending card and the budget "used" column. Recommendation: per section, with
-every restating surface showing an item only to a caller who may read the switch
-it restates.
-
-**Q-A2. What does the statutory pack do when a statement section is closed?**
-Greenfield School's registrar has Expense lines closed and opens the statutory
-pack. Refuse (403, "this filing needs every statement"): she cannot download
-anything misleading. Omit the closed sections: she downloads a pack with no
-expenses and no net income and sends it to the Corporate Affairs Commission as the
-annual accounts. Recommendation: refuse.
-
-**Q-A3. Within AR aging, are per-customer rows separate from the totals?** Lekki
-Branch's registrar sees "owed to the school: 12.4m, 4.1m over 90 days" but not
-"Mrs Okafor owes 340,000". Two switches (`aging_customers`, `aging_totals`): she
-keeps the totals. One switch: she sees both or neither. Recommendation: two.
-
-**Q-A4. Do budget plan amounts ship open or sensitive?** Greenfield's exam officer
-holds `finance.budget.view` to check the exam budget line, but the same budget
-holds "Salaries 41m" and a "Principal pay rise scenario". Sensitive: her budget
-screen shows no amounts until a school grants them. Open: nothing changes on
-deployment and the school closes what it wants. No recommendation; existing
-finance money fields shipped open and only pay figures and account numbers
-shipped closed.
-
-**Q-A5. Are budget lines one switch or two?** Lekki Branch's head of department
-may see that Stationery and Repairs are planned for January but not the amounts.
-Two switches (`lines` and `amount`): the coordinates stay visible and the amounts
-close. One switch: a hidden grid and no partial view. Recommendation: two.
-
-**Q-A6. Does a budget's title get a switch?** Greenfield names a draft "Principal
-pay rise scenario 2027"; a role without access to pay still reads that name on the
-budgets list, the dashboard subtitle, the audit trail and the procurement
-availability response. A switch on `name`: the title can be closed, the system
-number stays an identifier. No switch: simpler, but the title keeps leaking.
-Recommendation: a switch on `name`.
-
-**Q-A7. May a statement restate a figure whose own switch is closed?** Bright Star
-closes Gross pay for Mrs Bello, yet she reads "Salaries and wages 41,300,000" on
-the income statement and "Principal's office 1,800,000" (one person's pay) in the
-cost and dimension analysis. Accept aggregates: the statement switches govern.
-Suppress small groups and hold salary accounts back from her statements: stronger,
-but it needs a "salary accounts" family and breaks the trial balance footing.
-Recommendation: accept aggregates and ship `analytics_slice` as its own switch so
-a school can close it.
+All Area A questions are answered in section 8.1.
 
 ### 8.3 Area B: receivables, ledger and banking
 
@@ -1679,26 +1637,26 @@ How a status was chosen:
 
 | ID | Leak | Status |
 | --- | --- | --- |
-| A-L1 | The income statement carries budget and variance columns, JSON and export, under `finance.report.view` only; no budget permission is needed. | recorded |
-| A-L2 | Budget variance, heatmap, roll-up and list carry actual income and expense per account, including unbudgeted P&L accounts, under `finance.budget.view` only. | recorded |
-| A-L3 | Budget list, variance, heatmap and roll-up serve the figures of the registered `finance.dashboard` budget cards under a separate guard. | recorded |
-| A-L4 | Budget name, branch and status reappear in dashboards, the roll-up, response messages, error text and audit rows. | recorded |
-| A-L5 | Reports restate eleven registered `finance.dashboard` cards (net income, receivables, payables, cash, bank accounts, cash movement, aging, fixed assets, tax, spending, branch comparison). | recorded |
-| A-L6 | The income statement, changes in equity, balance sheet and pack restate the registered `finance.fiscalyear.net_income`. | recorded |
-| A-L7 | Trial balance, AR reconciliation, balance sheet, cash flow, equity and pack flags restate the registered `finance.period` close checks. | recorded |
-| A-L8 | Statements show live balances every day; the registered `finance.seal` serves the comparison against the sealed balances. | recorded |
-| A-L9 | Balance sheet, trial balance, pack and the ledger dataset restate the registered `finance.deferredincome` balances. | recorded |
-| A-L10 | Balance sheet, P&L and trial balance restate the registered `finance.provision` allowance. | recorded |
-| A-L11 | Balance sheet and trial balance restate the registered `finance.deposit` liability. | recorded |
-| A-L12 | Balance sheet and trial balance restate the registered `finance.interbranch` due-to and due-from balances. | recorded |
-| A-L13 | Balance sheet cash lines, cash flow opening and closing cash and the trial balance restate the registered bank balances. | recorded |
-| A-L14 | Statements restate aggregate pay (`finance.salary`, `finance.payrollrun`); a cost centre of one person in the analytics slice reads as that person's pay (Q-A7). | recorded |
-| A-L15 | Every report's export (CSV, XLSX or PDF) rebuilds the same figures with no field awareness. | recorded |
-| A-L16 | The `finance.gl_postings` dataset (schedulable) rebuilds every statement from raw ledger lines. | recorded |
-| A-L17 | `GET accounts/?with_balance=true` restates the trial balance per account (the bank-ledger part is B-L11). | recorded |
-| A-L18 | Procurement requisition budget availability returns a plan amount and budget name under `procurement.requisition.view`, and picks the latest approved plan of any branch, not the requester's. | fixed: the branch scope. Plans and commitments are narrowed to the caller's branches and the latest approved plan is taken per branch, `vs_procurement.tests_restated_reach.RequisitionBudgetReachTests`. The plan amount itself is an unregistered budget field and stays open, recorded under area A as the `finance.budget.amount` switch (see also C-L10) |
+| A-L1 | The income statement carries budget and variance columns, JSON and export, under `finance.report.view` only; no budget permission is needed. | fixed: report budget columns require the report section and budget amount switches |
+| A-L2 | Budget variance, heatmap, roll-up and list carry actual income and expense per account, including unbudgeted P&L accounts, under `finance.budget.view` only. | fixed: actual figures require budget actual and the matching income section switch |
+| A-L3 | Budget list, variance, heatmap and roll-up serve the figures of the registered `finance.dashboard` budget cards under a separate guard. | fixed: budget figures use the budget switches across these paths |
+| A-L4 | Budget name, branch and status reappear in dashboards, the roll-up, response messages, error text and audit rows. | fixed for switched values: the free-text name follows its switch; branch remains an identifier |
+| A-L5 | Reports restate eleven registered `finance.dashboard` cards (net income, receivables, payables, cash, bank accounts, cash movement, aging, fixed assets, tax, spending, branch comparison). | resolved by Q-A7: report section switches govern these aggregates |
+| A-L6 | The income statement, changes in equity, balance sheet and pack restate the registered `finance.fiscalyear.net_income`. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L7 | Trial balance, AR reconciliation, balance sheet, cash flow, equity and pack flags restate the registered `finance.period` close checks. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L8 | Statements show live balances every day; the registered `finance.seal` serves the comparison against the sealed balances. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L9 | Balance sheet, trial balance, pack and the ledger dataset restate the registered `finance.deferredincome` balances. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L10 | Balance sheet, P&L and trial balance restate the registered `finance.provision` allowance. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L11 | Balance sheet and trial balance restate the registered `finance.deposit` liability. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L12 | Balance sheet and trial balance restate the registered `finance.interbranch` due-to and due-from balances. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L13 | Balance sheet cash lines, cash flow opening and closing cash and the trial balance restate the registered bank balances. | resolved by Q-A7: report section switches govern these aggregates |
+| A-L14 | Statements restate aggregate pay (`finance.salary`, `finance.payrollrun`); a cost centre of one person in the analytics slice reads as that person's pay (Q-A7). | resolved by Q-A7: report section switches govern these aggregates |
+| A-L15 | Every report's export (CSV, XLSX or PDF) rebuilds the same figures with no field awareness. | fixed: exports use the filtered report payload |
+| A-L16 | The `finance.gl_postings` dataset (schedulable) rebuilds every statement from raw ledger lines. | pending with the Area B journal-field work; raw ledger lines have their own field boundary |
+| A-L17 | `GET accounts/?with_balance=true` restates the trial balance per account (the bank-ledger part is B-L11). | fixed for trial balance figures: account balances require `finance.report.trial_balance`; B-L11 remains pending |
+| A-L18 | Procurement requisition budget availability returns a plan amount and budget name under `procurement.requisition.view`, and picks the latest approved plan of any branch, not the requester's. | fixed: branch reach and the budget name, amount, actual and variance switches govern the procurement payload |
 | A-L19 | The customer statement `aging` and balances, the dunning summary buckets and the customer list `balance` restate customer balance and aging with no switch check. | fixed: `vs_finance.tests_receivables_restating_paths.CustomerStatementAccessTests`, `DunningSummaryAccessTests`, `CustomerCreditAccessTests.test_the_customer_list_balance_follows_the_balance_switch` |
-| A-L20 | Budget `filing.branches` offered while the caller may not set `branch`. | recorded |
+| A-L20 | Budget `filing.branches` offered while the caller may not set `branch`. | exempt: branch is an identifier and its write scope follows branch reach |
 
 A-L20 is voided by the branch rule in section 2.
 
@@ -1739,7 +1697,7 @@ B-L16 and B-L17 are voided by the identifier rule in section 2.
 | C-L7 | `QuotationDetailSerializer.submissions[].submitted_by_email` serves a vendor contact's email outside `procurement.vendor_contact.email`. | fixed: `vs_procurement.tests_restated_vendor_values.SubmittedByEmailTests` |
 | C-L8 | Registered vendor values still leak: (a) `VendorCategorySerializer.vendor_count`, (b) `VendorCategoryInsightsView` spend per category, (c) refusal sentences and the `?purchase_eligible=true` filter state hold and KYC, (d) the PO delivery history `recipient_count`, `bcc_count`, `failure_reason`, (e) a new order echoes the vendor's `payment_terms`. | fixed in parts: (a) `vs_procurement.tests_restated_vendor_values.VendorCategoryCountTests`; (b) `CategorySpendFieldAccessTests` (the insights answer 403 when the category is hidden); (c) exempt by owner decision: business-rule refusal sentences and the `?purchase_eligible=true` verdict stay; (d) `DeliveryHistoryFieldAccessTests`; (e) no change: payment terms copied onto an order are the order's own field |
 | C-L9 | Double-sourcing refusals name a shared RFQ number the buyer cannot open; document numbers are identifiers. | recorded |
-| C-L10 | A plan amount is readable under a procurement key only: budget availability and the suppliers dashboard `spend.plan`. | recorded |
+| C-L10 | A plan amount is readable under a procurement key only: budget availability and the suppliers dashboard `spend.plan`. | fixed: both paths require `finance.budget.amount` |
 | C-L11 | Requisition budget availability `committed` sums every branch's PO lines at a cost centre, not the caller's branches. | fixed: `vs_procurement.tests_restated_reach.RequisitionBudgetReachTests` |
 | C-L12 | `CatalogItemInsightsView` (vendor pricing, purchase history) and `ContractLinkedPurchaseOrdersView` (order totals) are not branch narrowed. | fixed: `vs_procurement.tests_restated_reach.CatalogItemInsightsReachTests`, `ContractLinkedOrdersReachTests` |
 | C-L13 | Assessment scores and grade are restated in vendor performance and the suppliers dashboard scorecard. | recorded |
@@ -1833,7 +1791,7 @@ for these screens (D-L10).
 | X-L13 | Reviewed, no leak: the `schools` import is judged by `SchoolCreateSerializer` (`platform.schools`, covered by `schools.vs_schools.tests_platform_schools_field_access`); the `branches` import writes the branch address and email that `school.branches` declares read-only because CodeX sets them when provisioning, and the dataset is platform-only; the `bank_statements` import writes `BankStatementLine` rows, which no registered resource covers (`finance.banktransaction` is the posted bank transaction document); `org_units`, `positions`, `matrix_reports`, `calendar_events`, `academic_structure` and `subjects` write no registered field. | reviewed, no change |
 | X-L14 | The student roll and household-list imports carried their own copy of the import write judge (`import_request`, `write_refusal`, `write_refusal_issue`). | fixed: both read the shared `vs_import_data.field_writes`, which takes an optional `names_set` for a column that fills several fields only in part (a guardian's one-line name); behaviour and messages are unchanged. `vs_import_data.tests_field_writes`, `schools.vs_students.tests.test_import_field_access` |
 | X-L15 | A platform account's phone (`User.phone`) has no switch. It shows on the user list and on the CodeX user-creation approval card (`PLATFORM_USER_CREATION`). Candidate: `platform.team.phone`, Read and Write, in the next wave. | recorded |
-| X-L16 | The `/me` field map lists the write aliases of `finance.customer` (`opening_date`, `opening_branch`, `receivable_account`) only under `read_only`, never under `open_on_create`; a client follows the governing field (`opening_balance`, `receivable_account`) rather than the alias. | recorded |
+| X-L16 | The `/me` field map listed create-open write aliases only under `read_only`. `opening_date` and `opening_branch` now follow `finance.customer.opening_balance` into `open_on_create`; `receivable_account` remains read-only because its governing field is not open on create. | fixed: `vs_rbac.tests.test_field_enforcement.TheMapAUserIsHandedTests`, `vs_finance.tests_customer_field_access.CustomerWriteTests` |
 | X-L17 | A cancelled purchase order's reason also appears in the delivery's `failure_reason` ("Purchase order cancelled: <reason>"). The reason is unregistered, so the text is open. | recorded: open, the reason is unregistered |
 
 ### 9.7 Deployment checks that belong with the registrations
@@ -1868,13 +1826,13 @@ one area, so the total is two lower than the sum of the areas.
 
 | Area | New switches recorded | Rows already registered | Rows with no switch: identifier | Rows with no switch: transport | Rows with no switch: owner decision |
 | --- | --- | --- | --- | --- | --- |
-| A. Budgets and financial statements | 25 | 0 | 3 | 3 | 2 |
+| A. Budgets and financial statements | 0 | 25 | 3 | 3 | 3 |
 | B. Receivables, ledger and banking documents | 103 | 16 | 3 | 17 | 12 |
 | C. Procurement | 193 | 4 | 4 | 13 | 10 |
 | D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
 | E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 471 | 31 | 14 | 50 | 31 |
+| Total | 446 | 56 | 14 | 50 | 32 |
 
 Where the new switches sit:
 
@@ -1900,7 +1858,8 @@ Where the new switches sit:
   `read_status`, and `read_receipts` from 22 October 2026), counted under the
   registered column.
 
-Sensitive by recommendation: `procurement.rfq.budget_estimate`,
+Sensitive by owner decision: `finance.budget.amount` (Q-A4). Sensitive by
+recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and
 `school.settings.starting_role`. Everything else ships open, several pending the
 questions in section 8.
@@ -1909,16 +1868,17 @@ questions in section 8.
 
 | Area | Leaks | Fixed | Still to be fixed | Recorded | Exempt | Reviewed or elsewhere |
 | --- | --- | --- | --- | --- | --- | --- |
-| A. Budgets and financial statements | 20 | 2 | 0 | 18 | 0 | 0 |
+| A. Budgets and financial statements | 20 | 8 | 0 | 1 | 11 | 0 |
 | B. Receivables, ledger and banking documents | 17 | 10 | 0 | 7 | 0 | 0 |
-| C. Procurement | 19 | 10 | 0 | 9 | 0 | 0 |
+| C. Procurement | 19 | 11 | 0 | 8 | 0 | 0 |
 | D. School settings | 9 | 6 | 0 | 2 | 1 | 0 |
 | E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 25 | 0 | 10 | 3 | 2 |
-| X. Found outside the five areas | 17 | 9 | 0 | 7 | 0 | 1 |
-| Total | 122 | 62 | 0 | 53 | 4 | 3 |
+| X. Found outside the five areas | 17 | 10 | 0 | 6 | 0 | 1 |
+| Total | 122 | 70 | 0 | 34 | 15 | 3 |
 
-The recorded column includes A-L20, B-L16 and B-L17, which the rules in section 2
-void but whose rows keep the status `recorded`. "Reviewed or elsewhere" is E-L34
+The recorded column includes B-L16 and B-L17, which the rules in section 2
+void but whose rows keep the status `recorded`. Area A's eleven exemptions follow
+the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34
 (names are labels, no change), E-L36 (belongs to the search feature) and X-L13
 (reviewed, no leak). C-L8 is counted as fixed although its part (c) is exempt by
 owner decision. Three reviewed paths in area D were clear and are not rows
@@ -1926,6 +1886,7 @@ owner decision. Three reviewed paths in area D were clear and are not rows
 
 ### 10.3 Open product questions
 
-24 questions: area A 7 (Q-A1 to Q-A7), area B 4 (Q-B4, Q-B5, Q-B8, Q-B10),
-area C 5 (Q-C2, Q-C3, Q-C4, Q-C6, Q-C7), area D 5 (Q-D1 to Q-D5), area E 3 (Q-E4,
-Q-E5, Q-E12). Six more (Q-D6, Q-D7, Q-E9, Q-E10, Q-E11, Q-E13) are answered in 8.1.
+17 questions: area A 0, area B 4 (Q-B4, Q-B5, Q-B8, Q-B10),
+area C 5 (Q-C2, Q-C3, Q-C4, Q-C6, Q-C7), area D 5 (Q-D1 to Q-D5),
+area E 3 (Q-E4, Q-E5, Q-E12). Thirteen more (Q-A1 to Q-A7, Q-D6,
+Q-D7, Q-E9, Q-E10, Q-E11, Q-E13) are answered in 8.1.

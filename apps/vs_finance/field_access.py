@@ -450,6 +450,65 @@ def _period_fields():
 def register():
     """Publish the finance field declarations to the Field Access registry."""
     register_fields(
+        "finance", "budget",
+        surfaces=(
+            "vs_finance.serializers.BudgetSerializer",
+            "vs_finance.serializers.BudgetLineSerializer",
+            "vs_finance.budget_access.BudgetAccessSerializer",
+        ),
+        fields=(
+            FieldSpec("name", "Budget name", group="Plan", scope=_TENANT,
+                      sort_order=10, api_names=("name", "budget_name")),
+            FieldSpec("fiscal_year", "Fiscal year", group="Plan", scope=_TENANT,
+                      sort_order=20, open_on_create=True),
+            FieldSpec("status", "Status", group="Plan", scope=_TENANT,
+                      sort_order=30, writable=False, api_names=("status", "is_locked")),
+            FieldSpec("approved_at", "Approved on", group="Plan", scope=_TENANT,
+                      sort_order=40, writable=False),
+            FieldSpec("lines", "Budget lines (account, cost centre, period)",
+                      group="Plan", scope=_TENANT, sort_order=50),
+            FieldSpec("amount", "Planned amount", group="Figures", scope=_TENANT,
+                      sort_order=100, sensitive=True,
+                      api_names=("amount", "budget", "budgeted_total", "budget_total",
+                                 "total_budget", "plan")),
+            FieldSpec("actual", "Actual against the plan", group="Figures",
+                      scope=_TENANT, sort_order=110, writable=False,
+                      api_names=("actual", "actual_ytd", "actual_total", "total_actual",
+                                 "used")),
+            FieldSpec("variance", "Variance and share used", group="Figures",
+                      scope=_TENANT, sort_order=120, writable=False,
+                      api_names=("variance", "total_variance", "consumed_pct",
+                                 "pct", "pct_of_plan", "delta_pct")),
+        ),
+    )
+    register_fields(
+        "finance", "report",
+        surfaces=("vs_finance.report_access.ReportSectionsSerializer",),
+        fields=tuple(
+            FieldSpec(name, label, group=group, scope=_TENANT, writable=False,
+                      sort_order=order)
+            for order, (name, label, group) in enumerate((
+                ("trial_balance", "Trial balance", "Trial balance"),
+                ("income_revenue", "Revenue lines", "Income statement"),
+                ("income_expense", "Expense lines", "Income statement"),
+                ("income_net", "Net income", "Income statement"),
+                ("income_budget", "Budget and variance columns", "Income statement"),
+                ("income_prior_year", "Prior-year column", "Income statement"),
+                ("balance_assets", "Assets", "Balance sheet"),
+                ("balance_liabilities", "Liabilities", "Balance sheet"),
+                ("balance_equity", "Equity and current-year earnings", "Balance sheet"),
+                ("balance_check", "Whether the balance sheet balances", "Balance sheet"),
+                ("cashflow_cash", "Opening and closing cash", "Cash flow"),
+                ("cashflow_activities", "Cash by activity", "Cash flow"),
+                ("equity_changes", "Changes in equity", "Changes in equity"),
+                ("analytics_slice", "Cost and dimension analysis", "Analysis"),
+                ("aging_customers", "Amounts owed by each customer", "Receivables"),
+                ("aging_totals", "Receivables by age, totals", "Receivables"),
+                ("ar_reconciliation", "Receivables reconciliation", "Receivables"),
+            ), start=1)
+        ),
+    )
+    register_fields(
         "finance",
         "customer",
         surfaces=(

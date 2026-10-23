@@ -21,6 +21,7 @@ from vs_finance.constants import BudgetStatus, DocumentStatus
 from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
+from vs_rbac.field_enforcement import can_read
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import HasRBACPermission, is_vision_super_admin, user_has_rbac_permission
 from vs_config.clock import tenant_today
@@ -536,10 +537,10 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
             entity=entity, start_date__lte=as_of, end_date__gte=as_of, is_closing=False,
         ).select_related("fiscal_year").first()
         if period is None:
-            return success_response("No fiscal period covers this date.", data={
-                "has_budget": False, "period": None, "budget": 0, "committed": 0,
-                "available": 0,
-            })
+            data = {"period": None, "committed": 0}
+            if can_read(request, "finance.budget.amount"):
+                data.update(has_budget=False, budget=0, available=0)
+            return success_response("No fiscal period covers this date.", data=data)
 
         # A plan belongs to a branch and so do the orders raised against it: the caller
         # is measured against the branches they work in (and ``?branch=`` within them),
@@ -577,16 +578,18 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
         ).aggregate(total=Sum("net_amount"))["total"] or 0
         # Available budget is the approved annual plan less commitments already raised for the department.
         available = budget_amount - committed
-        return success_response("Budget availability retrieved.", data={
-            "has_budget": bool(operative) and budget_amount > 0,
-            # Label with the operative plan (e.g. "IT CAPEX 2026") since the figures
-            # are annual; a month name here would misrepresent the scope. Several
-            # branches' plans in one answer are labelled by the year they cover.
-            "period": budget.name if budget is not None else f"FY{fy.year}",
-            "budget": budget_amount,
+        data = {
+            "period": (budget.name if budget is not None and
+                       can_read(request, "finance.budget.name") else f"FY{fy.year}"),
             "committed": committed,
-            "available": available,
-        })
+        }
+        if can_read(request, "finance.budget.amount"):
+            data.update(
+                has_budget=bool(operative) and budget_amount > 0,
+                budget=budget_amount,
+                available=available,
+            )
+        return success_response("Budget availability retrieved.", data=data)
 
 
 class RequisitionSubmitView(_ProcBase):

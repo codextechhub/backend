@@ -4270,7 +4270,8 @@ class DunningSummaryView(_FinanceBase):
         from django.db.models import F
 
         entity = resolve_entity(request)
-        if not can_read(request, "finance.customer.account_status"):
+        if (not can_read(request, "finance.customer.account_status")
+                or not can_read(request, "finance.report.aging_totals")):
             return success_response("Dunning summary retrieved.", data={})
         buckets = {k: {"amount": 0, "count": 0} for k in
                    ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}

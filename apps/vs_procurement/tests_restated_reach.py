@@ -170,6 +170,15 @@ class RequisitionBudgetReachTests(_ReachFixture):
                          (300_000, 100_000, 200_000))
         self.assertEqual(lekki["period"], "Lekki plan")
 
+    def test_sensitive_plan_amount_is_hidden_when_field_access_is_installed(self):
+        from vs_rbac.tests.helpers import install_declared_fields
+
+        install_declared_fields("finance.budget", "finance.report")
+        data = self.budget(self.ikeja_reader)
+        self.assertEqual(data["period"], "Ikeja plan")
+        self.assertNotIn("budget", data)
+        self.assertNotIn("available", data)
+
     def test_the_latest_approved_plan_of_a_branch_is_its_budget(self):
         self.assertEqual(self.budget(self.ikeja_reader)["budget"], 600_000)
 

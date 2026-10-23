@@ -23,8 +23,10 @@ from __future__ import annotations
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
+from vs_rbac.field_enforcement import assert_writable, visible
 from vs_rbac.scoping import transaction_branch_scope
 
+from ..budget_access import actual_readable, budget_figures, readable_budget_fields
 from ..money import format_naira
 from ..views import resolve_entity
 from ..models import (
@@ -76,26 +78,29 @@ def _money_pair(amount):
     return {"kobo": amount, "naira": format_naira(amount)}
 
 
-def _variance_payload(report) -> dict:
+def _variance_payload(request, report) -> dict:
     """A variance report, one budget's or a roll-up's, as the variance screen reads it."""
-    return {
+    account_types = {r.account_type for r in report.rows}
+    data = {
         "budget_id": report.budget_id,
         "fiscal_year_id": report.fiscal_year_id,
         "period_no": report.period_no,
         "rows": [
-            {
+            budget_figures(request, {
                 "account_id": r.account_id, "code": r.code, "name": r.name,
                 "account_type": r.account_type,
                 "budget": _money_pair(r.budget),
                 "actual": _money_pair(r.actual),
                 "variance": _money_pair(r.variance),
-            }
+            }, account_types=(r.account_type,))
             for r in report.rows
         ],
         "total_budget": _money_pair(report.total_budget),
         "total_actual": _money_pair(report.total_actual),
         "total_variance": _money_pair(report.total_variance),
     }
+    data["rows"] = [r for r in data["rows"] if "budget" in r or "actual" in r]
+    return budget_figures(request, data, account_types=account_types)
 
 
 # Group endpoint behavior for Budget List Create View.
@@ -131,12 +136,16 @@ class BudgetListCreateView(_FinanceBase):
         page = paginator.paginate_queryset(qs.order_by("-id"), request, view=self)
         data = BudgetSerializer(page, many=True, context={"request": request}).data
         by_id = {b.id: b for b in page}
+        account_types = {}
         for row in data:
             report = budget_vs_actual(by_id[row["id"]])
+            account_types[row["id"]] = {r.account_type for r in report.rows}
             budgeted, actual = report.total_budget, report.total_actual
             row["budgeted_total"] = budgeted
             row["actual_ytd"] = actual
             row["consumed_pct"] = round(actual * 100 / budgeted, 1) if budgeted else None
+        data = [budget_figures(request, row, account_types=account_types[row["id"]])
+                for row in data]
         response = paginator.get_paginated_response(data)
         response.data["narrowed"] = _reader_scope(request).is_narrowed
         response.data["filing"] = _filing_choices(request, entity)
@@ -148,6 +157,9 @@ class BudgetListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.budget", body, creating=True)
+        if body.get("lines"):
+            assert_writable(request, "finance.budget", {"amount": True}, creating=True)
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A budget name is required."})
@@ -228,6 +240,8 @@ class BudgetDetailView(_BudgetActionBase):
 
         _, budget = self._budget(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.budget", body,
+                        current={"name": budget.name} if "name" in body else None)
         name = body.get("name")
         if name is not None and not str(name).strip():
             raise ValidationError({"name": "A budget name is required."})
@@ -259,6 +273,7 @@ class BudgetLineCreateView(_BudgetActionBase):
 
         entity, budget = self._budget(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.budget", {"lines": True, "amount": True})
         add_budget_line(
             budget,
             account=_resolve_account(request, entity, body.get("account"), "account", required=True),
@@ -277,6 +292,7 @@ class BudgetLineCreateView(_BudgetActionBase):
 
         entity, budget = self._budget(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.budget", {"lines": True, "amount": True})
         set_budget_lines(budget, _resolve_lines(request, entity, body.get("lines")))
         budget.refresh_from_db()
         return success_response("Budget lines saved.", data=self._payload(request, budget))
@@ -293,6 +309,7 @@ class BudgetLineDetailView(_BudgetActionBase):
         from ..budgets import delete_budget_line
 
         _, budget = self._budget(request, pk)
+        assert_writable(request, "finance.budget", {"lines": True, "amount": True})
         delete_budget_line(budget, line_id)
         budget.refresh_from_db()
         return success_response("Budget line removed.", data=self._payload(request, budget))
@@ -311,7 +328,9 @@ class BudgetApproveView(_BudgetActionBase):
         approve_budget(budget, actor_user=request.user)
         budget.refresh_from_db()
         return success_response(
-            f"Budget '{budget.name}' approved and locked.",
+            (f"Budget '{budget.name}' approved and locked."
+             if "name" in readable_budget_fields(request)
+             else f"Budget {budget.code} approved and locked."),
             data=self._payload(request, budget),
         )
 
@@ -332,7 +351,7 @@ class BudgetVarianceView(_BudgetActionBase):
         _, budget = self._budget(request, pk)
         period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
         report = budget_vs_actual(budget, period_no=period_no)
-        return success_response("Budget variance retrieved.", data=_variance_payload(report))
+        return success_response("Budget variance retrieved.", data=_variance_payload(request, report))
 
 
 # Group endpoint behavior for Budget Heatmap View.
@@ -353,24 +372,34 @@ class BudgetHeatmapView(_BudgetActionBase):
 
         _, budget = self._budget(request, pk)
         matrix = budget_monthly_matrix(budget)
+        amount = "amount" in readable_budget_fields(request)
+        rows = []
+        for r in matrix.rows:
+            actual = actual_readable(request, (r.account_type,))
+            if not (amount or actual):
+                continue
+            row = {
+                "account_id": r.account_id, "code": r.code, "name": r.name,
+                "account_type": r.account_type,
+            }
+            if amount and actual:
+                row["cells"] = r.cells
+            if amount:
+                row["budget_total"] = r.budget_total
+            if actual:
+                row["actual_total"] = r.actual_total
+            rows.append(row)
         return success_response(
             "Budget heatmap retrieved.",
             data={
                 "budget_id": matrix.budget_id,
                 "fiscal_year_id": matrix.fiscal_year_id,
                 "periods": matrix.periods,
-                "rows": [
-                    {
-                        "account_id": r.account_id, "code": r.code, "name": r.name,
-                        "account_type": r.account_type,
-                        "cells": r.cells,
-                        "budget_total": r.budget_total,
-                        "actual_total": r.actual_total,
-                    }
-                    for r in matrix.rows
-                ],
-                "total_budget": matrix.total_budget,
-                "total_actual": matrix.total_actual,
+                "rows": rows,
+                **budget_figures(request, {
+                    "total_budget": matrix.total_budget,
+                    "total_actual": matrix.total_actual,
+                }, account_types={r.account_type for r in matrix.rows}),
             },
         )
 
@@ -410,16 +439,14 @@ class BudgetRollupView(_FinanceBase):
         period_no = _int(request.query_params.get("period_no"), "period_no", minimum=1)
         scope = _reader_scope(request)
         report = budget_rollup(entity, fiscal_year, scope=scope, period_no=period_no)
-        data = _variance_payload(report)
+        data = _variance_payload(request, report)
         data["fiscal_year"] = fiscal_year.year
         data["narrowed"] = scope.is_narrowed
         data["budgets"] = [
-            {
+            visible(request, "finance.budget", {
                 "id": b.id, "code": b.code, "name": b.name, "status": b.status,
                 "branch_id": b.branch_id, "branch_name": b.branch.name if b.branch_id else None,
-            }
+            })
             for b in report.budgets
         ]
         return success_response("Budget school total retrieved.", data=data)
-
-

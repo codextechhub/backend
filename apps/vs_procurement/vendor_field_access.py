@@ -47,6 +47,8 @@ def trim_overview_dashboard(request, data: dict) -> dict:
 
 def trim_suppliers_dashboard(request, data: dict) -> dict:
     """The spend and suppliers tab, without the vendor values the caller may not read."""
+    from vs_finance.budget_access import actual_readable, readable_budget_fields
+
     if not vendor_field_readable(request, "category"):
         for row in data.get("scorecard") or []:
             row.pop("category", None)
@@ -58,4 +60,17 @@ def trim_suppliers_dashboard(request, data: dict) -> dict:
             base.pop("on_hold", None)
         if not vendor_field_readable(request, "kyc_status"):
             base.pop("awaiting_kyc", None)
+    plan = data.get("plan")
+    if isinstance(plan, dict):
+        fields = readable_budget_fields(request)
+        if "name" not in fields:
+            plan.pop("budget_name", None)
+        amount = "amount" in fields
+        actual = actual_readable(request, ("EXPENSE",))
+        if not amount:
+            plan.pop("planned", None)
+        if not actual:
+            plan.pop("spent_ytd", None)
+        if not (amount and actual and "variance" in fields):
+            plan.pop("pct", None)
     return data

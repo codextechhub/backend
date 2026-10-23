@@ -2771,7 +2771,8 @@ class PayslipSerializer(serializers.ModelSerializer):
 # Budgets                                                                     #
 # --------------------------------------------------------------------------- #
 
-class BudgetLineSerializer(serializers.ModelSerializer):
+class BudgetLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.budget"
     account = serializers.CharField(source="account.code", read_only=True)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
@@ -2780,13 +2781,16 @@ class BudgetLineSerializer(serializers.ModelSerializer):
         fields = ["id", "account", "account_id", "cost_center", "period_no", "amount"]
 
 
-class BudgetSerializer(serializers.ModelSerializer):
+class BudgetSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A budget, with the branch it belongs to and whether the reader may change it.
 
     ``branch_id`` is empty only on a budget raised before every budget named a
     branch, which only a whole-school reader reaches. ``can_manage`` answers for
     the request's reader (see :func:`vs_rbac.scoping.caller_may_change`).
     """
+
+    field_resource = "finance.budget"
+    field_access_detail = True
 
     fiscal_year = serializers.IntegerField(source="fiscal_year.year", read_only=True)
     is_locked = serializers.BooleanField(read_only=True)
@@ -2873,6 +2877,7 @@ AUDIT_SNAPSHOT_FIELDS_BY_ACTION = {
 }
 
 AUDIT_SNAPSHOT_FIELDS = {
+    "Budget": "finance.budget",
     "EmployeeSalary": "finance.salary",
     "FinanceReceivablesPolicy": "finance.settings",
     "FinanceBankingSettings": "finance.settings",
@@ -3000,11 +3005,17 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         return audit_row_attribution(obj)
 
     def to_representation(self, obj):
-        from .audit import entry_reason, entry_sentence
+        from .audit import entry_reason, entry_sentence, mirror_summary
 
         data = super().to_representation(obj)
         data["message"] = entry_sentence(obj)
         request = self.context.get("request")
+        if obj.action in (FinanceAuditAction.BUDGET_APPROVED,
+                          FinanceAuditAction.BUDGET_DELETED) and not can_read(
+                              request, "finance.budget.name"):
+            data["message"] = mirror_summary(
+                obj.action, obj.document_number or obj.target_id,
+            )
         resource = (AUDIT_SNAPSHOT_FIELDS.get(obj.target_type)
                     or AUDIT_SNAPSHOT_FIELDS_BY_ACTION.get(obj.action))
         if resource is not None:
