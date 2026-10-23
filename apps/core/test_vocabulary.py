@@ -28,11 +28,14 @@ commits, not third-party or collected assets, so whatever is added there is
 the project's own writing. A checkout with no ``docs/`` directory, such as a
 deployed image, is read without it.
 
-Two lines are allowed. One is in the development seed: it renames branches
+Three lines are allowed. One is in the development seed: it renames branches
 that older runs of the seed stored under the old name, and it has to spell that
-name to match those rows. The other is a test asserting that a screen's labels
-never use the word, which has to spell it to look for it. ``ALLOWED_LINES`` records it by its path from the repository
-root and its exact content. Each entry excuses a single line, so a copy of it
+name to match those rows. Another is a test asserting that a screen's labels
+never use the word, which has to spell it to look for it. The third is in a
+requirements-document patch script that finds the old change-log sentence
+naming the word and rewrites it, so it too has to spell it.
+``ALLOWED_LINES`` records each by its path from the repository root and its
+exact content. Each entry excuses a single line, so a copy of it
 still fails, and a second test fails once the line is gone, so the exception
 cannot outlive the code it excuses.
 """
@@ -66,6 +69,12 @@ ALLOWED_LINES = frozenset({
     (
         "apps/schools/vs_schools/tests_settings_endpoints.py",
         'self.assertNotIn("campus", (option["label"] + option["description"]).lower())',
+    ),
+    # A document patch that finds the old sentence to rewrite it, which has to spell it.
+    (
+        "docs/frd/tools/patch_22_october_contracts_docs.py",
+        'old = "Document-only patch. Retired the word campus, which had drifted in as a '
+        'synonym for the site primitive this module defines."',
     ),
 })
 
