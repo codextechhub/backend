@@ -293,29 +293,18 @@ LEAVE_DOCUMENT_TYPE = "schools.leave_request"
 LEAVE_TEMPLATE_CODE = "leave-request"
 LEAVE_TEMPLATE_NAME = "Leave-request approval"
 
-#: The approver pool that decides a leave request.
+#: The code of the approver group a group-based leave ladder names.
 #:
-#: A GROUP and not a role, which is the difference worth reading. A provisioned
-#: role puts a row on the school's own Roles and access screen that nobody at
-#: the school created, that holds nobody, that cannot be deleted because the
-#: leave ladder resolves through it, and that the screen gives no way to explain.
-#: This module renders that screen, so it would have been shipping its own
-#: confusion.
-#:
-#: A group says the same thing without inventing a role: the stage points at
-#: "Leave Approvers", and who that reaches is a list the school composes from
-#: its own people, its own roles or its own org seats. Changing it is one screen
-#: rather than a permission-model conversation.
-#:
-#: Provisioning creates the group EMPTY. Until a school puts somebody in it, a
-#: filed request parks rather than being approved unseen, which is the
-#: seeded-blocked-not-seeded-open contract every other ladder here keeps.
+#: The default ladder approves through the person's line manager and names no
+#: group. A school whose ladder routes through a Leave Approvers group instead
+#: is found, staffed and reported on by this code.
 LEAVE_APPROVER_GROUP_CODE = "leave-approvers"
 
 #: New hires, at a school that approves each one before it is invited.
 #:
-#: The document is the staff record itself. Its approvers are a group, for the
-#: reason ``LEAVE_APPROVER_GROUP_CODE`` gives, created empty so a hire filed
+#: The document is the staff record itself. Its approvers are a group rather
+#: than a provisioned role (a role would put a row on the school's own Roles and
+#: access screen that nobody there created), created empty so a hire filed
 #: before anybody is nominated parks rather than being invited unseen.
 HIRE_DOCUMENT_TYPE = "schools.staff_hire"
 HIRE_TEMPLATE_CODE = "staff-hire"

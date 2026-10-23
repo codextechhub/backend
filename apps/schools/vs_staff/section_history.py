@@ -67,6 +67,30 @@ SECTION_MODELS = {
 }
 LEAVE_PROFILE_FIELDS = {"leave_group": "Leave group"}
 
+#: The ``school.leave`` switch behind each leave field of the timeline. The
+#: note is never part of a history entry.
+LEAVE_FIELD_KEYS = {
+    "leave_type": "school.leave.leave_type",
+    "start_date": "school.leave.dates",
+    "end_date": "school.leave.dates",
+    "resumption_date": "school.leave.dates",
+    "days": "school.leave.days",
+    "status": "school.leave.status",
+}
+
+
+def readable_leave_fields(request, *, owner: bool = False) -> set:
+    """The leave fields of the timeline *request*'s caller may read.
+
+    All of them for the owner of the leave, the member of staff the timeline is of.
+    """
+    from vs_rbac.field_enforcement import can_read
+
+    return {
+        name for name, key in LEAVE_FIELD_KEYS.items()
+        if owner or can_read(request, key)
+    }
+
 
 def _model(section):
     if section == "access":
@@ -159,7 +183,7 @@ def _display(section, field, value, names):
     return str(value)
 
 
-def _title(section, data, names, record_type):
+def _title(section, data, names, record_type, visible_fields=None):
     if section == "overview":
         return "Name and contact" if record_type == "vs_user.user" else "Profile details"
     if section == "teaching":
@@ -173,6 +197,8 @@ def _title(section, data, names, record_type):
     if section == "leave":
         if record_type == StaffProfile._meta.label_lower:
             return "Leave group"
+        if visible_fields is not None and "leave_type" not in visible_fields:
+            return "Leave"
         return _display(section, "leave_type", data.get("leave_type"), names) or "Leave"
     return _display(section, "role_id", data.get("role_id"), names) or "Role"
 
@@ -182,7 +208,10 @@ def section_changes(*, tenant, staff, section, page, visible_fields=None, before
 
     The reader has already been admitted for this section. For overview,
     ``visible_fields`` comes from the detail serializer, so profile visibility
-    and Field Access also remove a field's history.
+    and Field Access also remove a field's history. For the leave section it is
+    the leave fields the reader may read (:func:`readable_leave_fields`), and a
+    change to a field they may not read is not an entry; the title falls back to
+    "Leave" when they may not read the type.
     """
     try:
         page = int(page)
@@ -206,7 +235,9 @@ def section_changes(*, tenant, staff, section, page, visible_fields=None, before
             name: label for name, label in user_fields.items()
             if name in visible_fields
         }
-    if not fields and not user_fields:
+    if section == "leave" and visible_fields is not None:
+        fields = {name: label for name, label in fields.items() if name in visible_fields}
+    if not fields and not user_fields and section != "leave":
         return {"entries": [], "next_page": None}
 
     if section == "overview":
@@ -265,7 +296,7 @@ def section_changes(*, tenant, staff, section, page, visible_fields=None, before
         entries.append({
             "id": row.pk,
             "at": row.recorded_at,
-            "title": _title(section, row.data, names, row.record_type),
+            "title": _title(section, row.data, names, row.record_type, visible_fields),
             "action": "Recorded" if row.is_baseline else (
                 "Removed" if row.is_deleted else "Added" if row.previous_data is None else "Changed"
             ),

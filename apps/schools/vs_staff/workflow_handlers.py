@@ -21,7 +21,7 @@ from vs_workflow.conditions.fields import ConditionField
 from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
-from vs_workflow.presentation import document_details, fields_section
+from vs_workflow.presentation import document_details, fields_section, summary_fields
 
 from .constants import (
     HIRE_DOCUMENT_TYPE,
@@ -31,6 +31,13 @@ from .constants import (
     EmploymentStatus,
     LeaveStatus,
     LeaveType,
+)
+from .field_access import (
+    LEAVE_BALANCE_FIELD,
+    LEAVE_DATES_FIELD,
+    LEAVE_DAYS_FIELD,
+    LEAVE_NOTE_FIELD,
+    LEAVE_TYPE_FIELD,
 )
 
 
@@ -88,10 +95,13 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
         The person's name and the dates, because an approver deciding six
         requests in a morning is deciding between people and days rather than
         between ids. The leave TYPE is here too and is the one field worth
-        pausing over: sick leave says something about somebody's health, and it
-        appears on this card because an approver cannot decide a request without
-        knowing what kind it is. It goes no further than the approval surface,
-        which is why ``school.leave.view`` is not granted to teacher.
+        pausing over: sick leave says something about somebody's health, and an
+        approver cannot decide a request without knowing what kind it is. It is
+        a marked field and not part of the subtitle, which is copied into the
+        queue and every notification, so an approver whose role may not read the
+        type is not told it there either. Each field names the ``school.leave``
+        switch it restates, and an approver is shown the ones their roles may
+        read.
         """
         staff = getattr(document, "staff", None)
         user = getattr(staff, "user", None)
@@ -100,19 +110,16 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
             name = " ".join(
                 part for part in (user.first_name, user.last_name) if part
             ).strip()
-        fields = [
-            {
-                "label": "Dates",
-                "value": f"{document.start_date} to {document.end_date}",
-            },
-        ]
         over = getattr(document, "over_allowance_by", 0) or 0
-        if over:
-            fields.append({"label": "Over allowance", "value": _days(over)})
         return {
             "title": name or "Leave request",
-            "subtitle": f"{document.get_leave_type_display()} leave",
-            "fields": fields,
+            "subtitle": "Leave request",
+            "fields": summary_fields([
+                ("Type", f"{document.get_leave_type_display()} leave", LEAVE_TYPE_FIELD),
+                ("Dates", f"{document.start_date} to {document.end_date}",
+                 LEAVE_DATES_FIELD),
+                ("Over allowance", _days(over) if over else "", LEAVE_BALANCE_FIELD),
+            ]),
         }
 
     def get_document_details(self, document) -> dict:
@@ -120,21 +127,22 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
 
         The allowance line appears only where the request exceeds it. Filing
         over the allowance is allowed, so this is where the approver learns it.
+        Each value from a leave field names the switch that governs it; the job
+        title is the person's identifying label and always shows.
         """
         staff = getattr(document, "staff", None)
         from .services.leave import next_working_day
 
         resumption = document.resumption_date or next_working_day(staff, document.end_date)
-        rows = [
-            ("Days", getattr(document, "days", 0)),
-            ("Resumption date", str(resumption) if resumption else "Not set"),
-            ("Job title", getattr(staff, "job_title", "") or "-"),
-            ("Reason", getattr(document, "note", "")),
-        ]
         over = getattr(document, "over_allowance_by", 0) or 0
-        if over:
-            rows.append(("Over allowance by", _days(over)))
-        return document_details(fields_section("Leave details", rows))
+        return document_details(fields_section("Leave details", [
+            ("Days", getattr(document, "days", 0), LEAVE_DAYS_FIELD),
+            ("Resumption date", str(resumption) if resumption else "Not set",
+             LEAVE_DATES_FIELD),
+            ("Job title", getattr(staff, "job_title", "") or "-"),
+            ("Reason", getattr(document, "note", ""), LEAVE_NOTE_FIELD),
+            ("Over allowance by", _days(over) if over else "", LEAVE_BALANCE_FIELD),
+        ]))
 
     def validate_document(self, document, requested_by) -> None:
         """Only a pending request may be submitted.

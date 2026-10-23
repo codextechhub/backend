@@ -136,7 +136,7 @@ def _role_name(role_key: str, tenant) -> str:
     return role_names(tenant).get(role_key, "") if role_key else ""
 
 
-def stage_requirement(stage, tenant=None) -> str:
+def stage_requirement(stage, tenant=None, *, subject_name: str = "") -> str:
     """One plain sentence naming what would give this stage an approver.
 
     The dialog has to tell somebody how to fix the situation properly, and "no approver"
@@ -153,8 +153,14 @@ def stage_requirement(stage, tenant=None) -> str:
     template's when not given), because a shared template names its role by key
     and each tenant holds its own copy. A role the tenant does not hold reads as
     "the role this step approves from", never as its key.
+
+    An organogram sentence is about the person the climb starts from. It names
+    them when *subject_name* is given (the person a document is for, which is
+    not necessarily the person who raised it) and otherwise says "the person who
+    raised this".
     """
     source = stage.approver_source
+    who = subject_name or "the person who raised this"
     if source == ApproverSource.ROLE:
         role_key = approvers_service.stage_role_key(stage)
         if role_key:
@@ -175,15 +181,15 @@ def stage_requirement(stage, tenant=None) -> str:
     if source == ApproverSource.ORGANOGRAM:
         target = stage.organogram_target
         if target == OrganogramTarget.DIRECT_MANAGER:
-            return "give the person who raised this a manager on the organogram"
+            return f"give {who} a manager on the organogram"
         if target == OrganogramTarget.N_LEVELS_UP:
             levels = stage.organogram_levels or 1
             return (
-                f"complete the reporting line above the person who raised this "
+                f"complete the reporting line above {who} "
                 f"({levels} level{'s' if levels != 1 else ''} up)"
             )
         if target == OrganogramTarget.DEPARTMENT_HEAD:
-            return "appoint a head for the department of the person who raised this"
+            return f"appoint a head for the department of {who}"
         if target == OrganogramTarget.SPECIFIC_POSITION:
             from vs_workflow.services.positions import describe_position
 
@@ -194,10 +200,21 @@ def stage_requirement(stage, tenant=None) -> str:
             seat = label[1] if label else ""
             return f"put somebody in the {seat} position" if seat else (
                 "put somebody in the position this step approves from")
-        return "complete the organogram around the person who raised this"
+        return f"complete the organogram around {who}"
     # Deliberately generic: a source this function has not been taught about is a
     # configuration question, and pointing at the template is always true.
     return "configure an approver for this step on the workflow template"
+
+
+def _subject_name(instance) -> str:
+    """The name of the person the document is for when that is not who raised it.
+
+    Blank for a document about nobody in particular, so its sentences keep
+    speaking of "the person who raised this".
+    """
+    if not instance.request_for_id:
+        return ""
+    return approvers_service.display_name(instance.request_for)
 
 
 def describe_park(instance) -> dict:
@@ -239,7 +256,9 @@ def describe_park(instance) -> dict:
             if stage.approver_source == ApproverSource.WORKFLOW_GROUP
             and stage.approver_group_id else ""
         ),
-        "requirement": stage_requirement(stage, instance.tenant),
+        "requirement": stage_requirement(
+            stage, instance.tenant, subject_name=_subject_name(instance),
+        ),
         "document_type": instance.document_type,
         "can_continue_without_approval": can_continue,
     }
@@ -290,7 +309,10 @@ def release_parked_stage(instance, *, actor_user, reason=None):
             # relying on a key that may stop being the deciding factor.
             "approver_source": stage_instance.stage.approver_source,
             "role_key": approvers_service.stage_role_key(stage_instance.stage),
-            "requirement": stage_requirement(stage_instance.stage, instance.tenant),
+            "requirement": stage_requirement(
+                stage_instance.stage, instance.tenant,
+                subject_name=_subject_name(instance),
+            ),
             "reason": reason_text,
         },
         message=(

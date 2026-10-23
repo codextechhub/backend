@@ -17,7 +17,7 @@ from .views.directory import (
     StaffMineView,
     StaffSearchView,
 )
-from .views.leave import LeaveDetailView, StaffLeaveView
+from .views.leave import LeaveDetailView, StaffLeavePreviewView, StaffLeaveView
 from .views.names import StaffNamesView
 from .views.organogram import (
     AppointmentCloseView,
@@ -174,6 +174,10 @@ urlpatterns = [
         name="staff-documents",
     ),
     path("<int:pk>/leave/", StaffLeaveView.as_view(), name="staff-leave"),
+    path(
+        "<int:pk>/leave/preview/", StaffLeavePreviewView.as_view(),
+        name="staff-leave-preview",
+    ),
     path("<int:pk>/teaching/", StaffTeachingView.as_view(), name="staff-teaching"),
 
     path(

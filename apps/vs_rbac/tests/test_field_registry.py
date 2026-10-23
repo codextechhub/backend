@@ -106,6 +106,7 @@ EXPECTED_RESOURCES = {
     ("procurement", "approval"),
     ("school", "branches"),
     ("school", "guardians"),
+    ("school", "leave"),
     ("school", "messages"),
     ("school", "notices"),
     ("school", "profile"),
@@ -233,6 +234,30 @@ WRITE_PATH_ALLOWLIST = {
     ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "amount"):
         "A corrected bank statement line's amount, not anybody's pay; it shares only "
         "the name of a voluntary deduction's amount.",
+    **{
+        ("schools.vs_staff.serializers.LeavePreviewSerializer", name):
+            "The query a leave form sends while its dates are picked; it writes nothing, "
+            "and the answer is held to the school.leave switches by LeavePreviewResultSerializer."
+        for name in ("leave_type", "start_date", "end_date")
+    },
+    **{
+        ("schools.vs_staff.serializers.LeaveOverrideSettingSerializer", name):
+            "A school's leave allowance rule in Settings, Staff: a number of days for a type "
+            "of leave, not one person's request."
+        for name in ("leave_type", "days")
+    },
+    ("schools.vs_staff.serializers.StatusChangeSerializer", "note"):
+        "The note on an employment status change, behind school.teachers.transition; not "
+        "the note on a leave request.",
+    ("schools.vs_staff.serializers.EmailChangeSerializer", "note"):
+        "The note an administrator records with an email change, behind "
+        "school.administrators.update; not the note on a leave request.",
+    **{
+        ("schools.vs_staff.serializers.AppointmentWriteSerializer", "start_date"):
+            "The day a post's holder takes it up on the organogram, not a leave request's start.",
+        ("schools.vs_staff.serializers.AppointmentCloseSerializer", "end_date"):
+            "The day a post's holder leaves it on the organogram, not a leave request's end.",
+    },
     ("schools.vs_staff.serializers.EmailChangeSerializer", "email"):
         "Behind school.administrators.update on an endpoint of its own, the key that "
         "changes an account's sign-in address; the staff edit form cannot.",

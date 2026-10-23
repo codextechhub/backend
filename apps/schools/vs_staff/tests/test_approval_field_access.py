@@ -4,7 +4,9 @@ Brightfield runs two branches and Sunrise one. A hire card restates the staff
 fields a school can close per role (email, staff ID, employment type, hire
 date), so an approver whose role may not read one is not shown it. The person's
 name and job title, the branch and the starting role are what identify the hire
-and always show. A leave card restates only a name and a job title.
+and always show. A leave card restates the leave fields a school can close per
+role (type, dates, days, note and the over-allowance figure), and its title and
+subtitle hold only the person's name and the words "Leave request".
 """
 from __future__ import annotations
 
@@ -48,7 +50,7 @@ class _CardFixture(StaffFixture):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
-        cls.field_keys = install_declared_fields("school.teachers")
+        cls.field_keys = install_declared_fields("school.teachers", "school.leave")
         cls.view = make_permission("workflow.instance.view", scope=PermissionScope.TENANT)
         cls.hire = cls.pending_hire(
             "funke@brightfield.test", "Funke", "Adeyemi", cls.ikeja, cls.tenant, cls.school)
@@ -182,24 +184,111 @@ class HireCardFieldAccessTests(_CardFixture):
 
 
 class LeaveCardFieldAccessTests(_CardFixture):
+    """Each leave switch removes its rows from the card and nothing else."""
 
-    def test_a_leave_card_restates_only_a_name_and_a_job_title_so_every_switch_leaves_it_whole(self):
-        leave = LeaveRequest.all_objects.create(
-            tenant=self.tenant, staff=self.eze, leave_type="SICK",
+    ROWS = {
+        "leave_type": ("Type", "Sick leave"),
+        "dates": ("Dates", "2026-03-02"),
+        "days": ("Days", None),
+        "note": ("Reason", "Recovering from surgery."),
+        "balance": ("Over allowance", None),
+    }
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.leaves = {
+            "multi": cls.leave_for(cls.eze, cls.tenant),
+            "single": cls.leave_for(cls.solo_staff, cls.solo.tenant),
+        }
+
+    @classmethod
+    def leave_for(cls, staff, tenant):
+        return LeaveRequest.all_objects.create(
+            tenant=tenant, staff=staff, leave_type="SICK",
             start_date=dt.date(2026, 3, 2), end_date=dt.date(2026, 3, 6), days=5,
+            resumption_date=dt.date(2026, 3, 9), over_allowance_by=2,
             status=LeaveStatus.PENDING, note="Recovering from surgery.",
         )
+
+    def card(self, label, *, hide=()):
+        school = self.school if label == "multi" else self.solo
+        leave = self.leaves[label]
         instance = self.request_for(
-            leave, LeaveRequestWorkflowHandler(), self.tenant, self.admin,
-            document_type=LEAVE_DOCUMENT_TYPE, branch=self.lekki)
+            leave, LeaveRequestWorkflowHandler(), school.tenant,
+            self.admin if label == "multi" else self.solo_admin,
+            document_type=LEAVE_DOCUMENT_TYPE, branch=leave.staff.branch)
+        return self.read(
+            self.approver(school, hide=[f"school.leave.{name}" for name in hide]), instance)
+
+    def test_an_approver_with_every_switch_open_sees_the_whole_leave_card(self):
+        for label in self.leaves:
+            with self.subTest(school=label):
+                card = self.card(label)
+                self.assertEqual(
+                    self.labels(card),
+                    {"Type", "Dates", "Over allowance", "Days", "Resumption date",
+                     "Job title", "Reason", "Over allowance by"},
+                )
+                self.assertIn("Recovering from surgery.", self.dump(card))
+                self.assertIn("Sick leave", self.dump(card))
+
+    def test_closing_one_switch_removes_its_rows_and_its_values_only(self):
+        removed = {
+            "leave_type": {"Type"},
+            "dates": {"Dates", "Resumption date"},
+            "days": {"Days"},
+            "note": {"Reason"},
+            "balance": {"Over allowance", "Over allowance by"},
+        }
+        values = {
+            "leave_type": "Sick leave", "note": "Recovering from surgery.",
+            "dates": "2026-03-09",
+        }
+        for label in self.leaves:
+            baseline = self.labels(self.card(label))
+            for switch, gone in removed.items():
+                with self.subTest(school=label, switch=switch):
+                    card = self.card(label, hide=[switch])
+                    self.assertEqual(self.labels(card), baseline - gone)
+                    if switch in values:
+                        self.assertNotIn(values[switch], self.dump(card))
+
+    def test_the_title_and_subtitle_name_the_person_and_not_the_type(self):
+        for label, name in (("multi", "Chukwuemeka Eze"), ("single", "Bola Ade")):
+            with self.subTest(school=label):
+                card = self.card(label, hide=list(self.ROWS))
+                self.assertEqual(card["document_summary"]["title"], name)
+                self.assertEqual(card["document_summary"]["subtitle"], "Leave request")
+                self.assertNotIn("Sick", self.dump(card))
+                self.assertNotIn("Recovering", self.dump(card))
+
+    def test_the_job_title_is_a_label_and_stays_when_every_staff_switch_is_closed(self):
         every = [f"school.teachers.{spec}" for spec in (
             "first_name", "last_name", "job_title", "email", "staff_number",
             "hire_date", "employment_type", "employment_status")]
-        open_card = self.read(self.approver(self.school), instance)
+        leave = self.leaves["multi"]
+        instance = self.request_for(
+            leave, LeaveRequestWorkflowHandler(), self.tenant, self.admin,
+            document_type=LEAVE_DOCUMENT_TYPE, branch=self.lekki)
         closed_card = self.read(self.approver(self.school, hide=every), instance)
-        self.assertEqual(open_card["document_summary"], closed_card["document_summary"])
-        self.assertEqual(open_card["document_details"], closed_card["document_details"])
         self.assertEqual(closed_card["document_summary"]["title"], "Chukwuemeka Eze")
         self.assertIn("Lead Teacher", self.dump(closed_card))
         self.assertNotIn("eze@brightfield.test", self.dump(closed_card))
         self.assertNotIn("BFS/STF/0012", self.dump(closed_card))
+
+    def test_the_stored_snapshot_keeps_the_values_and_names_each_key(self):
+        leave = self.leaves["multi"]
+        instance = self.request_for(
+            leave, LeaveRequestWorkflowHandler(), self.tenant, self.admin,
+            document_type=LEAVE_DOCUMENT_TYPE, branch=self.lekki)
+        self.read(self.approver(self.school, hide=[f"school.leave.{n}" for n in self.ROWS]), instance)
+        stored = WorkflowInstance.all_objects.get(pk=instance.pk)
+        marked = {f["access"] for f in stored.document_summary["fields"]}
+        marked |= {item["access"] for item in stored.document_details["sections"][0]["items"]
+                   if "access" in item}
+        self.assertEqual(
+            marked,
+            {f"school.leave.{name}" for name in ("leave_type", "dates", "days", "note", "balance")},
+        )
+        self.assertIn("Recovering from surgery.", self.dump(stored.document_details))

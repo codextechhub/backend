@@ -18,6 +18,16 @@ own (``services/visibility.py``).
 Closed before go-live: there is nothing to record or approve before anybody has
 started.
 
+A preview of the days a request would count and the balance it would leave is
+served beside filing (:class:`StaffLeavePreviewView`).
+
+Every response here is held to the ``school.leave`` Field Access switches
+(``field_access.py``), except for the person the leave belongs to, who reads
+and supplies their own in full: the list and the preview through their serializers, the
+echo of a write through :class:`LeaveSerializer`, and the warnings a write
+answers with through :class:`~..field_access.LeaveReach`. Filing and correcting
+are held to the Write switches by the serializers that read the body.
+
 FRD M12 v2.1, FR-013.
 """
 from __future__ import annotations
@@ -34,8 +44,16 @@ from ..constants import (
     PERM_LEAVE_UPDATE,
     PERM_LEAVE_VIEW,
 )
+from ..field_access import LeaveReach, is_leave_owner
 from ..models import LeaveRequest
-from ..serializers import LeaveSerializer, LeaveUpdateSerializer, LeaveWriteSerializer
+from ..serializers import (
+    LeavePreviewResultSerializer,
+    LeavePreviewSerializer,
+    LeaveSerializer,
+    LeaveUpdateSerializer,
+    LeaveWriteSerializer,
+    StaffLeaveSerializer,
+)
 from ..services import leave as leave_service
 from ..services.scoping import is_self
 from ..services.visibility import GROUP_LEAVE
@@ -119,8 +137,10 @@ class StaffLeaveView(StaffViewMixin, APIView):
             subject, rows, rules=rules,
         )
         group = next((row for row in rules.groups if row["id"] == subject.leave_group), None)
-        return success_response(data={
-            "leave": LeaveSerializer(rows, many=True, context={"as_at": as_at, **read_context}).data,
+        context = {"request": request, "as_at": as_at, **read_context}
+        return success_response(data=StaffLeaveSerializer({
+            "owner_user_id": staff.user_id,
+            "leave": rows,
             "leave_group": group,
             "days_taken": days_taken,
             "balances": (
@@ -140,7 +160,7 @@ class StaffLeaveView(StaffViewMixin, APIView):
                 "for a decision; remaining is the allowance less both. A type "
                 "with no allowance has no limit."
             ),
-        })
+        }, context=context).data)
 
     def _request_context(self, rows, as_at):
         """Batch current approval holders and the last correction or cancellation."""
@@ -229,7 +249,9 @@ class StaffLeaveView(StaffViewMixin, APIView):
 
     def post(self, request, pk):
         staff = self.get_staff_for_write(pk)
-        payload = LeaveWriteSerializer(data=request.data)
+        payload = LeaveWriteSerializer(
+            data=request.data, context={"request": request, "staff": staff},
+        )
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
 
@@ -238,12 +260,66 @@ class StaffLeaveView(StaffViewMixin, APIView):
             start_date=data["start_date"], end_date=data["end_date"],
             days=data.get("days"), note=data.get("note", ""),
             actor=request.user, request=request,
+            reach=LeaveReach.of(request, owner=is_leave_owner(request, staff.user_id)),
         )
         return success_response(
             message="Leave request filed and sent for approval.",
-            data={"leave": LeaveSerializer(row).data, "warnings": warnings},
+            data={
+                "leave": LeaveSerializer(row, context={"request": request}).data,
+                "warnings": warnings,
+            },
             status=status.HTTP_201_CREATED,
         )
+
+
+class StaffLeavePreviewView(StaffViewMixin, APIView):
+    """GET /v1/i/me/staff/<id>/leave/preview/
+
+    ``?leave_type=ANNUAL&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD[&exclude=<leave id>]``
+
+    What the leave form shows as dates are picked: the days the school would
+    count (``services.leave.count_days``), the day the person returns, and,
+    with a ``leave_type``, where they stand against its allowance this session.
+    The browser cannot work this out, because the weekdays the school works and
+    the closures at the person's branch are staff rules a teacher cannot read.
+    Nothing is written.
+
+    Admitted exactly as filing is, since it answers the question filing is about
+    to ask: ``school.leave.apply`` for your own record, ``school.leave.update``
+    for somebody else's, through the same write admission, so another school's
+    person is a 404 and an unpermitted caller a 403. Closed before go-live.
+    Dates that hold no working day answer ``days: 0`` rather than an error; the
+    refusal belongs to filing.
+
+    docstring-name: Preview a leave request
+    """
+
+    _is_own = StaffLeaveView._is_own
+
+    @property
+    def rbac_permission(self):
+        return PERM_LEAVE_APPLY if self._is_own() else PERM_LEAVE_UPDATE
+
+    def get(self, request, pk):
+        staff = self.get_staff_for_write(pk)
+        query = LeavePreviewSerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        data = query.validated_data
+
+        exclude = data.get("exclude")
+        if exclude is not None and not LeaveRequest.objects.filter(
+            tenant=self.tenant, staff=staff, pk=exclude,
+        ).exists():
+            raise NotFound("No such leave request for this person.")
+
+        result = leave_service.preview(
+            staff, leave_type=data.get("leave_type"),
+            start_date=data["start_date"], end_date=data["end_date"],
+            exclude_pk=exclude,
+        )
+        return success_response(data=LeavePreviewResultSerializer(
+            {**result, "owner_user_id": staff.user_id}, context={"request": request},
+        ).data)
 
 
 class LeaveDetailView(StaffViewMixin, APIView):
@@ -274,19 +350,26 @@ class LeaveDetailView(StaffViewMixin, APIView):
 
     def patch(self, request, pk):
         row = self._row(pk)
-        payload = LeaveUpdateSerializer(data=request.data, partial=True)
+        payload = LeaveUpdateSerializer(
+            row, data=request.data, partial=True, context={"request": request},
+        )
         payload.is_valid(raise_exception=True)
         row, warnings = leave_service.correct(
             row, actor=request.user, **payload.validated_data,
+            reach=LeaveReach.of(request, owner=is_leave_owner(request, row.staff.user_id)),
         )
         return success_response(
             message="Leave request updated.",
-            data={"leave": LeaveSerializer(row).data, "warnings": warnings},
+            data={
+                "leave": LeaveSerializer(row, context={"request": request}).data,
+                "warnings": warnings,
+            },
         )
 
     def delete(self, request, pk):
         row = self._row(pk)
         leave_service.cancel(row, actor=request.user)
         return success_response(
-            message="Leave request cancelled.", data=LeaveSerializer(row).data,
+            message="Leave request cancelled.",
+            data=LeaveSerializer(row, context={"request": request}).data,
         )

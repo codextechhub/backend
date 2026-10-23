@@ -75,6 +75,63 @@ def _actor(user, context):
     }
 
 
+def _is_own_leave(leave, user) -> bool:
+    """Field Access owner rule: a person reads their own leave whole.
+
+    Own means the request's member of staff is the requesting user, and not that
+    the user filed it: an administrator who filed a request on a colleague's
+    behalf is not its owner.
+    """
+    return leave.staff.user_id == user.pk
+
+
+def _is_own_leave_page(payload, user) -> bool:
+    """The owner rule for a built page or preview, which carries its owner as ``owner_user_id``."""
+    return payload.get("owner_user_id") == user.pk
+
+
+class _OwnLeaveWrites:
+    """Lets the owner of a leave request supply what they write about it.
+
+    The Write switches of the type, the dates, the days and the note decide what
+    a role may change about somebody else's request. A person filing or
+    correcting their own is not held to them, or a school that closed the Note
+    switch for the Teacher role would stop its teachers adding a note to their
+    own leave. A field nothing can write (the status and the balance) is still
+    refused when sent, whoever sends it. Mixed in ahead of
+    :class:`FieldAccessMixin`, which judges everybody else.
+
+    The request's member of staff is ``self.context["staff"]`` where a request
+    is being filed and the instance's where one is being corrected.
+    """
+
+    def _owns_request(self) -> bool:
+        from vs_rbac.field_enforcement import SYSTEM_CONTEXT_KEY
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if request is None or self.context.get(SYSTEM_CONTEXT_KEY) or user is None:
+            return False
+        staff = self.context.get("staff")
+        if staff is None and self.instance is not None:
+            staff = self.instance.staff
+        return staff is not None and staff.user_id == user.pk
+
+    def to_internal_value(self, data):
+        from vs_rbac.field_enforcement import assert_writable
+
+        from .field_access import LEAVE_BALANCE_NAMES, LEAVE_RESOURCE, LEAVE_STATUS_NAMES
+
+        if not (self._owns_request() and hasattr(data, "items")):
+            return super().to_internal_value(data)
+        read_only = set(LEAVE_STATUS_NAMES) | set(LEAVE_BALANCE_NAMES)
+        assert_writable(
+            self.context["request"], LEAVE_RESOURCE,
+            {name: value for name, value in data.items() if name in read_only},
+        )
+        return serializers.Serializer.to_internal_value(self, data)
+
+
 def _is_own_record(staff, user) -> bool:
     """Field Access owner rule: a person reads their own staff record whole.
 
@@ -366,6 +423,28 @@ class StaffListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             return None
         return getattr(obj, "on_leave_until", None)
 
+    def to_representation(self, instance):
+        """The row, with the day somebody's leave ends held to the leave dates switch.
+
+        ``on_leave_until`` is the end date of a leave request, so it follows
+        ``school.leave.dates`` and the owner rule for leave: a person always reads
+        their own. The chip that says they are away is the employment status's
+        and stays; a role that may not read the dates is told that and not until
+        when.
+        """
+        from vs_rbac.field_enforcement import can_read
+
+        from .field_access import LEAVE_DATES_FIELD
+
+        data = super().to_representation(instance)
+        if (
+            "on_leave_until" in data and self._field_access() is not None
+            and not self._is_owner(instance)
+            and not can_read(self.context.get("request"), LEAVE_DATES_FIELD)
+        ):
+            data.pop("on_leave_until")
+        return data
+
     def get_display_employment_status(self, obj) -> str:
         """On Leave while it is running, and the stored value otherwise.
 
@@ -614,7 +693,20 @@ class EmploymentEventSerializer(serializers.ModelSerializer):
         return _actor(obj.changed_by, self.context)
 
 
-class LeaveSerializer(serializers.ModelSerializer):
+class LeaveSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One leave request, as the leave list and every echo of a write shows it.
+
+    Held to the ``school.leave`` switches (``field_access.py``): the type with
+    its label, the dates with the day the person returns, the days, the note,
+    the status with every form it takes, and the days over the allowance. The
+    person's name, who filed the request and who last changed it are labels
+    and record authorship, and carry no switch.
+    """
+
+    field_resource = "school.leave"
+    field_access_detail = True
+    owner_rule = staticmethod(_is_own_leave)
+
     leave_type_label = serializers.CharField(
         source="get_leave_type_display", read_only=True,
     )
@@ -677,15 +769,34 @@ class LeaveSerializer(serializers.ModelSerializer):
     def get_resumption_is_estimate(self, obj):
         return obj.resumption_date is None
 
+    def to_representation(self, instance):
+        """The request, naming for its owner only what nobody can write.
 
-class LeaveWriteSerializer(serializers.Serializer):
+        The owner reads every field, so the generic list of fields they cannot
+        write would be empty; the status and the balance still cannot be
+        written by anybody, and a form greys them.
+        """
+        from .field_access import LEAVE_BALANCE_NAMES, LEAVE_STATUS_NAMES
+
+        data = super().to_representation(instance)
+        if "_read_only_fields" in data and self._is_owner(instance):
+            fixed = set(LEAVE_STATUS_NAMES) | set(LEAVE_BALANCE_NAMES)
+            data["_read_only_fields"] = [name for name in data if name in fixed]
+        return data
+
+
+class LeaveWriteSerializer(_OwnLeaveWrites, FieldAccessMixin, serializers.Serializer):
     """What a form may send. Deliberately without ``status``.
 
     A status a form can set is a status that disagrees with the instance that
     decided it: an administrator could mark their own leave approved without
     anybody voting, and the profile would show an approval the trail has no
-    record of. The workflow handler writes it and nothing else does.
+    record of. The workflow handler writes it and nothing else does, and a body
+    that names it (or any other read-only leave figure) is refused by the
+    ``school.leave`` switches rather than ignored.
     """
+
+    field_resource = "school.leave"
 
     leave_type = serializers.ChoiceField(choices=LeaveType.choices)
     start_date = serializers.DateField()
@@ -694,12 +805,138 @@ class LeaveWriteSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, default="")
 
 
-class LeaveUpdateSerializer(serializers.Serializer):
+#: The longest span a leave preview will count. A year of leave is the most a
+#: request can sensibly cover, and an unbounded range would make the day count
+#: walk every date in it.
+LEAVE_PREVIEW_MAX_DAYS = 366
+
+
+class LeavePreviewSerializer(serializers.Serializer):
+    """The query a leave form sends while its dates are being picked.
+
+    ``exclude`` names a request being corrected, so its own days are not counted
+    against the balance it is being changed within.
+    """
+
+    leave_type = serializers.ChoiceField(choices=LeaveType.choices, required=False)
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    exclude = serializers.IntegerField(required=False, min_value=1)
+
+    def validate(self, attrs):
+        start, end = attrs["start_date"], attrs["end_date"]
+        if end < start:
+            raise serializers.ValidationError(
+                {"end_date": "Leave cannot end before it starts."},
+            )
+        if (end - start).days + 1 > LEAVE_PREVIEW_MAX_DAYS:
+            raise serializers.ValidationError({
+                "end_date": (
+                    f"Leave cannot cover more than {LEAVE_PREVIEW_MAX_DAYS} days."
+                ),
+            })
+        return attrs
+
+
+class LeaveUpdateSerializer(_OwnLeaveWrites, FieldAccessMixin, serializers.Serializer):
+    """A correction to a request that has not been decided.
+
+    Built with the request being corrected as its instance, so a form that
+    sends back the values it already holds is not refused for a field the
+    caller may read and not change.
+    """
+
+    field_resource = "school.leave"
+
     leave_type = serializers.ChoiceField(choices=LeaveType.choices, required=False)
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False)
     days = serializers.IntegerField(required=False, min_value=1, max_value=366)
     note = serializers.CharField(required=False, allow_blank=True)
+
+
+class StaffLeaveSerializer(FieldAccessMixin, serializers.Serializer):
+    """A person's leave page: the requests, with the balance and days taken beside them.
+
+    The page is built by hand, so this serializer is what holds it to the
+    ``school.leave`` switches. The requests are filtered as
+    :class:`LeaveSerializer`. ``days_taken`` and ``balances`` are broken down
+    by leave type, so they need the type as well as the balance to be readable.
+    The leave group is the person's assignment, not a leave field. The payload
+    carries ``owner_user_id``, the account the leave belongs to, which is not
+    emitted: that account reads the page whole.
+    """
+
+    field_resource = "school.leave"
+    owner_rule = staticmethod(_is_own_leave_page)
+
+    leave = LeaveSerializer(many=True, read_only=True)
+    leave_group = serializers.DictField(read_only=True, allow_null=True)
+    days_taken = serializers.ListField(child=serializers.DictField(), read_only=True)
+    balances = serializers.ListField(child=serializers.DictField(), read_only=True)
+    balance_session = serializers.DictField(read_only=True, allow_null=True)
+    balance_note = serializers.CharField(read_only=True)
+
+    #: The breakdowns by type, which say which types a person took.
+    PER_TYPE = ("days_taken", "balances")
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if (
+            self._field_access() is not None and not self._is_owner(instance)
+            and not self._reads_type()
+        ):
+            for name in self.PER_TYPE:
+                data.pop(name, None)
+        return data
+
+    def _reads_type(self) -> bool:
+        from .field_access import LEAVE_TYPE_FIELD
+        from vs_rbac.field_enforcement import can_read
+
+        return can_read(self.context.get("request"), LEAVE_TYPE_FIELD)
+
+
+class LeavePreviewResultSerializer(FieldAccessMixin, serializers.Serializer):
+    """What the leave form shows while its dates are picked.
+
+    The days and the day the person returns follow their own switches. The
+    figures against the allowance are the balance, and are counted for the type
+    the caller named, so a caller who may not read the type is given none of
+    them: asking about "Sick" and reading how many sick days are used would
+    answer a question the type's switch keeps closed. The result carries
+    ``owner_user_id`` (not emitted), and that account reads it whole.
+    """
+
+    field_resource = "school.leave"
+    owner_rule = staticmethod(_is_own_leave_page)
+
+    days = serializers.IntegerField(read_only=True)
+    resumption_date = serializers.DateField(read_only=True, allow_null=True)
+    leave_type = serializers.CharField(read_only=True, allow_null=True)
+    allowance = serializers.IntegerField(read_only=True, allow_null=True)
+    taken = serializers.IntegerField(read_only=True, allow_null=True)
+    pending = serializers.IntegerField(read_only=True, allow_null=True)
+    remaining = serializers.IntegerField(read_only=True, allow_null=True)
+    remaining_after = serializers.IntegerField(read_only=True, allow_null=True)
+    over_allowance_by = serializers.IntegerField(read_only=True)
+    session = serializers.DictField(read_only=True, allow_null=True)
+
+    #: The figures that are counted for the named type.
+    PER_TYPE = (
+        "allowance", "taken", "pending", "remaining", "remaining_after",
+        "over_allowance_by", "session",
+    )
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if (
+            self._field_access() is not None and not self._is_owner(instance)
+            and "leave_type" not in data
+        ):
+            for name in self.PER_TYPE:
+                data.pop(name, None)
+        return data
 
 
 class TeachingAssignmentSerializer(serializers.ModelSerializer):

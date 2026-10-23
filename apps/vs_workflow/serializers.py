@@ -862,6 +862,20 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         prime_exit_states(self.context, ids)
         return super().to_representation(obj)
 
+    def _reader(self, obj):
+        """The request whose Field Access filters *obj*'s card, or ``None`` for nobody.
+
+        The person a document is about (``request_for``) reads the card of their
+        own document whole: Field Access hides a value about somebody from the
+        roles that may not read it, and never from the person it is about.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        subject = getattr(obj, "request_for_id", None)
+        if subject is not None and subject == getattr(user, "pk", None):
+            return None
+        return request
+
     def get_next_stage(self, obj):
         from vs_workflow.services.routing import preview_next_approval_stage
         return preview_next_approval_stage(obj)
@@ -882,7 +896,7 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         from vs_workflow.presentation import details_dates_for_reader, for_reader
 
         return details_dates_for_reader(
-            for_reader(obj.document_details, self.context.get("request")),
+            for_reader(obj.document_details, self._reader(obj)),
             getattr(obj, "tenant", None), branch=getattr(obj, "branch_id", None),
         )
 
@@ -916,7 +930,7 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         summary = summary_for_reader(
             obj.document_summary, getattr(obj, "tenant", None),
             branch=getattr(obj, "branch_id", None),
-            request=self.context.get("request"),
+            request=self._reader(obj),
         )
         document = obj.document
         if document is None:

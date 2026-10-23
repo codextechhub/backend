@@ -1770,6 +1770,17 @@ class SchoolCreateSerializer(FieldAccessMixin, serializers.ModelSerializer):
         report_stage("onboarding")
         provision_onboarding_for_school(school, actor=actor)
 
+        # --- Leave approvals (best effort, never fatal) ---
+        # Leave has no platform fallback, so a school without its own ladder
+        # refuses the first leave anybody files. The ladder is the person's line
+        # manager and needs nothing else to exist first. Same shape as the books
+        # and the checklist: the service opens its own savepoint and swallows
+        # its own failures, and this serializer is the choke point for both
+        # creation paths.
+        from schools.vs_staff.approvals import provision_leave_approval_for_school
+
+        provision_leave_approval_for_school(school, actor=actor)
+
         # --- 8. Audit trail for school ---
         _school_snap = AuditDiffService.from_instances(
             before_instance=None,

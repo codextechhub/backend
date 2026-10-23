@@ -711,10 +711,11 @@ class LeaveAllowanceTests(_LeaveSettingsFixture):
 
         instance = self.instance(leave["id"])
         self.assertIn(
-            {"label": "Over allowance", "value": "3 days"}, instance.document_summary["fields"],
+            {"label": "Over allowance", "value": "3 days", "access": "school.leave.balance"},
+            instance.document_summary["fields"],
         )
         self.assertIn(
-            {"label": "Over allowance by", "value": "3 days"},
+            {"label": "Over allowance by", "value": "3 days", "access": "school.leave.balance"},
             instance.document_details["sections"][0]["items"],
         )
 

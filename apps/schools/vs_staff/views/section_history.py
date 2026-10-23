@@ -7,7 +7,8 @@ from rest_framework.views import APIView
 from core.response import success_response
 from vs_history.as_at import parse_as_at
 
-from ..section_history import SECTION_GROUPS, section_changes
+from ..field_access import is_leave_owner
+from ..section_history import SECTION_GROUPS, readable_leave_fields, section_changes
 from ..serializers import StaffDetailSerializer
 from ..services.visibility import GROUP_CONTACT, GROUP_PERMISSIONS
 from .base import StaffViewMixin
@@ -39,6 +40,10 @@ class StaffSectionHistoryView(StaffViewMixin, APIView):
             visible_fields = set(StaffDetailSerializer(
                 staff, context={**self.serializer_context(), "profile_access": access},
             ).data)
+        elif section == "leave":
+            visible_fields = readable_leave_fields(
+                request, owner=is_leave_owner(request, staff.user_id),
+            )
         return success_response(data=section_changes(
             tenant=self.tenant, staff=staff, section=section,
             page=request.query_params.get("page", "1"),

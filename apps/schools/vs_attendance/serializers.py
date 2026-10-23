@@ -64,6 +64,36 @@ _STAFF_JOB_TITLE = "school.teachers.job_title"
 _STAFF_EXIT_DATE = "school.teachers.exit_date"
 _STAFF_EMPLOYMENT_STATUS = "school.teachers.employment_status"
 
+#: The Staff Management switches the leave a register mentions is held to: the
+#: type of leave, and the day it ends.
+_LEAVE_TYPE = "school.leave.leave_type"
+_LEAVE_DATES = "school.leave.dates"
+
+
+def _is_the_person(serializer, user_id) -> bool:
+    """Whether the caller of *serializer*'s request is the account *user_id*."""
+    user = getattr(serializer.context.get("request"), "user", None)
+    return user_id is not None and getattr(user, "pk", None) == user_id
+
+
+def _cut_leave(serializer, block, *, type_names, date_names, owner_user_id=None):
+    """*block*, a register's mention of somebody's leave, cut to what the caller may read.
+
+    The type of leave and the day it ends are the leave switches' to give, so a
+    register that says "On leave" keeps saying it and stops saying what kind or
+    until when for a caller who may not read them. The names are the block's
+    own: the staff register and the class register word them differently. The
+    member of staff the leave belongs to (*owner_user_id*) reads their own whole.
+    """
+    if not block or _is_the_person(serializer, owner_user_id):
+        return block
+    hidden = set()
+    if not _readable(serializer, _LEAVE_TYPE):
+        hidden.update(type_names)
+    if not _readable(serializer, _LEAVE_DATES):
+        hidden.update(date_names)
+    return {name: value for name, value in block.items() if name not in hidden}
+
 
 def _readable(serializer, *keys) -> bool:
     """Whether the caller of *serializer*'s request may read every registry key in *keys*."""
@@ -158,6 +188,18 @@ class RegisterSerializer(FieldAccessMixin, serializers.Serializer):
     rows = RegisterRowSerializer(many=True, read_only=True)
     history = MarkChangeSerializer(many=True, read_only=True)
     submit_preview = serializers.DictField(read_only=True, allow_null=True)
+
+    def to_representation(self, instance):
+        """The register, with the leave of the teacher it was taken for cut to the leave switches."""
+        data = super().to_representation(instance)
+        taken = data.get("taken_by")
+        if taken and taken.get("on_leave"):
+            data["taken_by"] = {**taken, "on_leave": _cut_leave(
+                self, taken["on_leave"], type_names=("leave_type", "leave_type_label"),
+                date_names=("ends_on",),
+                owner_user_id=instance.get("on_leave_owner_user_id"),
+            )}
+        return data
 
 
 class MarkWriteSerializer(FieldAccessMixin, serializers.Serializer):
@@ -375,6 +417,11 @@ class StaffRowSerializer(FieldAccessMixin, serializers.Serializer):
         data = super().to_representation(instance)
         if "leave" not in instance:
             data.pop("leave", None)
+        elif data.get("leave"):
+            data["leave"] = _cut_leave(
+                self, data["leave"], type_names=("type", "type_label"),
+                date_names=("end_date",), owner_user_id=instance.get("owner_user_id"),
+            )
         if "exit" in data:
             data["exit"] = self._exit_block(data["exit"])
             if data["exit"] is _OMIT:

@@ -1399,6 +1399,59 @@ class OrganogramSourceResolutionTests(TestCase):
             resolve_approvers(self._stage(code="org-self"), self.instance), [],
         )
 
+    def test_the_climb_starts_from_the_person_the_document_is_for(self):
+        """A document filed on somebody's behalf climbs from them, not from the filer.
+
+        The filer has no manager on the chart. The person the document is for
+        reports to the Head of Operations, who is therefore the approver; with
+        nobody named, the climb falls back to whoever raised it and finds no one.
+        """
+        manager = self._cx_staff("org-head@test.com")
+        top = self._seat("ORG-HEAD", title="Head of Operations", holder=manager)
+        subject = self._cx_staff("org-subject@test.com")
+        self._seat("ORG-SUBJECT", title="Officer", reports_to=top, holder=subject)
+        stage = self._stage(code="org-for")
+
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
+
+        self.instance.request_for = subject
+        self.instance.save(update_fields=["request_for"])
+        self.assertEqual(
+            [a.user.pk for a in resolve_approvers(stage, self.instance)], [manager.pk],
+        )
+
+    def test_the_climb_never_hands_a_document_back_to_the_person_it_is_for(self):
+        """The subject holds the seat above their own, so the climb finds only them."""
+        subject = self._cx_staff("org-self@test.com")
+        top = self._seat("ORG-SELF-TOP", title="Principal", holder=subject, primary=False)
+        self._seat("ORG-SELF", title="Officer", reports_to=top, holder=subject)
+        self.instance.request_for = subject
+        self.instance.save(update_fields=["request_for"])
+        stage = self._stage(code="org-for-self")
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
+
+    def test_the_parked_sentence_names_the_person_the_document_is_for(self):
+        from vs_workflow.services.release import describe_park, stage_requirement
+
+        subject = self._cx_staff("org-named@test.com")
+        stage = self._stage(code="org-named")
+        self.assertEqual(
+            stage_requirement(stage),
+            "give the person who raised this a manager on the organogram",
+        )
+        self.assertEqual(
+            stage_requirement(stage, subject_name="Tunde Bello"),
+            "give Tunde Bello a manager on the organogram",
+        )
+
+        self.instance.request_for = subject
+        self.instance.save(update_fields=["request_for"])
+        routing_svc.advance_instance(self.instance, current_attempt=1)
+        self.assertEqual(
+            describe_park(self.instance)["requirement"],
+            "give Platform Staff a manager on the organogram",
+        )
+
     # -- what an empty climb must do ------------------------------------------ #
 
     def test_an_unstaffed_organogram_stage_parks_instead_of_auto_approving(self):

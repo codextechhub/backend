@@ -12,7 +12,6 @@ from __future__ import annotations
 import datetime as dt
 from unittest.mock import patch
 
-from schools.vs_staff.approvals import ensure_tenant_approval_templates
 from schools.vs_staff.constants import LEAVE_APPROVER_GROUP_CODE, LeaveStatus
 from schools.vs_staff.models import LeaveRequest
 from schools.vs_staff.services import leave as leave_service
@@ -23,18 +22,40 @@ from vs_workflow.models import WorkflowInstance
 from .base import StaffFixture
 
 
+def publish_group_leave_ladder(tenant):
+    """A group-based leave ladder: the shape a school that chose a group holds.
+
+    The default ladder approves through the person's line manager. Most tests in
+    this file are about filing, deciding and reading leave and not about who the
+    approver is, so they run against a school that nominated a group and put a
+    named approver in it, which needs no organogram to be drawn first.
+    """
+    from schools.vs_staff.approvals import _group_stages_payload
+    from vs_workflow.services.groups import ensure_approver_group
+    from vs_workflow.services.templates import publish_template
+
+    group, _ = ensure_approver_group(tenant, LEAVE_APPROVER_GROUP_CODE)
+    return publish_template(
+        tenant=tenant, branch=None, document_type="schools.leave_request",
+        code="leave-request", name="Leave-request approval",
+        stages_payload=_group_stages_payload(
+            group_code=group.code, label="Leave approval",
+        ),
+    )
+
+
 class LeaveFixture(StaffFixture):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
-        # This school's own ladder. There is no platform fallback for leave, so
-        # publishing it here is not belt-and-braces: without it every test below
-        # would be testing TEMPLATE_NOT_FOUND rather than the feature.
-        cls.leave_template, _ = ensure_tenant_approval_templates(cls.tenant)
+        # This school's own ladder, naming a group. Leave has no platform
+        # fallback, so without it every test below would be testing a missing
+        # template rather than the feature.
+        cls.leave_template = publish_group_leave_ladder(cls.tenant)
 
-        # Somebody has to be IN the group, because provisioning creates it
-        # empty. Mrs. Adeyemi is nominated by name at Lekki, which is where Mr.
-        # Eze is posted, so she is the one the BRANCH-scoped stage resolves.
+        # Somebody has to be IN the group, because it starts empty. Mrs.
+        # Adeyemi is nominated by name at Lekki, which is where Mr. Eze is
+        # posted, so she is the one the BRANCH-scoped stage resolves.
         from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 
         cls.leave_group = WorkflowApproverGroup.all_objects.get(
@@ -167,11 +188,15 @@ class FilingTests(LeaveFixture):
             [item["label"] for item in items],
             ["Days", "Resumption date", "Job title", "Reason"],
         )
-        self.assertIn({"label": "Days", "value": "8"}, items)
-        self.assertIn({"label": "Resumption date", "value": "2026-01-05"}, items)
+        self.assertIn({"label": "Days", "value": "8", "access": "school.leave.days"}, items)
+        self.assertIn(
+            {"label": "Resumption date", "value": "2026-01-05", "access": "school.leave.dates"},
+            items,
+        )
         self.assertIn({
             "label": "Reason",
             "value": "Travelling for a family ceremony.",
+            "access": "school.leave.note",
         }, items)
 
     def test_days_default_to_the_working_days_in_the_range(self):
@@ -390,8 +415,11 @@ class DecisionTests(LeaveFixture):
         row.refresh_from_db()
         self.assertEqual(row.days, 8)
         instance = self._instance(row)
-        self.assertIn({"label": "Days", "value": "8"}, instance.document_details["sections"][0]["items"])
-        self.assertIn({"label": "Reason", "value": "Family ceremony."}, instance.document_details["sections"][0]["items"])
+        items = instance.document_details["sections"][0]["items"]
+        self.assertIn({"label": "Days", "value": "8", "access": "school.leave.days"}, items)
+        self.assertIn(
+            {"label": "Reason", "value": "Family ceremony.", "access": "school.leave.note"}, items,
+        )
         read = self.get(self.admin, "staff-leave", pk=self.eze.pk)
         change = read.data["data"]["leave"][0]
         self.assertEqual(change["last_changed_by"]["id"], self.admin.pk)
@@ -494,13 +522,22 @@ class ReportingTests(LeaveFixture):
 
 
 class NobodyToApproveTests(StaffFixture):
-    """A school with no ladder at all is refused rather than granted.
+    """A school with no ladder is repaired by its first filing, and parks.
 
-    There is no platform fallback for leave, so this is the state of any school
-    that was never provisioned, and ``leave_template_gaps`` is what finds them.
+    There is no platform fallback for leave, so a school that was never
+    provisioned has nothing behind it until the ladder is ensured. Filing ensures
+    it, and a person with no manager on the chart leaves the request waiting
+    rather than approved.
     """
 
-    def test_filing_with_no_template_is_refused_rather_than_auto_approved(self):
+    def test_filing_with_no_template_publishes_one_and_never_auto_approves(self):
+        from vs_workflow.models import WorkflowTemplate
+
+        self.assertFalse(
+            WorkflowTemplate.all_objects.filter(
+                tenant=self.tenant, document_type="schools.leave_request",
+            ).exists(),
+        )
         response = self.post(
             self.admin, "staff-leave",
             {
@@ -510,7 +547,12 @@ class NobodyToApproveTests(StaffFixture):
             },
             pk=self.eze.pk,
         )
-        self.assertNotEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(
+            WorkflowTemplate.all_objects.filter(
+                tenant=self.tenant, document_type="schools.leave_request",
+            ).exists(),
+        )
         self.assertFalse(
             LeaveRequest.all_objects.filter(
                 staff=self.eze, status=LeaveStatus.APPROVED,

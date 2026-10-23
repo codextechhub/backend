@@ -24,7 +24,13 @@ range (Monday to Friday unless the school says otherwise) and, unless the school
 says otherwise, leaves out the days its calendar closes the school at the
 person's branch or school-wide (:func:`count_days`). A count is worked out when
 a request is filed or its dates are corrected; a count already stored is never
-recomputed, and a caller of the API may send its own.
+recomputed, and a caller of the API may send its own. The same count, with the
+balance it would leave, is answered before anything is filed by :func:`preview`.
+
+**Nobody approving is a warning, not a refusal.** A request the school's ladder
+cannot yet route to anybody (its person has no line manager on the organogram)
+is filed and waits, and the filing answers with ``NO_APPROVER`` saying what
+would give it an approver.
 
 FRD M12 v2.1, FR-013.
 """
@@ -184,6 +190,25 @@ def _session_rows(staff, session, *, exclude_pk=None):
     return rows
 
 
+def session_usage(staff, session, leave_type, *, exclude_pk=None) -> tuple[int, int]:
+    """``(taken, pending)`` days of *leave_type* among requests starting in *session*.
+
+    Taken is APPROVED and pending is PENDING, in one query. *exclude_pk* leaves
+    out a request being corrected, so it is not counted against itself.
+    """
+    from django.db.models import Q, Sum
+
+    totals = (
+        _session_rows(staff, session, exclude_pk=exclude_pk)
+        .filter(leave_type=leave_type)
+        .aggregate(
+            taken=Sum("days", filter=Q(status=LeaveStatus.APPROVED)),
+            pending=Sum("days", filter=Q(status=LeaveStatus.PENDING)),
+        )
+    )
+    return totals["taken"] or 0, totals["pending"] or 0
+
+
 def over_allowance(staff, leave_type, start_date, days, *, exclude_pk=None, rules=None) -> int:
     """Days past *leave_type*'s allowance this leave would take its session to.
 
@@ -191,8 +216,6 @@ def over_allowance(staff, leave_type, start_date, days, *, exclude_pk=None, rule
     requests that each fit alone but not together are both seen. 0 where the
     type has no allowance or no session covers the start date.
     """
-    from django.db.models import Sum
-
     from .rules import leave_rules
 
     rules = rules or leave_rules(staff.tenant)
@@ -202,11 +225,57 @@ def over_allowance(staff, leave_type, start_date, days, *, exclude_pk=None, rule
     session = leave_session(staff, start_date)
     if session is None:
         return 0
-    used = (
-        _session_rows(staff, session, exclude_pk=exclude_pk)
-        .filter(leave_type=leave_type).aggregate(total=Sum("days"))["total"] or 0
-    )
-    return max(0, used + days - allowance)
+    taken, pending = session_usage(staff, session, leave_type, exclude_pk=exclude_pk)
+    return max(0, taken + pending + days - allowance)
+
+
+def preview(staff, *, leave_type, start_date, end_date, exclude_pk=None) -> dict:
+    """What a leave form shows while its dates are being picked.
+
+    The days the school would count for these dates (working days less the
+    closures at the person's branch), the day they return, and, for a
+    *leave_type*, where the person stands against that type's allowance in the
+    session the leave starts in. Nothing is written. *exclude_pk* is a request
+    being corrected, left out of the balance so it is not counted against itself.
+
+    ``allowance``, ``remaining``, ``remaining_after`` are null for a type with
+    no limit or when no session covers the start date; ``taken`` and
+    ``pending`` are null when there is no type or no session to count in.
+    ``remaining_after`` may go negative: filing past an allowance is allowed,
+    and the form can say by how much. ``over_allowance_by`` is the same figure
+    filing would record.
+    """
+    from .rules import leave_rules
+
+    rules = leave_rules(staff.tenant)
+    days = count_days(staff, start_date, end_date, rules=rules)
+    session = leave_session(staff, start_date)
+    allowance = taken = pending = remaining = remaining_after = None
+    over = 0
+    if leave_type:
+        allowance = rules.allowance_for(leave_type, staff) if session else None
+        if session is not None:
+            taken, pending = session_usage(
+                staff, session, leave_type, exclude_pk=exclude_pk,
+            )
+        if allowance is not None:
+            remaining = allowance - taken - pending
+            remaining_after = remaining - days
+            over = max(0, -remaining_after)
+    return {
+        "days": days,
+        "resumption_date": next_working_day(staff, end_date, rules=rules),
+        "leave_type": leave_type or None,
+        "allowance": allowance,
+        "taken": taken,
+        "pending": pending,
+        "remaining": remaining,
+        "remaining_after": remaining_after,
+        "over_allowance_by": over,
+        "session": (
+            {"id": session.pk, "name": session.name} if session is not None else None
+        ),
+    }
 
 
 def balances(staff, session, *, rows=None, rules=None) -> list[dict]:
@@ -249,42 +318,85 @@ def balances(staff, session, *, rows=None, rules=None) -> list[dict]:
     return out
 
 
-def _over_warning(leave, rules):
-    """The filing's own warning where it goes past the allowance, or None."""
-    if not leave.over_allowance_by:
+def _over_warning(leave, rules, reach=None):
+    """The filing's own warning where it goes past the allowance, or None.
+
+    The warning is the leave balance in a sentence, so it goes only to a caller
+    who may read the balance, and it names the type of leave only to one who may
+    read that too.
+    """
+    from ..field_access import LeaveReach
+
+    reach = reach or LeaveReach()
+    if not leave.over_allowance_by or not reach.balance:
         return None
     allowance = rules.allowance_for(leave.leave_type, leave.staff)
     over = leave.over_allowance_by
+    kind = f"{leave.get_leave_type_display().lower()} leave" if reach.leave_type else "leave"
     return {
         "code": "OVER_ALLOWANCE",
         "message": (
             f"This goes {over} day{'s' if over != 1 else ''} past the "
             f"{allowance} day{'s' if allowance != 1 else ''} of "
-            f"{leave.get_leave_type_display().lower()} leave allowed this "
+            f"{kind} allowed this "
             f"session. It is filed, and the approver decides."
         ),
         "over_allowance_by": over,
     }
 
 
-def _overlap_warning(clashes, tenant):
+def _no_approver_warning(instance):
+    """The warning for a request nobody can approve yet, or None when somebody can.
+
+    The sentence comes from the engine's own account of what would unpark the
+    stage (``vs_workflow.services.release.describe_park``), naming the person the
+    leave is for, so it stays true when a school has changed its ladder.
+    """
+    from vs_workflow.constants import ApproverSource
+    from vs_workflow.services.release import describe_park
+
+    park = describe_park(instance)
+    if not park["parked"]:
+        return None
+    where = " (in Staff, Organogram)" if park["approver_source"] == ApproverSource.ORGANOGRAM else ""
+    return {
+        "code": "NO_APPROVER",
+        "message": (
+            f"Nobody can approve this yet. To fix that, {park['requirement']}{where}, "
+            f"or ask an administrator to choose an approver for this request. "
+            f"It is filed and waits until then."
+        ),
+        "stage": park["stage_label"],
+    }
+
+
+def _overlap_warning(clashes, tenant, reach=None):
     """The warning naming each clashing request, or None when nothing clashes.
 
     Each clash is its type and its span, the span in the school's own date
     format ("Annual 27 - 31 Oct 2025", or "Annual 27/10/2025 - 31/10/2025").
+    A caller who may not read the type is told the span only, one who may not
+    read the dates the type only, and one who may read neither is told that
+    there is a clash and nothing about it.
     """
+    from ..field_access import LeaveReach
+
     if not clashes:
         return None
+    reach = reach or LeaveReach()
+    described = [
+        " ".join(part for part in (
+            row.get_leave_type_display() if reach.leave_type else "",
+            format_date_range(row.start_date, row.end_date, tenant) if reach.dates else "",
+        ) if part)
+        for row in clashes
+    ]
+    message = "This overlaps leave already recorded for this person"
+    if any(described):
+        message += ": " + ", ".join(text for text in described if text)
     return {
         "code": "LEAVE_OVERLAP",
-        "message": (
-            "This overlaps leave already recorded for this person: "
-            + ", ".join(
-                f"{row.get_leave_type_display()} "
-                f"{format_date_range(row.start_date, row.end_date, tenant)}"
-                for row in clashes
-            )
-        ),
+        "message": message,
         "leave_ids": [row.pk for row in clashes],
     }
 
@@ -310,7 +422,7 @@ def overlapping(staff, start_date, end_date, *, exclude_pk=None):
 
 @transaction.atomic
 def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
-                 actor, request=None):
+                 actor, request=None, reach=None):
     """Create a request and submit it for approval, in one transaction.
 
     Returns ``(leave, warnings)``. Overlapping leave **warns and does not
@@ -321,9 +433,19 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
 
     ``days`` left out is counted by :func:`count_days`; dates holding no day
     the school counts are refused (``NO_WORKING_DAYS``).
+
+    The school's leave ladder is ensured before the request is submitted
+    (:func:`~..approvals.ensure_tenant_approval_templates`), so a school that
+    was never provisioned is repaired by its first filing rather than refused.
+    A request nobody can approve yet is still filed, and answers with a
+    ``NO_APPROVER`` warning saying what would give it an approver.
+
+    The warnings are worded for *reach*, the leave switches the caller may read
+    (:class:`~..field_access.LeaveReach`); without it they say everything.
     """
     from vs_workflow.services.submission import submit_for_approval
 
+    from ..approvals import ensure_tenant_approval_templates
     from ..models import LeaveRequest
 
     if end_date < start_date:
@@ -345,12 +467,15 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
         ),
         note=note or "", status=LeaveStatus.PENDING, requested_by=actor,
     )
-    submit_for_approval(leave, actor)
+    ensure_tenant_approval_templates(staff.tenant, created_by=actor)
+    instance = submit_for_approval(leave, actor)
     audit.emit_leave_recorded(leave, actor=actor)
 
     warnings = [
         w for w in (
-            _over_warning(leave, rules), _overlap_warning(clashes, staff.tenant),
+            _over_warning(leave, rules, reach),
+            _overlap_warning(clashes, staff.tenant, reach),
+            _no_approver_warning(instance),
         ) if w
     ]
     return leave, warnings
@@ -358,7 +483,7 @@ def file_request(*, staff, leave_type, start_date, end_date, days=None, note="",
 
 @transaction.atomic
 def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None,
-            note=None, actor=None):
+            note=None, actor=None, reach=None):
     """Change a request that has not been decided yet.
 
     Refused once it is approved or rejected, because a request whose dates
@@ -369,6 +494,7 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
     ``over_allowance_by`` is worked out again for whatever the request now
     says. The active workflow card follows the correction so an approver votes
     on the dates and reason currently filed, with the change attributed in audit.
+    The warnings are worded for *reach*, as in :func:`file_request`.
     """
     if leave.status != LeaveStatus.PENDING:
         raise LeaveAlreadyDecided(
@@ -426,7 +552,8 @@ def correct(leave, *, leave_type=None, start_date=None, end_date=None, days=None
     )
     warnings = [
         w for w in (
-            _over_warning(leave, rules), _overlap_warning(clashes, leave.tenant),
+            _over_warning(leave, rules, reach),
+            _overlap_warning(clashes, leave.tenant, reach),
         ) if w
     ]
     return leave, warnings

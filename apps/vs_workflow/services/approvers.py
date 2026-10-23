@@ -273,7 +273,7 @@ def describe_group_members(group, tenant, branch=None) -> list:
     resolved_by_member = []
     for m in members:
         if m.kind == GroupMemberKind.USER:
-            label = _display_name(m.user)
+            label = display_name(m.user)
             target_code, resolved = None, _tenant_members([m.user], tenant_id)
         elif m.kind == GroupMemberKind.ROLE:
             label = m.role.name if m.role else ""
@@ -303,7 +303,7 @@ def describe_group_members(group, tenant, branch=None) -> list:
             "target_code": target_code,
             "resolved_count": len(resolved),
             "resolved_users": [
-                {"id": str(u.pk), "name": _display_name(u), "email": u.email,
+                {"id": str(u.pk), "name": display_name(u), "email": u.email,
                  "is_exited": states.get(u.pk, False)}
                 for u in resolved
             ],
@@ -311,7 +311,8 @@ def describe_group_members(group, tenant, branch=None) -> list:
     return rows
 
 
-def _display_name(user) -> str:
+def display_name(user) -> str:
+    """A person's full name, falling back to their username; blank for nobody."""
     if user is None:
         return ""
     return getattr(user, "full_name", "") or user.get_username()
@@ -409,35 +410,51 @@ def role_holder_ids(*, role_key: str, tenant, branch) -> frozenset:
     )
 
 
-# Resolve organogram-based approvers relative to the requester.
-def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
-    """Resolve base approvers by climbing an organogram relative to the requester.
+def climb_subject(instance: WorkflowInstance):
+    """The person an organogram climb starts from: who the document is for, else who raised it.
 
-    Opt-in strategy (ApproverSource.ORGANOGRAM). Which organogram depends on who
-    raised the document. A platform user is climbed through the CX chart in
-    ``vs_user``. Anybody else is climbed through the chart registered for the
-    instance's tenant kind (:func:`register_tenant_organogram`), inside that
-    tenant, so a school's leave request reaches the school's own head of
-    department and never a seat on somebody else's chart.
+    A document about somebody else (an administrator recording leave on a
+    teacher's behalf) climbs from that person, because it is their line manager
+    who knows whether they can be spared. A document about nobody in particular
+    climbs from whoever raised it. An unsaved instance (the approver preview's
+    stand-in) names only its requester.
+    """
+    if instance.request_for_id:
+        return instance.request_for
+    return instance.requested_by
+
+
+# Resolve organogram-based approvers relative to the document's subject.
+def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers by climbing an organogram relative to the document's subject.
+
+    Opt-in strategy (ApproverSource.ORGANOGRAM). The subject is :func:`climb_subject`:
+    the person the document is for where its type names one, otherwise whoever
+    raised it. Which organogram depends on that person. A platform user is
+    climbed through the CX chart in ``vs_user``. Anybody else is climbed through
+    the chart registered for the instance's tenant kind
+    (:func:`register_tenant_organogram`), inside that tenant, so a school's leave
+    request reaches the school's own head of department and never a seat on
+    somebody else's chart.
 
     SPECIFIC_POSITION does not climb, so it follows the post the stage names
-    rather than the requester. A post on the template tenant's own chart
+    rather than the subject. A post on the template tenant's own chart
     resolves to its holders able to act, looked up inside the instance's tenant,
     whoever raised the document. A CX chart seat resolves only for a platform
-    requester: no tenant's chart contains it, and a named seat on another chart
+    subject: no tenant's chart contains it, and a named seat on another chart
     is exactly the reach across tenants this engine refuses everywhere else.
 
-    Degrades gracefully to an empty list when the chart a requester needs is
+    Degrades gracefully to an empty list when the chart a subject needs is
     unavailable - ``vs_user`` not installed, or no chart registered for the
     tenant kind - mirroring the RBAC path's defensive ImportError handling. An
-    empty list parks every ladder that does not skip. The requester is excluded
-    inside the resolvers, so they can never approve their own submission.
+    empty list parks every ladder that does not skip. The subject is excluded
+    inside the resolvers, so they can never approve their own document.
 
     The holders a climb returns are not contained by anything here.
     ``resolve_approvers`` contains them, once, for every source; do not add a
     second containment filter to this function.
     """
-    requester = instance.requested_by
+    requester = climb_subject(instance)
     target = stage.organogram_target
 
     if target == OrganogramTarget.SPECIFIC_POSITION and \
@@ -691,8 +708,9 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         group. A stage without a named Dynamic Role uses its own rules, whose
         first match names a role.
       - ORGANOGRAM: the holder(s) of the seat reached by climbing an
-        organogram relative to the requester: the CX chart for a platform
-        user, and the requesting tenant's own chart for anybody else.
+        organogram relative to the document's subject (:func:`climb_subject`):
+        the CX chart for a platform user, and the requesting tenant's own
+        chart for anybody else.
 
     Any other source raises :class:`~vs_workflow.exceptions.UnknownApproverSourceError`
     rather than resolving to nobody. An empty list is a legitimate answer that a
@@ -754,7 +772,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     elif stage.approver_source == ApproverSource.DYNAMIC_ROLE:
         base_users = _dynamic_role_base_users(stage, instance)
     elif stage.approver_source == ApproverSource.ORGANOGRAM:
-        # Organogram approvers are already relative to the requester.
+        # Organogram approvers are already relative to the document's subject.
         base_users = _organogram_base_users(stage, instance)
     else:
         # Deliberately not a catch-all returning nobody: a skip-enabled stage

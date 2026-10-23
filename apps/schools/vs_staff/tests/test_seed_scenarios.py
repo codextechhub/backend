@@ -21,7 +21,6 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from schools.vs_staff.constants import (
-    LEAVE_APPROVER_GROUP_CODE,
     EmploymentStatus,
     TeachingPart,
 )
@@ -275,29 +274,23 @@ class ScenarioCoverageTests(_Seeded):
             ).exists(),
         )
 
-    def test_the_leave_ladder_is_published_and_somebody_is_in_the_group(self):
-        """Both halves, because they fail identically from outside.
+    def test_every_seeded_school_has_a_line_manager_leave_ladder(self):
+        """A school with no ladder refuses the first leave anybody files.
 
-        A school with no ladder and a school whose ladder is right but whose
-        group is empty both look like leave that does not work; the first is
-        refused at submission and the second parks.
+        The seeded ladder is the default one, which names no group, so there is
+        nobody to staff and nothing that could be left empty.
         """
-        from vs_workflow.models import WorkflowApproverGroup, WorkflowTemplate
+        from vs_workflow.models import WorkflowTemplate
 
         for school in (self.multi, self.solo_live, self.solo):
             with self.subTest(school=school.slug):
-                self.assertTrue(
-                    WorkflowTemplate.all_objects.filter(
-                        tenant=school.tenant,
-                        document_type="schools.leave_request",
-                    ).exists(),
+                template = WorkflowTemplate.all_objects.get(
+                    tenant=school.tenant, document_type="schools.leave_request",
                 )
-                group = WorkflowApproverGroup.all_objects.get(
-                    tenant=school.tenant, code=LEAVE_APPROVER_GROUP_CODE,
-                )
-                self.assertTrue(
-                    group.members.exists(),
-                    "the group is empty, so every request would park",
+                [stage] = template.stages.filter(retired_at__isnull=True)
+                self.assertEqual(
+                    (stage.approver_source, stage.organogram_target),
+                    ("ORGANOGRAM", "DIRECT_MANAGER"),
                 )
 
     def test_a_bursar_is_invited_into_finance_admin_and_a_teacher_into_teacher(self):

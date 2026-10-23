@@ -203,8 +203,9 @@ class Command(BaseCommand):
 
         # Every school gets its own leave ladder. There is no platform
         # fallback for leave, so a school that skipped this has nothing behind
-        # it. Provisioning creates the approver group EMPTY, so a request filed
-        # before somebody is nominated parks rather than being approved unseen.
+        # it. The ladder is the person's line manager, so a request filed for
+        # somebody the seeded cast gives no manager parks rather than being
+        # approved unseen.
         ensure_tenant_approval_templates(tenant, created_by=actor)
 
         made = 0
@@ -474,12 +475,14 @@ class Command(BaseCommand):
         )
 
     def _appoint_leave_approver(self, tenant, actor):
-        """Somebody has to be in the group, or every request parks.
+        """Staff the Leave Approvers group at a school whose ladder uses one.
 
-        Provisioning creates the group empty on purpose. A seeded school with
-        nobody nominated would demonstrate the parking rule and nothing else, so
-        the school's own administrator is put in it here, which is what a real
-        school does on its first day.
+        The default ladder approves through the line manager and has no group, in
+        which case there is nothing here to do. A school whose ladder names the
+        group has it created empty on purpose, and a seeded school with nobody
+        nominated would demonstrate the parking rule and nothing else, so the
+        school's own administrator is put in it, which is what a real school does
+        on its first day.
 
         Added as a USER rather than as a ROLE, because the point of the seed is
         that somebody concrete can be seen approving something. A real school is

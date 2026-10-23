@@ -245,6 +245,10 @@ def register_payload(ctx: RegisterContext) -> dict:
         "roster_empty": ctx.day.is_open and not ctx.roster,
         "counts": counts,
         "taken_by": _taken_by(ctx),
+        "on_leave_owner_user_id": (
+            ctx.register.on_behalf_of.user_id
+            if ctx.register is not None and ctx.register.on_behalf_of is not None else None
+        ),
         "edit_window_open": window_is_open(ctx) if submitted else None,
         "rows": rows,
         "history": _history(ctx),

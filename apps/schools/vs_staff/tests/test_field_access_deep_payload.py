@@ -83,3 +83,79 @@ class StaffDeepPayloadTests(DeepPayloadChecks, StaffFixture):
                 }, context, tenant=tenant),
             ]
         return samples
+
+
+class LeaveDeepPayloadTests(DeepPayloadChecks, StaffFixture):
+    """No leave detail reaches a caller who may read none of them, at any depth.
+
+    Every declared surface of ``school.leave`` is rendered on a real request
+    with a note, over its allowance and waiting with an approver, as a caller
+    whose role has every leave switch off: the list row, the echo of a write,
+    the bodies filing and correcting read, the hand-built page that carries the
+    balance and days taken beside the requests, and the preview a form shows
+    while dates are picked. Both shapes of school are rendered.
+    """
+
+    resources = frozenset({"school.leave"})
+    covers = frozenset({
+        _SURFACE + "LeaveSerializer",
+        _SURFACE + "LeaveWriteSerializer",
+        _SURFACE + "LeaveUpdateSerializer",
+        _SURFACE + "StaffLeaveSerializer",
+        _SURFACE + "LeavePreviewResultSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from schools.vs_staff.models import LeaveRequest
+
+        cls.requests = {}
+        for staff in (cls.eze, cls.solo_staff):
+            cls.requests[staff.pk] = LeaveRequest.all_objects.create(
+                tenant=staff.tenant, staff=staff, leave_type="SICK",
+                start_date=dt.date(2026, 3, 2), end_date=dt.date(2026, 3, 6), days=5,
+                resumption_date=dt.date(2026, 3, 9), over_allowance_by=2,
+                status="PENDING", note="Recovering from surgery.",
+            )
+
+    def samples(self):
+        samples = []
+        for staff, tenant in ((self.eze, self.tenant), (self.solo_staff, self.solo.tenant)):
+            row = self.requests[staff.pk]
+            context = {
+                "leave_approvals": {row.pk: {
+                    "instance_id": 1, "stage": "Line manager", "pending_with": ["Ada Reader"],
+                }},
+                "leave_changes": {},
+            }
+            body = {
+                "leave_type": "SICK", "start_date": dt.date(2026, 3, 2),
+                "end_date": dt.date(2026, 3, 6), "days": 5, "note": "Recovering.",
+            }
+            samples += [
+                Sample(_SURFACE + "LeaveSerializer", [row], context, many=True, tenant=tenant),
+                Sample(_SURFACE + "LeaveSerializer", row, context, tenant=tenant),
+                Sample(_SURFACE + "LeaveWriteSerializer", body, tenant=tenant),
+                Sample(_SURFACE + "LeaveUpdateSerializer", body, tenant=tenant),
+                Sample(_SURFACE + "StaffLeaveSerializer", {
+                    "leave": [row], "leave_group": {"id": "g1", "name": "Teaching staff"},
+                    "days_taken": [{"leave_type": "SICK", "days": 5}],
+                    "balances": [{
+                        "leave_type": "SICK", "label": "Sick", "allowance": 10,
+                        "taken": 5, "pending": 0, "remaining": 5,
+                    }],
+                    "balance_session": {
+                        "id": 1, "name": "2025/2026",
+                        "start_date": dt.date(2025, 9, 1), "end_date": dt.date(2026, 7, 31),
+                    },
+                    "balance_note": "Allowances are per academic session.",
+                }, context, tenant=tenant),
+                Sample(_SURFACE + "LeavePreviewResultSerializer", {
+                    "days": 5, "resumption_date": dt.date(2026, 3, 9),
+                    "leave_type": "SICK", "allowance": 10, "taken": 5, "pending": 0,
+                    "remaining": 5, "remaining_after": 0, "over_allowance_by": 0,
+                    "session": {"id": 1, "name": "2025/2026"},
+                }, tenant=tenant),
+            ]
+        return samples

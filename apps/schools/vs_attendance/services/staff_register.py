@@ -336,6 +336,7 @@ def _row(entry: StaffEntry, ctx_tenant, branch, *, show_leave: bool = False) -> 
             "id": staff.pk, "name": entry.name, "staff_number": staff.staff_number,
         },
         "job_title": staff.job_title,
+        "owner_user_id": staff.user_id,
         "leads": entry.leads,
         "locked": locked,
         "lock_reason": entry.lock,

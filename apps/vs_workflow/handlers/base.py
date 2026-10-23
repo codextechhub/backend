@@ -66,8 +66,11 @@ class BaseWorkflowHandler:
         Only a type whose document is plainly about one person answers, and
         that person is who the document names, not who raised it: an
         administrator can file a colleague's absence, and the absence is the
-        colleague's. Every other type keeps the default, and its requests never
-        match the filter.
+        colleague's. An ORGANOGRAM approver stage climbs from this person rather
+        than from whoever raised the document, so an absence recorded by an
+        administrator reaches the colleague's manager. Every other type keeps
+        the default, and its requests never match the filter and climb from
+        their requester.
         """
         return None
 

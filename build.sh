@@ -40,6 +40,10 @@ python manage.py seed_all_permissions
 # them for a new school: a school created before a route changed gains it here,
 # and a route somebody has configured is left alone.
 python manage.py provision_procurement_routes
+# Each school's leave approval ladder (the person's line manager). Leave has no
+# platform fallback, so a school without one could not file leave; a ladder a
+# school already has, of any shape, is left alone.
+python manage.py provision_leave_approvals
 # Import templates and their columns. Upserts a template by `code` and a column
 # by (template, column_name), and deletes a column the definition has dropped,
 # so a template that gains a column gains it here rather than only where somebody
