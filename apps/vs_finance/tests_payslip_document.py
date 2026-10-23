@@ -161,6 +161,43 @@ class PayslipPdfIsTheTemplateTests(_PayslipFixture):
         )
 
 
+class YearToDateOfADraftPayslipTests(_PayslipFixture):
+    """A payslip previewed before its run posts prints the year the paid payslip will print.
+
+    Grace is paid 100,000 for January (posted). Her February and March runs are
+    both still drafts: opening March's preview counts March itself, and leaves
+    February's draft out because that run has not been posted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.feb_run = generate_run_from_roster(cls.solo_books, pay_date=base._date(2, 25))
+        cls.mar_run = generate_run_from_roster(cls.solo_books, pay_date=base._date(3, 25))
+
+    def ytd(self, run, key="gross"):
+        return payslip_context(self.line(run, self.grace))["ytd"][key]
+
+    def naira(self, kobo):
+        return f"\u20a6{kobo / N:,.2f}"
+
+    def test_a_draft_payslip_counts_its_own_line(self):
+        february = self.line(self.feb_run, self.grace)
+        january = self.line(self.solo_run, self.grace)
+        self.assertEqual(self.ytd(self.feb_run), self.naira(january.gross_amount + february.gross_amount))
+        self.assertEqual(self.ytd(self.feb_run, "net"), self.naira(january.net_amount + february.net_amount))
+
+    def test_a_posted_payslip_counts_its_own_line_once(self):
+        january = self.line(self.solo_run, self.grace)
+        self.assertEqual(self.ytd(self.solo_run), self.naira(january.gross_amount))
+        self.assertEqual(self.ytd(self.solo_run, "net"), self.naira(january.net_amount))
+
+    def test_another_draft_run_of_the_same_person_is_not_counted(self):
+        january = self.line(self.solo_run, self.grace)
+        march = self.line(self.mar_run, self.grace)
+        self.assertEqual(self.ytd(self.mar_run), self.naira(january.gross_amount + march.gross_amount))
+
+
 class GrossSharesTests(SimpleTestCase):
     """Bisi's 210,000: net 174,988.75, pension 16,800, PAYE 15,586.25, NHF 2,625."""
 

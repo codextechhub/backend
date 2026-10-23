@@ -65,6 +65,16 @@ def _issuer_name(entity) -> str:
     return issuer_name(entity)
 
 
+def _person_q(line) -> Q:
+    """The lines of ``line``'s roster row: the lines naming the row, and the row's older account-only lines."""
+    person = Q(pk=line.pk)
+    if line.salary_id:
+        person |= Q(salary_id=line.salary_id)
+    if line.employee_id:
+        person |= Q(salary__isnull=True, employee_id=line.employee_id)
+    return person
+
+
 def _person_lines(entity, line):
     """Every line of ``line``'s roster row on ``entity``'s counted runs.
 
@@ -79,12 +89,9 @@ def _person_lines(entity, line):
     """
     from .models import PayrollLine
 
-    person = Q(pk=line.pk)
-    if line.salary_id:
-        person |= Q(salary_id=line.salary_id)
-    if line.employee_id:
-        person |= Q(salary__isnull=True, employee_id=line.employee_id)
-    return PayrollLine.objects.filter(person, run__entity=entity, run__run_status__in=_COUNTED)
+    return PayrollLine.objects.filter(
+        _person_q(line), run__entity=entity, run__run_status__in=_COUNTED,
+    )
 
 
 #: The figures of a previous employer's pay a payslip and tax summary print.
@@ -159,7 +166,11 @@ def payslip_context(line) -> dict:
     """Everything a payslip shows, as formatted text and kobo figures.
 
     ``ytd`` is this employer's year to date and nothing else's, so the payslip
-    is honest about what this employer paid and deducted. For a tenant that
+    is honest about what this employer paid and deducted. It always includes
+    the payslip's own month, even while its run is still a draft: a preview
+    opened before posting shows the figures the paid payslip will show, and
+    the line is counted once whatever the run's status. Other runs count only
+    once posted or paid, as the PAYE working counts them. For a tenant that
     moved its payroll here mid-year it includes the employer's own months from
     before (``opening``, :func:`opening_of`), which are shown again apart, as
     brought forward from before payroll ran here; ``ytd["net"]`` is the net
@@ -176,6 +187,8 @@ def payslip_context(line) -> dict:
     from vs_config.display import format_date
     from vs_rbac.scoping import only_branch_id_or_several
 
+    from .models import PayrollLine
+
     run = line.run
     entity = run.entity
     tenant = entity.tenant
@@ -183,9 +196,10 @@ def payslip_context(line) -> dict:
     items = list(line.items.all())
     deductions = [i for i in items if i.kind == PayrollItemKind.DEDUCTION]
     employer = [i for i in items if i.kind == PayrollItemKind.EMPLOYER]
-    year_lines = _person_lines(entity, line).filter(
+    year_lines = PayrollLine.objects.filter(
+        _person_q(line), run__entity=entity,
         run__pay_date__year=run.pay_date.year, run__pay_date__lte=run.pay_date,
-    )
+    ).filter(Q(pk=line.pk) | Q(run__run_status__in=_COUNTED))
     ytd = {"gross": 0, "paye": 0, "pension": 0, "net": 0}
     for other in year_lines.only("gross_amount", "paye_amount", "pension_amount", "net_amount"):
         ytd["gross"] += other.gross_amount
