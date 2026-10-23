@@ -16,13 +16,18 @@ from unittest import mock
 from django.test import SimpleTestCase
 
 from core.suite_runner import (
+    REFUSAL_LOG_ENV,
     GuardedParallelTestSuite,
     NetworkAccessBlocked,
+    NetworkGuard,
+    XvsTestRunner,
     _database_exists,
     _imported_project_files,
     _is_local,
     _prune_templates,
     migration_fingerprint,
+    read_refusal_log,
+    refused_connections,
 )
 
 
@@ -71,6 +76,113 @@ class NetworkGuardTests(SimpleTestCase):
 
     def test_the_refusal_is_a_connection_error_code_already_handles(self):
         self.assertTrue(issubclass(NetworkAccessBlocked, ConnectionRefusedError))
+
+
+class RefusalReportingTests(SimpleTestCase):
+    """A refusal is recorded, shared with the parent run and fails the result.
+
+    These call the guard's own methods on a private instance, so no socket is
+    opened and the run's real guard records nothing.
+    """
+
+    PUBLIC = ("198.51.100.9", 443)  # TEST-NET-2: not exempt, never routable
+    TEST_NET_3 = ("203.0.113.7", 443)
+
+    def setUp(self):
+        handle, self.log = tempfile.mkstemp(suffix=".jsonl")
+        os.close(handle)
+        self.addCleanup(lambda: os.path.exists(self.log) and os.remove(self.log))
+
+    def test_a_refusal_is_recorded_with_where_it_came_from(self):
+        guard = NetworkGuard(log_path=self.log)
+        with self.assertRaises(NetworkAccessBlocked):
+            guard.check(self.PUBLIC)
+        [(address, caller)] = refused_connections(guard)
+        self.assertEqual(address, repr(self.PUBLIC))
+        self.assertIn("tests_suite_runner.py", caller)
+
+    def test_a_local_address_is_not_a_refusal(self):
+        guard = NetworkGuard(log_path=self.log)
+        guard.check(("127.0.0.1", 5432))
+        self.assertEqual(guard.blocked, [])
+        self.assertEqual(read_refusal_log(self.log), [])
+
+    def test_the_test_net_3_range_is_refused_but_never_reported(self):
+        guard = NetworkGuard(log_path=self.log)
+        with self.assertRaises(NetworkAccessBlocked):
+            guard.check(self.TEST_NET_3)
+        self.assertEqual(len(guard.blocked), 1)
+        self.assertEqual(refused_connections(guard, self.log), [])
+
+    def test_a_worker_refusal_written_to_the_shared_log_reaches_the_parent(self):
+        parent = NetworkGuard(log_path=self.log)
+        with mock.patch.dict(os.environ, {REFUSAL_LOG_ENV: self.log}):
+            worker = NetworkGuard()  # a spawned worker learns the path from its environment
+        self.assertEqual(worker.log_path, self.log)
+        with self.assertRaises(NetworkAccessBlocked):
+            worker.check(self.PUBLIC)
+        self.assertEqual(parent.blocked, [])
+        [(address, _caller)] = refused_connections(parent, self.log)
+        self.assertEqual(address, repr(self.PUBLIC))
+
+    def test_the_same_refusal_seen_by_parent_and_worker_is_listed_once(self):
+        guard = NetworkGuard(log_path=self.log)  # a forked worker shares the parent's guard and path
+        with self.assertRaises(NetworkAccessBlocked):
+            guard.check(self.PUBLIC)
+        self.assertEqual(len(read_refusal_log(self.log)), 1)
+        self.assertEqual(len(refused_connections(guard, self.log)), 1)
+
+    def test_a_damaged_log_line_does_not_hide_the_others(self):
+        guard = NetworkGuard(log_path=self.log)
+        with self.assertRaises(NetworkAccessBlocked):
+            guard.check(self.PUBLIC)
+        with open(self.log, "a", encoding="utf-8") as log:
+            log.write("not json\n{}\n")
+        self.assertEqual(len(read_refusal_log(self.log)), 1)
+        self.assertEqual(read_refusal_log(self.log + ".missing"), [])
+
+    def test_an_unwritable_log_does_not_hide_the_refusal(self):
+        guard = NetworkGuard(log_path="/nonexistent-directory/refusals.jsonl")
+        with self.assertRaises(NetworkAccessBlocked):
+            guard.check(self.PUBLIC)
+        self.assertEqual(len(guard.blocked), 1)
+
+    @unittest.skipIf(
+        os.environ.get("XVS_TEST_ALLOW_NETWORK") == "1",
+        "the network guard is deliberately lifted for this run",
+    )
+    def test_the_runner_reports_a_refusal_and_fails_the_result(self):
+        runner = XvsTestRunner(verbosity=0)
+        before = os.environ.get(REFUSAL_LOG_ENV)
+        with mock.patch("core.suite_runner.DiscoverRunner.setup_test_environment"), \
+                mock.patch("core.suite_runner.DiscoverRunner.teardown_test_environment"), \
+                mock.patch.object(NetworkGuard, "install"), \
+                mock.patch.object(NetworkGuard, "uninstall"), \
+                mock.patch("core.suite_runner.DiscoverRunner.suite_result", return_value=0):
+            runner.setup_test_environment()
+            log = runner._refusal_log
+            self.assertEqual(os.environ[REFUSAL_LOG_ENV], log)
+            with self.assertRaises(NetworkAccessBlocked):
+                runner._network_guard.check(self.PUBLIC)
+            with mock.patch.dict(os.environ, {REFUSAL_LOG_ENV: log}):
+                with self.assertRaises(NetworkAccessBlocked):
+                    NetworkGuard().check(("198.51.100.10", 25))  # a worker
+            with mock.patch("builtins.print") as printed:
+                runner.teardown_test_environment()
+            self.assertEqual(
+                {address for address, _ in runner.refused},
+                {repr(self.PUBLIC), repr(("198.51.100.10", 25))},
+            )
+            self.assertFalse(os.path.exists(log))
+            self.assertEqual(os.environ.get(REFUSAL_LOG_ENV), before)
+            report = "\n".join(str(call.args[0]) for call in printed.call_args_list)
+            self.assertIn("198.51.100.10", report)
+            self.assertEqual(runner.suite_result(None, None), 1)
+
+    def test_a_run_with_no_refusal_keeps_its_own_result(self):
+        runner = XvsTestRunner(verbosity=0)
+        with mock.patch("core.suite_runner.DiscoverRunner.suite_result", return_value=3):
+            self.assertEqual(runner.suite_result(None, None), 3)
 
 
 class MigrationFingerprintTests(SimpleTestCase):

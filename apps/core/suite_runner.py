@@ -40,12 +40,20 @@ providers, SMTP, health probes and every other outbound call are faked or
 patched in the tests that exercise them, and the guard is what keeps a new test
 from quietly depending on a live service: the attempt fails with
 ``NetworkAccessBlocked`` (a ``ConnectionRefusedError``, so code handling an
-unreachable host behaves as it would in production) and the run ends with a
-list of every destination that was refused. PostgreSQL is unaffected, since
-libpq connects outside Python's ``socket`` module. ``XVS_TEST_ALLOW_NETWORK=1``
-lifts the guard for a deliberate integration run. Under ``--parallel`` every
-worker is guarded too, but a refusal inside a worker is reported by the test
-it breaks rather than in the end-of-run list.
+unreachable host behaves as it would in production). Code under test often
+catches that error and carries on, so a refusal can leave every test green; the
+guard therefore fails the run itself. The run ends with a list of every
+destination refused and where it came from, and counts as failed. PostgreSQL is
+unaffected, since libpq connects outside Python's ``socket`` module.
+``XVS_TEST_ALLOW_NETWORK=1`` lifts the guard for a deliberate integration run.
+
+Under ``--parallel`` every worker is guarded too, and its refusals reach the
+parent through a per-run log file. The parent creates the file and exports its
+path in ``XVS_TEST_REFUSAL_LOG`` before any worker starts; a worker started by
+``fork`` or by ``spawn`` appends one JSON line per refusal, and the parent reads
+the file at teardown, merges it with its own refusals, reports them and deletes
+it. The TEST-NET-3 range (``203.0.113.0/24``), which the guard's own tests aim
+at, is never reported.
 
 Output buffering
 ----------------
@@ -78,6 +86,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from collections import defaultdict
@@ -135,12 +144,44 @@ def _caller():
     return f"{code} (test {label(tests[-1])})" if tests and tests[-1] is not frames[-1] else code
 
 
-class NetworkGuard:
-    """Refuses outbound connections from ``socket.socket`` for the run."""
+REFUSAL_LOG_ENV = "XVS_TEST_REFUSAL_LOG"
+_TEST_NET_3 = "203.0.113."
 
-    def __init__(self):
+
+class NetworkGuard:
+    """Refuses outbound connections from ``socket.socket`` for the run.
+
+    Each refusal is kept in :attr:`blocked` and, when a log path is known,
+    appended to that file as one JSON line, which is how a worker process tells
+    the parent what it refused. The path comes from the constructor or, in a
+    worker, from ``XVS_TEST_REFUSAL_LOG``.
+    """
+
+    def __init__(self, log_path=None):
         self.blocked = []
+        self.log_path = log_path or os.environ.get(REFUSAL_LOG_ENV) or None
         self._originals = None
+
+    def check(self, address):
+        """Raise :class:`NetworkAccessBlocked` unless *address* is this machine."""
+        if _is_local(address):
+            return
+        caller = _caller()
+        self.blocked.append((address, caller))
+        self._record(address, caller)
+        raise NetworkAccessBlocked(
+            f"Test attempted a network connection to {address!r}. "
+            "Fake or patch the boundary (see core/suite_runner.py)."
+        )
+
+    def _record(self, address, caller):
+        """Append the refusal to the shared log; a failed write never hides the refusal."""
+        if not self.log_path:
+            return
+        line = json.dumps({"address": repr(address), "host": str(address[0]), "caller": caller})
+        with contextlib.suppress(OSError):
+            with open(self.log_path, "a", encoding="utf-8") as log:
+                log.write(line + "\n")
 
     def install(self):
         import socket
@@ -148,20 +189,12 @@ class NetworkGuard:
         guard = self
         connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
 
-        def _check(sock, address):
-            if not _is_local(address):
-                guard.blocked.append((address, _caller()))
-                raise NetworkAccessBlocked(
-                    f"Test attempted a network connection to {address!r}. "
-                    "Fake or patch the boundary (see core/suite_runner.py)."
-                )
-
         def guarded_connect(sock, address):
-            _check(sock, address)
+            guard.check(address)
             return connect(sock, address)
 
         def guarded_connect_ex(sock, address):
-            _check(sock, address)
+            guard.check(address)
             return connect_ex(sock, address)
 
         guarded_connect.xvs_network_guard = True
@@ -176,6 +209,39 @@ class NetworkGuard:
         if self._originals:
             socket.socket.connect, socket.socket.connect_ex = self._originals
             self._originals = None
+
+
+def read_refusal_log(path):
+    """The refusals a log file holds, as ``(address, host, caller)`` rows.
+
+    A missing file or a line that is not a refusal record is skipped: the log
+    is best-effort evidence and a damaged line must not hide the others.
+    """
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as log:
+            lines = log.read().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        try:
+            record = json.loads(line)
+            rows.append((record["address"], record["host"], record["caller"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return rows
+
+
+def refused_connections(guard, log_path=None):
+    """Every distinct ``(address, caller)`` refused by *guard* or recorded in *log_path*.
+
+    TEST-NET-3 is what the guard's own tests aim at; nothing real lives there,
+    so it is left out.
+    """
+    rows = {(repr(a), str(a[0]), c) for a, c in (guard.blocked if guard else ())}
+    if log_path:
+        rows.update(read_refusal_log(log_path))
+    return sorted((a, c) for a, host, c in rows if not host.startswith(_TEST_NET_3))
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +308,10 @@ def migration_fingerprint():
 def _guarded_init_worker(*args, **kwargs):
     """Django's worker setup, plus the network guard.
 
-    A worker started by ``fork`` inherits the guard the parent installed; one
-    started by ``spawn`` (the default on macOS) begins with a fresh ``socket``
-    module and would otherwise run unguarded.
+    A worker started by ``fork`` inherits the guard the parent installed, with
+    the parent's refusal log; one started by ``spawn`` (the default on macOS)
+    begins with a fresh ``socket`` module and would otherwise run unguarded, so
+    its guard reads the log path from ``XVS_TEST_REFUSAL_LOG``.
     """
     import socket
 
@@ -329,6 +396,9 @@ class XvsTestRunner(DiscoverRunner):
         self.fresh_db = fresh_db
         self._timing_result = None
         self._network_guard = None
+        self._refusal_log = None
+        self._log_env_before = None
+        self.refused = []
 
     @classmethod
     def add_arguments(cls, parser):
@@ -356,21 +426,35 @@ class XvsTestRunner(DiscoverRunner):
     def setup_test_environment(self, **kwargs):
         super().setup_test_environment(**kwargs)
         if os.environ.get("XVS_TEST_ALLOW_NETWORK") != "1":
-            self._network_guard = NetworkGuard()
+            # The log exists, and its path is exported, before any worker starts.
+            handle, self._refusal_log = tempfile.mkstemp(prefix="xvs-refusals-", suffix=".jsonl")
+            os.close(handle)
+            self._log_env_before = os.environ.get(REFUSAL_LOG_ENV)
+            os.environ[REFUSAL_LOG_ENV] = self._refusal_log
+            self._network_guard = NetworkGuard(log_path=self._refusal_log)
             self._network_guard.install()
 
     def teardown_test_environment(self, **kwargs):
         guard, self._network_guard = self._network_guard, None
+        log, self._refusal_log = self._refusal_log, None
         if guard is not None:
             guard.uninstall()
-            # TEST-NET-3 is what the guard's own tests aim at; nothing real lives there.
-            blocked = {
-                (repr(a), c) for a, c in guard.blocked
-                if not str(a[0]).startswith("203.0.113.")
-            }
-            if blocked:
-                print("\nNetwork connections refused during this run:")
-                for address, caller in sorted(blocked):
+            self.refused = refused_connections(guard, log)
+            if self._log_env_before is None:
+                os.environ.pop(REFUSAL_LOG_ENV, None)
+            else:
+                os.environ[REFUSAL_LOG_ENV] = self._log_env_before
+            if log:
+                with contextlib.suppress(OSError):
+                    os.remove(log)
+            if self.refused:
+                print(
+                    "\nNetwork connections refused during this run. A test or the "
+                    "code it runs reached a live host; fake or patch that boundary "
+                    "(payment providers go through vs_payments.providers.http.request_json). "
+                    "The run fails:"
+                )
+                for address, caller in self.refused:
                     print(f"  {address}  from {caller}")
         super().teardown_test_environment(**kwargs)
 
@@ -454,7 +538,9 @@ class XvsTestRunner(DiscoverRunner):
     def suite_result(self, suite, result, **kwargs):
         if self._timing_result is not None:
             self._report(self._timing_result)
-        return super().suite_result(suite, result, **kwargs)
+        failures = super().suite_result(suite, result, **kwargs)
+        # A refusal the code under test caught leaves every test green; it still fails the run.
+        return failures + 1 if self.refused else failures
 
     def _report(self, result):
         per_class = defaultdict(lambda: {"tests": 0, "test_time": 0.0})

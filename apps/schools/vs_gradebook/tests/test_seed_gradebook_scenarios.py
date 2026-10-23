@@ -20,6 +20,7 @@ import datetime as dt
 from contextlib import redirect_stdout
 from decimal import Decimal
 from io import StringIO
+from unittest import mock
 from urllib.parse import urlencode
 
 from django.apps import apps
@@ -104,6 +105,16 @@ def _counts(tenant) -> dict:
     return out
 
 
+PAYSTACK_TRANSPORT = "vs_payments.providers.paystack.request_json"
+
+
+def _provider_unreachable(method, url, *, provider="", **kwargs):
+    """Answer a provider call as ``request_json`` does when the provider cannot be reached."""
+    from vs_payments.exceptions import ProviderError
+
+    raise ProviderError(f"Could not reach {provider or 'provider'}: unreachable", provider=provider)
+
+
 class SeededSchools:
     """The two prerequisite schools with the seeder run once, on the day ``AT``.
 
@@ -136,11 +147,22 @@ class SeededSchools:
 
     @classmethod
     def run_seed(cls, at=None, **options) -> str:
-        """Run the seeder on *at* (the class's day by default), with the emails it triggers sent as if committed."""
+        """Run the seeder on *at* (the class's day by default), with the emails it triggers sent as if committed.
+
+        Billing a family queues a transfer account at the payment provider. The
+        provider answers as an unreachable host does, so seeding never opens a
+        socket and a school without a transfer account is what the tests see.
+        The fake is entered before the on-commit capture so it is still in place
+        when the captured callbacks run on leaving it.
+        """
         out = StringIO()
         if cls.ONLY:
             options.setdefault("only", cls.ONLY)
-        with school_clock(at or cls.AT), cls.captureOnCommitCallbacks(execute=True):
+        with (
+            school_clock(at or cls.AT),
+            mock.patch(PAYSTACK_TRANSPORT, side_effect=_provider_unreachable),
+            cls.captureOnCommitCallbacks(execute=True),
+        ):
             call_command("seed_gradebook_scenarios", stdout=out, **options)
         return out.getvalue()
 
