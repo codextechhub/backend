@@ -201,6 +201,12 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 class AccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A chart-of-accounts row.
 
+    ``managed_by`` is null for an account a person works with and
+    ``{"keeper", "moved_by", "hand_journals"}`` for one the software keeps
+    (:func:`vs_finance.account_guide.managed_accounts`). The view builds that map
+    once and passes it as ``context["managed_accounts"]``; a serializer given no
+    map answers null instead of querying per row.
+
     ``bank_account_id`` and ``bank_branch_id`` name the bank account behind a
     ledger account and that account's branch, empty for an account no bank
     account backs. A document is deposited into, or paid from, its own branch's
@@ -219,14 +225,15 @@ class AccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     # Sub-ledger role: AR/AP control account, or the cash & bank account.
     tag = serializers.SerializerMethodField()
+    managed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Account
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
-            "subtype", "description", "balance", "tag", "bank_account_id",
-            "bank_branch_id",
+            "subtype", "description", "ifrs_line", "balance", "tag", "managed_by",
+            "bank_account_id", "bank_branch_id",
         ]
 
     @staticmethod
@@ -262,6 +269,11 @@ class AccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
         if obj.id in self.context.get("cash_ids", set()):
             return "CASH"
         return None
+
+    def get_managed_by(self, obj):
+        from .account_guide import managed_by_payload
+
+        return managed_by_payload(self.context.get("managed_accounts", {}).get(obj.id))
 
     def to_representation(self, instance):
         """The account, without what restates a bank account the caller may not read.

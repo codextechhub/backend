@@ -38,6 +38,7 @@ from vs_rbac.scoping import (
     transaction_branch_scope,
 )
 
+from .account_guide import managed_accounts, suggest_account_code, suggestions_payload
 from .approvals import with_approval_request
 from .wording import period_status_word
 from .models import (
@@ -527,15 +528,40 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
 
     # POST added manually (not using CreateAPIView or ListCreateAPIView)
     def post(self, request):
-        """Create a new chart-of-accounts node for the entity."""
-        from .constants import ACCOUNT_CODE_LENGTH, account_type_from_code
+        """Create a new chart-of-accounts node for the entity.
+
+        Two ways in. With a ``code``, the code decides the account type and a
+        code the software keeps for a system account the books do not hold is
+        refused with the next free code offered
+        (:func:`vs_finance.account_guide.ensure_code_not_reserved`). Without
+        one, ``account_type`` is required: the code is the next free one of that
+        type (:func:`vs_finance.account_guide.suggest_account_code`) and, when no
+        ``parent`` is named, the account goes under the type's heading.
+        """
+        from .account_guide import ensure_code_not_reserved
+        from .constants import (
+            ACCOUNT_CODE_LENGTH, ACCOUNT_TYPE_BY_CODE_PREFIX, AccountType, IFRSLine,
+            account_type_from_code,
+        )
         from .models import Account
 
         entity = resolve_entity(request)
         body = request.data or {}
-        code = str(body.get("code", "")).strip()
+        code = "" if body.get("code") is None else str(body["code"]).strip()
+        default_parent = None
         if not code:
-            raise ValidationError({"code": "An account code is required."})
+            requested = str(body.get("account_type") or "").strip().upper()
+            if requested not in AccountType.values:
+                raise ValidationError({"account_type": (
+                    "Choose an account type (" + ", ".join(AccountType.values)
+                    + ") or give an account code."
+                )})
+            code = suggest_account_code(entity, requested)
+            lead = next(prefix for prefix, kind in ACCOUNT_TYPE_BY_CODE_PREFIX.items()
+                        if kind == requested)
+            default_parent = Account.objects.filter(
+                entity=entity, code=lead + "0" * (ACCOUNT_CODE_LENGTH - 1), is_postable=False,
+            ).first()
         if not code.isdigit():
             raise ValidationError({"code": "Account codes can contain numbers only."})
         atype = account_type_from_code(code)
@@ -545,15 +571,19 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
             raise ValidationError({"code": f"Account codes must contain exactly {ACCOUNT_CODE_LENGTH} digits."})
         if Account.objects.filter(entity=entity, code=code).exists():
             raise ValidationError({"code": f"Account '{code}' already exists in this entity."})
+        ensure_code_not_reserved(entity, code)
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "An account name is required."})
+        ifrs_line = str(body.get("ifrs_line") or "").strip()
+        if ifrs_line and ifrs_line not in IFRSLine.values:
+            raise ValidationError({"ifrs_line": "Choose one of the statutory report lines."})
         assert_writable(request, "finance.account", {
             key: body[key] for key in (
-                "is_contra", "is_postable", "parent", "subtype", "description",
+                "is_contra", "is_postable", "parent", "subtype", "description", "ifrs_line",
             ) if key in body
         }, creating=True)
-        parent = None
+        parent = default_parent
         if (parent_ref := body.get("parent")) not in (None, ""):
             # By id for a JSON number, by code for a string, within the entity.
             from core.references import find_by_code_or_id
@@ -575,10 +605,13 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
             is_postable=bool(body.get("is_postable", True)),
             subtype=str(body.get("subtype", "")).strip(),
             description=str(body.get("description", "")).strip(),
+            ifrs_line=ifrs_line,
         )
         return success_response(
             f"Account {account.code} created.",
-            data=AccountSerializer(account, context={"request": request}).data, status=201,
+            data=AccountSerializer(account, context={
+                "request": request, "managed_accounts": managed_accounts(entity),
+            }).data, status=201,
         )
 
     def entity_qs(self, entity):
@@ -603,8 +636,9 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
+        entity = getattr(self, "entity", None) or resolve_entity(self.request)
+        ctx["managed_accounts"] = managed_accounts(entity)
         if self._whole_tree():
-            entity = getattr(self, "entity", None) or resolve_entity(self.request)
             from .account_mappings import resolve_mapped_account
             from .constants import AccountMappingKey
             from .exceptions import MissingAccountError
@@ -681,6 +715,48 @@ def _with_branch_balances(accounts, entity, scope):
     for account in accounts:
         account._bal_dr, account._bal_cr = totals.get(account.id, (0, 0))
     return accounts
+
+
+class AccountNextCodeView(APIView):
+    """GET /finance/accounts/next-code/?account_type=EXPENSE - the code a new account would get.
+
+    Lets the new-account form show the code before it is saved. It is the same
+    pick the create endpoint makes when no code is sent, so what is shown is
+    what is used unless another account is added in between.
+
+    docstring-name: Next account code
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.account.create"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        account_type = str(request.query_params.get("account_type") or "").strip().upper()
+        return success_response(
+            "Next account code retrieved.",
+            data={"code": suggest_account_code(entity, account_type)},
+        )
+
+
+class AccountSuggestionsView(APIView):
+    """GET /finance/accounts/suggestions/ - common accounts to add in one step.
+
+    The organisation-neutral catalogue plus whatever a product registers for
+    books it serves (:func:`vs_finance.account_guide.register_account_suggestion_provider`).
+    Each row says whether the books already hold an account of that name.
+
+    docstring-name: Suggested accounts
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.account.create"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        return success_response(
+            "Suggested accounts retrieved.", data=suggestions_payload(entity),
+        )
 
 
 # Group endpoint behavior for Account Detail View.
@@ -827,7 +903,8 @@ class AccountDetailView(APIView):
                 },
                 "activity": activity,
             }, context={"request": request,
-                        "bank_balance_hidden": bank_balance_hidden}).data,
+                        "bank_balance_hidden": bank_balance_hidden,
+                        "managed_accounts": managed_accounts(entity)}).data,
         )
 
     def patch(self, request, pk):
@@ -856,7 +933,9 @@ class AccountDetailView(APIView):
         acc.save()
         return success_response(
             f"Account {acc.code} updated.",
-            data=AccountSerializer(acc, context={"request": request}).data,
+            data=AccountSerializer(acc, context={
+                "request": request, "managed_accounts": managed_accounts(entity),
+            }).data,
         )
 
 

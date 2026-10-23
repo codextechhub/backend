@@ -1035,6 +1035,7 @@ class AccountAndCostCenterDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
 
     @classmethod
     def setUpTestData(cls):
+        from vs_finance.account_guide import managed_accounts
         from vs_finance.models import CostCenter
 
         super().setUpTestData()
@@ -1042,12 +1043,13 @@ class AccountAndCostCenterDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
         for tenant, books in ((cls.tenant, cls.books),
                               (cls.solo_tenant, cls.solo_books)):
             account = Account.objects.get(entity=books, code="3100")
+            receivable = Account.objects.get(entity=books, code="1200")
             center = CostCenter.objects.create(entity=books, code="ADMIN", name="Admin")
-            cls.records.append((tenant, account, center))
+            cls.records.append((tenant, account, receivable, managed_accounts(books), center))
 
     def samples(self):
         samples = []
-        for tenant, account, center in self.records:
+        for tenant, account, receivable, managed, center in self.records:
             amount = {"kobo": 1_000, "naira": "10.00"}
             summary = {
                 "current_balance": amount, "opening_balance": amount,
@@ -1062,6 +1064,8 @@ class AccountAndCostCenterDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
             }
             samples += [
                 Sample(_SURFACE + "AccountSerializer", account, tenant=tenant),
+                Sample(_SURFACE + "AccountSerializer", [receivable], many=True,
+                       tenant=tenant, context={"managed_accounts": managed}),
                 Sample(_SURFACE + "AccountSummarySerializer", summary, tenant=tenant),
                 Sample(_SURFACE + "AccountActivityRowSerializer", activity, tenant=tenant),
                 Sample(_SURFACE + "AccountActivityTotalsSerializer", {
@@ -1395,3 +1399,4 @@ class ExpenseClaimDeepPayloadTests(DeepPayloadChecks, TestCase):
                 Sample(_SURFACE + "ExpenseClaimSerializer", [claim], many=True, tenant=tenant),
             ]
         return samples
+

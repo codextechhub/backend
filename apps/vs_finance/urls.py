@@ -25,6 +25,8 @@ from .views_accruals import (
 from .views import (
     AccountActivityView,
     AccountDetailView,
+    AccountNextCodeView,
+    AccountSuggestionsView,
     AccountListCreateView,
     AnalyticsSliceView,
     ARAgingView,
@@ -327,6 +329,8 @@ urlpatterns = [
     path("settings/history/", FinanceSettingsHistoryView.as_view(),
          name="finance-settings-history"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
+    path("accounts/next-code/", AccountNextCodeView.as_view(), name="finance-account-next-code"),
+    path("accounts/suggestions/", AccountSuggestionsView.as_view(), name="finance-account-suggestions"),
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),
     path("periods/", FiscalPeriodListView.as_view(), name="finance-period-list"),

@@ -60,6 +60,10 @@ permission keys; a document number identifies the document the way a name
 identifies a customer. Neither is registered on any resource, and
 ``RegistryHoldsNoBranchOrDocumentNumberTests`` in ``vs_rbac`` keeps it so.
 
+``finance.account`` is a row of the chart of accounts. Whether the software keeps
+an account (``managed_by``) is worked out from the books, so it is read-only. The
+statutory report line (``ifrs_line``) is chosen when an account is created.
+
 The receivables accruals carry four resources of their own, all open to every
 role until a school closes a field:
 
@@ -831,6 +835,8 @@ def register():
                       api_names=("parent_id", "parent_code")),
             FieldSpec("subtype", "Account subtype", group="Setup", scope=_TENANT,
                       sort_order=50),
+            FieldSpec("ifrs_line", "Statutory report line", group="Setup", scope=_TENANT,
+                      open_on_create=True, sort_order=55),
             FieldSpec("description", "Description", group="Setup", scope=_TENANT,
                       sort_order=60),
             FieldSpec("balance", "Account balance", group="Ledger", scope=_TENANT,
@@ -839,6 +845,8 @@ def register():
                                  "running_balance", "debit", "credit", "net_movement")),
             FieldSpec("tag", "Sub-ledger role", group="Ledger", scope=_TENANT,
                       writable=False, sort_order=80),
+            FieldSpec("managed_by", "Managed by the system", group="Ledger", scope=_TENANT,
+                      writable=False, sort_order=85),
             FieldSpec("activity", "Ledger activity", group="Ledger", scope=_TENANT,
                       writable=False, sort_order=90),
         ),

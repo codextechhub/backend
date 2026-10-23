@@ -13,7 +13,9 @@ class FalConfig(AppConfig):
     ``ready`` connects the FAL to the finance and payments engines' signals: a
     pupil's first posted bill issues their transfer account, and a replaced
     number tells the pupil and their primary guardian
-    (:mod:`schools.core.fal.transfer_accounts`).
+    (:mod:`schools.core.fal.transfer_accounts`). It also registers the accounts
+    a school commonly adds as suggestions for the finance chart
+    (:mod:`schools.core.fal.account_suggestions`).
     """
 
     name = "schools.core.fal"
@@ -26,13 +28,16 @@ class FalConfig(AppConfig):
 
         from vs_payments.signals import virtual_account_replaced
 
+        from vs_finance.account_guide import register_account_suggestion_provider
         from vs_finance.document_contacts import register_contact_resolver
 
+        from .account_suggestions import school_account_suggestions
         from .guardian_invoices import on_invoice_posted as tell_primary_guardian
         from .guardian_invoices import primary_guardian_contact
         from .transfer_accounts import on_invoice_posted, on_virtual_account_replaced
 
         register_contact_resolver(primary_guardian_contact)
+        register_account_suggestion_provider(school_account_suggestions)
 
         invoice_posted.connect(on_invoice_posted, dispatch_uid="fal.transfer_account_on_first_bill")
         invoice_posted.connect(tell_primary_guardian, dispatch_uid="fal.guardian_invoice_on_post")

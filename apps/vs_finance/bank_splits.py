@@ -35,6 +35,7 @@ from django.db.models import Q, Sum
 from vs_config.clock import tenant_today
 from vs_config.display import format_date
 
+from .account_guide import ensure_code_not_reserved
 from .account_mappings import resolve_mapped_account
 from .audit import record
 from .branch_ledger import ledger_lines
@@ -383,6 +384,8 @@ def split_shared_bank_account(
             f"Every new branch ledger code must be an asset code, like the shared "
             f"account's {legacy.code}."
         )
+    for code in codes:
+        ensure_code_not_reserved(source.entity, code, error=BankAccountSplitError)
 
     selected_primary = any(row["is_primary"] for row in rows)
     if selected_primary and BankAccount.objects.filter(

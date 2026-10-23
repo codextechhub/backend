@@ -205,7 +205,13 @@ def seed_chart_of_accounts(entity):
     row, which is about 170 round trips for the default chart. The
     ``(entity, code)`` constraint still refuses a duplicate from a concurrent
     seed of the same entity.
+
+    Each account carries its plain-language purpose
+    (:data:`vs_finance.account_guide.ACCOUNT_PURPOSES`) as its description. A
+    re-run fills a blank description on an existing default account and leaves
+    one an operator wrote alone.
     """
+    from .account_guide import ACCOUNT_PURPOSES
     from .models import Account
 
     existing = {account.code: account for account in Account.objects.filter(entity=entity)}
@@ -213,6 +219,7 @@ def seed_chart_of_accounts(entity):
     for code, name, acc_type, postable, contra in DEFAULT_CHART:  # Create each default account.
         # ``normal_balance`` is left for Account.save() to derive from type + contra.  # Avoid duplicating model logic.
         ifrs_line = DEFAULT_IFRS_LINE_BY_CODE.get(code, "")
+        purpose = ACCOUNT_PURPOSES.get(code, "")
         account = existing.get(code)
         was_created = account is None
         if was_created:
@@ -223,6 +230,7 @@ def seed_chart_of_accounts(entity):
                 is_postable=postable,  # Whether journals may post directly here.
                 is_contra=contra,  # Whether normal balance is contra to account type.
                 ifrs_line=ifrs_line,  # Statutory presentation line.
+                description=purpose,  # What the account is for, in plain words.
                 parent=created.get(_PARENTS.get(code, "")) or existing.get(_PARENTS.get(code, "")),
             )
             account.save()
@@ -232,6 +240,10 @@ def seed_chart_of_accounts(entity):
         if not was_created and ifrs_line and not account.ifrs_line:  # Backfill only unmapped old accounts.
             account.ifrs_line = ifrs_line  # Set missing statutory line.
             account.save(update_fields=["ifrs_line", "updated_at"])
+        # Likewise the purpose: a blank description is filled, one an operator wrote stays.
+        if not was_created and purpose and not account.description.strip():
+            account.description = purpose
+            account.save(update_fields=["description", "updated_at"])
         created[code] = account  # Store account for parent pass.
 
     # Second pass: link parents now that every node exists.  # Parent rows may be created later in the first pass.
