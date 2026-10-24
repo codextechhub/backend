@@ -35,7 +35,7 @@ from vs_rbac.field_enforcement import FieldReadDenied
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from . import analytics, audit, services
-from .catalogue import all_datasets, get_dataset, modules
+from .catalogue import access_is_readable, all_datasets, get_dataset, modules
 from .constants import (
     AuditAction,
     ExportFormat,
@@ -659,7 +659,7 @@ class FromScreenView(_ExportBase):
                 "fields": [
                     f.describe() for f in dataset.fields
                     if (include_sensitive or not f.sensitive)
-                    and (not f.access or screen_readable(f.access))
+                    and access_is_readable(f.access, screen_readable)
                 ],
                 "carried": resolved["carried"],
                 "unmapped": resolved["unmapped"],

@@ -95,6 +95,18 @@ class GoverningFieldTests(SimpleTestCase):
     def test_an_explicit_key_governs_a_path_that_is_no_column(self):
         self.assertEqual(_dataset().filter_access(EXPLICIT), FIRST)
 
+    def test_a_derived_column_needs_every_governing_key(self):
+        dataset = Dataset(
+            key="test.combined", module="Test", name="Combined", description="",
+            base=lambda scope: None,
+            fields=(Field("first_name", "Combined", "Person", KIND_TEXT,
+                          access=(FIRST, LAST)),),
+            filters=(FilterDef("first_name", "Combined", FILTER_TEXT),),
+        )
+        self.assertEqual(dataset.describe(readable=_hiding(LAST))["fields"], [])
+        self.assertFalse(dataset.filter_readable(dataset.filters[0], _hiding(LAST)))
+        self.assertEqual(len(dataset.describe(readable=_hiding())["fields"]), 1)
+
 
 class SearchNarrowingTests(SimpleTestCase):
     """A search matches only the columns its reader may read."""

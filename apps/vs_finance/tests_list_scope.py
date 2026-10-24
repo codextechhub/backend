@@ -329,7 +329,9 @@ class DocumentDateAccessTests(SimpleTestCase):
             with self.subTest(model=label):
                 keys = [k for k, _ in date_access_keys(apps.get_model(label))]
                 self.assertEqual(keys, [key])
-        self.assertEqual(date_access_keys(Invoice), ())
+        self.assertEqual(date_access_keys(Invoice), (
+            ("finance.invoice.invoice_date", "Invoice date"),
+        ))
 
 
 class RefundsAndWriteOffsScopeTests(TestCase):

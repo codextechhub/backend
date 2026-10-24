@@ -22,7 +22,7 @@ from .models import FiscalPeriod, JournalEntry, PayrollLine, PayrollRun
 from .tests_branch_scope import _FinanceBranchFixture
 
 #: A request for a list of journals costs this many queries however long the list is.
-JOURNAL_LIST_QUERY_BOUND = 18
+JOURNAL_LIST_QUERY_BOUND = 20
 
 
 class _MonthsFixture(_FinanceBranchFixture):

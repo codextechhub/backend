@@ -55,6 +55,7 @@ from django.db.models import Q
 from .catalogue import (
     FILTER_SEARCH,
     FilterError,
+    access_is_readable,
     compile_filter,
     describe_filter,
     get_dataset,
@@ -248,7 +249,7 @@ def resolve_columns(user, dataset, column_ids, tenant):
         if field.sensitive and not allow_sensitive:
             forbidden.append(field.label)
             continue
-        if field.access and not readable(field.access):
+        if not access_is_readable(field.access, readable):
             forbidden.append(field.label)
             continue
         fields.append(field)
@@ -408,7 +409,7 @@ def build_queryset(dataset, scope, filters, sort=None):
         field = dataset.field(str(item.get("field", "")))
         if field is None:
             continue                                  # a withdrawn sort is not fatal
-        if readable is not None and field.access and not readable(field.access):
+        if not access_is_readable(field.access, readable):
             continue                                  # a hidden column ranks nothing
         prefix = "-" if str(item.get("direction", "asc")).lower() == "desc" else ""
         order.append(f"{prefix}{field.path}")

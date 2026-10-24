@@ -50,12 +50,17 @@ from vs_finance.models import (
     BankTransfer,
     CreditNote,
     CreditNoteLine,
+    Concession,
+    CustomerCreditTransfer,
     CustomerDeposit,
     DepositForfeiture,
     DoubtfulDebtProvision,
     DoubtfulDebtProvisionLine,
     Invoice,
     InvoiceLine,
+    PaymentPlan,
+    PaymentPlanInstallment,
+    WriteOffRequest,
     EmployeeDeduction,
     EmployeeSalary,
     EmployeeSalaryVersion,
@@ -854,11 +859,18 @@ class CustomerAndBankAccountDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
         _SURFACE + "BankAccountMetricsSerializer",
         _SURFACE + "BankAccountActivitySerializer",
         _SURFACE + "BankReconciliationSerializer",
+        _SURFACE + "BankStatementSerializer",
+        _SURFACE + "BankStatementDetailSerializer",
+        _SURFACE + "BankStatementLineSerializer",
+        _SURFACE + "BankBookLinesSerializer",
     })
 
     @classmethod
     def setUpTestData(cls):
-        from vs_finance.models import BankReconciliation, Customer, FinanceDocumentDelivery
+        from vs_finance.models import (
+            BankReconciliation, BankStatement, BankStatementLine, Customer,
+            FinanceDocumentDelivery,
+        )
 
         super().setUpTestData()
         cls.records = []
@@ -881,11 +893,21 @@ class CustomerAndBankAccountDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
                 bank_account=bank, as_of_date=datetime.date(2026, 1, 31),
                 book_balance=5_000, statement_balance=4_000, difference=1_000, matched_count=2,
             )
-            cls.records.append((tenant, customer, delivery, bank, reconciliation))
+            statement = BankStatement.objects.create(
+                bank_account=bank, statement_date=datetime.date(2026, 1, 31),
+                period_label="January 2026", opening_balance=1_000,
+                closing_balance=2_000,
+            )
+            line = BankStatementLine.objects.create(
+                bank_account=bank, statement=statement,
+                txn_date=datetime.date(2026, 1, 20), description="Deposit", amount=1_000,
+            )
+            cls.records.append((tenant, customer, delivery, bank, reconciliation,
+                                statement, line))
 
     def samples(self):
         samples = []
-        for tenant, customer, delivery, bank, reconciliation in self.records:
+        for tenant, customer, delivery, bank, reconciliation, statement, line in self.records:
             money = {"kobo": 1_000, "naira": "10.00"}
             standing = {
                 "current_balance": money, "lifetime_paid": money, "open_invoice_count": 1,
@@ -900,7 +922,7 @@ class CustomerAndBankAccountDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
                 "reference": "CAP-1", "debit": 5_000, "credit": 0, "running_balance": 5_000,
                 "matched": False,
             }]
-            bank.detail_statements = [{"id": 1, "statement_date": "2026-01-31"}]
+            bank.detail_statements = [statement]
             bank.detail_reconciliations = [reconciliation]
             samples += [
                 Sample(_SURFACE + "CustomerSerializer", customer, tenant=tenant),
@@ -939,7 +961,388 @@ class CustomerAndBankAccountDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
                        tenant=tenant),
                 Sample(_SURFACE + "BankReconciliationSerializer", reconciliation,
                        tenant=tenant),
+                Sample(_SURFACE + "BankStatementSerializer", statement, tenant=tenant),
+                Sample(_SURFACE + "BankStatementDetailSerializer", statement, tenant=tenant),
+                Sample(_SURFACE + "BankStatementLineSerializer", line, tenant=tenant),
+                Sample(_SURFACE + "BankBookLinesSerializer", {
+                    "book_lines": [{"id": 1, "date": "2026-01-15",
+                                    "description": "Owner capital", "reference": "CAP-1",
+                                    "amount": 1_000}]}, tenant=tenant),
             ]
+        return samples
+
+
+class JournalDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Journal list, detail, lines and summary honor one resource's switches."""
+
+    resources = frozenset({"finance.journal"})
+    covers = frozenset({
+        _SURFACE + "JournalEntryListSerializer",
+        _SURFACE + "JournalEntryDetailSerializer",
+        _SURFACE + "JournalLineSerializer",
+        _SURFACE + "JournalSummarySerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import JournalEntry, JournalLine
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books, branch in (
+            (cls.tenant, cls.books, cls.ikeja),
+            (cls.solo_tenant, cls.solo_books, cls.solo_main),
+        ):
+            entry = JournalEntry.objects.create(
+                entity=books, branch=branch, date=datetime.date(2026, 1, 15),
+                narration="Opening capital", reference="CAP-1",
+            )
+            line = JournalLine.objects.create(
+                entry=entry, account=Account.objects.get(entity=books, code="3100"),
+                line_no=1, debit=1_000,
+            )
+            cls.records.append((tenant, entry, line))
+
+    def samples(self):
+        samples = []
+        for tenant, entry, line in self.records:
+            samples += [
+                Sample(_SURFACE + "JournalEntryListSerializer", [entry], many=True,
+                       tenant=tenant),
+                Sample(_SURFACE + "JournalEntryDetailSerializer", entry, tenant=tenant),
+                Sample(_SURFACE + "JournalLineSerializer", line, tenant=tenant),
+                Sample(_SURFACE + "JournalSummarySerializer", {
+                    "total": 1, "by_status": {"POSTED": 1}, "sent_back": 0,
+                    "posted_total": {"kobo": 1_000, "naira": "10.00"},
+                    "reversed_total": {"kobo": 0, "naira": "0.00"},
+                }, tenant=tenant),
+            ]
+        return samples
+
+
+class AccountAndCostCenterDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Chart rows, detail blocks and cost centres hide their registered fields."""
+
+    resources = frozenset({"finance.account", "finance.costcenter"})
+    covers = frozenset({
+        _SURFACE + "AccountSerializer",
+        _SURFACE + "AccountSummarySerializer",
+        _SURFACE + "AccountActivityRowSerializer",
+        _SURFACE + "AccountActivityTotalsSerializer",
+        _SURFACE + "AccountDetailEnvelopeSerializer",
+        _SURFACE + "CostCenterSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import CostCenter
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books in ((cls.tenant, cls.books),
+                              (cls.solo_tenant, cls.solo_books)):
+            account = Account.objects.get(entity=books, code="3100")
+            center = CostCenter.objects.create(entity=books, code="ADMIN", name="Admin")
+            cls.records.append((tenant, account, center))
+
+    def samples(self):
+        samples = []
+        for tenant, account, center in self.records:
+            amount = {"kobo": 1_000, "naira": "10.00"}
+            summary = {
+                "current_balance": amount, "opening_balance": amount,
+                "line_count": 1, "journal_count": 1,
+                "fiscal_year_start": "2026-01-01", "as_of": "2026-01-31",
+            }
+            activity = {
+                "date": "2026-01-15", "journal_no": "JN-1", "source": "MANUAL",
+                "status": "POSTED", "description": "Capital", "cost_center": "ADMIN",
+                "dimensions": {}, "debit": amount, "credit": amount,
+                "running_balance": amount,
+            }
+            samples += [
+                Sample(_SURFACE + "AccountSerializer", account, tenant=tenant),
+                Sample(_SURFACE + "AccountSummarySerializer", summary, tenant=tenant),
+                Sample(_SURFACE + "AccountActivityRowSerializer", activity, tenant=tenant),
+                Sample(_SURFACE + "AccountActivityTotalsSerializer", {
+                    "debit": amount, "credit": amount, "net_movement": amount,
+                }, tenant=tenant),
+                Sample(_SURFACE + "AccountDetailEnvelopeSerializer", {
+                    "account": account, "type_label": "Equity", "summary": summary,
+                    "activity": [activity],
+                }, tenant=tenant),
+                Sample(_SURFACE + "CostCenterSerializer", center, tenant=tenant),
+            ]
+        return samples
+
+
+class FinanceSetupDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Finance setup rows hide their configurable values in both tenant shapes."""
+
+    resources = frozenset({
+        "finance.currency", "finance.fxrate", "finance.taxcode", "finance.dimension",
+    })
+    covers = frozenset({
+        _SURFACE + "CurrencySerializer", _SURFACE + "FxRateSerializer",
+        _SURFACE + "TaxCodeSerializer", _SURFACE + "DimensionSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from decimal import Decimal
+        from vs_finance.models import Currency, Dimension, FxRate, TaxCode
+
+        super().setUpTestData()
+        base, _ = Currency.objects.get_or_create(
+            code="NGN", defaults={"name": "Naira", "symbol": "₦"})
+        quote, _ = Currency.objects.get_or_create(
+            code="USD", defaults={"name": "US Dollar", "symbol": "$"})
+        cls.currency = quote
+        cls.fx = FxRate.objects.create(base=base, quote=quote,
+                                       rate=Decimal("0.0007"), as_of=datetime.date(2026, 1, 15),
+                                       source="CBN")
+        cls.records = []
+        for tenant, books in ((cls.tenant, cls.books),
+                              (cls.solo_tenant, cls.solo_books)):
+            tax = TaxCode.objects.create(entity=books, code="VAT", name="VAT", rate_bps=750)
+            dimension = Dimension.objects.create(entity=books, code="FUND", name="Fund",
+                                                 allowed_values=["GRANT-A"])
+            cls.records.append((tenant, tax, dimension))
+
+    def samples(self):
+        samples = []
+        for tenant, tax, dimension in self.records:
+            samples.extend((
+                Sample(_SURFACE + "CurrencySerializer", self.currency, tenant=tenant),
+                Sample(_SURFACE + "FxRateSerializer", self.fx, tenant=tenant),
+                Sample(_SURFACE + "TaxCodeSerializer", tax, tenant=tenant),
+                Sample(_SURFACE + "DimensionSerializer", dimension, tenant=tenant),
+            ))
+        return samples
+
+
+class InvoiceDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Invoice rows and nested drawer blocks hide every registered field."""
+
+    resources = frozenset({"finance.invoice"})
+    covers = frozenset({
+        _SURFACE + "InvoiceSerializer",
+        _SURFACE + "InvoiceDetailSummarySerializer",
+        _SURFACE + "InvoiceDetailLineSerializer",
+        _SURFACE + "InvoiceDetailEnvelopeSerializer",
+        _SURFACE + "InvoiceSummarySerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import Customer
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books, branch in (
+            (cls.tenant, cls.books, cls.ikeja),
+            (cls.solo_tenant, cls.solo_books, cls.solo_main),
+        ):
+            customer = Customer.objects.create(
+                entity=books, branch=branch, code="INV-DEEP", name="Ada Family",
+                receivable_account=Account.objects.get(entity=books, code="1200"),
+            )
+            invoice = Invoice.objects.create(
+                entity=books, branch=branch, customer=customer,
+                invoice_date=datetime.date(2026, 1, 15),
+                due_date=datetime.date(2026, 2, 15), subtotal=1_000,
+                tax_total=0, total=1_000, reference="TERM-1", narration="Tuition",
+            )
+            cls.records.append((tenant, invoice))
+
+    def samples(self):
+        samples = []
+        for tenant, invoice in self.records:
+            amount = {"kobo": 1_000, "naira": "10.00"}
+            detail_summary = {
+                "subtotal": amount, "tax": amount, "total": amount,
+                "paid": amount, "credited": amount, "settled": amount,
+                "balance": amount, "due_date": "2026-02-15",
+            }
+            line = {
+                "description": "Tuition", "account_code": "4100",
+                "account_name": "Income", "quantity": "1", "unit_price": amount,
+                "tax_code": None, "tax_amount": amount, "line_total": amount,
+                "kind": "CHARGE", "service_start": None, "service_end": None,
+            }
+            samples += [
+                Sample(_SURFACE + "InvoiceSerializer", invoice, tenant=tenant),
+                Sample(_SURFACE + "InvoiceDetailSummarySerializer", detail_summary,
+                       tenant=tenant),
+                Sample(_SURFACE + "InvoiceDetailLineSerializer", line, tenant=tenant),
+                Sample(_SURFACE + "InvoiceDetailEnvelopeSerializer", {
+                    "invoice": invoice, "summary": detail_summary, "lines": [line],
+                    "deferred_income": {}, "payments": [], "settlements": [],
+                    "gl_postings": [], "gl_journals": [], "reminders": [],
+                    "activity": [],
+                }, tenant=tenant),
+                Sample(_SURFACE + "InvoiceSummarySerializer", {
+                    "kpis": {"total_invoiced": amount},
+                    "by_status": {"paid": 1}, "totals": {"total": amount},
+                    "monthly": [{"label": "January", "invoiced": amount}],
+                }, tenant=tenant),
+            ]
+        return samples
+
+
+class RefundDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Refund money and details stay hidden across tenant and branch shapes."""
+
+    resources = frozenset({"finance.refund"})
+    covers = frozenset({_SURFACE + "RefundSerializer"})
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import Customer, Refund
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books, branch, bank in (
+            (cls.tenant, cls.books, cls.ikeja, cls.ikeja_bank),
+            (cls.solo_tenant, cls.solo_books, cls.solo_main, cls.solo_bank),
+        ):
+            customer = Customer.objects.create(
+                entity=books, branch=branch, code="REF-DEEP", name="Ada Family",
+                receivable_account=Account.objects.get(entity=books, code="1200"),
+            )
+            refund = Refund.objects.create(
+                entity=books, branch=branch, customer=customer, bank_account=bank,
+                refund_date=datetime.date(2026, 1, 15), amount=1_000,
+                reference="RET-1", narration="Duplicate payment",
+            )
+            cls.records.append((tenant, refund))
+
+    def samples(self):
+        return [Sample(_SURFACE + "RefundSerializer", refund, tenant=tenant)
+                for tenant, refund in self.records]
+
+
+class CreditNoteDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Credit and debit note lines follow the note's nested switches."""
+
+    resources = frozenset({"finance.creditnote"})
+    covers = frozenset({
+        _SURFACE + "CreditNoteSerializer",
+        _SURFACE + "CreditNoteLineSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import Customer
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books, branch in (
+            (cls.tenant, cls.books, cls.ikeja),
+            (cls.solo_tenant, cls.solo_books, cls.solo_main),
+        ):
+            customer = Customer.objects.create(
+                entity=books, branch=branch, code="NOTE-DEEP", name="Ada Family",
+                receivable_account=Account.objects.get(entity=books, code="1200"),
+            )
+            note = CreditNote.objects.create(
+                entity=books, branch=branch, customer=customer,
+                note_date=datetime.date(2026, 1, 15), reason="Returned goods",
+                reference="RET-1", total=1_000,
+            )
+            line = CreditNoteLine.objects.create(
+                note=note, line_no=1,
+                revenue_account=Account.objects.get(entity=books, code="4000"),
+                quantity=1, unit_price=1_000, net_amount=1_000,
+            )
+            cls.records.append((tenant, note, line))
+
+    def samples(self):
+        samples = []
+        for tenant, note, line in self.records:
+            samples += [
+                Sample(_SURFACE + "CreditNoteSerializer", note, tenant=tenant),
+                Sample(_SURFACE + "CreditNoteLineSerializer", line, tenant=tenant),
+            ]
+        return samples
+
+
+class ReceivableAdjustmentDeepPayloadTests(DeepPayloadChecks, _ReworkFixture):
+    """Adjustment documents hide their own fields in either branch shape."""
+
+    resources = frozenset({
+        "finance.concession", "finance.writeoff", "finance.credittransfer",
+        "finance.paymentplan",
+    })
+    covers = frozenset({
+        _SURFACE + "ConcessionSerializer",
+        _SURFACE + "WriteOffRequestSerializer",
+        _SURFACE + "CustomerCreditTransferSerializer",
+        _SURFACE + "PaymentPlanSerializer",
+        _SURFACE + "PaymentPlanInstallmentSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import Customer
+
+        super().setUpTestData()
+        cls.records = []
+        for tenant, books, branch in (
+            (cls.tenant, cls.books, cls.ikeja),
+            (cls.solo_tenant, cls.solo_books, cls.solo_main),
+        ):
+            receivable = Account.objects.get(entity=books, code="1200")
+            first = Customer.objects.create(
+                entity=books, branch=branch, code="ADJ-DEEP-1", name="Ada Family",
+                receivable_account=receivable,
+            )
+            second = Customer.objects.create(
+                entity=books, branch=branch, code="ADJ-DEEP-2", name="Tunde Family",
+                receivable_account=receivable,
+            )
+            invoice = Invoice.objects.create(
+                entity=books, branch=branch, customer=first,
+                invoice_date=datetime.date(2026, 1, 15),
+                due_date=datetime.date(2026, 2, 15), subtotal=1_000, total=1_000,
+            )
+            concession = Concession.objects.create(
+                entity=books, branch=branch, customer=first, invoice=invoice,
+                concession_date=datetime.date(2026, 1, 20), amount=100,
+                reason="Aid", reference="AID-1",
+            )
+            writeoff = WriteOffRequest.objects.create(
+                entity=books, branch=branch, invoice=invoice, amount=100,
+                narration="Bad debt", reason="Unpaid",
+            )
+            transfer = CustomerCreditTransfer.objects.create(
+                entity=books, branch=branch, from_customer=first, to_customer=second,
+                transfer_date=datetime.date(2026, 1, 20), amount=100,
+                reason="Family request",
+            )
+            plan = PaymentPlan.objects.create(
+                entity=books, branch=branch, customer=first, invoice=invoice,
+                start_date=datetime.date(2026, 2, 1), installment_count=1,
+                total_amount=1_000, notes="Monthly",
+            )
+            installment = PaymentPlanInstallment.objects.create(
+                plan=plan, seq_no=1, due_date=datetime.date(2026, 2, 1),
+                amount=1_000,
+            )
+            cls.records.append((tenant, concession, writeoff, transfer, plan, installment))
+
+    def samples(self):
+        samples = []
+        for tenant, concession, writeoff, transfer, plan, installment in self.records:
+            samples.extend((
+                Sample(_SURFACE + "ConcessionSerializer", concession, tenant=tenant),
+                Sample(_SURFACE + "WriteOffRequestSerializer", writeoff, tenant=tenant),
+                Sample(_SURFACE + "CustomerCreditTransferSerializer", transfer,
+                       tenant=tenant),
+                Sample(_SURFACE + "PaymentPlanSerializer", plan, tenant=tenant),
+                Sample(_SURFACE + "PaymentPlanInstallmentSerializer", installment,
+                       tenant=tenant),
+            ))
         return samples
 
 

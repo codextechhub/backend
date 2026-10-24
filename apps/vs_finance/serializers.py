@@ -198,7 +198,7 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         return LedgerEntitySerializer(instance, context=self.context).data
 
 
-class AccountSerializer(serializers.ModelSerializer):
+class AccountSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A chart-of-accounts row.
 
     ``bank_account_id`` and ``bank_branch_id`` name the bank account behind a
@@ -208,6 +208,8 @@ class AccountSerializer(serializers.ModelSerializer):
     ``bank_branch_id`` to the document's branch instead of offering Lekki's
     collection ledger on an Ikeja receipt and meeting the refusal on save.
     """
+
+    field_resource = "finance.account"
 
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
     bank_account_id = serializers.SerializerMethodField()
@@ -223,7 +225,8 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
-            "subtype", "balance", "tag", "bank_account_id", "bank_branch_id",
+            "subtype", "description", "balance", "tag", "bank_account_id",
+            "bank_branch_id",
         ]
 
     @staticmethod
@@ -272,12 +275,79 @@ class AccountSerializer(serializers.ModelSerializer):
         """
         data = super().to_representation(instance)
         request = self.context.get("request")
-        if request is not None and self._bank(instance) is not None:
-            if not can_read(request, "finance.bankaccount.ledger_account"):
+        if request is not None:
+            if self._bank(instance) is not None and not can_read(
+                request, "finance.bankaccount.ledger_account"
+            ):
                 data.pop("bank_account_id", None)
-            if not can_read(request, "finance.bankaccount.book_balance"):
+            if instance.pk in self.context.get("bank_balance_hidden_ids", ()) or (
+                self._bank(instance) is not None
+                and not can_read(request, "finance.bankaccount.book_balance")
+            ):
                 data.pop("balance", None)
         return data
+
+
+class AccountSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """Account balances and row counts for one reader's branch reach."""
+
+    field_resource = "finance.account"
+
+    current_balance = serializers.DictField(read_only=True)
+    opening_balance = serializers.DictField(read_only=True)
+    line_count = serializers.IntegerField(read_only=True)
+    journal_count = serializers.IntegerField(read_only=True)
+    fiscal_year_start = serializers.CharField(read_only=True, allow_null=True)
+    as_of = serializers.CharField(read_only=True)
+
+
+class AccountActivityRowSerializer(FieldAccessMixin, serializers.Serializer):
+    """A posted ledger line, with money controlled by the account balance switch."""
+
+    field_resource = "finance.account"
+
+    id = serializers.IntegerField(read_only=True)
+    date = serializers.CharField(read_only=True)
+    account_id = serializers.IntegerField(read_only=True)
+    account_code = serializers.CharField(read_only=True)
+    account_name = serializers.CharField(read_only=True)
+    journal_no = serializers.CharField(read_only=True)
+    source = serializers.CharField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    description = serializers.CharField(read_only=True, allow_blank=True)
+    cost_center = serializers.CharField(read_only=True, allow_blank=True)
+    dimensions = serializers.DictField(read_only=True)
+    debit = serializers.DictField(read_only=True)
+    credit = serializers.DictField(read_only=True)
+    running_balance = serializers.DictField(read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if self.context.get("bank_balance_hidden"):
+            for name in ("debit", "credit", "running_balance"):
+                data.pop(name, None)
+        return data
+
+
+class AccountActivityTotalsSerializer(FieldAccessMixin, serializers.Serializer):
+    """Ledger movement totals controlled by the account balance switch."""
+
+    field_resource = "finance.account"
+
+    debit = serializers.DictField(read_only=True)
+    credit = serializers.DictField(read_only=True)
+    net_movement = serializers.DictField(read_only=True)
+
+
+class AccountDetailEnvelopeSerializer(FieldAccessMixin, serializers.Serializer):
+    """The account, scoped balances and ledger activity as one field-aware payload."""
+
+    field_resource = "finance.account"
+
+    account = AccountSerializer(read_only=True)
+    type_label = serializers.CharField(read_only=True, allow_blank=True)
+    summary = AccountSummarySerializer(read_only=True)
+    activity = AccountActivityRowSerializer(many=True, read_only=True)
 
 
 class BranchStatesMixin:
@@ -439,7 +509,8 @@ class ApprovalStateMixin(serializers.Serializer):
         return self._approval(obj)[1]
 
 
-class JournalLineSerializer(serializers.ModelSerializer):
+class JournalLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.journal"
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -472,7 +543,8 @@ class JournalPeopleListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
-class JournalEntryListSerializer(PeriodLabelMixin, ApprovalStateMixin, serializers.ModelSerializer):
+class JournalEntryListSerializer(FieldAccessMixin, PeriodLabelMixin, ApprovalStateMixin,
+                                 serializers.ModelSerializer):
     """A journal in a list. ``created_by_is_exited`` is true once its maker has left.
 
     ``null`` for a journal the system raised with nobody named. ``period`` is the
@@ -481,12 +553,15 @@ class JournalEntryListSerializer(PeriodLabelMixin, ApprovalStateMixin, serialize
     both are ``null`` for a journal with no period.
     """
 
+    field_resource = "finance.journal"
+
     period = serializers.CharField(source="period.name", read_only=True, default=None)
     period_label = serializers.SerializerMethodField()
     total_debit = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
     created_by_id = serializers.IntegerField(read_only=True, default=None)
     created_by_is_exited = serializers.SerializerMethodField()
+    opening_balance = serializers.SerializerMethodField()
 
     class Meta:
         model = JournalEntry
@@ -494,12 +569,17 @@ class JournalEntryListSerializer(PeriodLabelMixin, ApprovalStateMixin, serialize
             "id", "document_number", "date", "period", "period_label", "source",
             "status", "narration", "reference", "posted_at",
             "total_debit", "created_by", "created_by_id", "created_by_is_exited",
-            "approval_state", "approval_returned",
+            "approval_state", "approval_returned", "opening_balance",
         ]
         list_serializer_class = JournalPeopleListSerializer
 
     def get_period_label(self, obj) -> str | None:
         return self.label_period(obj.period)
+
+    def get_opening_balance(self, obj) -> bool:
+        from .constants import JournalSource
+
+        return obj.source == JournalSource.OPENING
 
     def get_created_by_is_exited(self, obj):
         from core.person_exit import person_is_exited
@@ -543,6 +623,18 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
         from .posting import journal_reversal_action
 
         return journal_reversal_action(obj)
+
+
+class JournalSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """List-screen counts and totals under the journal's field switches."""
+
+    field_resource = "finance.journal"
+
+    total = serializers.IntegerField()
+    by_status = serializers.DictField()
+    sent_back = serializers.IntegerField()
+    posted_total = serializers.DictField()
+    reversed_total = serializers.DictField()
 
 
 class DirectEntryLineSerializer(serializers.Serializer):
@@ -834,7 +926,7 @@ class FeeStructureSerializer(serializers.ModelSerializer):
         return {"invoices_generated": qs.count(), "last_generated_at": last}
 
 
-class InvoiceSerializer(serializers.ModelSerializer):
+class InvoiceSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Read shape for a sales invoice.
 
     ``branch_id`` is the invoice's own branch, which is not always its
@@ -843,6 +935,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
     and is deposited only into that branch's bank accounts, so a payment form
     narrows its deposit picker by this rather than by the customer's.
     """
+
+    field_resource = "finance.invoice"
 
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
@@ -855,6 +949,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         source="beneficiary.code", read_only=True, default=None)
     beneficiary_name = serializers.CharField(
         source="beneficiary.name", read_only=True, default=None)
+    currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
 
     class Meta:
         model = Invoice
@@ -866,13 +961,97 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "amount_credited", "settled_amount", "balance_due",
             "reference", "narration", "billing_period", "billing_period_label",
+            "currency_code",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "total" not in data:
+            for name in ("amount_paid", "amount_credited", "settled_amount", "balance_due"):
+                data.pop(name, None)
+        return data
 
-class CreditNoteLineSerializer(serializers.ModelSerializer):
+
+class InvoiceDetailSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """The invoice's totals and settlement figures in display money shape."""
+
+    field_resource = "finance.invoice"
+
+    subtotal = serializers.DictField(read_only=True)
+    tax = serializers.DictField(read_only=True)
+    total = serializers.DictField(read_only=True)
+    paid = serializers.DictField(read_only=True)
+    credited = serializers.DictField(read_only=True)
+    settled = serializers.DictField(read_only=True)
+    balance = serializers.DictField(read_only=True)
+    due_date = serializers.CharField(read_only=True, allow_null=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "total" not in data:
+            for name in ("paid", "credited", "settled", "balance"):
+                data.pop(name, None)
+        return data
+
+
+class InvoiceDetailLineSerializer(FieldAccessMixin, serializers.Serializer):
+    """One invoice line, with unit price separate from its other details."""
+
+    field_resource = "finance.invoice"
+
+    description = serializers.CharField(read_only=True)
+    account_code = serializers.CharField(read_only=True)
+    account_name = serializers.CharField(read_only=True)
+    quantity = serializers.CharField(read_only=True)
+    unit_price = serializers.DictField(read_only=True)
+    tax_code = serializers.CharField(read_only=True, allow_null=True)
+    tax_amount = serializers.DictField(read_only=True)
+    line_total = serializers.DictField(read_only=True)
+    kind = serializers.CharField(read_only=True)
+    service_start = serializers.CharField(read_only=True, allow_null=True)
+    service_end = serializers.CharField(read_only=True, allow_null=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "unit_price" not in data:
+            data.pop("tax_amount", None)
+            data.pop("line_total", None)
+        return data
+
+
+class InvoiceDetailEnvelopeSerializer(FieldAccessMixin, serializers.Serializer):
+    """The invoice drawer's nested blocks under their owning switches."""
+
+    field_resource = "finance.invoice"
+
+    invoice = InvoiceSerializer(read_only=True)
+    summary = InvoiceDetailSummarySerializer(read_only=True)
+    lines = InvoiceDetailLineSerializer(many=True, read_only=True)
+    deferred_income = serializers.JSONField(read_only=True)
+    payments = serializers.JSONField(read_only=True)
+    settlements = serializers.JSONField(read_only=True)
+    gl_postings = serializers.JSONField(read_only=True)
+    gl_journals = serializers.JSONField(read_only=True)
+    reminders = serializers.JSONField(read_only=True)
+    activity = serializers.JSONField(read_only=True)
+
+
+class InvoiceSummarySerializer(FieldAccessMixin, serializers.Serializer):
+    """Invoice list figures and status counts under their switches."""
+
+    field_resource = "finance.invoice"
+
+    kpis = serializers.JSONField(read_only=True)
+    by_status = serializers.JSONField(read_only=True)
+    totals = serializers.JSONField(read_only=True)
+    monthly = serializers.JSONField(read_only=True)
+
+
+class CreditNoteLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.creditnote"
     revenue_account = serializers.CharField(source="revenue_account.code", read_only=True)
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -884,6 +1063,13 @@ class CreditNoteLineSerializer(serializers.ModelSerializer):
             "quantity", "unit_price", "tax_code", "net_amount", "tax_amount",
             "cost_center",
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if "unit_price" not in data:
+            data.pop("net_amount", None)
+            data.pop("tax_amount", None)
+        return data
 
 
 class ApprovalGatedMixin(serializers.Serializer):
@@ -987,8 +1173,9 @@ class IncomeGivenBackMixin(serializers.Serializer):
         return [visible(request, "finance.interbranch", row) for row in rows]
 
 
-class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
+class CreditNoteSerializer(FieldAccessMixin, IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
                            serializers.ModelSerializer):
+    field_resource = "finance.creditnote"
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
@@ -1025,7 +1212,11 @@ class CreditNoteSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalSta
         return data
 
 
-class RefundSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.ModelSerializer):
+class RefundSerializer(FieldAccessMixin, ApprovalGatedMixin, ApprovalStateMixin,
+                       serializers.ModelSerializer):
+    field_resource = "finance.refund"
+    field_aliases = {"amount_naira": "amount", "approval_required": "status",
+                     "approval_state": "status", "approval_returned": "status"}
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     amount_naira = serializers.SerializerMethodField()
@@ -1043,9 +1234,11 @@ class RefundSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.Model
         return format_naira(obj.amount)
 
 
-class CustomerCreditTransferSerializer(ApprovalGatedMixin, ApprovalStateMixin,
+class CustomerCreditTransferSerializer(FieldAccessMixin, ApprovalGatedMixin, ApprovalStateMixin,
                                        serializers.ModelSerializer):
     """Read shape for a customer credit transfer and the receipt it gave its destination."""
+
+    field_resource = "finance.credittransfer"
 
     from_customer_code = serializers.CharField(source="from_customer.code", read_only=True)
     from_customer_name = serializers.CharField(source="from_customer.name", read_only=True)
@@ -1070,7 +1263,9 @@ class CustomerCreditTransferSerializer(ApprovalGatedMixin, ApprovalStateMixin,
         return format_naira(obj.amount)
 
 
-class WriteOffRequestSerializer(ApprovalGatedMixin, ApprovalStateMixin, serializers.ModelSerializer):
+class WriteOffRequestSerializer(FieldAccessMixin, ApprovalGatedMixin, ApprovalStateMixin,
+                                serializers.ModelSerializer):
+    field_resource = "finance.writeoff"
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
     customer_code = serializers.CharField(source="invoice.customer.code", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
@@ -1132,8 +1327,9 @@ class PaymentSerializer(serializers.ModelSerializer):
         return "PARTIAL"
 
 
-class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
+class ConcessionSerializer(FieldAccessMixin, IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalStateMixin,
                            serializers.ModelSerializer):
+    field_resource = "finance.concession"
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
@@ -1157,7 +1353,8 @@ class ConcessionSerializer(IncomeGivenBackMixin, ApprovalGatedMixin, ApprovalSta
         return format_naira(obj.amount)
 
 
-class PaymentPlanInstallmentSerializer(serializers.ModelSerializer):
+class PaymentPlanInstallmentSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.paymentplan"
     balance = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -1168,13 +1365,15 @@ class PaymentPlanInstallmentSerializer(serializers.ModelSerializer):
         ]
 
 
-class PaymentPlanSerializer(serializers.ModelSerializer):
+class PaymentPlanSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Read shape for a payment plan and its instalments.
 
     ``branch_id`` is the plan's own branch: its invoice's when it spreads one,
     otherwise its customer's or the one named for a shared customer. An
     instalment payment is deposited only into that branch's bank accounts.
     """
+
+    field_resource = "finance.paymentplan"
 
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
@@ -1185,6 +1384,7 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
     settled_total = serializers.IntegerField(read_only=True)
     outstanding_total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    settled_amount = serializers.IntegerField(source="settled_total", read_only=True)
     installments = PaymentPlanInstallmentSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
 
@@ -1196,11 +1396,28 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
             "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
             "installment_count", "total_amount", "total_naira",
             "baseline_settled", "scheduled_total", "settled_total", "outstanding_total",
+            "settled_amount",
             "notes", "installments",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total_amount)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if instance.invoice_id and request is not None and not can_read(
+            request, "finance.invoice.settlement"
+        ):
+            for name in ("baseline_settled", "scheduled_total", "settled_total",
+                         "outstanding_total", "settled_amount"):
+                data.pop(name, None)
+            for row in data.get("installments", []):
+                for name in ("amount_settled", "balance", "status"):
+                    row.pop(name, None)
+        if "settled_total" not in data:
+            data.pop("settled_amount", None)
+        return data
 
 
 class DunningStageSerializer(serializers.ModelSerializer):
@@ -1243,13 +1460,15 @@ class DunningNoticeSerializer(serializers.ModelSerializer):
 # Setup / reference data                                                      #
 # --------------------------------------------------------------------------- #
 
-class CurrencySerializer(serializers.ModelSerializer):
+class CurrencySerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.currency"
     class Meta:
         model = Currency
         fields = ["code", "name", "symbol", "minor_unit", "is_active"]
 
 
-class FxRateSerializer(serializers.ModelSerializer):
+class FxRateSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.fxrate"
     base = serializers.CharField(source="base_id", read_only=True)
     quote = serializers.CharField(source="quote_id", read_only=True)
 
@@ -1258,7 +1477,8 @@ class FxRateSerializer(serializers.ModelSerializer):
         fields = ["id", "base", "quote", "rate", "as_of", "source"]
 
 
-class TaxCodeSerializer(serializers.ModelSerializer):
+class TaxCodeSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.taxcode"
     collected_account = serializers.CharField(
         source="collected_account.code", read_only=True, default=None)
     paid_account = serializers.CharField(
@@ -1272,7 +1492,9 @@ class TaxCodeSerializer(serializers.ModelSerializer):
         ]
 
 
-class CostCenterSerializer(serializers.ModelSerializer):
+class CostCenterSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.costcenter"
+    field_aliases = {"parent_id": "parent_code"}
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
 
     class Meta:
@@ -1280,7 +1502,8 @@ class CostCenterSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "parent_id", "parent_code", "is_active"]
 
 
-class DimensionSerializer(serializers.ModelSerializer):
+class DimensionSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.dimension"
     class Meta:
         model = Dimension
         fields = ["id", "code", "name", "allowed_values", "is_active"]
@@ -1444,7 +1667,9 @@ class BankAccountActivitySerializer(FieldAccessMixin, serializers.Serializer):
     matched = serializers.ReadOnlyField()
 
 
-class BankStatementLineSerializer(serializers.ModelSerializer):
+class BankStatementLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.bankaccount"
+    field_aliases = {"status": "match_source"}
     amount_naira = serializers.SerializerMethodField()
     match_source_display = serializers.CharField(source="get_match_source_display", read_only=True)
     matched_reference = serializers.SerializerMethodField()
@@ -1489,17 +1714,16 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
         return statement_line_delete_block_reason(obj)
 
 
-class BankStatementSerializer(serializers.ModelSerializer):
+class BankStatementSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One imported bank statement.
 
-    A statement's opening and closing balances are the bank's own figures, the
-    ones the account's registered ``statement_balance`` is read from, so they
-    are served only to a caller who may read that field
-    (``finance.bankaccount.statement_balance``). The statement's date, period,
-    state and line count identify it and always show.
+    Each balance has its own switch. The account's statement balance switch
+    also gates both figures because they restate the account's balance.
     """
 
-    #: The balances that go when ``finance.bankaccount.statement_balance`` is hidden.
+    field_resource = "finance.bankaccount"
+    field_aliases = {"opening_balance": "opening_balance_naira"}
+
     BALANCE_FIELDS = (
         "opening_balance", "opening_balance_naira", "closing_balance", "closing_balance_naira",
     )
@@ -1595,6 +1819,9 @@ class BankReconciliationSerializer(FieldAccessMixin, serializers.ModelSerializer
         ):
             data.pop("difference", None)
             data.pop("difference_naira", None)
+        if not can_read(request, "finance.bankaccount.reconciliation_history"):
+            data.pop("status", None)
+            data.pop("status_display", None)
         return data
 
     def get_book_balance_naira(self, obj) -> str:
@@ -1615,6 +1842,13 @@ class BankReconciliationSerializer(FieldAccessMixin, serializers.ModelSerializer
         return name or getattr(u, "email", None)
 
 
+class BankBookLinesSerializer(FieldAccessMixin, serializers.Serializer):
+    """The unmatched ledger lines under the bank account's book-lines switch."""
+
+    field_resource = "finance.bankaccount"
+    book_lines = serializers.ListField(child=serializers.DictField(), read_only=True)
+
+
 class BankAccountDetailSerializer(BankAccountSerializer):
     """A bank account with the blocks its detail screen carries.
 
@@ -1627,7 +1861,7 @@ class BankAccountDetailSerializer(BankAccountSerializer):
     metrics = BankAccountMetricsSerializer(source="detail_metrics", read_only=True)
     transactions = BankAccountActivitySerializer(
         source="detail_transactions", many=True, read_only=True)
-    statements = serializers.ReadOnlyField(source="detail_statements")
+    statements = BankStatementSerializer(source="detail_statements", many=True, read_only=True)
     reconciliations = BankReconciliationSerializer(
         source="detail_reconciliations", many=True, read_only=True)
 
@@ -2882,6 +3116,16 @@ AUDIT_SNAPSHOT_FIELDS = {
     "FinanceReceivablesPolicy": "finance.settings",
     "FinanceBankingSettings": "finance.settings",
     "Customer": "finance.customer",
+    "Invoice": "finance.invoice",
+    "CreditNote": "finance.creditnote",
+    "Refund": "finance.refund",
+    "Concession": "finance.concession",
+    "WriteOff": "finance.writeoff",
+    "CreditTransfer": "finance.credittransfer",
+    "PaymentPlan": "finance.paymentplan",
+    "JournalEntry": "finance.journal",
+    "Account": "finance.account",
+    "CostCenter": "finance.costcenter",
     "BankAccount": "finance.bankaccount",
     "BankTransaction": "finance.banktransaction",
     "BankTransfer": "finance.banktransfer",

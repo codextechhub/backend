@@ -259,14 +259,14 @@ row uses the Area A report switch.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id` | record id | Transport | none | - | - | - | - | no switch: transport |
 | `code`, `name`, `customer_code`, `customer_name` | customer identity | Stored | create; PATCH `name` | - | - | - | - | no switch: owner decision |
-| `billing_email` (also `recipients`, `to`), `billing_phone`, `billing_address` | contact details | Stored | create, PATCH | `finance.customer.billing_email`, `billing_phone`, `billing_address` | Billing email, phone, address | RW | open (contact details open by default); the address is not open on create (Q-B10) | registered |
+| `billing_email` (also `recipients`, `to`), `billing_phone`, `billing_address` | contact details | Stored | create, PATCH | `finance.customer.billing_email`, `billing_phone`, `billing_address` | Billing email, phone, address | RW | open (contact details open by default); the address is open on create (Q-B10 answered) | registered |
 | `receivable_account_id`, `receivable_account_code`, `receivable_account_name` | control account | Stored | create, PATCH (fixed after activity) | `finance.customer.receivable_account` | Receivable account | RW | open | registered |
 | `opening_balance`, `opening_balance_naira` | opening position | Stored, create only | create (with `opening_date`, `opening_branch`) | `finance.customer.opening_balance` | Opening balance | RW (open on create) | open | registered |
-| `source_type`, `source_id` | originating record kind and id | Stored | create, PATCH (fixed after activity) | `finance.customer.source_type`, `source_id` | Source | RW | open; `source_id` is exported as "Customer tax ID" (Q-B4) | registered |
+| `source_type`, `source_id` | originating record kind and id | Stored | create, PATCH (fixed after activity) | `finance.customer.source_type`, `source_id` | Source | RW | sensitive; `source_id` is exported as "Customer tax ID" (Q-B4) | registered |
 | `is_active` | active flag | Stored | create, PATCH | `finance.customer.is_active` | Active | RW | open | registered |
 | `branch_id`, `branch_name` | customer's branch, null for shared | Stored, create only | create `branch` | - | - | - | The existing `finance.customer.branch` switch is removed | no switch: owner decision |
 | `created_at` | creation date | Computed | none | `finance.customer.created_at` | Created | RO | open | registered |
-| `balance`, `balance_naira` (also `current_balance`, `receivable`, `on_credit`, statement `opening_balance`, `closing_balance`, `total_debits`, `total_credits`, `entries[].balance`, refund availability `refundable_credit`, AR adjustments `kpis.refundable_credit`, credit note `credit_remaining`) | signed outstanding minus credit, scoped to the reader's branches | Computed | none | `finance.customer.balance` | Balance | RO | open (Q-B4) | registered |
+| `balance`, `balance_naira` (also `current_balance`, `receivable`, `on_credit`, statement `opening_balance`, `closing_balance`, `total_debits`, `total_credits`, `entries[].balance`, refund availability `refundable_credit`, AR adjustments `kpis.refundable_credit`, credit note `credit_remaining`) | signed outstanding minus credit, scoped to the reader's branches | Computed | none | `finance.customer.balance` | Balance | RO | open (Q-B4 answered) | registered |
 | `account_status` (also `overdue`, `status_counts`), `pays_for_count` | standing and payer count | Computed | none | `finance.customer.account_status`, `pays_for_count` | Account standing, Pays for | RO | open | registered |
 | detail `lifetime_paid`, `open_invoice_count`, `open_invoices`, `open_debit_notes`, `transactions`, `statement` | account detail blocks | Computed | none | `finance.customer.lifetime_paid`, `open_invoice_count`, `open_invoices`, `open_debit_notes`, `transactions`, `statement` | as labelled in the registry | RO | open; where a block restates an invoice or receipt total the stricter switch wins | registered |
 | customer statement `aging.*` (per-customer buckets) | the customer's age analysis | Computed | none | `finance.report.aging_customers` | Amounts owed by each customer | RO | open (Q-A3); shown only if `balance` is also readable | registered in area A |
@@ -293,26 +293,26 @@ Create body: `customer`, `beneficiary`, `invoice_date`, `due_date`, `currency`,
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `customer_id`, `invoice_id` | ids | Transport | create `customer` | - | - | - | - | no switch: transport |
 | `document_number`, `customer_code`, `customer_name`, `branch_id`, `branch_name`, create `branch` | invoice number, customer and branch identity | Computed or stored | create, fee run, opening import | - | - | - | - | no switch: owner decision |
-| `beneficiary_id`, `beneficiary_code`, `beneficiary_name` | second customer the bill is for (a child billed to a sponsor) | Stored | create `beneficiary` | `finance.invoice.beneficiary` | Beneficiary (who the bill is for) | RW (open on create) | open | recorded |
-| `invoice_date` | invoice date | Stored | create, fee run, opening import | `finance.invoice.invoice_date` | Invoice date | RW (open on create) | open | recorded |
-| `due_date`, `summary.due_date` | due date | Stored | create, fee run, opening import | `finance.invoice.due_date` | Due date | RW (open on create) | open | recorded |
-| `status`, `payment_status`, `screen_tab` | state of the invoice | Computed | post, void, pay actions | `finance.invoice.status` | Status | RO | open | recorded |
-| `subtotal`, `tax_total`, `total`, `total_naira`, `summary.subtotal`, `summary.tax`, `summary.total` | amounts from the lines | Computed | none | `finance.invoice.total` | Invoice amounts | RO | open | recorded |
-| `amount_paid`, `amount_credited`, `settled_amount`, `balance_due`, `summary.paid`, `credited`, `settled`, `balance` | paid, credited and owed | Computed | none | `finance.invoice.settlement` | Paid, credited and balance due | RO | open; shown only if `total` is readable | recorded |
-| `reference` | free-text reference | Stored | create | `finance.invoice.reference` | Reference | RW | open | recorded |
-| `narration` | free-text narration | Stored | create | `finance.invoice.narration` | Narration | RW | open | recorded |
-| `billing_period`, `billing_period_label` | period set by the fee run | Computed | fee run | `finance.invoice.billing_period` | Billing period | RO | open | recorded |
-| `currency` (create only, never returned) | invoice currency | Stored | create | `finance.invoice.currency` | Currency | RW | open; register only if it is ever returned | recorded |
+| `beneficiary_id`, `beneficiary_code`, `beneficiary_name` | second customer the bill is for (a child billed to a sponsor) | Stored | create `beneficiary` | `finance.invoice.beneficiary` | Beneficiary (who the bill is for) | RW (open on create) | open | registered |
+| `invoice_date` | invoice date | Stored | create, fee run, opening import | `finance.invoice.invoice_date` | Invoice date | RW (open on create) | open | registered |
+| `due_date`, `summary.due_date` | due date | Stored | create, fee run, opening import | `finance.invoice.due_date` | Due date | RW (open on create) | open | registered |
+| `status`, `payment_status`, `screen_tab` | state of the invoice | Computed | post, void, pay actions | `finance.invoice.status` | Status | RO | open | registered |
+| `subtotal`, `tax_total`, `total`, `total_naira`, `summary.subtotal`, `summary.tax`, `summary.total` | amounts from the lines | Computed | none | `finance.invoice.total` | Invoice amounts | RO | open | registered |
+| `amount_paid`, `amount_credited`, `settled_amount`, `balance_due`, `summary.paid`, `credited`, `settled`, `balance` | paid, credited and owed | Computed | none | `finance.invoice.settlement` | Paid, credited and balance due | RO | open; shown only if `total` is readable | registered |
+| `reference` | free-text reference | Stored | create | `finance.invoice.reference` | Reference | RW | open | registered |
+| `narration` | free-text narration | Stored | create | `finance.invoice.narration` | Narration | RW | open | registered |
+| `billing_period`, `billing_period_label` | period set by the fee run | Computed | fee run | `finance.invoice.billing_period` | Billing period | RO | open | registered |
+| `currency` (create only, never returned) | invoice currency | Stored | create | `finance.invoice.currency` | Currency | RW | open; register only if it is ever returned | registered |
 | `post` (create only) | action flag | Transport | create | - | - | - | - | no switch: transport |
-| detail `lines[]`: `description`, `account_code`, `account_name`, `quantity`, `tax_code`, `kind`, `service_start`, `service_end` | what is billed | Stored | create `lines` | `finance.invoice.lines` | Invoice lines | RW | open | recorded |
-| detail `lines[].unit_price` | price of one unit | Stored | create `lines` | `finance.invoice.unit_price` | Unit price | RW | open (own switch by decision) | recorded |
-| detail `lines[].tax_amount`, `lines[].line_total` | line amounts | Computed | none | `finance.invoice.total` | Invoice amounts | RO | open | recorded |
+| detail `lines[]`: `description`, `account_code`, `account_name`, `quantity`, `tax_code`, `kind`, `service_start`, `service_end` | what is billed | Stored | create `lines` | `finance.invoice.lines` | Invoice lines | RW | open | registered |
+| detail `lines[].unit_price` | price of one unit | Stored | create `lines` | `finance.invoice.unit_price` | Unit price | RW | open (own switch by decision) | registered |
+| detail `lines[].tax_amount`, `lines[].line_total` | line amounts | Computed | none | `finance.invoice.total` | Invoice amounts | RO | open | registered |
 | detail `deferred_income` | pending and released deferred income | Computed | none | `finance.deferredincome` fields | as registered | RO | open | registered |
-| detail `payments[]`, `settlements[]` (`type`, `date`, `reference`, `method`, `amount`) | receipts, credit notes, concessions and write-offs applied | Computed | none | `finance.invoice.settlements` | Payments, credits and write-offs applied | RO | open; the stricter of this and the receipt switches (section 7.1) wins | recorded |
-| detail `gl_postings[]`, `gl_journals[]` | ledger lines of the invoice and its settlements | Computed | none | `finance.invoice.postings` | Ledger postings | RO | open; account code and name are chart labels | recorded |
-| detail `reminders[]` | reminders sent | Computed | none | `finance.invoice.reminders` | Reminders sent | RO | open | recorded |
-| detail `activity[]` | timeline; labels embed document numbers and amounts | Computed | none | `finance.invoice.activity` | Activity timeline | RO | open; built from the readable parts only | recorded |
-| summary `kpis` (`total_invoiced`, `total_collected`, `collection_rate`, `overdue_balance`), `totals` (`total`, `outstanding`), `monthly[]` (`invoiced`, `collected`) | list-screen figures | Computed | none | `finance.invoice.summary` | Invoice summary figures | RO | open; collected figures also need the receipt amount switch | recorded |
+| detail `payments[]`, `settlements[]` (`type`, `date`, `reference`, `method`, `amount`) | receipts, credit notes, concessions and write-offs applied | Computed | none | `finance.invoice.settlements` | Payments, credits and write-offs applied | RO | open; the stricter of this and the receipt switches (section 7.1) wins | registered |
+| detail `gl_postings[]`, `gl_journals[]` | ledger lines of the invoice and its settlements | Computed | none | `finance.invoice.postings` | Ledger postings | RO | open; account code and name are chart labels | registered |
+| detail `reminders[]` | reminders sent | Computed | none | `finance.invoice.reminders` | Reminders sent | RO | open | registered |
+| detail `activity[]` | timeline; labels embed document numbers and amounts | Computed | none | `finance.invoice.activity` | Activity timeline | RO | open; built from the readable parts only | registered |
+| summary `kpis` (`total_invoiced`, `total_collected`, `collection_rate`, `overdue_balance`), `totals` (`total`, `outstanding`), `monthly[]` (`invoiced`, `collected`) | list-screen figures | Computed | none | `finance.invoice.summary` | Invoice summary figures | RO | open; collected figures also need the receipt amount switch | registered |
 | summary `by_status`, `totals.count` | counts of documents the reader may list | Computed | none | - | - | - | - | no switch: transport |
 
 Messages "Invoice INV-0042 posted" and "Receipt R-0004 recorded against
@@ -332,17 +332,17 @@ Routes: `credit-notes/` (GET `.view`, POST `.create`), `credit-notes/<pk>/`
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `customer_id`, `invoice_id` | ids | Transport | create | - | - | - | - | no switch: transport |
 | `document_number`, `customer_code`, `customer_name`, create `branch` | identity | Computed or stored | create | - | - | - | - | no switch: owner decision |
-| `kind` | credit or debit note | Stored | create | `finance.creditnote.kind` | Credit or debit note | RW (open on create) | open | recorded |
-| `invoice_id`, `invoice_number` | invoice adjusted | Stored | create `invoice` | `finance.creditnote.invoice` | Invoice adjusted | RW (open on create) | open | recorded |
-| `note_date` | note date | Stored | create, PATCH | `finance.creditnote.note_date` | Note date | RW | open | recorded |
-| `status`, `approval_state`, `approval_returned`, `approval_required` | state and approval words | Computed | submit, post, void actions | `finance.creditnote.status` | Status | RO | open | recorded |
-| `subtotal`, `tax_total`, `total`, `total_naira` | amounts | Computed | none | `finance.creditnote.total` | Credit note amounts | RO | open | recorded |
-| `allocated_amount`, `unallocated_amount`, `refunded_amount`, `transferred_amount`, `credit_remaining` | how the credit has been used | Computed | allocate action | `finance.creditnote.credit_use` | How the credit has been used | RO | open; `credit_remaining` also needs `finance.customer.balance` | recorded |
-| `reason` | reason for the note | Stored | create, PATCH | `finance.creditnote.reason` | Reason | RW | open | recorded |
-| `reference` | reference | Stored | create, PATCH | `finance.creditnote.reference` | Reference | RW | open | recorded |
-| `lines[]` (`line_no`, `description`, `revenue_account`, `quantity`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`) | what is credited | Stored | create, PATCH | `finance.creditnote.lines` | Credited lines | RW | open | recorded |
-| `lines[].unit_price` | price of one unit | Stored | create, PATCH | `finance.creditnote.unit_price` | Unit price | RW | open (own switch by decision) | recorded |
-| `income_given_back[]` (`id`, `to_branch_id`, `to_branch_name`, `amount`, `status`; also on concessions) | inter-branch transfers that gave the income back | Computed | none | `finance.creditnote.income_given_back` | Income given back to other branches | RO | open; each row also passes `finance.interbranch` `amount` and `status` (stricter wins) | recorded |
+| `kind` | credit or debit note | Stored | create | `finance.creditnote.kind` | Credit or debit note | RW (open on create) | open | registered |
+| `invoice_id`, `invoice_number` | invoice adjusted | Stored | create `invoice` | `finance.creditnote.invoice` | Invoice adjusted | RW (open on create) | open | registered |
+| `note_date` | note date | Stored | create, PATCH | `finance.creditnote.note_date` | Note date | RW | open | registered |
+| `status`, `approval_state`, `approval_returned`, `approval_required` | state and approval words | Computed | submit, post, void actions | `finance.creditnote.status` | Status | RO | open | registered |
+| `subtotal`, `tax_total`, `total`, `total_naira` | amounts | Computed | none | `finance.creditnote.total` | Credit note amounts | RO | open | registered |
+| `allocated_amount`, `unallocated_amount`, `refunded_amount`, `transferred_amount`, `credit_remaining` | how the credit has been used | Computed | allocate action | `finance.creditnote.credit_use` | How the credit has been used | RO | open; `credit_remaining` also needs `finance.customer.balance` | registered |
+| `reason` | reason for the note | Stored | create, PATCH | `finance.creditnote.reason` | Reason | RW | open | registered |
+| `reference` | reference | Stored | create, PATCH | `finance.creditnote.reference` | Reference | RW | open | registered |
+| `lines[]` (`line_no`, `description`, `revenue_account`, `quantity`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`) | what is credited | Stored | create, PATCH | `finance.creditnote.lines` | Credited lines | RW | open | registered |
+| `lines[].unit_price` | price of one unit | Stored | create, PATCH | `finance.creditnote.unit_price` | Unit price | RW | open (own switch by decision) | registered |
+| `income_given_back[]` (`id`, `to_branch_id`, `to_branch_name`, `amount`, `status`; also on concessions) | inter-branch transfers that gave the income back | Computed | none | `finance.creditnote.income_given_back` | Income given back to other branches | RO | open; each row also passes `finance.interbranch` `amount` and `status` (stricter wins) | registered |
 | `income_given_back[].document_number` | transfer number | Computed | none | - | - | - | - | no switch: owner decision |
 
 ### 4.4 Refunds (`finance.refund`)
@@ -359,15 +359,15 @@ Create body: `customer`, `branch`, `bank_account`, `refund_date`, `method`,
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `customer_id` | ids | Transport | create | - | - | - | - | no switch: transport |
 | `document_number`, `customer_code`, `customer_name`, create `branch`, availability `branch_id`, `branch_name` | identity | Computed or stored | create, batch | - | - | - | - | no switch: owner decision |
-| `refund_date` | refund date | Stored | create, batch | `finance.refund.refund_date` | Refund date | RW (open on create) | open | recorded |
-| `method` | payment method | Stored | create, batch | `finance.refund.method` | Refund method | RW | open | recorded |
-| `status`, `approval_state`, `approval_returned`, `approval_required` | state and approval words | Computed | submit, post, void | `finance.refund.status` | Status | RO | open | recorded |
-| `amount`, `amount_naira` | amount refunded | Stored | create, batch | `finance.refund.amount` | Refund amount | RW | open; restates customer credit (Q-B4) | recorded |
-| `bank_account_id` | bank account the refund is paid from | Stored | create, batch | `finance.refund.bank_account` | Paid from bank account | RW | open (Q-C4) | recorded |
-| `reference`, `narration` | free text | Stored | create, batch | `finance.refund.reference`, `finance.refund.narration` | Reference, Narration | RW | open | recorded |
+| `refund_date` | refund date | Stored | create, batch | `finance.refund.refund_date` | Refund date | RW (open on create) | open | registered |
+| `method` | payment method | Stored | create, batch | `finance.refund.method` | Refund method | RW | open | registered |
+| `status`, `approval_state`, `approval_returned`, `approval_required` | state and approval words | Computed | submit, post, void | `finance.refund.status` | Status | RO | open | registered |
+| `amount`, `amount_naira` | amount refunded | Stored | create, batch | `finance.refund.amount` | Refund amount | RW | open; restates customer credit (Q-B4) | registered |
+| `bank_account_id` | bank account the refund is paid from | Stored | create, batch | `finance.refund.bank_account` | Paid from bank account | RW | open (Q-C4 answered) | registered |
+| `reference`, `narration` | free text | Stored | create, batch | `finance.refund.reference`, `finance.refund.narration` | Reference, Narration | RW | open | registered |
 | `currency` (create only, never returned) | currency | Stored | create | - | - | - | - | no switch: transport |
 | availability `refundable_credit`, `refundable_credit_naira` | credit per customer and branch | Computed | none | `finance.customer.balance` | Balance | RO | the row is dropped when `balance` is hidden | registered |
-| `ar-adjustments/` `rows[]` (`kind`, `reference`, `date`, `reason`, `amount`, `amount_naira`, `status`, `refund_id`, `write_off_id`, `approval_*`), `kinds` | unified refund and write-off list | Computed | none | `finance.refund.*` and `finance.writeoff.*` fields of the row's kind | as the document | RO | rows follow their document switches; `kpis.written_off_ytd`, `pending`, `sent_back` follow the amount and status switches | recorded |
+| `ar-adjustments/` `rows[]` (`kind`, `reference`, `date`, `reason`, `amount`, `amount_naira`, `status`, `refund_id`, `write_off_id`, `approval_*`), `kinds` | unified refund and write-off list | Computed | none | `finance.refund.*` and `finance.writeoff.*` fields of the row's kind | as the document | RO | rows follow their document switches; `kpis.written_off_ytd`, `pending`, `sent_back` follow the amount and status switches | registered |
 
 ### 4.5 Concessions, write-offs and credit transfers (same pattern)
 
@@ -378,22 +378,22 @@ not switched. Money is open. Approval words travel with the status field.
 
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| concession `kind` | waiver kind | Stored | create | `finance.concession.kind` | Concession kind | RW | open | recorded |
-| concession `invoice` | invoice the concession applies to | Stored | create | `finance.concession.invoice` | Invoice | RW | open | recorded |
-| concession `concession_date` | date | Stored | create | `finance.concession.concession_date` | Concession date | RW | open | recorded |
-| concession `amount` | amount waived | Stored | create | `finance.concession.amount` | Amount | RW | open | recorded |
-| concession `allowance_account` | account the waiver is charged to | Stored | create | `finance.concession.allowance_account` | Allowance account | RW | open | recorded |
-| concession `reason`, `reference` | free text | Stored | create | `finance.concession.reason`, `finance.concession.reference` | Reason, Reference | RW | open | recorded |
-| concession `status`, `approval_*`, `income_given_back` | state, approval words, inter-branch rows | Computed | actions | `finance.concession.status`, `finance.concession.income_given_back` | Status, Income given back | RO | open | recorded |
-| write-off `invoice` | invoice written off | Stored | create | `finance.writeoff.invoice` | Invoice | RW | open | recorded |
-| write-off `amount` | amount | Stored | create | `finance.writeoff.amount` | Amount | RW | open | recorded |
-| write-off `write_off_account` | account charged | Stored | create | `finance.writeoff.write_off_account` | Write-off account | RW | open | recorded |
-| write-off `write_off_date` | date | Stored | create | `finance.writeoff.write_off_date` | Write-off date | RW | open | recorded |
-| write-off `narration`, `reason` | free text | Stored | create | `finance.writeoff.narration`, `finance.writeoff.reason` | Narration, Reason | RW | open | recorded |
-| write-off `status`, `approval_*`, `journal_id`, `allowance_used`, `recovered_amount` | state, ledger link and recovery | Computed | actions | `finance.writeoff.status`, `finance.writeoff.journal`, `finance.writeoff.recovery` | Status, Journal, Recovery | RO | open | recorded |
-| credit transfer `from_customer`, `to_customer` | customers the credit moves between | Stored | create | `finance.credittransfer.customers` | From and to customer | RW | open | recorded |
-| credit transfer `transfer_date`, `amount`, `reason` | typed values | Stored | create | `finance.credittransfer.transfer_date`, `finance.credittransfer.amount`, `finance.credittransfer.reason` | Transfer date, Amount, Reason | RW | open | recorded |
-| credit transfer `status`, `approval_*`, `receipt_id`, `receipt_number` | state and receipt link | Computed | actions | `finance.credittransfer.status`, `finance.credittransfer.receipt` | Status, Receipt | RO | open | recorded |
+| concession `kind` | waiver kind | Stored | create | `finance.concession.kind` | Concession kind | RW | open | registered |
+| concession `invoice` | invoice the concession applies to | Stored | create | `finance.concession.invoice` | Invoice | RW | open | registered |
+| concession `concession_date` | date | Stored | create | `finance.concession.concession_date` | Concession date | RW | open | registered |
+| concession `amount` | amount waived | Stored | create | `finance.concession.amount` | Amount | RW | open | registered |
+| concession `allowance_account` | account the waiver is charged to | Stored | create | `finance.concession.allowance_account` | Allowance account | RW | open | registered |
+| concession `reason`, `reference` | free text | Stored | create | `finance.concession.reason`, `finance.concession.reference` | Reason, Reference | RW | open | registered |
+| concession `status`, `approval_*`, `income_given_back` | state, approval words, inter-branch rows | Computed | actions | `finance.concession.status`, `finance.concession.income_given_back` | Status, Income given back | RO | open | registered |
+| write-off `invoice` | invoice written off | Stored | create | `finance.writeoff.invoice` | Invoice | RW | open | registered |
+| write-off `amount` | amount | Stored | create | `finance.writeoff.amount` | Amount | RW | open | registered |
+| write-off `write_off_account` | account charged | Stored | create | `finance.writeoff.write_off_account` | Write-off account | RW | open | registered |
+| write-off `write_off_date` | date | Stored | create | `finance.writeoff.write_off_date` | Write-off date | RW | open | registered |
+| write-off `narration`, `reason` | free text | Stored | create | `finance.writeoff.narration`, `finance.writeoff.reason` | Narration, Reason | RW | open | registered |
+| write-off `status`, `approval_*`, `journal_id`, `allowance_used`, `recovered_amount` | state, ledger link and recovery | Computed | actions | `finance.writeoff.status`, `finance.writeoff.journal`, `finance.writeoff.recovery` | Status, Journal, Recovery | RO | open | registered |
+| credit transfer `from_customer`, `to_customer` | customers the credit moves between | Stored | create | `finance.credittransfer.customers` | From and to customer | RW | open | registered |
+| credit transfer `transfer_date`, `amount`, `reason` | typed values | Stored | create | `finance.credittransfer.transfer_date`, `finance.credittransfer.amount`, `finance.credittransfer.reason` | Transfer date, Amount, Reason | RW | open | registered |
+| credit transfer `status`, `approval_*`, `receipt_id`, `receipt_number` | state and receipt link | Computed | actions | `finance.credittransfer.status`, `finance.credittransfer.receipt` | Status, Receipt | RO | open | registered |
 | credit transfer `branch_id` | branch | Stored | create | - | - | - | - | no switch: owner decision |
 
 ---
@@ -412,16 +412,16 @@ Create body: `customer`, `invoice` (optional), `start_date`, `frequency`,
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `customer_id`, `invoice_id` | ids | Transport | create | - | - | - | - | no switch: transport |
 | `document_number`, `customer_code`, `customer_name`, `branch_id`, `branch_name`, create `branch` | identity | Computed or stored | create | - | - | - | - | no switch: owner decision |
-| `invoice_id`, `invoice_number` | invoice the plan spreads | Stored | create `invoice` | `finance.paymentplan.invoice` | Invoice spread | RW (open on create) | open | recorded |
-| `plan_status` | state of the plan | Computed | activate, refresh, cancel | `finance.paymentplan.status` | Status | RO | open | recorded |
-| `start_date` | first instalment date | Stored | create | `finance.paymentplan.start_date` | Start date | RW (open on create) | open | recorded |
-| `frequency` | spacing | Stored | create | `finance.paymentplan.frequency` | Frequency | RW (open on create) | open | recorded |
-| `installment_count` | number of instalments | Stored | create | `finance.paymentplan.installment_count` | Number of instalments | RW (open on create) | open | recorded |
-| `total_amount`, `total_naira` | amount spread | Stored | create | `finance.paymentplan.total_amount` | Amount spread | RW | open | recorded |
-| `baseline_settled`, `scheduled_total`, `settled_total`, `outstanding_total`, `installments[].amount_settled`, `installments[].balance`, `installments[].status` | paid so far and outstanding | Computed | refresh action | `finance.paymentplan.progress` | Paid so far and outstanding | RO | open; the stricter of this and `finance.invoice.settlement` wins | recorded |
-| `notes` | free text | Stored | create | `finance.paymentplan.notes` | Notes | RW | open | recorded |
-| `installments[]` (`id`, `seq_no`, `due_date`, `amount`) | the schedule; amounts typed through create `amounts[]` | Stored | create `amounts` | `finance.paymentplan.installments` | Instalment schedule | RW | open | recorded |
-| refresh body `settled_amount` | settled amount applied on refresh | Stored | refresh action | `finance.paymentplan.settled_amount` | Settled amount applied on refresh | RW | open; asserted in `PaymentPlanRefreshView` | recorded |
+| `invoice_id`, `invoice_number` | invoice the plan spreads | Stored | create `invoice` | `finance.paymentplan.invoice` | Invoice spread | RW (open on create) | open | registered |
+| `plan_status` | state of the plan | Computed | activate, refresh, cancel | `finance.paymentplan.status` | Status | RO | open | registered |
+| `start_date` | first instalment date | Stored | create | `finance.paymentplan.start_date` | Start date | RW (open on create) | open | registered |
+| `frequency` | spacing | Stored | create | `finance.paymentplan.frequency` | Frequency | RW (open on create) | open | registered |
+| `installment_count` | number of instalments | Stored | create | `finance.paymentplan.installment_count` | Number of instalments | RW (open on create) | open | registered |
+| `total_amount`, `total_naira` | amount spread | Stored | create | `finance.paymentplan.total_amount` | Amount spread | RW | open | registered |
+| `baseline_settled`, `scheduled_total`, `settled_total`, `outstanding_total`, `installments[].amount_settled`, `installments[].balance`, `installments[].status` | paid so far and outstanding | Computed | refresh action | `finance.paymentplan.progress` | Paid so far and outstanding | RO | open; the stricter of this and `finance.invoice.settlement` wins | registered |
+| `notes` | free text | Stored | create | `finance.paymentplan.notes` | Notes | RW | open | registered |
+| `installments[]` (`id`, `seq_no`, `due_date`, `amount`) | the schedule; amounts typed through create `amounts[]` | Stored | create `amounts` | `finance.paymentplan.installments` | Instalment schedule | RW | open | registered |
+| refresh body `settled_amount` | settled amount applied on refresh | Stored | refresh action | `finance.paymentplan.settled_amount` | Settled amount applied on refresh | RW | open; asserted in `PaymentPlanRefreshView` | registered |
 
 ### 4.7 Chart of accounts (`finance.account`)
 
@@ -439,18 +439,18 @@ Routes: `accounts/` (GET open to any finance member, `?with_balance=true` needs
 | `id`, `parent_id` | ids | Transport | create | - | - | - | - | no switch: transport |
 | `code`, `name` | account identity | Stored | create; PATCH `name` | - | - | - | - | no switch: identifier |
 | `account_type`, `normal_balance`, `type_label` | structural classification derived from the code and contra flag | Computed | none | - | - | - | - | no switch: identifier |
-| `is_contra` | contra account | Stored, create only | create | `finance.account.is_contra` | Contra account | RW (open on create) | open | recorded |
-| `is_postable` | accepts postings | Stored | create, PATCH | `finance.account.is_postable` | Accepts postings | RW (open on create) | open | recorded |
-| `is_active` | active flag | Stored | PATCH | `finance.account.is_active` | Active | RW | open | recorded |
-| `parent_id`, `parent_code` | parent account | Stored | create `parent` | `finance.account.parent` | Parent account | RW (open on create) | open | recorded |
-| `subtype` | account subtype | Stored | create, PATCH | `finance.account.subtype` | Account subtype | RW | open | recorded |
-| `description` (write only, never returned) | free text | Stored | create, PATCH | `finance.account.description` | Description | RW | open; either return it and register, or document it as write-only | recorded |
-| `balance`, detail `summary.current_balance`, `summary.opening_balance`, activity `running_balance`, `totals.debit`, `totals.credit`, `totals.net_movement` | net ledger balance signed to the normal balance; a branch reader sees their branches' share | Computed | none | `finance.account.balance` | Account balance | RO | open (Q-B4); for a bank ledger account, and for a group account with any bank ledger account among its descendants, it also needs `finance.bankaccount.book_balance` (B-L11) | recorded |
-| `tag` (`CONTROL`, `CASH`, null) | sub-ledger role | Computed | none | `finance.account.tag` | Sub-ledger role | RO | open | recorded |
+| `is_contra` | contra account | Stored, create only | create | `finance.account.is_contra` | Contra account | RW (open on create) | open | registered |
+| `is_postable` | accepts postings | Stored | create, PATCH | `finance.account.is_postable` | Accepts postings | RW (open on create) | open | registered |
+| `is_active` | active flag | Stored | PATCH | `finance.account.is_active` | Active | RW | open | registered |
+| `parent_id`, `parent_code` | parent account | Stored | create `parent` | `finance.account.parent` | Parent account | RW (open on create) | open | registered |
+| `subtype` | account subtype | Stored | create, PATCH | `finance.account.subtype` | Account subtype | RW | open | registered |
+| `description` (write only, never returned) | free text | Stored | create, PATCH | `finance.account.description` | Description | RW | open; either return it and register, or document it as write-only | registered |
+| `balance`, detail `summary.current_balance`, `summary.opening_balance`, activity `running_balance`, `totals.debit`, `totals.credit`, `totals.net_movement` | net ledger balance signed to the normal balance; a branch reader sees their branches' share | Computed | none | `finance.account.balance` | Account balance | RO | open (Q-B4); for a bank ledger account, and for a group account with any bank ledger account among its descendants, it also needs `finance.bankaccount.book_balance` (B-L11) | registered |
+| `tag` (`CONTROL`, `CASH`, null) | sub-ledger role | Computed | none | `finance.account.tag` | Sub-ledger role | RO | open | registered |
 | `bank_account_id` | the bank account behind a ledger account | Computed | none | `finance.bankaccount.ledger_account` | Ledger account | RW | stricter wins with the bank switch; a role that cannot read the link must not learn it from the chart | registered |
 | `bank_branch_id` | branch of that bank account | Computed | none | - | - | - | stays open; the deposit picker narrows by it | no switch: owner decision |
 | detail `summary.line_count`, `summary.journal_count`, `summary.fiscal_year_start`, `summary.as_of` | counts and window echoes | Computed | none | - | - | - | - | no switch: transport |
-| detail `activity[]` (`date`, `journal_no`, `source`, `status`, `description`, `cost_center`, `dimensions`, `debit`, `credit`) | ledger activity | Computed | none | `finance.account.activity` | Ledger activity | RO | open; its money follows `balance` | recorded |
+| detail `activity[]` (`date`, `journal_no`, `source`, `status`, `description`, `cost_center`, `dimensions`, `debit`, `credit`) | ledger activity | Computed | none | `finance.account.activity` | Ledger activity | RO | open; its money follows `balance` | registered |
 
 ### 4.8 Cost centres and setup data (`finance.costcenter`)
 
@@ -462,9 +462,9 @@ Serializer: `CostCenterSerializer`. Frontend: `FinPro/src/pages/finance/setup/co
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `parent_id` | ids | Transport | create | - | - | - | - | no switch: transport |
 | `code`, `name` | cost centre identity | Stored | POST | - | - | - | - | no switch: identifier |
-| `parent_code` | parent cost centre | Stored | POST `parent` | `finance.costcenter.parent` | Parent cost centre | RW | open | recorded |
-| `is_active` | active flag | Stored | POST | `finance.costcenter.is_active` | Active | RW | open | recorded |
-| `DimensionSerializer` (`code`, `name`, `allowed_values`, `is_active`), `TaxCodeSerializer`, `CurrencySerializer`, `FxRateSerializer` | setup data with the same shape | Stored | their create and update endpoints | to be named when the setup-data resources register | - | RW | code and name get no switch; the rest get RW switches | recorded |
+| `parent_code` | parent cost centre | Stored | POST `parent` | `finance.costcenter.parent` | Parent cost centre | RW | open | registered |
+| `is_active` | active flag | Stored | POST | `finance.costcenter.is_active` | Active | RW | open | registered |
+| `DimensionSerializer` (`code`, `name`, `allowed_values`, `is_active`), `TaxCodeSerializer`, `CurrencySerializer`, `FxRateSerializer` | setup data with the same shape | Stored | their create and update endpoints | to be named when the setup-data resources register | - | RW | code and name get no switch; the rest get RW switches | registered |
 
 ### 4.9 Journals (`finance.journal`)
 
@@ -483,19 +483,19 @@ close result (`closing_journals`, `closing_journal`) and re-open result
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `reverses_id`, `created_by_id`, `workflow_instance_id`, `approval` block | ids and approval transport | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `reversal_action.document_number`, create `branch` | journal number, branch | Computed or stored | direct entry | - | - | - | - | no switch: owner decision |
-| `date` | journal date | Stored | direct entry, PATCH, reverse `date` | `finance.journal.date` | Journal date | RW (open on create) | open | recorded |
-| `period`, `period_label` | accounting period | Computed | none | `finance.journal.period` | Accounting period | RO | open | recorded |
-| `source` | where the journal came from | Computed | none | `finance.journal.source` | Source | RO | open | recorded |
-| `status`, `approval_state`, `approval_returned`, `reversal_action.kind`, `document_type`, `document_id` | state and reversal link | Computed | submit, post, reverse | `finance.journal.status` | Status | RO | open | recorded |
-| `narration` | free text | Stored | direct entry, PATCH | `finance.journal.narration` | Narration | RW | open | recorded |
-| `reference` | free text | Stored | direct entry, PATCH | `finance.journal.reference` | Reference | RW | open | recorded |
-| `posted_at` | posting time | Computed | none | `finance.journal.posted_at` | Posted on | RO | open | recorded |
-| `total_debit`, `total_credit` | journal totals | Computed | none | `finance.journal.total` | Journal total | RO | open (Q-B4) | recorded |
-| `created_by`, `created_by_is_exited` | person who raised it (a staff name) | Computed | none | `finance.journal.created_by` | Raised by | RO | open; personal data | recorded |
-| `lines[]` (`line_no`, `account_id`, `account_code`, `account_name`, `cost_center`, `dimensions`, `debit`, `credit`, `debit_naira`, `credit_naira`, `description`) | journal lines | Stored | direct entry, PATCH | `finance.journal.lines` | Journal lines | RW | open (Q-B5: one switch or a separate one for debit and credit) | recorded |
-| create `opening_balance` | marks the entry as an opening balance | Stored, create only | direct entry | `finance.journal.opening_balance` | Opening balance entry | RW (open on create) | open | recorded |
+| `date` | journal date | Stored | direct entry, PATCH, reverse `date` | `finance.journal.date` | Journal date | RW (open on create) | open | registered |
+| `period`, `period_label` | accounting period | Computed | none | `finance.journal.period` | Accounting period | RO | open | registered |
+| `source` | where the journal came from | Computed | none | `finance.journal.source` | Source | RO | open | registered |
+| `status`, `approval_state`, `approval_returned`, `reversal_action.kind`, `document_type`, `document_id` | state and reversal link | Computed | submit, post, reverse | `finance.journal.status` | Status | RO | open | registered |
+| `narration` | free text | Stored | direct entry, PATCH | `finance.journal.narration` | Narration | RW | open | registered |
+| `reference` | free text | Stored | direct entry, PATCH | `finance.journal.reference` | Reference | RW | open | registered |
+| `posted_at` | posting time | Computed | none | `finance.journal.posted_at` | Posted on | RO | open | registered |
+| `total_debit`, `total_credit` | journal totals | Computed | none | `finance.journal.total` | Journal total | RO | open (Q-B4 answered) | registered |
+| `created_by`, `created_by_is_exited` | person who raised it (a staff name) | Computed | none | `finance.journal.created_by` | Raised by | RO | open; personal data | registered |
+| `lines[]` (`line_no`, `account_id`, `account_code`, `account_name`, `cost_center`, `dimensions`, `debit`, `credit`, `debit_naira`, `credit_naira`, `description`) | journal lines | Stored | direct entry, PATCH | `finance.journal.lines` | Journal lines | RW | open (Q-B5: one switch for the whole line) | registered |
+| create `opening_balance` | marks the entry as an opening balance | Stored, create only | direct entry | `finance.journal.opening_balance` | Opening balance entry | RW (open on create) | open | registered |
 | create `confirm_without_approval`, `reason` | action flags; `reason` is stored text on the audit row | Transport | direct entry | - | - | - | - | no switch: transport |
-| summary `posted_total`, `reversed_total` | list-screen money | Computed | none | `finance.journal.summary` | Posted and reversed totals | RO | open | recorded |
+| summary `posted_total`, `reversed_total` | list-screen money | Computed | none | `finance.journal.summary` | Posted and reversed totals | RO | open | registered |
 | summary `total`, `by_status`, `sent_back` | counts | Computed | none | - | - | - | - | no switch: transport |
 | close result `closing_journals`, `closing_journal`, `reversals` | closing journals embedded in the fiscal-year result | Computed | none | `finance.fiscalyear.net_income` | Net result | RO | their P&L lines restate the registered net result (leak B-L10) | registered |
 
@@ -523,20 +523,20 @@ and book lines are not, and they restate the registered `book_balance`,
 | `name`, `gl_account_name` | bank account and ledger account names | Stored | create, PATCH | - | - | - | - | no switch: owner decision |
 | `bank_name`, `account_number`, `currency`, `is_active`, `is_primary`, `is_primary_collection`, `gl_account`, `book_balance`, `unreconciled_count`, `last_reconciled_at`, `gateway_subaccount_*`, `settlement_bank_code`, `metrics.*`, `transactions[]` | the bank account | Stored or computed | create, PATCH, payments endpoint | `finance.bankaccount.*` | as registered | per field | `account_number` is the only sensitive field | registered |
 | `branch_id` | bank account's branch | Stored, create only | create `branch` | - | - | - | The existing `finance.bankaccount.branch` switch is removed | no switch: owner decision |
-| statement `statement_date` | statement date | Stored | import, PATCH | `finance.bankaccount.statement_date` | Statement date | RW | open | recorded |
-| statement `period_label` | statement period | Stored | import, PATCH | `finance.bankaccount.statement_period` | Statement period | RW | open | recorded |
-| statement `opening_balance`, `opening_balance_naira` | opening balance on the statement; the first statement's is the account's opening position | Stored | import, PATCH | `finance.bankaccount.statement_opening_balance` | Statement opening balance | RW | open (Q-B4) | recorded |
-| statement `closing_balance`, `closing_balance_naira` | closing balance on the statement; the latest statement's is the account's statement balance | Stored on import, recomputed on correction | import | `finance.bankaccount.statement_closing_balance` | Statement closing balance | RW | readable only with `statement_balance` (Q-B8) | recorded |
-| statement `status`, `status_display`, `can_edit`, `edit_block_reason`, `import_rollback` | state of the statement and why it is locked | Computed | none | `finance.bankaccount.statement_state` | Statement status | RO | open; the reason sentence goes neutral when hidden | recorded |
+| statement `statement_date` | statement date | Stored | import, PATCH | `finance.bankaccount.statement_date` | Statement date | RW | open | registered |
+| statement `period_label` | statement period | Stored | import, PATCH | `finance.bankaccount.statement_period` | Statement period | RW | open | registered |
+| statement `opening_balance`, `opening_balance_naira` | opening balance on the statement; the first statement's is the account's opening position | Stored | import, PATCH | `finance.bankaccount.statement_opening_balance` | Statement opening balance | RW | Write open; Read requires sensitive `statement_balance` (Q-B4 and Q-B8 answered) | registered |
+| statement `closing_balance`, `closing_balance_naira` | closing balance on the statement; the latest statement's is the account's statement balance | Stored on import, recomputed on correction | import | `finance.bankaccount.statement_closing_balance` | Statement closing balance | RW | Write open; Read requires sensitive `statement_balance` (Q-B4 and Q-B8 answered) | registered |
+| statement `status`, `status_display`, `can_edit`, `edit_block_reason`, `import_rollback` | state of the statement and why it is locked | Computed | none | `finance.bankaccount.statement_state` | Statement status | RO | open; the reason sentence goes neutral when hidden | registered |
 | statement `line_count` | count of lines | Computed | none | - | - | - | - | no switch: transport |
-| statement `lines[]`, line `txn_date`, `description`, `reference`, `amount`, `amount_naira`, `external_id` | the bank's own entries | Stored | JSON import, statement PATCH, DELETE | `finance.bankaccount.statement_lines` | Statement lines | RW | open | recorded |
-| line `status`, `match_source`, `match_source_display`, `matched_reference`, `reconciled_at`, `can_delete`, `delete_block_reason` | match state of a line | Computed | match, group match, split match, adjust, unmatch, ignore | `finance.bankaccount.line_state` | Match status of a line | RO | open | recorded |
-| adjust body `counter_account`, `counter_code`, `narration`, `posting_date` | adjustment booked from a statement line | Stored | adjust action | `finance.bankaccount.reconcile_adjustment` | Adjustment booked from a statement line | RW | open | recorded |
+| statement `lines[]`, line `txn_date`, `description`, `reference`, `amount`, `amount_naira`, `external_id` | the bank's own entries | Stored | JSON import, statement PATCH, DELETE | `finance.bankaccount.statement_lines` | Statement lines | RW | open | registered |
+| line `status`, `match_source`, `match_source_display`, `matched_reference`, `reconciled_at`, `can_delete`, `delete_block_reason` | match state of a line | Computed | match, group match, split match, adjust, unmatch, ignore | `finance.bankaccount.line_state` | Match status of a line | RO | open | registered |
+| adjust body `counter_account`, `counter_code`, `narration`, `posting_date` | adjustment booked from a statement line | Stored | adjust action | `finance.bankaccount.reconcile_adjustment` | Adjustment booked from a statement line | RW | open | registered |
 | ignore body `ignored`, `reason`; auto-reconcile body `tolerance_days`, `group` | action inputs; defaults come from the banking settings | Transport | ignore, auto-reconcile | - | - | - | - | no switch: transport |
-| reconciliation `status`, `status_display`, `matched_count`, `as_of_date`, `created_at`, `performed_by_name` | reconciliation history (also returned by `reconcile/complete/`) | Computed | complete action | `finance.bankaccount.reconciliation_history` | Reconciliation history | RO | open; `performed_by_name` is a staff name | recorded |
+| reconciliation `status`, `status_display`, `matched_count`, `as_of_date`, `created_at`, `performed_by_name` | reconciliation history (also returned by `reconcile/complete/`) | Computed | complete action | `finance.bankaccount.reconciliation_history` | Reconciliation history | RO | open; `performed_by_name` is a staff name | registered |
 | reconciliation `book_balance`, `statement_balance`, `difference` and naira twins | reconciliation figures | Computed | none | `finance.bankaccount.book_balance`, `finance.bankaccount.statement_balance`, `finance.bankaccount.unreconciled_diff` | as registered | RO | `difference` shown only if book and statement balances are readable | registered |
-| book lines `id`, `date`, `description`, `reference`, `amount` | unmatched ledger lines of the account | Computed | none | `finance.bankaccount.book_lines` | Unmatched ledger lines | RO | open; a description may name a customer, which is an identifier | recorded |
-| import batch `domain_context` (`bank_account_name`, `statement_date`, `period_label`, `opening_balance`, `closing_balance`, `published_statement_id`) | bank statement upload summary under `import.batches` | Computed | none | `finance.bankaccount.statement_opening_balance`, `finance.bankaccount.statement_closing_balance` | as above | RO | the balances follow the statement switches (leak B-L7) | recorded |
+| book lines `id`, `date`, `description`, `reference`, `amount` | unmatched ledger lines of the account | Computed | none | `finance.bankaccount.book_lines` | Unmatched ledger lines | RO | open; a description may name a customer, which is an identifier | registered |
+| import batch `domain_context` (`bank_account_name`, `statement_date`, `period_label`, `opening_balance`, `closing_balance`, `published_statement_id`) | bank statement upload summary under `import.batches` | Computed | none | `finance.bankaccount.statement_opening_balance`, `finance.bankaccount.statement_closing_balance` | as above | RO | the balances follow the statement switches (leak B-L7) | registered |
 
 ---
 
@@ -1476,42 +1476,20 @@ answered table (8.1) and updating the rows that cite it.
 | Budget lines and amounts (Q-A5) | Separate switches for the line set and planned amounts. |
 | Budget title (Q-A6) | Switch the free-text name; the budget code remains an identifier. |
 | Aggregates of switched source figures (Q-A7) | Report section switches govern aggregates. Individual pay switches do not remove aggregate salary accounts from statements; `analytics_slice` has its own switch. |
+| Choosing the bank account for a payment or refund (Q-C4) | Give the account choice its own Read and Write switch. Branch reach still limits which account can be selected. The refund switch is registered; receipt and procurement switches remain for their areas. |
 
 ### 8.2 Area A: budgets and statements
 
 All Area A questions are answered in section 8.1.
 
-### 8.3 Area B: receivables, ledger and banking
+### 8.3 Area B: receivables, ledger and banking (answered)
 
-**Q-B4. Which unregistered money and identifier fields ship closed?** Mrs Adeyemi,
-Ikeja Branch fee clerk, files receipts all day. Open: she sees the GTBank Ikeja
-statement balance of N48 million and a family's tax reference (`source_id`, which
-the Export Centre labels "Customer tax ID") until Finance Admin closes them.
-Sensitive, read by the Finance Admin, Bursar and Accountant library roles: her
-screens lose those figures on deployment, and she cannot confirm a balance over
-the counter. Recommendation: `source_id` and bank statement balances sensitive;
-customer balances, invoice money and journal totals open.
-
-**Q-B5. Are journal lines one switch or two?** Bright Star's junior accountant may
-choose accounts and describe a journal but must not type amounts. One switch for
-`lines`: she edits all or none. A separate switch for debit and credit: she
-describes the entry, someone else types the amounts, but a line with one side
-missing means nothing. Recommendation: one switch for journal lines.
-
-**Q-B8. Are a statement's own balances separate from the account's statement
-balance?** Lekki Branch's finance assistant may import statements but must not
-read the account's balance. Reuse `statement_balance`: importing works only if she
-can read the balance, because a statement's closing balance is the account's
-statement balance. Give statements their own writable twin, readable only with
-`statement_balance`: she types the statement in and cannot read it back.
-Recommendation: the twin for writing, reading follows `statement_balance`.
-
-**Q-B10. Can a clerk file a customer's billing address without Write on it?**
-Mrs Adeyemi's role may write a parent's email and phone but not the address.
-With the address open on create, like the other two, she files "Tunde Bello, 12
-Lekki Road" and the family is complete. Without it, the new family has no address
-until somebody with Write on the address edits it. The registered switch is not
-open on create today. Recommendation: open on create.
+Q-B4: customer source references and bank statement balances are sensitive.
+Customer balances, invoice amounts and journal totals stay open. Q-B5: one
+switch governs each complete journal line, including its debit and credit.
+Q-B8: a statement balance has a writable switch of its own, and its Read
+requires the account's statement-balance switch. Q-B10: a customer's billing
+address is open on create like the other contact fields.
 
 ### 8.4 Area C: procurement
 
@@ -1529,14 +1507,6 @@ way. The same question covers unit prices, estimated totals, quoted prices,
 contract value, standard price and the free-text assessment of a supplier.
 Recommendation: open for all, with two sensitive exceptions: RFQ `budget_estimate`
 and vendor assessment `notes`.
-
-**Q-C4. Is choosing the bank account a field of its own?** Ikeja Branch's clerk
-drafts a payment to Adex Stationers "paid from Ikeja Operating Account". Switch the
-choice, as `finance.interbranch.source_bank_account` and the petty cash return do:
-a clerk who must not choose which account pays sees it read-only. No switch: the
-account name is a label and she may pick any account of her branch. The same
-question covers receipts (deposit account), refunds and vendor payments. The rows
-in this ledger assume a switch, following the inter-branch precedent.
 
 **Q-C6. Are a vendor's accounting defaults one switch or three?** Mrs Eze, Ikeja
 Branch's purchasing clerk, may pick the stationery vendor's expense account. One
@@ -1672,17 +1642,17 @@ A-L20 is voided by the branch rule in section 2.
 | B-L6 | Statement detail GET and PATCH and the statement-lines import and list serve the same statement balances and line amounts outside the account detail. | fixed: `vs_finance.tests_bank_restating_paths.BankStatementAccessTests` (detail GET and PATCH); statement lines carry no balance, and their amounts are the recorded `statement_lines` switch. The correction (PATCH) takes `opening_balance` as optional, keeps the figure on file when it is left out, and refuses a submitted one with 403 `field_write_denied` for a caller who cannot read `statement_balance`, whatever the value (accepting an unchanged value would let the caller find the figure by trying values): `test_a_correction_without_an_opening_balance_keeps_the_one_on_file`, `test_a_caller_who_cannot_read_the_balance_may_not_write_it_whatever_the_value`. The `BANK_STATEMENT_CORRECTED` entry's `before`/`after` drop `opening_balance` and `closing_balance` for the same caller (`AUDIT_SNAPSHOT_GUARDS`): `test_the_correction_entry_hides_the_balances_from_a_caller_who_cannot_read_them` |
 | B-L7 | Import batch `domain_context` repeats a bank statement's opening and closing balance under `import.batches`. | fixed: `vs_finance.tests_import_batch_restating.ImportBatchDomainContextAccessTests` |
 | B-L8 | Customer balance is restated by the customer statement JSON and export, refund availability, the AR-adjustments KPI and credit note `credit_remaining`; AR aging and AR reconciliation are the report change. | fixed: `vs_finance.tests_receivables_restating_paths.CustomerStatementAccessTests`, `CustomerCreditAccessTests` (refund availability, credit note `credit_remaining`); AR aging and AR reconciliation stay with the report change |
-| B-L9 | Typed reasons and narrations (journal `reason`, credit note `reason`, refund `narration`, statement-line ignore `reason`) reach the audit viewer unfiltered. | recorded: the reasons are unregistered and so open by rule. Every finance audit row now carries them as a separate `reason` value beside the figure-free sentence (`vs_finance.audit.entry_reason`), `vs_finance.tests_audit_figures.OlderEntryAndReasonTests`, `vs_procurement.tests_audit_figures` |
+| B-L9 | Typed reasons and narrations can reach the audit viewer in snapshots or as a separate `reason` value. | recorded: registered journal, credit-note and refund snapshot fields follow their Read switches, but metadata reasons without a registered field, including a statement-line ignore reason, remain open by rule. `vs_finance.audit.entry_reason` serves that value beside the figure-free sentence; see `vs_finance.tests_audit_figures.OlderEntryAndReasonTests` and `vs_procurement.tests_audit_figures`. |
 | B-L10 | Fiscal-year close and re-open responses embed closing journals whose P&L lines restate the hidden `finance.fiscalyear.net_income`. | fixed: `vs_finance.tests_year_close_restating.YearCloseJournalAccessTests` |
 | B-L11 | Chart `balance`, account detail `summary` and activity `running_balance` for a bank ledger account restate the registered `finance.bankaccount.book_balance`. | fixed: `vs_finance.tests_bank_restating_paths.BankLedgerAccountAccessTests`. A group account adds up its descendants, so the stricter rule applies: when any account a figure sums backs a bank account and the caller cannot read the book balance, the group's `summary.current_balance`, `summary.opening_balance` and activity `totals` are omitted (`vs_finance.accounts.book_balance_hidden`; also when `?account=` picks the bank out of a group): `test_a_group_over_a_bank_ledger_account_follows_the_book_balance_switch`, `test_one_bank_ledger_account_among_ordinary_ones_is_enough_to_withhold_the_group`, `test_the_activity_totals_of_a_group_over_a_bank_follow_the_switch`, `test_picking_the_bank_out_of_a_group_does_not_bring_the_totals_back`, `test_a_group_in_a_single_branch_school_follows_the_same_switch` |
-| B-L12 | Invoice detail `payments[]`, `settlements[]`, `gl_journals[]` and `activity[]` re-serve receipt data. | recorded |
-| B-L13 | Payment plan progress restates the invoice's paid and balance figures. | recorded |
-| B-L14 | Invoice summary KPIs and monthly series restate receipts. | recorded |
-| B-L15 | Export datasets for invoices (money columns) and GL postings carry no `access=` keys. | recorded |
-| B-L16 | Refund `bank_account_id` and the availability branch rows name a bank account and a branch; both are identifiers. | recorded |
-| B-L17 | Success messages name documents ("Invoice INV-0042 posted"); document numbers are identifiers. | recorded |
+| B-L12 | Invoice detail `payments[]`, `settlements[]`, `gl_journals[]` and `activity[]` re-serve receipt data. | fixed: `vs_finance.tests_invoice_field_access.InvoiceFieldAccessTests`; settlement rows and their journals follow the source amount switches, and journal lines follow `finance.journal.lines` |
+| B-L13 | Payment plan progress restates the invoice's paid and balance figures. | fixed: `vs_finance.tests_field_access_deep_payload.PaymentPlanDeepPayloadTests`; invoice-linked progress follows the invoice settlement switch |
+| B-L14 | Invoice summary KPIs and monthly series restate receipts. | fixed: `vs_finance.tests_invoice_field_access.InvoiceFieldAccessTests`; receipt figures follow `finance.payment.amount`, and invoice totals and derived rates follow the invoice switches |
+| B-L15 | Export datasets for invoices (money columns) and GL postings carry no `access=` keys. | fixed: `vs_finance.tests_invoice_field_access.FinanceExportFieldAccessTests` and `vs_exports.tests_filter_field_access`; columns, filters, sorts and searches follow their keys, including both switches of a derived amount |
+| B-L16 | Refund `bank_account_id` and the availability branch rows name a bank account and a branch; both are identifiers. | exempt: identifiers under section 2 |
+| B-L17 | Success messages name documents ("Invoice INV-0042 posted"); document numbers are identifiers. | exempt: identifiers under section 2 |
 
-B-L16 and B-L17 are voided by the identifier rule in section 2.
+B-L16 and B-L17 follow the identifier rule in section 2.
 
 ### 9.3 Area C: procurement
 
@@ -1827,17 +1797,17 @@ one area, so the total is two lower than the sum of the areas.
 | Area | New switches recorded | Rows already registered | Rows with no switch: identifier | Rows with no switch: transport | Rows with no switch: owner decision |
 | --- | --- | --- | --- | --- | --- |
 | A. Budgets and financial statements | 0 | 25 | 3 | 3 | 3 |
-| B. Receivables, ledger and banking documents | 103 | 16 | 3 | 17 | 12 |
+| B. Receivables, ledger and banking documents | 0 | 119 | 3 | 17 | 12 |
 | C. Procurement | 193 | 4 | 4 | 13 | 10 |
 | D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
 | E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 446 | 56 | 14 | 50 | 32 |
+| Total | 343 | 159 | 14 | 50 | 32 |
 
 Where the new switches sit:
 
 * Area A: `finance.budget` 8, `finance.report` 17.
-* Area B: `finance.invoice` 17, `finance.creditnote` 11, `finance.refund` 7,
+* Area B: 103 switches registered in this change. The original plan was `finance.invoice` 17, `finance.creditnote` 11, `finance.refund` 8,
   `finance.concession` 9, `finance.writeoff` 9, `finance.credittransfer` 6,
   `finance.paymentplan` 10, `finance.account` 9, `finance.costcenter` 2,
   `finance.journal` 12, `finance.bankaccount` 10 (statements and reconciliations),
@@ -1858,7 +1828,9 @@ Where the new switches sit:
   `read_status`, and `read_receipts` from 22 October 2026), counted under the
   registered column.
 
-Sensitive by owner decision: `finance.budget.amount` (Q-A4). Sensitive by
+Sensitive by owner decision: `finance.budget.amount` (Q-A4),
+`finance.customer.source_id` and `finance.bankaccount.statement_balance`
+(Q-B4). Sensitive by
 recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and
 `school.settings.starting_role`. Everything else ships open, several pending the
@@ -1869,15 +1841,14 @@ questions in section 8.
 | Area | Leaks | Fixed | Still to be fixed | Recorded | Exempt | Reviewed or elsewhere |
 | --- | --- | --- | --- | --- | --- | --- |
 | A. Budgets and financial statements | 20 | 8 | 0 | 1 | 11 | 0 |
-| B. Receivables, ledger and banking documents | 17 | 10 | 0 | 7 | 0 | 0 |
+| B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
 | C. Procurement | 19 | 11 | 0 | 8 | 0 | 0 |
 | D. School settings | 9 | 6 | 0 | 2 | 1 | 0 |
 | E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 25 | 0 | 10 | 3 | 2 |
 | X. Found outside the five areas | 17 | 10 | 0 | 6 | 0 | 1 |
-| Total | 122 | 70 | 0 | 34 | 15 | 3 |
+| Total | 122 | 74 | 0 | 28 | 17 | 3 |
 
-The recorded column includes B-L16 and B-L17, which the rules in section 2
-void but whose rows keep the status `recorded`. Area A's eleven exemptions follow
+Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34
 (names are labels, no change), E-L36 (belongs to the search feature) and X-L13
 (reviewed, no leak). C-L8 is counted as fixed although its part (c) is exempt by
@@ -1886,7 +1857,7 @@ owner decision. Three reviewed paths in area D were clear and are not rows
 
 ### 10.3 Open product questions
 
-17 questions: area A 0, area B 4 (Q-B4, Q-B5, Q-B8, Q-B10),
-area C 5 (Q-C2, Q-C3, Q-C4, Q-C6, Q-C7), area D 5 (Q-D1 to Q-D5),
-area E 3 (Q-E4, Q-E5, Q-E12). Thirteen more (Q-A1 to Q-A7, Q-D6,
-Q-D7, Q-E9, Q-E10, Q-E11, Q-E13) are answered in 8.1.
+12 questions: area A 0, area B 0,
+area C 4 (Q-C2, Q-C3, Q-C6, Q-C7), area D 5 (Q-D1 to Q-D5),
+area E 3 (Q-E4, Q-E5, Q-E12). Fourteen more (Q-A1 to Q-A7, Q-D6,
+Q-D7, Q-E9, Q-E10, Q-E11, Q-E13, Q-C4) are answered in 8.1; Q-B4, Q-B5, Q-B8 and Q-B10 are answered in 8.3.

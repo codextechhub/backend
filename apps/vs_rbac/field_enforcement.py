@@ -459,12 +459,12 @@ def field_access_payload(user, tenant) -> dict:
     is built from roles alone.
 
     A write alias (:func:`vs_rbac.field_registry.register_fields`) appears in
-    ``read_only`` when the field it follows may not be written, and nowhere
-    else: it is never hidden, because reading it is not reading the figure.
-    Mrs Okafor may read salaries but not change PAYE, so ``finance.salary``
-    lists ``residence_state`` as read-only for her, and the edit form greys
-    the state a person's PAYE is charged in rather than offer a save the
-    write check refuses.
+    ``read_only`` when the field it follows may not be written. It is never
+    hidden, because reading it is not reading the figure. When the governing
+    field is open on create, the alias also appears in ``open_on_create`` so
+    an Add form can submit it. Mrs Okafor may read salaries but not change
+    PAYE, so ``finance.salary`` lists ``residence_state`` as read-only for her,
+    and the edit form greys the state a person's PAYE is charged in.
     """
     from .models import FieldDefinition, PermissionScope, tenant_is_platform
 
@@ -479,9 +479,9 @@ def field_access_payload(user, tenant) -> dict:
         "open_on_create",
     )
     payload: dict[str, dict] = {}
-    evaluated: set[str] = set()
+    evaluated: dict[str, bool] = {}
     for module, resource_name, key, field_name, api_names, open_on_create in rows:
-        evaluated.add(key)
+        evaluated[key] = open_on_create
         readable, writable = access.can_read(key), access.can_write(key)
         if readable and writable:
             continue
@@ -496,9 +496,12 @@ def field_access_payload(user, tenant) -> dict:
     for resource, aliases in _write_aliases().items():
         for alias, key in aliases.items():
             if key in evaluated and not access.can_write(key):
-                payload.setdefault(
+                entry = payload.setdefault(
                     resource, {"hidden": [], "read_only": [], "open_on_create": []},
-                )["read_only"].append(alias)
+                )
+                entry["read_only"].append(alias)
+                if evaluated[key]:
+                    entry["open_on_create"].append(alias)
     for entry in payload.values():
         for names in entry.values():
             names.sort()

@@ -771,13 +771,20 @@ class ImportBatchDetailSerializer(
             "closing_balance_major": str(to_naira(context.closing_balance)),
             "published_statement_id": context.published_statement_id,
         }
-        # The statement's balances are the registered finance.bankaccount.statement_balance.
-        if not can_read(self.context.get("request"), "finance.bankaccount.statement_balance"):
-            for name in (
-                "opening_balance", "opening_balance_major", "closing_balance",
-                "closing_balance_major",
+        request = self.context.get("request")
+        resource = "finance.bankaccount."
+        for key, names in (
+            ("statement_date", ("statement_date",)),
+            ("statement_period", ("period_label",)),
+            ("statement_opening_balance", ("opening_balance", "opening_balance_major")),
+            ("statement_closing_balance", ("closing_balance", "closing_balance_major")),
+        ):
+            if not can_read(request, resource + key) or (
+                key in ("statement_opening_balance", "statement_closing_balance")
+                and not can_read(request, resource + "statement_balance")
             ):
-                payload.pop(name)
+                for name in names:
+                    payload.pop(name, None)
         return payload
 
 

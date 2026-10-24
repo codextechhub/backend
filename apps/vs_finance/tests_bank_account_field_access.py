@@ -126,6 +126,16 @@ class BankAccountReadTests(_BankAccountFieldAccess):
         cls.no_gateway = cls.staff(cls.tenant, hide=("gateway_subaccount",))
         cls.solo_open = cls.staff(cls.solo_tenant)
         cls.solo_no_bank = cls.staff(cls.solo_tenant, hide=("bank_name",))
+        cls.default_balance_reader = cls.grant(
+            cls.user_for(cls.tenant, "statement-default@bank.test"),
+            "finance.bankaccount.view", tenant=cls.tenant,
+            role_key="statement-default",
+        )
+
+    def test_statement_balance_starts_closed_without_a_field_grant(self):
+        data = self.detail(self.default_balance_reader)
+        self.assertNotIn("statement_balance", data["metrics"])
+        self.assertIn("book_balance", data["metrics"])
 
     def test_hidden_bank_leaves_the_list_the_detail_and_the_provider_code(self):
         for shown in (self.row(self.no_bank), self.detail(self.no_bank)):
@@ -397,7 +407,8 @@ class BankAccountExportTests(_BankAccountFieldAccess):
         for dataset in all_datasets():
             for column in dataset.fields:
                 with self.subTest(dataset=dataset.key, column=column.id):
-                    self.assertFalse(column.access.startswith(f"{BANK}."))
+                    keys = (column.access,) if isinstance(column.access, str) else column.access
+                    self.assertFalse(any(key.startswith(f"{BANK}.") for key in keys))
 
 
 class DocumentSettingsBankTests(_BankAccountFieldAccess):

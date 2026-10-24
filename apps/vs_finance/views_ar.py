@@ -1622,6 +1622,10 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"applies_to":
                 "Only a customer fee structure can raise invoices."})
         body = request.data or {}
+        assert_writable(request, "finance.invoice", {
+            "lines": True, "unit_price": True,
+            **{key: body[key] for key in ("invoice_date", "due_date") if key in body},
+        }, creating=True)
         # None dates each invoice on its own branch's day (see generate_invoices).
         invoice_date = _date(body.get("invoice_date"), "invoice_date")
         due_date = _date(body.get("due_date"), "due_date")
@@ -1671,7 +1675,8 @@ class FeeStructureGenerateView(_FinanceBase):
             data={
                 "structure": structure.code,
                 "generated": len(invoices),
-                "invoices": InvoiceSerializer(invoices, many=True).data,
+                "invoices": InvoiceSerializer(
+                    invoices, many=True, context={"request": request}).data,
             },
             status=201,
         )
@@ -1750,6 +1755,14 @@ class CreditNoteListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
+        assert_writable(request, "finance.creditnote", {
+            key: body[key] for key in (
+                "kind", "invoice", "note_date", "reason", "reference", "lines",
+            ) if key in body
+        }, creating=True)
+        if any("unit_price" in line for line in lines):
+            assert_writable(request, "finance.creditnote", {"unit_price": True},
+                            creating=True)
         customer = _resolve_customer(request, entity, body.get("customer"))
         invoice = _resolve_invoice(request, entity, body.get("invoice"), required=False)
         if invoice is not None and invoice.customer_id != customer.pk:
@@ -1874,6 +1887,14 @@ class CreditNoteDetailView(_CreditNoteActionBase):
                 "A credit or debit note adjusts one customer's account as one kind of "
                 "note; raise a new note for another."
             )})
+        assert_writable(request, "finance.creditnote", {
+            key: body[key] for key in ("note_date", "reason", "reference", "lines")
+            if key in body
+        })
+        if "lines" in body and any(
+            isinstance(line, dict) and "unit_price" in line for line in body["lines"]
+        ):
+            assert_writable(request, "finance.creditnote", {"unit_price": True})
         changes = {}
         if "note_date" in body:
             changes["note_date"] = _date(body.get("note_date"), "note_date", required=True)
@@ -2147,7 +2168,7 @@ class RefundListCreateView(_FinanceBase):
         refund = _build_refund(request, entity, request.data or {})
         return success_response(
             f"Refund {refund.document_number} created.",
-            data=RefundSerializer(refund).data, status=201,
+            data=RefundSerializer(refund, context={"request": request}).data, status=201,
         )
 
 
@@ -2159,6 +2180,12 @@ def _build_refund(request, entity, body):
     continues; see :func:`_inherited_branch_id`.
     """
     from .receivables import customer_refund_available_balance
+
+    assert_writable(request, "finance.refund", {
+        key: body[key] for key in (
+            "refund_date", "method", "amount", "bank_account", "reference",
+            "narration") if key in body
+    }, creating=True)
 
     actor_user = request.user
     customer = _resolve_customer(request, entity, body.get("customer"))
@@ -2273,7 +2300,8 @@ class RefundDetailView(_RefundActionBase):
     def get(self, request, pk):
         _, refund = self._refund(request, pk)
         return success_response(
-            "Refund retrieved.", data=with_approval_request(RefundSerializer(refund).data, refund))
+            "Refund retrieved.", data=with_approval_request(
+                RefundSerializer(refund, context={"request": request}).data, refund))
 
 
 # Group endpoint behavior for Refund Submit View.
@@ -2306,7 +2334,7 @@ class RefundSubmitView(_RefundActionBase):
         refund.refresh_from_db()
         return success_response(
             f"Refund {refund.document_number} submitted for approval.",
-            data=RefundSerializer(refund).data
+            data=RefundSerializer(refund, context={"request": request}).data
             # Same contract as procurement and payouts: the client learns here that
             # nobody can approve this, and can offer to continue without approval.
             | {"approval": release_svc.approval_block(instance)},
@@ -2338,7 +2366,7 @@ class RefundPostView(_RefundActionBase):
         refund.refresh_from_db()
         return success_response(
             f"Refund {refund.document_number} posted.",
-            data=RefundSerializer(refund).data,
+            data=RefundSerializer(refund, context={"request": request}).data,
         )
 
 
@@ -2358,7 +2386,7 @@ class RefundVoidView(_RefundActionBase):
         refund.refresh_from_db()
         return success_response(
             f"Refund {refund.document_number} voided.",
-            data=RefundSerializer(refund).data,
+            data=RefundSerializer(refund, context={"request": request}).data,
         )
 
 
@@ -2377,6 +2405,11 @@ def _build_write_off_request(request, entity, body):
     Takes the whole ``request`` rather than just the actor because the write-off's
     branch is decided from the caller's grants as well as the invoice it continues.
     """
+    assert_writable(request, "finance.writeoff", {
+        name: name in body or (name == "amount" and "amount" not in body)
+        for name in ("invoice", "amount", "write_off_account", "write_off_date",
+                     "narration", "reason")
+    }, creating=True)
     actor_user = request.user
     invoice = _resolve_invoice(request, entity, body.get("invoice"))
     amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") \
@@ -2459,7 +2492,9 @@ class WriteOffRequestListCreateView(_FinanceBase):
         qs = filter_by_approval_param(qs, request.query_params)
         response = _paginate(
             request, qs.order_by("-id"), WriteOffRequestSerializer, self)
-        if _may_make_write_offs(request, entity):
+        if _may_make_write_offs(request, entity) and can_read(
+            request, "finance.writeoff.write_off_account"
+        ):
             response.data["default_write_off_account"] = _default_write_off_account(entity)
         return response
 
@@ -2469,7 +2504,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
         wor = _build_write_off_request(request, entity, request.data or {})
         return success_response(
             f"Write-off request {wor.document_number} created.",
-            data=WriteOffRequestSerializer(wor).data, status=201,
+            data=WriteOffRequestSerializer(wor, context={"request": request}).data, status=201,
         )
 
 
@@ -2499,7 +2534,7 @@ class WriteOffRequestDetailView(_WriteOffActionBase):
         _, wor = self._wor(request, pk)
         return success_response(
             "Write-off request retrieved.",
-            data=with_approval_request(WriteOffRequestSerializer(wor).data, wor))
+            data=with_approval_request(WriteOffRequestSerializer(wor, context={"request": request}).data, wor))
 
 
 # Group endpoint behavior for Write Off Request Submit View.
@@ -2526,7 +2561,7 @@ class WriteOffRequestSubmitView(_WriteOffActionBase):
         wor.refresh_from_db()
         return success_response(
             f"Write-off request {wor.document_number} submitted for approval.",
-            data=WriteOffRequestSerializer(wor).data
+            data=WriteOffRequestSerializer(wor, context={"request": request}).data
             # Same contract as procurement and payouts: the client learns here that
             # nobody can approve this, and can offer to continue without approval.
             | {"approval": release_svc.approval_block(instance)},
@@ -2557,7 +2592,7 @@ class WriteOffRequestPostView(_WriteOffActionBase):
         wor.refresh_from_db()
         return success_response(
             f"Write-off request {wor.document_number} posted.",
-            data=WriteOffRequestSerializer(wor).data,
+            data=WriteOffRequestSerializer(wor, context={"request": request}).data,
         )
 
 
@@ -2600,7 +2635,7 @@ class InvoiceWriteOffView(_FinanceBase):
             wor.refresh_from_db()
             return success_response(
                 f"Write-off request {wor.document_number} submitted for approval.",
-                data=WriteOffRequestSerializer(wor).data,
+                data=WriteOffRequestSerializer(wor, context={"request": request}).data,
             )
 
         confirm_unconfigured_post(wor, request, noun="write-off")
@@ -2608,7 +2643,7 @@ class InvoiceWriteOffView(_FinanceBase):
         invoice.refresh_from_db()
         return success_response(
             f"Invoice {invoice.document_number} written off.",
-            data=InvoiceSerializer(invoice).data,
+            data=InvoiceSerializer(invoice, context={"request": request}).data,
         )
 
 
@@ -2815,6 +2850,16 @@ class ARAdjustmentBatchView(_FinanceBase):
         if kind == "REFUND":
             from .receivables import refundable_credit_by_branch
 
+            assert_writable(request, "finance.refund", {
+                "refund_date": body.get("date"),
+                "narration": narration,
+                "bank_account": body.get("bank_account"),
+            }, creating=True)
+            for item in items:
+                assert_writable(request, "finance.refund", {
+                    key: item[key] for key in ("amount", "reference", "narration") if key in item
+                }, creating=True)
+
             # The batch names one account; each refund's own branch is checked per line.
             bank_account = _bank_account_in_reach(
                 request, entity, body.get("bank_account"), required=True)
@@ -2874,6 +2919,14 @@ class ARAdjustmentBatchView(_FinanceBase):
                 for refund in documents:
                     submit_for_approval(refund, requested_by=request.user)
         else:
+            assert_writable(request, "finance.writeoff", {
+                "invoice": True, "amount": True,
+                "write_off_account": "write_off_account" in body,
+                "write_off_date": True,
+                "narration": "narration" in body or any(
+                    "narration" in item for item in items),
+                "reason": "reason" in body or any("reason" in item for item in items),
+            }, creating=True)
             write_off_account = _resolve_account(
                 request, entity, body.get("write_off_account"), "write_off_account")
             invoices = _batch_invoices(request, entity, items)
@@ -2948,9 +3001,10 @@ class ARAdjustmentBatchView(_FinanceBase):
         for document in documents:
             document.refresh_from_db()
         payload = (
-            RefundSerializer(documents, many=True).data
+            RefundSerializer(documents, many=True, context={"request": request}).data
             if kind == "REFUND"
-            else WriteOffRequestSerializer(documents, many=True).data
+            else WriteOffRequestSerializer(documents, many=True,
+                                           context={"request": request}).data
         )
         total_amount = sum(document.amount for document in documents)
         verb = {"DRAFT": "created", "POST": "posted", "SUBMIT": "submitted"}[action]
@@ -2960,7 +3014,9 @@ class ARAdjustmentBatchView(_FinanceBase):
                 "kind": kind,
                 "action": action,
                 "count": len(documents),
-                "total_amount": total_amount,
+                **({"total_amount": total_amount} if can_read(
+                    request, "finance.refund.amount" if kind == "REFUND"
+                    else "finance.writeoff.amount") else {}),
                 "items": payload,
             },
             status=201,
@@ -3230,23 +3286,26 @@ class ARAdjustmentListView(_FinanceBase):
         written_off_ytd = sum(
             w["amount"] for w in writeoff_rows
             if w["status"] == "POSTED" and (in_period or w["date"][:4] == str(year))
-        ) if sees_writeoffs else None
+        ) if sees_writeoffs and can_read(request, "finance.writeoff.amount") else None
         # "Pending" spans the adjustment kinds this reader sees.
         listed_requests = narrow_finance_document_list(
             scope.filter(WriteOffRequest.objects.filter(entity=entity)),
             request, entity=entity, archived=False,
         )
         pending = (
-            refunds.filter(status__in=PENDING_STATUSES).count()
-            + (listed_requests.filter(status__in=PENDING_STATUSES).count() if sees_writeoffs else 0)
+            (refunds.filter(status__in=PENDING_STATUSES).count()
+             if sees_refunds and can_read(request, "finance.refund.status") else 0)
+            + (listed_requests.filter(status__in=PENDING_STATUSES).count()
+               if sees_writeoffs and can_read(request, "finance.writeoff.status") else 0)
         )
         # The Sent back filter's count, over the kinds this reader sees.
         from vs_workflow.services.approval_filter import returned_condition
 
         sent_back = (
-            refunds.filter(returned_condition(Refund)).count()
+            (refunds.filter(returned_condition(Refund)).count()
+             if sees_refunds and can_read(request, "finance.refund.status") else 0)
             + (listed_requests.filter(returned_condition(WriteOffRequest)).count()
-               if sees_writeoffs else 0)
+               if sees_writeoffs and can_read(request, "finance.writeoff.status") else 0)
         )
         refundable_credit = None
         # The credit a reader could refund is customers' balances added up, so it
@@ -3281,6 +3340,30 @@ class ARAdjustmentListView(_FinanceBase):
         total = len(rows)
         total_pages = math.ceil(total / page_size) if total else 1
         start = (page - 1) * page_size
+        page_rows = _with_approval_overview(rows[start:start + page_size])
+        for row in page_rows:
+            resource = "finance.refund" if row["kind"] == "REFUND" else "finance.writeoff"
+            if not can_read(request, f"{resource}.amount"):
+                row.pop("amount", None)
+                row.pop("amount_naira", None)
+            if not can_read(request, f"{resource}.status"):
+                for name in ("status", "approval_required", "approval_state",
+                             "approval_returned"):
+                    row.pop(name, None)
+            if row["kind"] == "REFUND":
+                if not can_read(request, "finance.refund.method"):
+                    row.pop("method", None)
+                if not can_read(request, "finance.refund.narration"):
+                    row.pop("reason", None)
+                if not can_read(request, "finance.refund.refund_date"):
+                    row.pop("date", None)
+            else:
+                if not (can_read(request, "finance.writeoff.reason") and can_read(
+                    request, "finance.writeoff.narration"
+                )):
+                    row.pop("reason", None)
+                if not can_read(request, "finance.writeoff.write_off_date"):
+                    row.pop("date", None)
         return Response({
             "success": True,
             "message": "AR adjustments retrieved.",
@@ -3289,13 +3372,17 @@ class ARAdjustmentListView(_FinanceBase):
                 "totalPages": total_pages, "next": None, "previous": None,
             },
             "kpis": {
-                "written_off_ytd": written_off_ytd,
-                "pending": pending,
-                "sent_back": sent_back,
+                **({"written_off_ytd": written_off_ytd} if (
+                    not sees_writeoffs or can_read(request, "finance.writeoff.amount")
+                ) else {}),
+                **({"pending": pending, "sent_back": sent_back} if (
+                    (sees_refunds and can_read(request, "finance.refund.status")) or
+                    (sees_writeoffs and can_read(request, "finance.writeoff.status"))
+                ) else {}),
                 **({"refundable_credit": refundable_credit} if customer_balance_readable(request) else {}),
             },
             "kinds": [kind for kind, seen in (("REFUND", sees_refunds), ("WRITEOFF", sees_writeoffs)) if seen],
-            "data": _with_approval_overview(rows[start:start + page_size]),
+            "data": page_rows,
         })
 
 
@@ -3507,6 +3594,11 @@ class ConcessionListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.concession", {
+            name: name in body for name in (
+                "kind", "invoice", "concession_date", "amount", "allowance_account",
+                "reason", "reference")
+        }, creating=True)
         customer = _resolve_customer(request, entity, body.get("customer"))
         invoice = _resolve_invoice(request, entity, body.get("invoice"))
         if invoice.customer_id != customer.pk:
@@ -3599,6 +3691,11 @@ class ConcessionDetailView(_ConcessionActionBase):
                 "A concession discounts one invoice of one customer; raise a new "
                 "concession for another."
             )})
+        assert_writable(request, "finance.concession", {
+            name: name in body for name in (
+                "kind", "concession_date", "amount", "allowance_account",
+                "reason", "reference")
+        })
         changes = {}
         if "kind" in body:
             if body.get("kind") not in ConcessionKind.values:
@@ -3768,11 +3865,14 @@ class ConcessionSummaryView(_FinanceBase):
             word_condition(Concession, Q(status=DocumentStatus.DRAFT)),
         ).aggregate(s=Sum("amount"))["s"] or 0
         sent_back = qs.filter(returned_condition(Concession)).aggregate(s=Sum("amount"))["s"] or 0
+        amount_visible = can_read(request, "finance.concession.amount")
+        status_visible = can_read(request, "finance.concession.status")
         return success_response("Concession summary retrieved.", data={
-            "posted_ytd": int(posted_ytd),
-            "draft_pending": int(draft_pending),
-            "sent_back": int(sent_back),
-            "active_count": qs.filter(status=DocumentStatus.POSTED).count(),
+            **({"posted_ytd": int(posted_ytd)} if amount_visible else {}),
+            **({"draft_pending": int(draft_pending), "sent_back": int(sent_back)}
+               if amount_visible and status_visible else {}),
+            **({"active_count": qs.filter(status=DocumentStatus.POSTED).count()}
+               if status_visible else {}),
         })
 
 
@@ -3818,6 +3918,11 @@ class PaymentPlanListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.paymentplan", {
+            name: name in body for name in (
+                "invoice", "start_date", "frequency", "installment_count",
+                "total_amount", "notes", "amounts")
+        }, creating=True)
         invoice = _resolve_invoice(request, entity, body.get("invoice"), required=False)
         # Default the spread total to the invoice's outstanding balance when omitted.
         raw_total = body.get("total_amount")
@@ -3849,7 +3954,7 @@ class PaymentPlanListCreateView(_FinanceBase):
         build_installments(plan, amounts=amounts)
         return success_response(
             f"Payment plan {plan.document_number} created.",
-            data=PaymentPlanSerializer(plan).data, status=201,
+            data=PaymentPlanSerializer(plan, context={"request": request}).data, status=201,
         )
 
 
@@ -3878,7 +3983,7 @@ class PaymentPlanDetailView(_PaymentPlanActionBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, plan = self._plan(request, pk)
-        return success_response("Payment plan retrieved.", data=PaymentPlanSerializer(plan).data)
+        return success_response("Payment plan retrieved.", data=PaymentPlanSerializer(plan, context={"request": request}).data)
 
 
 # Group endpoint behavior for Payment Plan Activate View.
@@ -3899,7 +4004,7 @@ class PaymentPlanActivateView(_PaymentPlanActionBase):
         plan.refresh_from_db()
         return success_response(
             f"Payment plan {plan.document_number} activated.",
-            data=PaymentPlanSerializer(plan).data,
+            data=PaymentPlanSerializer(plan, context={"request": request}).data,
         )
 
 
@@ -3919,6 +4024,9 @@ class PaymentPlanRefreshView(_PaymentPlanActionBase):
 
         _, plan = self._plan(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.paymentplan", {
+            "settled_amount": "settled_amount" in body
+        })
         settled = (
             _money(body["settled_amount"], "settled_amount")
             if body.get("settled_amount") not in (None, "") else None
@@ -3927,7 +4035,7 @@ class PaymentPlanRefreshView(_PaymentPlanActionBase):
         plan.refresh_from_db()
         return success_response(
             f"Payment plan {plan.document_number} progress refreshed.",
-            data=PaymentPlanSerializer(plan).data,
+            data=PaymentPlanSerializer(plan, context={"request": request}).data,
         )
 
 
@@ -3949,7 +4057,7 @@ class PaymentPlanCancelView(_PaymentPlanActionBase):
         plan.refresh_from_db()
         return success_response(
             f"Payment plan {plan.document_number} cancelled.",
-            data=PaymentPlanSerializer(plan).data,
+            data=PaymentPlanSerializer(plan, context={"request": request}).data,
         )
 
 
@@ -4465,6 +4573,10 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.credittransfer", {
+            name: name in body for name in (
+                "from_customer", "to_customer", "transfer_date", "amount", "reason")
+        }, creating=True)
         source = _resolve_customer(request, entity, body.get("from_customer"), "from_customer")
         destination = _resolve_customer(request, entity, body.get("to_customer"), "to_customer")
         if source.pk == destination.pk:
@@ -4482,7 +4594,7 @@ class CustomerCreditTransferListCreateView(_FinanceBase):
         check_transfer(transfer)  # Refuse now what could never post.
         return success_response(
             f"Credit transfer {transfer.document_number} created.",
-            data=CustomerCreditTransferSerializer(transfer).data, status=201,
+            data=CustomerCreditTransferSerializer(transfer, context={"request": request}).data, status=201,
         )
 
 
@@ -4512,7 +4624,7 @@ class CustomerCreditTransferDetailView(_CreditTransferActionBase):
         _, transfer = self._transfer(request, pk)
         return success_response(
             "Credit transfer retrieved.",
-            data=with_approval_request(CustomerCreditTransferSerializer(transfer).data, transfer),
+            data=with_approval_request(CustomerCreditTransferSerializer(transfer, context={"request": request}).data, transfer),
         )
 
 
@@ -4539,7 +4651,7 @@ class CustomerCreditTransferSubmitView(_CreditTransferActionBase):
         transfer.refresh_from_db()
         return success_response(
             f"Credit transfer {transfer.document_number} submitted for approval.",
-            data=CustomerCreditTransferSerializer(transfer).data
+            data=CustomerCreditTransferSerializer(transfer, context={"request": request}).data
             | {"approval": release_svc.approval_block(instance)},
         )
 
@@ -4566,7 +4678,7 @@ class CustomerCreditTransferVoidView(_CreditTransferActionBase):
         transfer.refresh_from_db()
         return success_response(
             f"Credit transfer {transfer.document_number} voided.",
-            data=CustomerCreditTransferSerializer(transfer).data,
+            data=CustomerCreditTransferSerializer(transfer, context={"request": request}).data,
         )
 
 
@@ -4692,6 +4804,15 @@ class CustomerOpeningInvoiceImportView(_FinanceBase):
             raise ValidationError({
                 "invoices": f"Send at most {CUSTOMER_OPENING_IMPORT_LIMIT} invoices in one import.",
             })
+        for item in raw:
+            if isinstance(item, dict):
+                assert_writable(request, "finance.invoice", {
+                    "lines": True, "unit_price": True,
+                    **{key: item[key] for key in (
+                        "invoice_date", "due_date", "reference", "narration",
+                        "period_label",
+                    ) if key in item},
+                }, creating=True)
         rows = []
         for index, item in enumerate(raw):
             if not isinstance(item, dict):
@@ -4724,5 +4845,7 @@ class CustomerOpeningInvoiceImportView(_FinanceBase):
         prefetch_related_objects(invoices, "customer", "branch")
         return success_response(
             f"{counted(len(invoices), 'opening invoice')} carried in.",
-            data=InvoiceSerializer(invoices, many=True).data, status=201,
+            data=InvoiceSerializer(
+                invoices, many=True, context={"request": request}).data,
+            status=201,
         )

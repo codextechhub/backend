@@ -6,6 +6,7 @@ from __future__ import annotations
 from rest_framework.exceptions import ValidationError
 
 from core.response import success_response
+from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
     HasRBACPermission,
@@ -113,7 +114,7 @@ class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
-            "Currencies retrieved.", data=CurrencySerializer(qs, many=True).data,
+            "Currencies retrieved.", data=CurrencySerializer(qs, many=True, context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -123,6 +124,9 @@ class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
         code = str(body.get("code", "")).upper().strip()
         if not code:
             raise ValidationError({"code": "A 3-letter ISO currency code is required."})
+        assert_writable(request, "finance.currency", {
+            key: body[key] for key in ("symbol", "minor_unit", "is_active") if key in body
+        }, creating=True)
         currency, created = _upsert_by_code(Currency, {"code": code}, body, {
             "name": ("name", lambda value: value, code),
             "symbol": ("symbol", lambda value: value, ""),
@@ -131,7 +135,8 @@ class CurrencyListCreateView(WholeTenantWriteMixin, _FinanceBase):
         })
         return success_response(
             f"Currency {code} {'created' if created else 'updated'}.",
-            data=CurrencySerializer(currency).data, status=201 if created else 200,
+            data=CurrencySerializer(currency, context={"request": request}).data,
+            status=201 if created else 200,
         )
 
 
@@ -169,6 +174,9 @@ class FxRateListCreateView(WholeTenantWriteMixin, _FinanceBase):
         rate = _dec(body.get("rate"), "rate")
         if rate <= 0:
             raise ValidationError({"rate": "Rate must be positive."})
+        assert_writable(request, "finance.fxrate", {
+            key: body[key] for key in ("rate", "as_of", "source") if key in body
+        }, creating=True)
         fx, created = FxRate.objects.update_or_create(
             base=base, quote=quote,
             as_of=_date(body.get("as_of"), "as_of", required=True),
@@ -177,7 +185,8 @@ class FxRateListCreateView(WholeTenantWriteMixin, _FinanceBase):
         )
         return success_response(
             f"FX rate {base.code}/{quote.code} recorded.",
-            data=FxRateSerializer(fx).data, status=201 if created else 200,
+            data=FxRateSerializer(fx, context={"request": request}).data,
+            status=201 if created else 200,
         )
 
 
@@ -213,7 +222,7 @@ class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
-            "Tax codes retrieved.", data=TaxCodeSerializer(qs, many=True).data,
+            "Tax codes retrieved.", data=TaxCodeSerializer(qs, many=True, context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -234,6 +243,11 @@ class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
             raise ValidationError({"code": "A tax code is required."})
         if body.get("treatment") in (None, ""):
             body.pop("treatment", None)
+        assert_writable(request, "finance.taxcode", {
+            key: body[key] for key in (
+                "rate_bps", "treatment", "is_recoverable", "collected_account",
+                "paid_account", "is_active") if key in body
+        }, creating=True)
 
         def treatment_of(value):
             treatment = str(value).upper()
@@ -262,7 +276,8 @@ class TaxCodeListCreateView(WholeTenantWriteMixin, _FinanceBase):
         }, check=check)
         return success_response(
             f"Tax code {code} {'created' if created else 'updated'}.",
-            data=TaxCodeSerializer(tax).data, status=201 if created else 200,
+            data=TaxCodeSerializer(tax, context={"request": request}).data,
+            status=201 if created else 200,
         )
 
 
@@ -317,7 +332,8 @@ class CostCenterListCreateView(WholeTenantWriteMixin, _FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
-            "Cost centres retrieved.", data=CostCenterSerializer(qs, many=True).data,
+            "Cost centres retrieved.", data=CostCenterSerializer(
+                qs, many=True, context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -328,6 +344,9 @@ class CostCenterListCreateView(WholeTenantWriteMixin, _FinanceBase):
         # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A cost centre code is required."})
+        assert_writable(request, "finance.costcenter", {
+            key: body[key] for key in ("parent", "is_active") if key in body
+        }, creating=True)
         cc, created = _upsert_by_code(CostCenter, {"entity": entity, "code": code}, body, {
             "name": ("name", lambda value: value, code),
             "parent": ("parent", lambda value: (
@@ -336,7 +355,8 @@ class CostCenterListCreateView(WholeTenantWriteMixin, _FinanceBase):
         })
         return success_response(
             f"Cost centre {code} {'created' if created else 'updated'}.",
-            data=CostCenterSerializer(cc).data, status=201 if created else 200,
+            data=CostCenterSerializer(cc, context={"request": request}).data,
+            status=201 if created else 200,
         )
 
 
@@ -374,7 +394,7 @@ class DimensionListCreateView(WholeTenantWriteMixin, _FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
-            "Dimensions retrieved.", data=DimensionSerializer(qs, many=True).data,
+            "Dimensions retrieved.", data=DimensionSerializer(qs, many=True, context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
@@ -385,6 +405,9 @@ class DimensionListCreateView(WholeTenantWriteMixin, _FinanceBase):
         # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A dimension code is required."})
+        assert_writable(request, "finance.dimension", {
+            key: body[key] for key in ("allowed_values", "is_active") if key in body
+        }, creating=True)
         dim, created = _upsert_by_code(Dimension, {"entity": entity, "code": code}, body, {
             "name": ("name", lambda value: value, code),
             "allowed_values": ("allowed_values", lambda value: _str_list(value, "allowed_values"), None),
@@ -392,6 +415,6 @@ class DimensionListCreateView(WholeTenantWriteMixin, _FinanceBase):
         })
         return success_response(
             f"Dimension {code} {'created' if created else 'updated'}.",
-            data=DimensionSerializer(dim).data, status=201 if created else 200,
+            data=DimensionSerializer(dim, context={"request": request}).data,
+            status=201 if created else 200,
         )
-

@@ -153,12 +153,13 @@ class Field:
     #: The Field Access registry key this column exposes, for example
     #: ``procurement.vendor.bank_account_number``. Blank when the column is not
     #: a registered field.
-    access: str = ""
+    access: str | tuple[str, ...] = ""
 
     @property
     def path(self) -> str:
         """ORM lookup path for this column."""
         return self.source or self.id
+
 
     # Serialise for the catalogue endpoint.
     def describe(self) -> dict:
@@ -171,6 +172,14 @@ class Field:
             "sensitive": self.sensitive,
             "description": self.description,
         }
+
+
+def access_is_readable(access, readable) -> bool:
+    """Require every Field Access key when a value combines protected parts."""
+    if not access or readable is None:
+        return True
+    keys = (access,) if isinstance(access, str) else access
+    return all(readable(key) for key in keys)
 
 
 #: Filter kinds the compiler understands.
@@ -510,13 +519,13 @@ class Dataset:
         return None
 
     # The Field Access key of the column read at *path*, or "".
-    def column_access(self, path: str) -> str:
+    def column_access(self, path: str) -> str | tuple[str, ...]:
         for f in self.fields:
             if f.access and f.path == path:
                 return f.access
         return ""
 
-    def filter_access(self, fdef: FilterDef) -> str:
+    def filter_access(self, fdef: FilterDef) -> str | tuple[str, ...]:
         """The Field Access key governing a single-path filter, or "" when none does.
 
         The filter's own ``access`` first, then the key of the column the filter
@@ -542,7 +551,7 @@ class Dataset:
         return tuple(
             (path, label) for path, label in fdef.searches
             if not (key := fdef.access_by_path.get(path) or self.column_access(path))
-            or readable(key)
+            or access_is_readable(key, readable)
         )
 
     def filter_readable(self, fdef: FilterDef, readable=None) -> bool:
@@ -556,7 +565,7 @@ class Dataset:
         if fdef.kind == FILTER_SEARCH:
             return bool(self.readable_searches(fdef, readable))
         key = self.filter_access(fdef)
-        return not key or readable(key)
+        return access_is_readable(key, readable)
 
     @property
     def locked_field_ids(self) -> tuple:
@@ -613,7 +622,7 @@ class Dataset:
         fields = [
             f for f in self.fields
             if (include_sensitive or not f.sensitive)
-            and (readable is None or not f.access or readable(f.access))
+            and access_is_readable(f.access, readable)
         ]
         return {
             "id": self.key,

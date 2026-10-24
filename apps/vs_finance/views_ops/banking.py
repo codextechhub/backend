@@ -27,7 +27,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from vs_rbac.field_enforcement import (
-    FieldAccessMixin, FieldWriteDenied, assert_writable, can_read, visible,
+    FieldAccessMixin, assert_writable, can_read, visible,
 )
 from vs_rbac.scoping import (
     caller_reaches_whole_tenant,
@@ -60,6 +60,7 @@ from ..models import (
 from ..serializers import (
     BankAccountDetailSerializer,
     BankAccountSerializer,
+    BankBookLinesSerializer,
     BankReconciliationSerializer,
     BankStatementDetailSerializer,
     BankStatementLineSerializer,
@@ -567,13 +568,11 @@ class BankAccountDetailView(_FinanceBase):
             "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
         }
         bank.detail_transactions = self._transactions(bank, book_balance=book)
-        bank.detail_statements = BankStatementSerializer(
-            annotate_statement_rollback(bank.statements.annotate(
+        bank.detail_statements = list(annotate_statement_rollback(
+            bank.statements.annotate(
                 has_acted_lines=Exists(acted_lines),
                 is_bulk_import=Exists(bulk_context),
-            ))[:50],
-            many=True, context={"request": request},
-        ).data
+            ))[:50])
         bank.detail_reconciliations = list(bank.reconciliations.all()[:50])
         data = BankAccountDetailSerializer(bank, context={"request": request}).data
         return success_response("Bank account retrieved.", data=data)
@@ -691,6 +690,13 @@ class BankStatementLineView(_FinanceBase):
         from ..banking import import_statement_lines
 
         bank = self._bank(request, pk)
+        body = request.data or {}
+        statement_fields = {name: body[name] for name in (
+            "statement_date", "period_label", "opening_balance", "closing_balance", "lines",
+        ) if name in body}
+        assert_writable(request, _BANK_ACCOUNT, statement_fields, creating=True,
+                        aliases={"opening_balance": "opening_balance_naira",
+                                 "lines": "lines"})
         rows = _require_lines(request.data or {})
         parsed = []
         for i, row in enumerate(rows):
@@ -701,7 +707,6 @@ class BankStatementLineView(_FinanceBase):
                 "reference": row.get("reference", ""),
                 "external_id": row.get("external_id", ""),
             })
-        body = request.data or {}
         _, created, suspected = import_statement_lines(
             bank, parsed, actor_user=request.user,
             force=_bool(body.get("force", False), default=False),
@@ -718,7 +723,8 @@ class BankStatementLineView(_FinanceBase):
         return success_response(
             message,
             data={
-                "imported": BankStatementLineSerializer(created, many=True).data,
+                "imported": BankStatementLineSerializer(
+                    created, many=True, context={"request": request}).data,
                 "suspected_duplicates": suspected,
             },
             status=201,
@@ -731,6 +737,8 @@ class BankStatementLineDetailView(_FinanceBase):
     rbac_permission = "finance.bankaccount.import"
 
     def delete(self, request, pk):
+        assert_writable(request, _BANK_ACCOUNT, {"lines": True},
+                        aliases={"lines": "lines"})
         entity = resolve_entity(request)
         with transaction.atomic():
             line = (
@@ -979,23 +987,16 @@ class BankStatementDetailView(_FinanceBase):
     def patch(self, request, pk, statement_id):
         """Correct the statement's date, period, opening balance and lines.
 
-        The opening balance is the bank's own figure, the one the account's
-        ``statement_balance`` switch governs. A caller who cannot read it may
-        not write it: submitting it, whatever its value, is refused with the
-        standard field refusal and nothing is saved. "Unchanged is accepted,
-        different is refused" would let such a caller find the figure by trying
-        values, so the refusal does not depend on what is on file. Leaving it
-        out keeps the figure on file.
+        A submitted opening balance requires its Write switch even when the
+        caller cannot read the stored figure. The response follows both its
+        Read switch and the account's statement balance Read switch.
         """
         correction = _BankStatementCorrectionSerializer(data=request.data)
         correction.is_valid(raise_exception=True)
         values = correction.validated_data
-        if "opening_balance" in values and not can_read(
-            request, "finance.bankaccount.statement_balance",
-        ):
-            raise FieldWriteDenied(
-                ["opening_balance"], labels={"opening_balance": "Statement opening balance"},
-            )
+        assert_writable(request, _BANK_ACCOUNT, values,
+                        aliases={"opening_balance": "opening_balance_naira",
+                                 "lines": "lines"})
 
         with transaction.atomic():
             statement = self._statement(
@@ -1212,6 +1213,12 @@ class BankStatementImportWizardView(_FinanceBase):
         metadata = _BankStatementWizardUploadSerializer(data=request.data)
         metadata.is_valid(raise_exception=True)
         values = metadata.validated_data
+        assert_writable(request, _BANK_ACCOUNT, {
+            name: values[name] for name in (
+                "statement_date", "period_label", "opening_balance", "closing_balance",
+            ) if name in values
+        } | {"lines": True}, creating=True,
+                        aliases={"opening_balance": "opening_balance_naira"})
         uploaded_file = values["file"]
 
         template = ImportTemplate.objects.filter(
@@ -1328,7 +1335,8 @@ class BankAutoReconcileView(_FinanceBase):
             bank, tolerance_days=tolerance, group=group, actor_user=request.user)
         return success_response(
             f"Auto-matched {counted(len(matched), 'statement line')}.",
-            data=BankStatementLineSerializer(matched, many=True).data,
+            data=BankStatementLineSerializer(
+                matched, many=True, context={"request": request}).data,
         )
 
 
@@ -1352,6 +1360,10 @@ class BankBookLinesView(_FinanceBase):
 
         entity = resolve_entity(request)
         bank = _bank_or_404(request, pk, entity=entity)
+        paginator = XVSPagination()
+        if not can_read(request, "finance.bankaccount.book_lines"):
+            paginator.paginate_queryset([], request, view=self)
+            return paginator.get_paginated_response([])
 
         # Posting bakes the customer *code* into line descriptions ("Receipt: CUST-002").
         # Resolve it to the human name for the reconciliation view.
@@ -1363,7 +1375,6 @@ class BankBookLinesView(_FinanceBase):
             return f"{label}: {names[tail]}" if sep and tail in names else (desc or "-")
 
         # Paginate the unmatched book lines (was capped at [:200]); build rows per page.
-        paginator = XVSPagination()
         page = paginator.paginate_queryset(_unmatched_gl_lines(bank), request, view=self)
         rows = [{
             "id": ln.id,
@@ -1372,7 +1383,9 @@ class BankBookLinesView(_FinanceBase):
             "reference": ln.entry.document_number or ln.entry.reference or "",
             "amount": int((ln.debit or 0) - (ln.credit or 0)),
         } for ln in page]
-        return paginator.get_paginated_response(rows)
+        return paginator.get_paginated_response(
+            BankBookLinesSerializer({"book_lines": rows},
+                                    context={"request": request}).data["book_lines"])
 
 
 # Group endpoint behavior for Bank Reconcile Complete View.
@@ -1439,7 +1452,8 @@ class BankStatementLineMatchView(_StatementLineActionBase):
         match_line(line, jl, actor_user=request.user)
         line.refresh_from_db()
         return success_response(
-            "Statement line matched.", data=BankStatementLineSerializer(line).data,
+            "Statement line matched.", data=BankStatementLineSerializer(
+                line, context={"request": request}).data,
         )
 
 
@@ -1472,7 +1486,8 @@ class BankStatementLineGroupMatchView(_StatementLineActionBase):
         line.refresh_from_db()
         return success_response(
             "Statement line group-matched.",
-            data=BankStatementLineSerializer(line).data, status=201,
+            data=BankStatementLineSerializer(line, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -1512,7 +1527,8 @@ class BankSplitMatchView(_FinanceBase):
         rows = BankStatementLine.objects.filter(pk__in=[s.id for s in slines])
         return success_response(
             "Journal line split-matched.",
-            data=BankStatementLineSerializer(rows, many=True).data, status=201,
+            data=BankStatementLineSerializer(
+                rows, many=True, context={"request": request}).data, status=201,
         )
 
 
@@ -1536,6 +1552,10 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
 
         entity, line = self._line(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.bankaccount", {
+            "reconcile_adjustment": any(name in body for name in (
+                "counter_account", "counter_code", "narration", "posting_date"))
+        })
         # Both spellings resolve here, under the caller's reach, never in the service.
         # Another bank's ledger as the counter moves that bank's money, so it obeys
         # the statement's own bank's branch.
@@ -1554,7 +1574,8 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
         line.refresh_from_db()
         return success_response(
             "Bank adjustment booked and line matched.",
-            data=BankStatementLineSerializer(line).data, status=201,
+            data=BankStatementLineSerializer(line, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -1575,7 +1596,8 @@ class BankStatementLineUnmatchView(_StatementLineActionBase):
         unmatch_line(line, actor_user=request.user)
         line.refresh_from_db()
         return success_response(
-            "Statement line unmatched.", data=BankStatementLineSerializer(line).data,
+            "Statement line unmatched.", data=BankStatementLineSerializer(
+                line, context={"request": request}).data,
         )
 
 
@@ -1601,7 +1623,8 @@ class BankStatementLineIgnoreView(_StatementLineActionBase):
         )
         line.refresh_from_db()
         return success_response(
-            "Statement line updated.", data=BankStatementLineSerializer(line).data,
+            "Statement line updated.", data=BankStatementLineSerializer(
+                line, context={"request": request}).data,
         )
 
 

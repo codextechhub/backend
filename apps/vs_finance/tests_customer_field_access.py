@@ -118,6 +118,20 @@ class CustomerReadTests(_CustomerFieldAccess):
             "open_invoices", "open_debit_notes", "transactions", "statement"))
         cls.solo_open = cls.staff(cls.solo_tenant)
         cls.solo_no_contact = cls.staff(cls.solo_tenant, hide=CONTACT)
+        cls.default_source_reader = cls.grant(
+            cls.user_for(cls.tenant, "source-default@customer.test"),
+            "finance.customer.view", "finance.customer.create",
+            tenant=cls.tenant, role_key="source-default",
+        )
+
+    def test_source_reference_starts_closed_without_a_field_grant(self):
+        self.assertNotIn("source_id", self.row(self.default_source_reader))
+        response = self.api(self.default_source_reader).post(
+            self.url("customers/"),
+            {"name": "New payer", "source_id": "TIN-123", "branch": self.ikeja.pk},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
 
     # -- list and detail -------------------------------------------------------- #
 
@@ -275,6 +289,13 @@ class CustomerWriteTests(_CustomerFieldAccess):
         customer.refresh_from_db()
         return customer
 
+    def test_opening_write_aliases_follow_the_create_rule(self):
+        payload = field_access_payload(self.ro_account, self.tenant)[CUSTOMER]
+        self.assertIn("opening_date", payload["open_on_create"])
+        self.assertIn("opening_branch", payload["open_on_create"])
+        self.assertIn("receivable_account", payload["read_only"])
+        self.assertNotIn("receivable_account", payload["open_on_create"])
+
     def test_a_detail_lists_the_read_only_fields_and_their_aliases(self):
         customer = self.detail(self.ro_contact)["customer"]
         self.assertEqual(
@@ -391,18 +412,18 @@ class CustomerWriteTests(_CustomerFieldAccess):
         return self.api(user).post(self.url("customers/"), self.body(**extra), format="json")
 
     def test_a_read_only_role_can_still_open_a_customer_with_its_contact_and_branch(self):
-        response = self.create(self.ro_contact)
+        response = self.create(self.ro_contact, billing_address="12 Lekki Road")
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["data"]["billing_email"], "adeyemi@family.test")
+        self.assertEqual(response.data["data"]["billing_address"], "12 Lekki Road")
 
     def test_a_create_that_sets_a_closed_field_is_refused_and_saves_nothing(self):
         before = Customer.objects.filter(entity=self.books).count()
         for extra in (
-            {"billing_address": "5 Yaba Road"}, {"source_id": "AD-1"},
+            {"source_id": "AD-1"},
             {"is_active": False}, {"receivable_account": "1200"},
         ):
-            user = self.ro_contact if "billing_address" in extra else self.ro_account
-            response = self.create(user, **extra)
+            response = self.create(self.ro_account, **extra)
             with self.subTest(extra=extra):
                 self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(Customer.objects.filter(entity=self.books).count(), before)

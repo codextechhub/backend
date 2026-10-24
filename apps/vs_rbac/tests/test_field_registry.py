@@ -62,27 +62,41 @@ EXPECTED_RESOURCES = {
     ("attendance", "lesson"),
     ("attendance", "register"),
     ("attendance", "staff"),
+    ("finance", "account"),
     ("finance", "bankaccount"),
     ("finance", "banktransaction"),
     ("finance", "banktransfer"),
     ("finance", "budget"),
     ("finance", "customer"),
+    ("finance", "costcenter"),
+    ("finance", "concession"),
+    ("finance", "creditnote"),
+    ("finance", "credittransfer"),
+    ("finance", "currency"),
     ("finance", "dashboard"),
     ("finance", "deferredincome"),
     ("finance", "deposit"),
+    ("finance", "dimension"),
     ("finance", "expenseclaim"),
+    ("finance", "fxrate"),
     ("finance", "fiscalyear"),
     ("finance", "interbranch"),
+    ("finance", "invoice"),
+    ("finance", "journal"),
     ("finance", "payer_link"),
     ("finance", "payer_payment"),
     ("finance", "payrollrun"),
+    ("finance", "paymentplan"),
     ("finance", "period"),
     ("finance", "pettycash_return"),
     ("finance", "provision"),
     ("finance", "report"),
+    ("finance", "refund"),
     ("finance", "salary"),
     ("finance", "seal"),
+    ("finance", "taxcode"),
     ("finance", "settings"),
+    ("finance", "writeoff"),
     ("gradebook", "amendment"),
     ("gradebook", "hold"),
     ("gradebook", "result"),
@@ -140,8 +154,28 @@ ENDPOINT_GUARDED_RESOURCES = {
 #: Serializers that can write a registered name without carrying a rule for it,
 #: each with the reason that is safe. Every entry must still match a real hit.
 WRITE_PATH_ALLOWLIST = {
+    **{
+        ("vs_finance.serializers.DirectEntryLineSerializer", name):
+            "The direct journal view checks the enclosing lines switch before posting."
+        for name in ("debit", "credit", "cost_center", "dimensions")
+    },
+    **{
+        (f"vs_finance.views_ops.banking.{serializer}", name):
+            "The bank statement view checks this submitted field with assert_writable."
+        for serializer, names in (
+            ("_BankStatementCorrectionSerializer",
+             ("statement_date", "period_label", "opening_balance", "lines")),
+            ("_BankStatementCorrectionLineSerializer",
+             ("txn_date", "description", "reference", "amount", "external_id")),
+            ("_BankStatementWizardUploadSerializer",
+             ("statement_date", "period_label", "opening_balance", "closing_balance")),
+        )
+        for name in names
+    },
     ("vs_finance.views_ops.banking._BankStatementCorrectionSerializer", "lines"):
         "Statement correction lines belong to the bank statement, not a budget.",
+    ("vs_finance.views_ops.banking._BankStatementWizardUploadSerializer", "notes"):
+        "Upload notes describe a bank statement, not a payment plan.",
     ("vs_finance.serializers.DirectEntryCreateSerializer", "lines"):
         "Direct journal lines belong to the journal, not a budget.",
     ("vs_finance.views_ops.banking._BankStatementCorrectionLineSerializer", "reference"):
@@ -355,6 +389,13 @@ NESTING_ONLY_SURFACES = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "finance.customer.source_id": (
+        "The source reference can be exported as a customer's tax ID, so it starts "
+        "closed until a role receives Read and Write grants."
+    ),
+    "finance.bankaccount.statement_balance": (
+        "A bank's statement balance starts closed until a role receives Read access."
+    ),
     "finance.budget.amount": (
         "A budget can include pay scenarios and other plans a viewer must not read "
         "merely because they can open the budget. The owner chose separate Read and "
@@ -635,8 +676,10 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
                     continue
                 linked += 1
                 with self.subTest(dataset=dataset.key, column=column.id):
-                    self.assertIn(column.access, registry)
-                    if registry[column.access].sensitive:
+                    keys = (column.access,) if isinstance(column.access, str) else column.access
+                    for key in keys:
+                        self.assertIn(key, registry)
+                    if any(registry[key].sensitive for key in keys):
                         self.assertTrue(column.sensitive)
         self.assertGreater(linked, 0)
 

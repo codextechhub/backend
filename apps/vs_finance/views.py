@@ -23,7 +23,7 @@ from core.mixins import RetrieveModelMixin
 from core.response import success_response
 from vs_config.clock import branch_day_q, branch_zone, tenant_today
 from vs_config.display import format_date, format_month
-from vs_rbac.field_enforcement import can_read
+from vs_rbac.field_enforcement import assert_writable, can_read
 from vs_rbac.field_enforcement import visible as field_visible
 from vs_rbac.permissions import (
     HasAnyModuleAccess,
@@ -57,11 +57,17 @@ from .report_access import (
 )
 from .serializers import (
     AccountSerializer,
+    AccountActivityRowSerializer,
+    AccountActivityTotalsSerializer,
+    AccountDetailEnvelopeSerializer,
     FiscalPeriodSerializer,
     FiscalYearSerializer,
     InvoiceSerializer,
+    InvoiceDetailEnvelopeSerializer,
+    InvoiceSummarySerializer,
     JournalEntryDetailSerializer,
     JournalEntryListSerializer,
+    JournalSummarySerializer,
     DirectEntryCreateSerializer,
     LedgerEntityCreateSerializer,
     LedgerEntitySerializer,
@@ -542,6 +548,11 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "An account name is required."})
+        assert_writable(request, "finance.account", {
+            key: body[key] for key in (
+                "is_contra", "is_postable", "parent", "subtype", "description",
+            ) if key in body
+        }, creating=True)
         parent = None
         if (parent_ref := body.get("parent")) not in (None, ""):
             # By id for a JSON number, by code for a string, within the entity.
@@ -617,6 +628,22 @@ class AccountListCreateView(WholeTenantWriteMixin, EntityScopedListMixin, generi
                 }
             except MissingAccountError:
                 ctx["cash_ids"] = set()
+            if self._with_balance() and not can_read(
+                self.request, "finance.bankaccount.book_balance"
+            ):
+                from .models import Account, BankAccount
+
+                parent_by_id = dict(Account.objects.filter(entity=entity).values_list(
+                    "id", "parent_id"))
+                hidden_ids = set()
+                for bank_id in BankAccount.objects.filter(entity=entity).values_list(
+                    "gl_account_id", flat=True
+                ):
+                    account_id = bank_id
+                    while account_id is not None and account_id not in hidden_ids:
+                        hidden_ids.add(account_id)
+                        account_id = parent_by_id.get(account_id)
+                ctx["bank_balance_hidden_ids"] = hidden_ids
         return ctx
 
     # Handle the list workflow.
@@ -783,8 +810,8 @@ class AccountDetailView(APIView):
         # its running balance from the individual posted transaction lines.
         return success_response(
             "Account detail retrieved.",
-            data={
-                "account": AccountSerializer(acc, context={"request": request}).data,
+            data=AccountDetailEnvelopeSerializer({
+                "account": acc,
                 "type_label": AccountType(acc.account_type).label if acc.account_type else "",
                 "summary": {
                     **({} if bank_balance_hidden else {
@@ -799,13 +826,19 @@ class AccountDetailView(APIView):
                     "as_of": today.isoformat(),
                 },
                 "activity": activity,
-            },
+            }, context={"request": request,
+                        "bank_balance_hidden": bank_balance_hidden}).data,
         )
 
     def patch(self, request, pk):
         entity = resolve_entity(request)
         acc = self._get(entity, pk, request=request)
         body = request.data or {}
+        assert_writable(request, "finance.account", {
+            key: body[key] for key in (
+                "is_active", "is_postable", "subtype", "description",
+            ) if key in body
+        })
         # Only safe, non-structural fields are editable (type/normal/parent are not,
         # since changing them would rewrite how posted history is classified).
         if "name" in body:
@@ -849,6 +882,10 @@ class AccountActivityView(APIView):
         account = Account.objects.filter(entity=entity, pk=pk).first()
         if account is None:
             raise NotFound("No such account in this entity.")
+        if not can_read(request, "finance.account.activity"):
+            paginator = XVSPagination()
+            paginator.paginate_queryset([], request, view=self)
+            return paginator.get_paginated_response([])
 
         account_ids = {account.id} if account.is_postable else account_subtree_ids(account)
         lines = _reader_scope(request).filter(
@@ -898,17 +935,21 @@ class AccountActivityView(APIView):
             for line in page
         ]
         response = paginator.get_paginated_response(data)
+        totalled = {int(raw_account)} if raw_account else account_ids
+        hidden_bank_balance = book_balance_hidden(request, totalled)
+        response.data["data"] = AccountActivityRowSerializer(
+            data, many=True,
+            context={"request": request, "bank_balance_hidden": hidden_bank_balance}).data
         # The movement of a bank account's ledger account adds up to its book
         # balance, so totals over any bank ledger account are withheld with it,
         # whether the account asked for is the bank's own, a group above it, or
         # a bank picked out of a group with ``?account=``.
-        totalled = {int(raw_account)} if raw_account else account_ids
-        if not book_balance_hidden(request, totalled):
-            response.data["totals"] = {
+        if can_read(request, "finance.account.balance") and not hidden_bank_balance:
+            response.data["totals"] = AccountActivityTotalsSerializer({
                 "debit": _money(debit),
                 "credit": _money(credit),
                 "net_movement": _money(sign * (debit - credit)),
-            }
+            }, context={"request": request}).data
         return response
 
 
@@ -1235,13 +1276,13 @@ class JournalSummaryView(APIView):
         )
         return success_response(
             "Journal summary retrieved.",
-            data={
+            data=JournalSummarySerializer({
                 "total": counts["total"],
                 "by_status": by_status,
                 "sent_back": counts["sent_back"],
                 "posted_total": _money(posted_total),
                 "reversed_total": _money(reversed_total),
-            },
+            }, context={"request": request}).data,
         )
 
 
@@ -1302,13 +1343,18 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         serializer = DirectEntryCreateSerializer(data=body, partial="lines" not in body)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        assert_writable(request, "finance.journal", {
+            name: data[name] for name in ("date", "narration", "reference", "lines")
+            if name in body
+        })
         changes = {name: data[name] for name in DIRECT_ENTRY_FIELDS if name in body}
         lines = _direct_entry_lines(request, entity, data["lines"]) if "lines" in body else None
         revise_direct_entry(entry, actor_user=request.user, changes=changes, lines=lines)
         entry = self.get_queryset().get(id=id)
         return success_response(
             message=f"Journal {entry.document_number} corrected.",
-            data=with_approval_request(JournalEntryDetailSerializer(entry).data, entry),
+            data=with_approval_request(
+                JournalEntryDetailSerializer(entry, context={"request": request}).data, entry),
         )
 
     def retrieve(self, request, *args, **kwargs):
@@ -1370,6 +1416,14 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
+        assert_writable(request, "finance.invoice", {
+            name: body[name] for name in (
+                "beneficiary", "invoice_date", "due_date", "reference", "narration",
+                "currency", "lines",
+            ) if name in body
+        }, creating=True)
+        if any("unit_price" in line for line in lines):
+            assert_writable(request, "finance.invoice", {"unit_price": True}, creating=True)
         from .document_settings import resolve_finance_document_settings
         policy = resolve_finance_document_settings(entity)
         should_post = body.get("post", policy.auto_post_manual_invoices)
@@ -1432,7 +1486,8 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         invoice.refresh_from_db()
         return success_response(
             f"Invoice {invoice.document_number} {'posted' if should_post else 'saved as draft'}.",
-            data=InvoiceSerializer(invoice).data, status=201,
+            data=InvoiceSerializer(invoice, context={"request": request}).data,
+            status=201,
         )
 
     # Handle the entity qs workflow.
@@ -1441,7 +1496,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
         qs = Invoice.objects.filter(
             transaction_branch_q(self.request), entity=entity,
-        ).select_related("customer", "branch")
+        ).select_related("customer", "branch", "beneficiary", "currency")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1580,19 +1635,36 @@ class InvoiceSummaryView(APIView):
             monthly.append({"label": format_month(cur, entity.tenant), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
             cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)
 
+        may_read_receipts = can_read(request, "finance.payment.amount")
+        may_read_total = can_read(request, "finance.invoice.total")
+        may_read_settlement = can_read(request, "finance.invoice.settlement")
+        if not may_read_receipts:
+            for row in monthly:
+                row.pop("collected", None)
+        if not may_read_total:
+            for row in monthly:
+                row.pop("invoiced", None)
+        kpis = {}
+        totals = {"count": total_count}
+        if may_read_total:
+            kpis["total_invoiced"] = _money(invoiced)
+            totals["total"] = _money(total_all)
+        if may_read_total and may_read_settlement:
+            kpis["overdue_balance"] = _money(overdue_balance)
+            totals["outstanding"] = _money(outstanding)
+        if may_read_receipts:
+            kpis["total_collected"] = _money(collected)
+            if may_read_total:
+                kpis["collection_rate"] = rate
+
         return success_response(
             "Invoice summary retrieved.",
-            data={
-                "kpis": {
-                    "total_invoiced": _money(invoiced),
-                    "total_collected": _money(collected),
-                    "collection_rate": rate,
-                    "overdue_balance": _money(overdue_balance),
-                },
+            data=InvoiceSummarySerializer({
+                "kpis": kpis,
                 "by_status": {**by_status, "total": total_count},
-                "totals": {"count": total_count, "total": _money(total_all), "outstanding": _money(outstanding)},
+                "totals": totals,
                 "monthly": monthly,
-            },
+            }, context={"request": request}).data,
         )
 
 
@@ -1618,7 +1690,7 @@ class InvoiceDetailView(APIView):
             Invoice.objects.filter(
                 transaction_branch_q(request), entity=entity, pk=pk,
             )
-            .select_related("customer", "journal", "branch")
+            .select_related("customer", "beneficiary", "currency", "journal", "branch")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
                 "allocations__payment__journal__lines__account",
@@ -1715,6 +1787,18 @@ class InvoiceDetailView(APIView):
                 "amount": _money(int(log.metadata.get("amount") or 0)),
             })
         settlements.sort(key=lambda x: x["date"])
+        settlement_fields = {
+            "PAYMENT": "finance.payment.amount",
+            "CREDIT_NOTE": "finance.creditnote.total",
+            "CONCESSION": "finance.concession.amount",
+            "WRITE_OFF": "finance.writeoff.amount",
+        }
+        visible_settlements = {
+            kind for kind, key in settlement_fields.items() if can_read(request, key)
+        } if can_read(request, "finance.invoice.total") else set()
+        if "PAYMENT" not in visible_settlements:
+            payments = []
+        settlements = [row for row in settlements if row["type"] in visible_settlements]
 
         # Flat lines of the invoice's own AR journal - kept as `gl_postings` for
         # existing consumers. `gl_journals` is the full GL history: the invoice posting
@@ -1764,6 +1848,18 @@ class InvoiceDetailView(APIView):
             if j is not None:
                 _add_journal(j, "WRITE_OFF", inv.document_number, j.date.isoformat())
         gl_journals.sort(key=lambda x: x["date"])
+        if not can_read(request, "finance.journal.lines"):
+            gl_postings = []
+            gl_journals = []
+        else:
+            readable_journals = visible_settlements | (
+                {"INVOICE"} if can_read(request, "finance.invoice.total") else set()
+            )
+            gl_journals = [
+                row for row in gl_journals if row["document_type"] in readable_journals
+            ]
+            if "INVOICE" not in readable_journals:
+                gl_postings = []
 
         reminders = [
             {
@@ -1775,21 +1871,25 @@ class InvoiceDetailView(APIView):
             for d in inv.dunning_notices.all()
         ]
 
-        activity = [{"date": inv.invoice_date.isoformat(), "label": "Invoice created"}]
+        activity = [{"date": inv.invoice_date.isoformat(), "label": "Invoice created",
+                     "_source": "INVOICE"}]
         for a in inv.allocations.all():
             activity.append({
                 "date": a.payment.payment_date.isoformat(),
                 "label": f"Payment {a.payment.document_number} ({format_naira(a.amount)})",
+                "_source": "PAYMENT",
             })
         for a in inv.credit_allocations.all():
             activity.append({
                 "date": a.note.note_date.isoformat(),
                 "label": f"Credit note {a.note.document_number} ({format_naira(a.amount)})",
+                "_source": "CREDIT_NOTE",
             })
         for c in concessions:
             activity.append({
                 "date": c.concession_date.isoformat(),
                 "label": f"{c.get_kind_display()} {c.document_number} ({format_naira(c.amount)})",
+                "_source": "CONCESSION",
             })
         for log in writeoff_logs:
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
@@ -1797,15 +1897,25 @@ class InvoiceDetailView(APIView):
             activity.append({
                 "date": (j.date.isoformat() if j else _day_at(log.created_at, inv).isoformat()),
                 "label": f"Write-off ({format_naira(amount)})",
+                "_source": "WRITE_OFF",
             })
         for r in reminders:
-            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} - {r['status']}"})
+            activity.append({"date": r["date"],
+                             "label": f"Reminder level {r['level']} - {r['status']}",
+                             "_source": "REMINDER"})
         activity.sort(key=lambda x: x["date"])
+        readable_activity = visible_settlements | (
+            {"INVOICE"} if can_read(request, "finance.invoice.invoice_date") else set()
+        ) | ({"REMINDER"} if can_read(request, "finance.invoice.reminders") else set())
+        activity = [
+            {key: value for key, value in row.items() if key != "_source"}
+            for row in activity if row["_source"] in readable_activity
+        ]
 
         return success_response(
             "Invoice retrieved.",
-            data={
-                "invoice": InvoiceSerializer(inv).data,
+            data=InvoiceDetailEnvelopeSerializer({
+                "invoice": inv,
                 "summary": {
                     "subtotal": _money(inv.subtotal), "tax": _money(inv.tax_total),
                     "total": _money(inv.total),
@@ -1826,7 +1936,7 @@ class InvoiceDetailView(APIView):
                 "gl_journals": gl_journals,
                 "reminders": reminders,
                 "activity": activity,
-            },
+            }, context={"request": request}).data,
         )
 
 
@@ -1901,7 +2011,7 @@ class JournalSubmitView(APIView):
         entry.refresh_from_db()
         return success_response(
             message=f"Journal {entry.document_number} submitted for approval.",
-            data=JournalEntryDetailSerializer(entry).data
+            data=JournalEntryDetailSerializer(entry, context={"request": request}).data
             # Same contract as procurement and payouts: the client learns here that
             # nobody can approve this, and can offer to continue without approval.
             | {"approval": release_svc.approval_block(instance)},
@@ -1945,7 +2055,7 @@ class JournalPostView(APIView):
         entry.refresh_from_db()
         return success_response(
             message=f"Journal {entry.document_number} posted.",
-            data=JournalEntryDetailSerializer(entry).data,
+            data=JournalEntryDetailSerializer(entry, context={"request": request}).data,
         )
 
 
@@ -1977,6 +2087,10 @@ class JournalReverseView(APIView):
         # period, or into the current open period if that period has since closed.
         body = request.data or {}
         raw_date = body.get("date") or body.get("reversal_date")
+        if "date" in body or "reversal_date" in body:
+            assert_writable(request, "finance.journal", {
+                name: body[name] for name in ("date", "reversal_date") if name in body
+            }, aliases={"reversal_date": "date"})
         rdate = None
         if raw_date:
             try:  # Start protected finance operation.
@@ -1986,7 +2100,7 @@ class JournalReverseView(APIView):
         reversal = reverse_journal(entry, actor_user=request.user, date=rdate)
         return success_response(
             message=f"Journal {entry.document_number} reversed.",
-            data=JournalEntryDetailSerializer(reversal).data,
+            data=JournalEntryDetailSerializer(reversal, context={"request": request}).data,
             status=201,
         )
 
@@ -2064,6 +2178,13 @@ class DirectEntryCreateView(APIView):
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        assert_writable(request, "finance.journal", {
+            name: data[name] for name in ("date", "narration", "reference", "lines")
+            if name in request.data
+        }, creating=True)
+        if "opening_balance" in request.data:
+            assert_writable(request, "finance.journal", {"opening_balance": request.data["opening_balance"]},
+                            creating=True)
         opening = (request.data or {}).get("opening_balance", False)
         if not isinstance(opening, bool):
             raise ValidationError({"opening_balance": "Expected a JSON boolean."})
@@ -2087,7 +2208,7 @@ class DirectEntryCreateView(APIView):
                         f"Direct entry {entry.document_number} is waiting for approval. "
                         f"It reaches the books once it is approved."
                     ),
-                    data=JournalEntryDetailSerializer(entry).data
+                    data=JournalEntryDetailSerializer(entry, context={"request": request}).data
                     | {"approval": release_svc.approval_block(instance)},
                     status=201,
                 )
@@ -2097,7 +2218,8 @@ class DirectEntryCreateView(APIView):
             entry.refresh_from_db()
         return success_response(
             message=f"Direct entry posted as {entry.document_number}.",
-            data=JournalEntryDetailSerializer(entry).data, status=201,
+            data=JournalEntryDetailSerializer(entry, context={"request": request}).data,
+            status=201,
         )
 
 
@@ -2427,7 +2549,8 @@ def _year_end_journals(request, journals) -> list:
     ``finance.fiscalyear.net_income`` is served each journal's identity and
     state without them.
     """
-    rows = list(JournalEntryDetailSerializer(journals, many=True).data)
+    rows = list(JournalEntryDetailSerializer(
+        journals, many=True, context={"request": request}).data)
     if not can_read(request, "finance.fiscalyear.net_income"):
         for row in rows:
             for name in ("lines", "total_debit", "total_credit"):

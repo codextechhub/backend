@@ -20,7 +20,7 @@ import itertools
 from vs_finance.banking import import_statement_lines
 from vs_finance.models import Account, BankAccount, BankStatement
 from vs_rbac.models import TenantRoleTemplate
-from vs_rbac.tests.helpers import set_field_access
+from vs_rbac.tests.helpers import install_declared_fields, set_field_access
 
 from .tests_bank_account_field_access import BANK, _BankAccountFieldAccess
 
@@ -56,7 +56,7 @@ class _BankRestating(_BankAccountFieldAccess):
         )
 
     @classmethod
-    def who(cls, *, hide=(), tenant=None, branch=None, keys=BANK_KEYS):
+    def who(cls, *, hide=(), hide_account=(), tenant=None, branch=None, keys=BANK_KEYS):
         """A user holding ``keys`` whose role has the named bank account fields switched off."""
         tenant = tenant or cls.tenant
         name = f"bankrestate-{next(_seq)}"
@@ -64,9 +64,14 @@ class _BankRestating(_BankAccountFieldAccess):
             cls.user_for(tenant, f"{name}@bank.test"), *keys,
             tenant=tenant, role_key=name, branch=branch,
         )
+        role = TenantRoleTemplate.objects.get(tenant=tenant, key=name)
+        set_field_access(role, *cls.keys, read=True, write=True)
         if hide:
-            role = TenantRoleTemplate.objects.get(tenant=tenant, key=name)
             set_field_access(role, *_k(*hide), read=False, write=False)
+        if hide_account:
+            set_field_access(role, *(
+                f"finance.account.{name}" for name in hide_account
+            ), read=False, write=False)
         return user
 
     def get(self, user, path, books=None):
@@ -89,9 +94,20 @@ class BankStatementAccessTests(_BankRestating):
         super().setUpTestData()
         cls.open = cls.who()
         cls.no_statement = cls.who(hide=("statement_balance",))
+        cls.no_opening_writer = cls.who(hide=("statement_opening_balance",))
+        cls.opening_writer = cls.grant(
+            cls.user_for(cls.tenant, "opening-writer@bank.test"), *BANK_KEYS,
+            tenant=cls.tenant, role_key="opening-writer",
+        )
+        opening_role = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="opening-writer")
+        set_field_access(opening_role, *cls.keys, read=True, write=True)
+        set_field_access(opening_role, *_k("statement_balance"), read=False, write=False)
+        set_field_access(opening_role, *_k("statement_opening_balance"), read=True, write=True)
         cls.no_book = cls.who(hide=("book_balance",))
         cls.solo_open = cls.who(tenant=cls.solo_tenant)
         cls.solo_no_statement = cls.who(hide=("statement_balance",), tenant=cls.solo_tenant)
+        cls.solo_no_opening_writer = cls.who(
+            hide=("statement_opening_balance",), tenant=cls.solo_tenant)
         cls.rival_open = cls.who(tenant=cls.rival_tenant)
 
     def listed(self, user):
@@ -115,6 +131,12 @@ class BankStatementAccessTests(_BankRestating):
 
     def test_the_book_balance_switch_does_not_hide_the_statements_balances(self):
         self.assertIn("closing_balance", self.listed(self.no_book))
+
+    def test_each_statement_balance_has_its_own_read_switch(self):
+        row = self.listed(self.no_opening_writer)
+        self.assertNotIn("opening_balance", row)
+        self.assertNotIn("opening_balance_naira", row)
+        self.assertIn("closing_balance", row)
 
     def test_the_statement_detail_follows_the_switch(self):
         path = f"bank-accounts/{self.ikeja_bank.pk}/statements/{self.statement.pk}/"
@@ -163,9 +185,17 @@ class BankStatementAccessTests(_BankRestating):
         self.assertEqual(
             BankStatement.objects.get(pk=self.statement.pk).closing_balance, 902_000)
 
+    def test_a_writer_without_balance_read_may_correct_the_opening_balance(self):
+        response = self.api(self.opening_writer).patch(
+            self.url(self.statement_path), self.correction(opening_balance=900_000), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("opening_balance", response.data["data"])
+        self.assertEqual(BankStatement.objects.get(pk=self.statement.pk).opening_balance, 900_000)
+
     def test_a_caller_who_cannot_read_the_balance_may_not_write_it_whatever_the_value(self):
         for value in (900_000, 1_000_000):
-            response = self.api(self.no_statement).patch(
+            response = self.api(self.no_opening_writer).patch(
                 self.url(self.statement_path), self.correction(opening_balance=value),
                 format="json")
 
@@ -192,7 +222,7 @@ class BankStatementAccessTests(_BankRestating):
         }
         url = self.url(path, self.solo_books)
 
-        refused = self.api(self.solo_no_statement).patch(
+        refused = self.api(self.solo_no_opening_writer).patch(
             url, {**body, "opening_balance": 100_000}, format="json")
         kept = self.api(self.solo_no_statement).patch(url, body, format="json")
 
@@ -300,7 +330,10 @@ class BankLedgerAccountAccessTests(_BankRestating):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
+        install_declared_fields("finance.account")
         cls.open = cls.who()
+        cls.no_account_balance = cls.who(hide_account=("balance",))
+        cls.no_account_activity = cls.who(hide_account=("activity",))
         cls.no_book = cls.who(hide=("book_balance",))
         cls.no_link = cls.who(hide=("ledger_account",))
         cls.ikeja_no_book = cls.who(hide=("book_balance",), branch=cls.ikeja)
@@ -332,6 +365,27 @@ class BankLedgerAccountAccessTests(_BankRestating):
         self.assertIn("bank_account_id", chart["1151"])
         self.assertEqual(chart["3100"]["balance"]["kobo"], 7_000_000)
 
+    def test_the_account_balance_switch_covers_chart_detail_and_activity(self):
+        chart = self.chart(self.no_account_balance)
+        detail = self.data(self.no_account_balance, f"accounts/{self.capital.pk}/")
+        activity = self.get(
+            self.no_account_balance, f"accounts/{self.capital.pk}/activity/").data
+
+        self.assertNotIn("balance", chart["3100"])
+        self.assertNotIn("current_balance", detail["summary"])
+        self.assertNotIn("debit", detail["activity"][0])
+        self.assertNotIn("totals", activity)
+        self.assertNotIn("credit", activity["data"][0])
+
+    def test_the_account_activity_switch_removes_both_read_paths(self):
+        detail = self.data(self.no_account_activity, f"accounts/{self.capital.pk}/")
+        activity = self.get(
+            self.no_account_activity, f"accounts/{self.capital.pk}/activity/").data
+
+        self.assertNotIn("activity", detail)
+        self.assertEqual(activity["data"], [])
+        self.assertEqual(activity["pagination"]["totalItems"], 0)
+
     def test_a_branch_bound_reader_follows_the_same_switch(self):
         chart = self.chart(self.ikeja_no_book)
 
@@ -352,7 +406,8 @@ class BankLedgerAccountAccessTests(_BankRestating):
         self.assertTrue(hidden["activity"])
         for row in hidden["activity"]:
             self.assertNotIn("running_balance", row)
-            self.assertIn("debit", row)
+            self.assertNotIn("debit", row)
+            self.assertNotIn("credit", row)
         self.assertNotIn("bank_account_id", self.data(self.no_link, path)["account"])
 
     def test_an_ordinary_account_detail_keeps_its_balances(self):
@@ -390,6 +445,7 @@ class BankLedgerAccountAccessTests(_BankRestating):
         shown = self.data(self.open, path)["summary"]
         hidden = self.data(self.no_book, path)["summary"]
         branch_bound = self.data(self.ikeja_no_book, path)["summary"]
+        self.assertNotIn("balance", self.chart(self.no_book)["1190"])
 
         self.assertEqual(shown["current_balance"]["kobo"], 7_000_000)
         self.assertIn("opening_balance", shown)

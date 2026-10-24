@@ -791,6 +791,16 @@ class TheMapAUserIsHandedTests(_Enforcement):
         )
         self.assertTrue(alias.sensitive)
 
+    def test_a_write_alias_follows_its_fields_create_rule(self):
+        aliases = {"fenf.vendor": {"opened_date": "fenf.vendor.opened_on",
+                                   "contact_phone": "fenf.vendor.phone"}}
+        with mock.patch("vs_rbac.field_enforcement._write_aliases", return_value=aliases):
+            entry = field_access_payload(_fresh(self.user), self.tenant)["fenf.vendor"]
+        self.assertIn("opened_date", entry["read_only"])
+        self.assertIn("opened_date", entry["open_on_create"])
+        self.assertIn("contact_phone", entry["read_only"])
+        self.assertNotIn("contact_phone", entry["open_on_create"])
+
 
 class HiddenButOpenOnCreateTests(_Enforcement):
     """A field the caller cannot read, but may set while creating the record.
