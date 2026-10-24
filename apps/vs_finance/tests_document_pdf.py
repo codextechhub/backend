@@ -208,6 +208,22 @@ class ReceiptPdfIsTheTemplateTests(_DocumentFixture, TestCase):
 
         self.assertIn("Thank you, Mrs Bello", html)
 
+    def test_a_balance_still_owing_is_labelled_dr(self, _logo):
+        from vs_finance.pdf import receipt_pdf
+
+        html = self.rendered_html(receipt_pdf, self.pay(40000))
+
+        self.assertIn("Account balance after this payment", html)
+        self.assertIn("\u20a6675.00 owing", html)
+
+    def test_a_balance_in_credit_is_labelled_cr_with_no_minus_sign(self, _logo):
+        from vs_finance.pdf import receipt_pdf
+
+        html = self.rendered_html(receipt_pdf, self.pay(200000))
+
+        self.assertIn("in credit", html)
+        self.assertNotIn("\u20a6-", html)
+
 
 @mock.patch("vs_finance.pdf._embedded_logo", return_value="")
 class StatementPdfIsTheTemplateTests(_DocumentFixture, TestCase):

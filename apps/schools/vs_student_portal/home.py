@@ -80,19 +80,20 @@ def attendance_block(student) -> dict:
 
 
 def _fees(student) -> dict:
-    """The balance, whether it is owed, and the invoice falling due first."""
-    from .fees import fee_summary
+    """What is owed, the credit held, the status, and the invoice falling due first."""
+    from .fees import fee_summary, position_status
 
     summary = fee_summary(student)
-    balance = summary["balance"]
     open_invoices = sorted(
         (row for row in summary["invoices"] if row["balance"] > 0),
         key=lambda row: (row["due_date"] is None, row["due_date"] or row["invoice_date"]),
     )
     first = open_invoices[0] if open_invoices else None
     return {
-        "balance": balance,
-        "status": "OWING" if balance > 0 else ("IN_CREDIT" if balance < 0 else "CLEAR"),
+        "owing": summary["owing"],
+        "credit": summary["credit"],
+        "balance": summary["balance"],
+        "status": position_status(summary["owing"], summary["credit"]),
         "open_invoice": (
             {
                 key: first[key]

@@ -70,10 +70,10 @@
   .inv-ref{ font-weight:700; color:var(--accent); }
   .it-sub{ color:var(--muted); font-size:10px; }
 
-  .after{ display:flex; justify-content:flex-end; margin-top:14px; }
-  .after-box{ background:var(--navy); color:#fff; padding:11px 16px; display:flex; gap:18px; align-items:center; }
-  .after-box .lbl{ font-family:var(--label); font-size:10px; letter-spacing:1.5px; text-transform:uppercase; opacity:.85; }
-  .after-box .amt{ font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .after{ margin-top:14px; text-align:right; }
+  .after-box{ display:inline-block; background:var(--navy); color:#fff; padding:11px 16px; white-space:nowrap; text-align:left; }
+  .after-box .lbl{ display:inline-block; vertical-align:middle; margin-right:18px; font-family:var(--label); font-size:10px; letter-spacing:1.5px; text-transform:uppercase; opacity:.85; }
+  .after-box .amt{ display:inline-block; vertical-align:middle; font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
 
   .footer{ margin-top:auto; padding-top:18px; border-top:2px solid var(--navy);
     display:flex; justify-content:space-between; align-items:flex-end; gap:24px; }
@@ -186,7 +186,7 @@
 
   <div class="after">
     <div class="after-box">
-      <span class="lbl">Customer balance after payment</span>
+      <span class="lbl">Account balance after this payment</span>
       <span class="amt">{{ receipt.customer_balance_after }}</span>
     </div>
   </div>

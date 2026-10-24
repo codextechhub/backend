@@ -492,12 +492,17 @@ class DebitNoteView:
 
 @dataclass(frozen=True)
 class FeeStatus:
-    """A student's read-only fee position, for the student portal.
+    """A student's read-only fee position, for the student and parent portals.
 
-    ``balance`` is the family account's net position in the books (open bills
-    and debit notes, less unused credit; negative means in credit), and
-    ``total_billed`` and ``total_paid`` count bills and debit notes alike, so
-    a reader can see what made up the balance.
+    ``owing`` is what is still to pay on open bills and debit notes, gross: it is
+    never reduced by credit, so an unpaid bill always shows as owed. ``credit``
+    is the unused credit the school holds for the family's AR accounts across
+    the whole entity. ``balance`` is the net of the two (``owing - credit``;
+    negative means in credit), kept for readers that want one figure. A screen
+    that asks "what must be paid" reads ``owing``.
+
+    ``total_billed`` and ``total_paid`` count bills and debit notes alike, so a
+    reader can see what made up ``owing``.
     """
 
     student_ref: StudentRef
@@ -506,6 +511,8 @@ class FeeStatus:
     total_paid: Kobo
     invoices: tuple[InvoiceView, ...]
     debit_notes: tuple[DebitNoteView, ...] = ()
+    owing: Kobo = 0
+    credit: Kobo = 0
 
 
 @dataclass(frozen=True)

@@ -96,7 +96,9 @@ class HomeView(PortalView):
     """GET /v1/portal/student/home/
 
     The pupil's home in one read: today's classes with now / next / done,
-    today's attendance mark and the term's rate, the fee balance and the
+    today's attendance mark and the term's rate, the fees (``owing``, the
+    ``credit`` held, ``balance`` as owing less credit, and a status of
+    ``OWING`` / ``IN_CREDIT`` / ``CLEAR`` where owing wins) and the
     invoice falling due first, the newest notice with the unread count, and
     the unread notification count. Each block carries ``available``; one that
     cannot be read answers ``false`` with a sentence to show, never a zero,
@@ -382,7 +384,9 @@ class ReportCardView(PortalView):
 class FeesView(PortalView):
     """GET /v1/portal/student/fees/
 
-    The pupil's balance, what was billed and paid, and each invoice with its
+    What the pupil owes on open bills and debit notes (``owing``, never
+    reduced by credit), the ``credit`` held, ``balance`` as owing less credit,
+    what was billed and paid, and each invoice with its
     number, title, dates, lines and status, all in kobo; ``can_pay`` and
     ``min_part_payment`` are the school's rules for paying here. 503
     ``FINANCE_UNAVAILABLE`` when the books cannot be read, never a zero.

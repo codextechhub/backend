@@ -163,12 +163,44 @@ def invoice_row(invoice) -> dict:
     }
 
 
-def fee_summary(student) -> dict:
-    """The pupil's balance, invoices and debit notes, and whether they may pay.
+def debit_note_row(note) -> dict:
+    """One debit note as the portals show it: number, date, reason, amounts, status."""
+    status = _status(note)
+    return {
+        "note_ref": note.note_ref,
+        "number": note.document_number,
+        "date": note.note_date,
+        "reason": note.reason,
+        "total": note.amount_due,
+        "paid": note.amount_paid,
+        "balance": note.balance,
+        "status": status,
+        "status_label": STATUS_LABEL.get(status, status),
+    }
 
-    A debit note is a charge added after a bill. It counts in the balance and
-    the totals like a bill, and it is listed beside the bills so the balance can
-    be accounted for. It cannot be paid by card from here (a card payment names
+
+def position_status(owing: int, credit: int) -> str:
+    """``OWING`` while anything is owed, else ``IN_CREDIT`` while credit is held, else ``CLEAR``.
+
+    Owing wins over credit: a child with an unpaid bill is never "paid up",
+    however much credit the school also holds for the family.
+    """
+    if owing > 0:
+        return "OWING"
+    return "IN_CREDIT" if credit > 0 else "CLEAR"
+
+
+def fee_summary(student) -> dict:
+    """The pupil's owing, credit, invoices and debit notes, and whether they may pay.
+
+    ``owing`` is what is still to pay on open bills and debit notes, never
+    reduced by credit. ``credit`` is the unused credit the school holds for the
+    family, shown beside it. ``balance`` is the net of the two (``owing`` less
+    ``credit``) and is kept for readers that want one figure.
+
+    A debit note is a charge added after a bill. It counts in ``owing`` and the
+    totals like a bill, and it is listed beside the bills so the figure can be
+    accounted for. It cannot be paid by card from here (a card payment names
     one invoice); a transfer into the pupil's account number settles it.
     """
     result = registry.get_finance_reader().fee_status(_ref(student))
@@ -177,24 +209,13 @@ def fee_summary(student) -> dict:
     status = result.value
     rules = read_student_payment_rules(student.tenant)
     return {
+        "owing": status.owing,
+        "credit": status.credit,
         "balance": status.balance,
         "total_billed": status.total_billed,
         "total_paid": status.total_paid,
         "invoices": [invoice_row(invoice) for invoice in status.invoices],
-        "debit_notes": [
-            {
-                "note_ref": note.note_ref,
-                "number": note.document_number,
-                "date": note.note_date,
-                "reason": note.reason,
-                "total": note.amount_due,
-                "paid": note.amount_paid,
-                "balance": note.balance,
-                "status": _status(note),
-                "status_label": STATUS_LABEL.get(_status(note), _status(note)),
-            }
-            for note in status.debit_notes
-        ],
+        "debit_notes": [debit_note_row(note) for note in status.debit_notes],
         "can_pay": rules.enabled,
         "min_part_payment": rules.min_part_payment,
     }

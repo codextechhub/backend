@@ -75,6 +75,90 @@ class _FeesFixture(FALFixture):
         url = reverse("student-portal-pay", kwargs={"invoice_ref": (invoice or self.tunde_invoice).pk})
         return self.as_pupil().post(url, {"amount": amount}, format="json")
 
+def hold_credit(books, customer_ref, amount, *, branch_id=None):
+    """A posted receipt that settles nothing, so the school holds it as the family's credit."""
+    from vs_config.clock import tenant_today
+    from vs_finance.models import Account, Customer, Payment
+    from vs_finance.receivables import post_payment
+
+    customer = Customer.objects.get(pk=customer_ref)
+    payment = Payment.objects.create(
+        entity_id=books.entity_ref, customer=customer,
+        payment_date=tenant_today(customer.entity.tenant),
+        branch_id=branch_id or customer.branch_id, amount=amount,
+        deposit_account=Account.objects.get(entity_id=books.entity_ref, code="1100"),
+    )
+    post_payment(payment, allocations=[], auto_allocate=False)
+    return payment
+
+
+class OwingAndCreditTests(_FeesFixture):
+    """Credit is shown beside what is owed and never hides an unpaid bill.
+
+    Tunde owes ₦3,000.00 on his term bill while the school holds ₦4,500.00 of
+    his credit: the headline reads OWING ₦3,000.00 with the credit alongside,
+    where a single netted figure used to read "in credit".
+    """
+
+    def fees(self):
+        return self.as_pupil().get(reverse("student-portal-fees")).data["data"]
+
+    def home_fees(self):
+        response = self.as_pupil().get(reverse("student-portal-home"))
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]["fees"]
+
+    def test_an_open_bill_beside_larger_credit_still_reads_owing(self):
+        hold_credit(self.corona_books, self.tunde_invoice.customer_id, 450_000)
+        data = self.fees()
+        self.assertEqual((data["owing"], data["credit"], data["balance"]), (300_000, 450_000, -150_000))
+        self.assertEqual(data["owing"] - data["credit"], data["balance"])
+        home = self.home_fees()
+        self.assertEqual((home["owing"], home["credit"], home["balance"]), (300_000, 450_000, -150_000))
+        self.assertEqual(home["status"], "OWING")
+        self.assertEqual(home["open_invoice_count"], 1)
+
+    def test_credit_held_at_another_branch_does_not_net_off_the_bill(self):
+        hold_credit(
+            self.corona_books, self.tunde_invoice.customer_id, 300_000, branch_id=self.lekki.pk,
+        )
+        home = self.home_fees()
+        self.assertEqual((home["owing"], home["credit"], home["balance"]), (300_000, 300_000, 0))
+        self.assertEqual(home["status"], "OWING")
+
+    def test_credit_with_nothing_owed_reads_in_credit(self):
+        FALFixture.pay(self.corona_books, self.bola_invoice.customer_id, 300_000, invoice=self.bola_invoice)
+        hold_credit(self.corona_books, self.bola_invoice.customer_id, 80_000)
+        bola = TenantAPIClient(give_access(self.bola, "COR/002"))
+        home = bola.get(reverse("student-portal-home")).data["data"]["fees"]
+        self.assertEqual((home["owing"], home["credit"], home["balance"]), (0, 80_000, -80_000))
+        self.assertEqual(home["status"], "IN_CREDIT")
+
+    def test_nothing_owed_and_no_credit_reads_clear(self):
+        FALFixture.pay(self.corona_books, self.tunde_invoice.customer_id, 300_000, invoice=self.tunde_invoice)
+        home = self.home_fees()
+        self.assertEqual((home["owing"], home["credit"], home["balance"], home["status"]), (0, 0, 0, "CLEAR"))
+
+    def test_a_debit_note_counts_in_owing_before_any_credit(self):
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.credit_notes import post_credit_note
+        from vs_finance.models import CreditNote, CreditNoteLine
+
+        note = CreditNote.objects.create(
+            entity=self.tunde_invoice.entity, customer=self.tunde_invoice.customer,
+            branch=self.tunde_invoice.branch, kind=CreditNoteKind.DEBIT,
+            note_date=self.tunde_invoice.invoice_date, reason="Replacement ID card",
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=25_000,
+            revenue_account=self.tunde_invoice.lines.first().revenue_account,
+        )
+        post_credit_note(note)
+        hold_credit(self.corona_books, self.tunde_invoice.customer_id, 100_000)
+        data = self.fees()
+        self.assertEqual((data["owing"], data["credit"], data["balance"]), (325_000, 100_000, 225_000))
+
+
 class PortalFeesTests(_FeesFixture):
     # ── reading ──────────────────────────────────────────────────────────
 

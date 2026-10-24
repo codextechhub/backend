@@ -80,7 +80,7 @@ class ParentHomeTests(ParentBooksFixture):
         self.assertIn("rate", chiamaka["attendance"])
 
         self.assertEqual(data["fees"], {
-            "available": True, "outstanding": 1_000_000, "pay_all_total": 1_000_000,
+            "available": True, "outstanding": 1_000_000, "credit": 0, "pay_all_total": 1_000_000,
         })
         self.assertEqual(data["notifications"], {"available": True, "unread_count": 0})
 
@@ -89,6 +89,28 @@ class ParentHomeTests(ParentBooksFixture):
         self.pay(self.books, self.tobi_tuition.customer_id, 300_000, invoice=self.tobi_tuition)
         tobi = self.home()["children"][1]["fees"]
         self.assertEqual((tobi["balance"], tobi["status"], tobi["open_invoice_count"]), (0, "CLEAR", 0))
+
+    def test_credit_held_never_turns_an_owing_child_into_one_in_credit(self):
+        self.hold_credit(self.books, self.chiamaka_tuition.customer_id, 500_000)
+        self.pay(self.books, self.tobi_levy.customer_id, 50_000, invoice=self.tobi_levy)
+        self.pay(self.books, self.tobi_tuition.customer_id, 300_000, invoice=self.tobi_tuition)
+        self.hold_credit(self.books, self.tobi_tuition.customer_id, 20_000)
+        data = self.home()
+        chiamaka = data["children"][0]["fees"]
+        self.assertEqual((chiamaka["owing"], chiamaka["credit"], chiamaka["balance"]), (350_000, 500_000, -150_000))
+        self.assertEqual((chiamaka["status"], chiamaka["open_invoice_count"], chiamaka["open_charge_count"]), ("OWING", 2, 0))
+        tobi = data["children"][1]["fees"]
+        self.assertEqual((tobi["owing"], tobi["credit"], tobi["status"]), (0, 20_000, "IN_CREDIT"))
+        self.assertEqual(data["fees"], {
+            "available": True, "outstanding": 350_000 + 300_000, "credit": 520_000,
+            "pay_all_total": 650_000,
+        })
+
+    def test_an_open_debit_note_is_counted_as_an_open_charge(self):
+        self.add_charge(self.folu_tuition, 25_000)
+        folu = self.home()["children"][2]["fees"]
+        self.assertEqual((folu["owing"], folu["open_invoice_count"], folu["open_charge_count"]), (325_000, 1, 1))
+        self.assertEqual(folu["status"], "OWING")
 
     def test_notices_name_the_children_each_is_for_and_count_the_unread(self):
         block = self.home()["notices"]

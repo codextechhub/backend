@@ -365,8 +365,12 @@ class FakeFinanceReader(FinanceReadPort):
         return _ok(_page(self._payment_rows, page, page_size))
 
     def fee_status(self, student_ref):
-        return _ok(self._fee_status or FeeStatus(
-            student_ref=student_ref, balance=self._balances.get(student_ref, 0),
+        if self._fee_status is not None:
+            return _ok(self._fee_status)
+        balance = self._balances.get(student_ref, 0)
+        return _ok(FeeStatus(
+            student_ref=student_ref, balance=balance,
+            owing=max(balance, 0), credit=max(-balance, 0),
             total_billed=0, total_paid=0, invoices=(),
         ))
 

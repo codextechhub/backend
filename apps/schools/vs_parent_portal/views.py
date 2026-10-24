@@ -139,11 +139,13 @@ class HomeView(PortalView):
     """GET /v1/portal/parent/home/
 
     The parent's home in one read. For each child: their class, and a block each
-    for attendance (the term's rate and today's mark), fees (balance, status
-    ``OWING`` / ``CLEAR`` / ``IN_CREDIT``, open invoices), results (the latest
+    for attendance (the term's rate and today's mark), fees (``owing`` on open
+    bills and charges, the ``credit`` held, ``balance`` as owing less credit,
+    status ``OWING`` / ``IN_CREDIT`` / ``CLEAR`` where owing wins over credit,
+    and the counts of open invoices and open charges), results (the latest
     released term and its overall average, or none released) and today (the
-    lesson in progress or next). For the family: fees (what is owed in all and
-    the total of paying every open invoice), notices (the newest one, with the
+    lesson in progress or next). For the family: fees (what is owed in all, the
+    credit held, and the total of paying every open invoice), notices (the newest one, with the
     children it is for, and the unread count) and notifications. Every block
     carries ``available``; one that cannot be read answers ``available: false``
     with a sentence and the rest still arrive.
@@ -266,15 +268,22 @@ class ReportCardView(ChildView):
 class FeesView(PortalView):
     """GET /v1/portal/parent/fees/
 
-    Every child's fees: balance, billed, paid and each invoice with its number,
-    title, dates, lines and status, all in kobo. A child whose books cannot be
-    read carries ``available: false`` and a sentence, never zeros. ``combined``
-    sums billed, paid and outstanding across the children, and is itself
-    ``available: false`` while any child cannot be read. ``min_part_payment`` is
+    Every child's fees: ``owing`` (open bills and debit notes, never reduced by
+    credit), ``credit``, ``balance`` (owing less credit), billed, paid, each
+    invoice with its number, title, dates, lines and status, and each debit
+    note, all in kobo. A child whose books cannot be read carries
+    ``available: false`` and a sentence, never zeros. ``combined`` sums billed
+    and paid across the children, ``outstanding`` as the sum of their ``owing``
+    and ``credit`` as the sum of their credit (one child's credit never offsets
+    another's debt), and is itself ``available: false`` while any child cannot
+    be read. ``min_part_payment`` is
     the school's smallest part payment; the whole balance of an invoice may
     always be paid. ``pay_all`` lists one step per open invoice, by child and
     then oldest due date first: the payments engine charges one child's account
     per checkout, so the app runs one checkout for each step in turn.
+    ``pay_all.charges_total`` is what is owed on open debit notes, which no step
+    covers: a card payment names one invoice, so charges are paid by transfer
+    into the child's account.
 
     docstring-name: My children's fees
     """

@@ -72,6 +72,11 @@ def unavailable_sentence(child) -> str:
 def read_child(child) -> dict:
     """One child's fees as the fees screen shows them, available or not.
 
+    ``owing`` is what is still to pay on open bills and debit notes, never
+    reduced by credit; ``credit`` is the unused credit held for the child's
+    accounts; ``balance`` is ``owing`` less ``credit``. Debit notes are listed
+    beside the invoices because they count in ``owing``.
+
     An unreadable child answers ``available: false`` with a sentence, and
     carries no figure at all.
     """
@@ -83,10 +88,13 @@ def read_child(child) -> dict:
     return {
         **head,
         "available": True,
+        "owing": status.owing,
+        "credit": status.credit,
         "balance": status.balance,
         "total_billed": status.total_billed,
         "total_paid": status.total_paid,
         "invoices": [pupil_fees.invoice_row(invoice) for invoice in status.invoices],
+        "debit_notes": [pupil_fees.debit_note_row(note) for note in status.debit_notes],
     }
 
 
@@ -100,23 +108,37 @@ def open_invoices(entry: dict) -> list:
     )
 
 
+def open_charges(entry: dict) -> list:
+    """A readable child's debit notes that still owe something."""
+    return [row for row in entry["debit_notes"] if row["balance"] > 0]
+
+
 def combined(entries: list) -> dict:
-    """The family's billed, paid and outstanding, or the reason there is no total."""
+    """The family's billed, paid, outstanding and credit, or the reason there is no total.
+
+    ``outstanding`` is the sum of the children's ``owing`` and ``credit`` the
+    sum of their credit. They are never netted against each other: one child's
+    credit does not pay another child's bill.
+    """
     if not all(entry["available"] for entry in entries):
         return {"available": False, "message": COMBINED_UNAVAILABLE}
     return {
         "available": True,
         "billed": sum(entry["total_billed"] for entry in entries),
         "paid": sum(entry["total_paid"] for entry in entries),
-        "outstanding": sum(entry["balance"] for entry in entries),
+        "outstanding": sum(entry["owing"] for entry in entries),
+        "credit": sum(entry["credit"] for entry in entries),
     }
 
 
 def pay_all(children, entries: list) -> dict:
     """One step per open invoice, by child as listed and then oldest due date first.
 
-    ``total`` is the sum of the steps. ``complete`` is false while a child's
-    books could not be read, because their invoices are missing from the list.
+    ``total`` is the sum of the steps. ``charges_total`` is what the readable
+    children owe on open debit notes, which no step covers because a card
+    payment names one invoice; a transfer into the child's account settles
+    them. ``complete`` is false while a child's books could not be read,
+    because their invoices are missing from the list.
     """
     steps = []
     for child, entry in zip(children, entries):
@@ -134,6 +156,11 @@ def pay_all(children, entries: list) -> dict:
     return {
         "total": sum(step["amount"] for step in steps),
         "steps": steps,
+        "charges_total": sum(
+            row["balance"]
+            for entry in entries if entry["available"]
+            for row in open_charges(entry)
+        ),
         "complete": all(entry["available"] for entry in entries),
     }
 

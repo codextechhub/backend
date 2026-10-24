@@ -106,6 +106,41 @@ class BooksHelpers:
         return payment
 
 
+    @classmethod
+    def hold_credit(cls, books, customer_ref, amount):
+        """A posted receipt that settles nothing, so the school holds it as the family's credit."""
+        from vs_config.clock import tenant_today
+        from vs_finance.models import Customer, Payment
+        from vs_finance.receivables import post_payment
+
+        customer = Customer.objects.get(pk=customer_ref)
+        payment = Payment.objects.create(
+            entity_id=books.entity_ref, customer=customer,
+            payment_date=tenant_today(customer.entity.tenant), branch_id=customer.branch_id,
+            amount=amount, deposit_account=cls.ledger_account(books.entity_ref, "1100"),
+        )
+        post_payment(payment, allocations=[], auto_allocate=False)
+        return payment
+
+    @classmethod
+    def add_charge(cls, invoice, amount, reason="Replacement ID card"):
+        """A posted debit note on the invoice's customer, the way a school adds a charge after a bill."""
+        from vs_finance.constants import CreditNoteKind
+        from vs_finance.credit_notes import post_credit_note
+        from vs_finance.models import CreditNote, CreditNoteLine
+
+        note = CreditNote.objects.create(
+            entity=invoice.entity, customer=invoice.customer, branch=invoice.branch,
+            kind=CreditNoteKind.DEBIT, note_date=invoice.invoice_date, reason=reason,
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=amount,
+            revenue_account=invoice.lines.first().revenue_account,
+        )
+        post_credit_note(note)
+        return note
+
+
 class UnreadableChildReader(DjangoFinanceReadAdapter):
     """The real finance reader, except that it cannot read the named children's books."""
 

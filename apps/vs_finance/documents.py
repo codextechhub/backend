@@ -22,7 +22,7 @@ from core.media import signed_url
 from vs_config.display import format_date
 
 from .constants import TaxTreatment
-from .money import format_naira, naira_in_words
+from .money import account_balance_words, format_naira, naira_in_words
 from .pay_links import invoice_pay_url
 
 
@@ -239,17 +239,27 @@ def _payment_status_badge(payment_status: str) -> str:
     return "unpaid"  # UNPAID (and overdue+unpaid) both read as 'unpaid'
 
 
-# Compute customer net receivable after current postings.
-def customer_net_after(entity, customer) -> int:
-    """The customer's net AR position (kobo; positive = owes) after current postings.
+def customer_position(entity, customer) -> tuple[int, int]:
+    """The customer's AR position as ``(owing, credit)`` in kobo, from one ledger read.
 
-    Reuses the AR ledger already backing the customer drawer
-    (:func:`vs_finance.views_ar._customer_ledger`): net = outstanding − credit.
+    ``owing`` is the gross unsettled balance of open invoices and debit notes and
+    is never reduced by credit; ``credit`` is the unapplied credit the entity
+    holds for the customer. Both come from the AR ledger already backing the
+    customer drawer (:func:`vs_finance.views_ar._customer_ledger`), whole entity.
     """
     from .views_ar import _customer_ledger
 
     led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
-    return int(led.get("outstanding", 0)) - int(led.get("credit", 0))
+    return int(led.get("outstanding", 0)), int(led.get("credit", 0))
+
+
+def customer_net_after(entity, customer) -> int:
+    """The customer's net AR position (kobo; positive = owes) after current postings.
+
+    Net is owing less credit, as :func:`customer_position` reports them.
+    """
+    owing, credit = customer_position(entity, customer)
+    return owing - credit
 
 
 # --------------------------------------------------------------------------- #
@@ -419,9 +429,9 @@ def receipt_document_context(payment) -> dict:
             "amount_in_words": naira_in_words(payment.amount),  # Display amount in words.
             "allocations": allocations,  # Prepared allocation rows.
             # Frozen at posting; worked out now only for receipts posted before that.
-            "customer_balance_after": format_naira(
+            "customer_balance_after": account_balance_words(
                 payment.customer_balance_after if payment.customer_balance_after is not None
-                else customer_net_after(entity, payment.customer)
+                else customer_net_after(entity, payment.customer),
             ),
             "settled_stamp": "Received",  # Static stamp text for the template.
         },

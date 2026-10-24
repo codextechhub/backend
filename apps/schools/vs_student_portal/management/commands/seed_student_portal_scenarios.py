@@ -495,7 +495,7 @@ class Command(BaseCommand):
                 f"Results {result}"
                 f"{', year-end block' if year.get('cumulative') else ''}; "
                 f"timetable {'published' if timetable(pupil)['published'] else 'unpublished'}; "
-                f"balance ₦{fees['balance'] / 100:,.2f}; "
+                f"owing ₦{fees['owing'] / 100:,.2f}, credit ₦{fees['credit'] / 100:,.2f}; "
                 f"{sum(p['status'] == 'CONFIRMED' for p in payments)} confirmed and "
                 f"{sum(p['status'] != 'CONFIRMED' for p in payments)} pending payments.",
             )

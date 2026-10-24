@@ -597,7 +597,7 @@ def _plain_receipt_pdf(context, *, note: str = "") -> bytes:
                       "applied to a specific invoice.", styles["Muted"]),
         ])
 
-    story.extend([Spacer(1, 4 * mm), _totals([("Account balance", rcp["customer_balance_after"])], styles)])
+    story.extend([Spacer(1, 4 * mm), _totals([("Account balance after this payment", rcp["customer_balance_after"])], styles)])
 
     note_block = _note_block(note, styles)
     if note_block is not None:

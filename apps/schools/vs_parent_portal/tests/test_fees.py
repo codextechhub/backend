@@ -40,6 +40,7 @@ class ParentFeesReadTests(ParentBooksFixture):
         )
         self.assertEqual(data["combined"], {
             "available": True, "billed": 1_000_000, "paid": 0, "outstanding": 1_000_000,
+            "credit": 0,
         })
         self.assertEqual(data["min_part_payment"], 100_000)
         chiamaka = data["children"][0]
@@ -123,7 +124,9 @@ class ParentFeesReadTests(ParentBooksFixture):
         self.assertEqual(data["children"][0]["balance"], 0)
         self.assertEqual(data["children"][0]["invoices"], [])
         self.assertEqual(data["combined"]["outstanding"], 0)
-        self.assertEqual(data["pay_all"], {"total": 0, "steps": [], "complete": True})
+        self.assertEqual(
+            data["pay_all"], {"total": 0, "steps": [], "charges_total": 0, "complete": True},
+        )
 
     def test_the_schools_smallest_part_payment_is_reported(self):
         self.set_config("fees.min_part_payment", 2500)
@@ -131,6 +134,62 @@ class ParentFeesReadTests(ParentBooksFixture):
 
     def test_staff_without_a_child_get_404(self):
         self.assertEqual(self.read(FEES, self.admin).status_code, 404)
+
+
+class ParentOwingAndCreditTests(ParentBooksFixture):
+    """What a family owes is never netted against credit, child by child or across children.
+
+    Mrs. Nwosu's Chiamaka (Lekki) holds ₦5,000.00 of credit while Tobi (Ikeja)
+    owes ₦3,500.00: the family still owes ₦3,500.00, with ₦5,000.00 of credit
+    beside it, where one netted figure used to read "in credit".
+    """
+
+    def fees(self, user=None):
+        response = self.read(FEES, user)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_an_open_bill_beside_larger_credit_reads_owing_with_the_credit_beside_it(self):
+        self.hold_credit(self.books, self.chiamaka_tuition.customer_id, 500_000)
+        chiamaka = self.fees()["children"][0]
+        self.assertEqual((chiamaka["owing"], chiamaka["credit"]), (350_000, 500_000))
+        self.assertEqual(chiamaka["balance"], chiamaka["owing"] - chiamaka["credit"])
+        self.assertEqual(chiamaka["balance"], -150_000)
+
+    def test_one_childs_credit_does_not_hide_a_siblings_debt(self):
+        self.pay(self.books, self.chiamaka_tuition.customer_id, 300_000, invoice=self.chiamaka_tuition)
+        self.pay(self.books, self.chiamaka_levy.customer_id, 50_000, invoice=self.chiamaka_levy)
+        self.hold_credit(self.books, self.chiamaka_tuition.customer_id, 500_000)
+        data = self.fees()
+        chiamaka, tobi, folu = data["children"]
+        self.assertEqual((chiamaka["owing"], chiamaka["credit"]), (0, 500_000))
+        self.assertEqual((tobi["owing"], tobi["credit"]), (350_000, 0))
+        self.assertEqual(data["combined"]["outstanding"], 350_000 + 300_000)
+        self.assertEqual(data["combined"]["credit"], 500_000)
+        self.assertEqual(data["combined"]["paid"], 350_000)
+
+    def test_a_debit_note_is_listed_and_counts_in_owing_but_not_in_pay_all_steps(self):
+        note = self.add_charge(self.tobi_tuition, 25_000)
+        data = self.fees()
+        tobi = data["children"][1]
+        self.assertEqual(tobi["owing"], 375_000)
+        [charge] = tobi["debit_notes"]
+        self.assertEqual(charge["note_ref"], note.pk)
+        self.assertEqual(charge["number"], note.document_number)
+        self.assertEqual(charge["reason"], "Replacement ID card")
+        self.assertEqual((charge["total"], charge["paid"], charge["balance"]), (25_000, 0, 25_000))
+        self.assertEqual(charge["status_label"], "Owing")
+        self.assertEqual(data["children"][0]["debit_notes"], [])
+        self.assertEqual(data["combined"]["outstanding"], 1_025_000)
+        self.assertEqual(data["pay_all"]["total"], 1_000_000)
+        self.assertEqual(data["pay_all"]["charges_total"], 25_000)
+        self.assertEqual(len(data["pay_all"]["steps"]), 5)
+
+    def test_a_single_branch_school_reports_the_same_shape(self):
+        data = self.fees(self.ade_user)
+        bola = data["children"][0]
+        self.assertEqual((bola["owing"], bola["credit"], bola["balance"], bola["debit_notes"]), (0, 0, 0, []))
+        self.assertEqual(data["combined"]["credit"], 0)
 
 
 class ParentHistoryTests(ParentBooksFixture):

@@ -78,6 +78,27 @@ def format_naira(kobo: int, *, symbol: str = "₦") -> str:
     return f"{symbol}{to_naira(kobo):,.2f}"  # Add symbol, thousands separators, and 2 decimals.
 
 
+def account_balance_words(kobo: int) -> str:
+    """A customer's net account balance written by its side, never by a sign.
+
+    ``kobo`` is the net position, positive when the customer owes and negative
+    when they are in credit. A minus sign alone does not say which, so the side
+    is named in words. A zero balance has no side and is the bare amount.
+
+    >>> account_balance_words(10000000)
+    '₦100,000.00 owing'
+    >>> account_balance_words(-2000000)
+    '₦20,000.00 in credit'
+    >>> account_balance_words(0)
+    '₦0.00'
+    """
+    if kobo == 0:  # Nothing on either side.
+        return format_naira(0)
+    if kobo > 0:  # The customer owes.
+        return f"{format_naira(kobo)} owing"
+    return f"{format_naira(-kobo)} in credit"  # The school owes the customer.
+
+
 _ONES = (  # English words for values from 0 through 19.
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",  # Single digits.
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",  # Ten through sixteen.

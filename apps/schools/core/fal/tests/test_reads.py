@@ -289,7 +289,26 @@ class PerStudentViewTests(_ReadFixture):
         self.assertEqual(status.total_billed, 300_000)
         self.assertEqual(status.total_paid, 150_000)
         self.assertEqual(status.balance, 150_000)
+        self.assertEqual((status.owing, status.credit), (150_000, 0))
         self.assertEqual(len(status.invoices), 1)
+
+    def test_credit_beside_an_open_bill_is_reported_apart_and_never_nets_it_off(self):
+        from vs_config.clock import tenant_today
+        from vs_finance.models import Customer, Payment
+        from vs_finance.receivables import post_payment
+
+        customer = Customer.objects.get(pk=self.tunde.customer_ref)
+        payment = Payment.objects.create(
+            entity_id=self.corona_books.entity_ref, customer=customer,
+            payment_date=tenant_today(customer.entity.tenant), branch_id=customer.branch_id,
+            amount=200_000, deposit_account=self.account(self.corona_books.entity_ref, "1100"),
+        )
+        post_payment(payment, allocations=[], auto_allocate=False)
+
+        status = self.reader.fee_status("stu-tunde").unwrap()
+
+        self.assertEqual((status.owing, status.credit, status.balance), (150_000, 200_000, -50_000))
+        self.assertEqual(status.balance, status.owing - status.credit)
 
     def debit(self, customer_ref, amount, reason):
         """A posted charge added to the account after its bill, as Finance raises one."""
@@ -316,6 +335,7 @@ class PerStudentViewTests(_ReadFixture):
         self.assertEqual(status.total_billed, 325_000)
         self.assertEqual(status.total_paid, 150_000)
         self.assertEqual(status.balance, 175_000)
+        self.assertEqual(status.owing, 175_000)
         [note] = status.debit_notes
         self.assertEqual((note.reason, note.amount_due, note.amount_paid, note.balance), ("Replacement ID card", 25_000, 0, 25_000))
         self.assertEqual(note.status.value, "UNPAID")
@@ -326,7 +346,7 @@ class PerStudentViewTests(_ReadFixture):
 
         status = self.reader.fee_status("stu-tunde").unwrap()
 
-        self.assertEqual(status.balance, 0)
+        self.assertEqual((status.balance, status.owing, status.credit), (0, 0, 0))
         self.assertEqual(status.total_paid, status.total_billed)
         self.assertEqual(status.debit_notes[0].status.value, "PAID")
 
@@ -353,6 +373,7 @@ class PerStudentViewTests(_ReadFixture):
         self.assertEqual(status.total_billed, 0)
         self.assertEqual(status.total_paid, 0)
         self.assertEqual(status.balance, -350_000)
+        self.assertEqual((status.owing, status.credit), (0, 350_000))
         self.assertEqual(status.invoices, ())
 
     def test_a_child_who_has_never_been_billed_reads_as_zero_not_missing(self):
@@ -360,6 +381,7 @@ class PerStudentViewTests(_ReadFixture):
 
         self.assertTrue(result.is_available)
         self.assertEqual(result.value.balance, 0)
+        self.assertEqual((result.value.owing, result.value.credit), (0, 0))
         self.assertEqual(result.value.invoices, ())
 
     def test_invoices_carry_their_lines(self):

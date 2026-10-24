@@ -83,15 +83,19 @@ def _today(child) -> dict:
 
 
 def _fees(child, reads: _FeeReads) -> dict:
-    """The child's balance, whether it is owed, and how many invoices are open."""
+    """What the child owes, the credit held, the status, and how many bills and charges are open."""
+    from schools.vs_student_portal.fees import position_status
+
     entry = reads.entry(child)
     if not entry["available"]:
         raise FinanceUnavailable()
-    balance = entry["balance"]
     return {
-        "balance": balance,
-        "status": "OWING" if balance > 0 else ("IN_CREDIT" if balance < 0 else "CLEAR"),
+        "owing": entry["owing"],
+        "credit": entry["credit"],
+        "balance": entry["balance"],
+        "status": position_status(entry["owing"], entry["credit"]),
         "open_invoice_count": len(parent_fees.open_invoices(entry)),
+        "open_charge_count": len(parent_fees.open_charges(entry)),
     }
 
 
@@ -134,13 +138,17 @@ def _child(child, enrolment, reads: _FeeReads) -> dict:
 
 
 def _family_fees(reads: _FeeReads) -> dict:
-    """The family's outstanding balance and the total of its pay-all steps."""
+    """What the family owes, the credit it holds, and the total of its pay-all steps."""
     entries = reads.entries()
     total = parent_fees.combined(entries)
     if not total["available"]:
         raise FinanceUnavailable()
     steps = parent_fees.pay_all(reads.children, entries)
-    return {"outstanding": total["outstanding"], "pay_all_total": steps["total"]}
+    return {
+        "outstanding": total["outstanding"],
+        "credit": total["credit"],
+        "pay_all_total": steps["total"],
+    }
 
 
 def _notices(children, user) -> dict:

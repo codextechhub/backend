@@ -68,7 +68,7 @@ class PortalCollectionTests(_PaymentsFixtureMixin, TestCase):
 
         context = receipt_document_context(payment)
         self.assertEqual(context["receipt"]["allocations"][0]["invoice_balance_after"], "₦30,000.00")
-        self.assertEqual(context["receipt"]["customer_balance_after"], "₦30,000.00")
+        self.assertEqual(context["receipt"]["customer_balance_after"], "₦30,000.00 owing")
 
     def test_a_receipt_from_before_the_balance_was_recorded_reads_todays(self):
         entity, customer, _ = self.build()

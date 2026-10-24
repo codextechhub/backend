@@ -358,9 +358,10 @@ class Command(BaseCommand):
         return lines
 
     def _balance(self, pupil):
+        """What the pupil owes on open bills and charges (never net of credit), or ``None`` without books."""
         from schools.vs_student_portal.fees import fee_summary
 
-        return fee_summary(pupil)["balance"] if self.books else None
+        return fee_summary(pupil)["owing"] if self.books else None
 
     def _has_released_result(self, pupil) -> bool:
         from schools.vs_student_portal.results import term_choices

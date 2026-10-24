@@ -52,7 +52,7 @@ class PortalHomeTests(PortalReadsFixture):
         super().setUp()
         self.addCleanup(fal_registry.reset)
         fal_registry.set_finance_reader(FakeFinanceReader(fee_status=FeeStatus(
-            student_ref=str(self.chiamaka.pk), balance=4_500_000,
+            student_ref=str(self.chiamaka.pk), balance=4_500_000, owing=4_500_000,
             total_billed=5_500_000, total_paid=1_000_000,
             invoices=(
                 _invoice(11, "Second Term tuition", 5_000_000, 1_000_000, dt.date(2025, 11, 30)),
