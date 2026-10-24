@@ -590,12 +590,13 @@ def register():
                       sort_order=40, api_names=("amount", "amount_naira")),
             FieldSpec("bank_account", "Paid from bank account", group="Banking",
                       scope=_TENANT, sort_order=50,
-                      api_names=("bank_account", "bank_account_id")),
+                      api_names=("bank_account_id",)),
             FieldSpec("reference", "Reference", group="Details", scope=_TENANT,
                       sort_order=60),
             FieldSpec("narration", "Narration", group="Details", scope=_TENANT,
                       sort_order=70),
         ),
+        write_aliases={"bank_account": "bank_account"},
     )
     register_fields(
         "finance", "concession",
