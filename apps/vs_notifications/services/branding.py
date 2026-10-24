@@ -39,12 +39,21 @@ def email_sender_name(tenant) -> str:
 
 
 def email_brand_context(tenant) -> dict[str, str]:
-    """Return the trusted product name and public logo URL for one audience."""
+    """Return the trusted product name, public logo URL and header style for one audience.
+
+    ``email_mark_only`` is true when the product signs the header with its mark
+    alone: a school's email shows its crest with nothing beside it, while the
+    footer still names the product.
+    """
     override = _product_override(tenant)
     name = str(override.get("email_brand") or "").strip()
     logo_url = brand_logo_from_context(override)
     if name and logo_url:
-        return {"email_brand": name, "brand_logo_url": logo_url}
+        return {
+            "email_brand": name,
+            "brand_logo_url": logo_url,
+            "email_mark_only": bool(override.get("email_mark_only")),
+        }
 
     from vs_config.platform_settings import get_platform_profile
 
@@ -58,4 +67,5 @@ def email_brand_context(tenant) -> dict[str, str]:
         "brand_logo_url": logo_url or brand_logo_from_context(
             {"brand_logo_url": profile.get("logo_url") or default_logo_url}
         ),
+        "email_mark_only": False,
     }

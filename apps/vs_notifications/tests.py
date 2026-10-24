@@ -408,11 +408,14 @@ class DispatchTests(_NotifFixture):
             )
 
         email = Notification.objects.get(id__in=ids, channel=ChannelChoices.EMAIL)
-        self.assertIn("XVS", email.html_body)
+        self.assertIn("Powered by XVS", email.html_body)
+        # A school with no upload: the XVS logo on its own subdomain, because the
+        # bare host serves the product site. The mark stands alone in the header.
         self.assertIn(
-            'src="https://xvs.codexng.com/image/xvs-logo-square.png"',
+            'src="https://alpha-nt.xvs.codexng.com/image/xvs-logo-square.png"',
             email.html_body,
         )
+        self.assertNotIn("Secure notification", email.html_body)
         self.assertNotIn("CodeX Vision", email.html_body)
 
     def test_unregistered_recipient_gets_no_in_app_record(self):

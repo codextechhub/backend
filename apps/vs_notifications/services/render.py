@@ -148,5 +148,6 @@ def render_notification_template(notification_template, context: dict) -> tuple[
         ),
         brand=brand_from_context(context),
         brand_logo_url=brand_logo_from_context(context),
+        mark_only=bool((context or {}).get("email_mark_only")),
     )
     return rendered_subject, rendered_body, rendered_html

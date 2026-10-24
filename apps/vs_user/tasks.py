@@ -40,9 +40,7 @@ import logging
 from math import ceil
 
 from celery import shared_task
-from django.conf import settings
 from django.db import transaction
-from django.urls import reverse
 from django.utils import timezone
 
 from vs_config.display import format_datetime
@@ -86,33 +84,6 @@ def _tenant_display_name(user) -> str:
     if getattr(user.tenant, 'kind', None) == 'PLATFORM':
         return 'CodeX'
     return user.tenant.name
-
-
-def _tenant_logo_url(user) -> str:
-    """The workspace's own logo, absolute, for the header of an email.
-
-    Absolute and public, because neither of the usual routes to a logo works
-    here. There is no request to build a relative path against, and the
-    authenticated /media/ route is no use to a mail client with no session -
-    which is exactly what the public brand route exists for.
-
-    "" when the tenant has no school profile, or the school has uploaded
-    nothing: the email then keeps the platform mark it has always shown.
-    """
-    profile = getattr(user.tenant, 'school_profile', None)
-    if profile is None:
-        return ''
-    branding = getattr(profile, 'branding', None)
-    if branding is None or not getattr(branding, 'logo', None):
-        return ''
-    base = (getattr(settings, 'API_PUBLIC_BASE_URL', '') or '').rstrip('/')
-    if not base:
-        return ''
-    # reverse(), not a literal path. The route is named and owned by another
-    # app; spelling it out here is a copy that goes stale silently, and a logo
-    # that 404s in a mail client shows nothing rather than raising anywhere we
-    # would see it. Resolving the name is not importing the app.
-    return f'{base}{reverse("public-school-logo", args=[profile.slug])}'
 
 
 # =============================================================================
@@ -177,9 +148,6 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
             # standard copy. New standard templates use domain-neutral keys.
             'school_name':     tenant_name,
             'has_school':      bool(profile),
-            # The header mark. A school that has uploaded a logo signs its own
-            # invitations with it; everyone else keeps the platform initials.
-            'brand_logo_url':  _tenant_logo_url(user),
         },
         recipients=registered,
         unregistered_recipients=extras,
@@ -386,7 +354,6 @@ def send_password_reset_email_task(
             'user_first_name': user.first_name,
             'user_email':      user.email or '',
             'tenant_name':     _tenant_display_name(user),
-            'brand_logo_url':  _tenant_logo_url(user),
             'reset_url':       reset_url,
             'expiry_hours':    expiry_hours,
             'expires_at':      expires_at,

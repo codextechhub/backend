@@ -75,6 +75,10 @@ EMAIL_BRAND_PLACEHOLDER = "{{ email_brand }}"
 # stored document keeps both, and dispatch substitutes them per recipient, so a
 # template seeded once still signs itself with each school's own logo.
 EMAIL_BRAND_LOGO_PLACEHOLDER = "{{ brand_logo_url }}"
+# Set true in a render context to sign the header with the mark alone: a
+# school's email shows its crest with nothing beside it, while the footer still
+# names the product. Absent or false keeps the name and "Secure notification".
+EMAIL_MARK_ONLY_FLAG = "email_mark_only"
 
 _FONT = (
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
@@ -155,6 +159,7 @@ def compose_email_html(
     cta_url: str = "",
     brand: str = "",
     brand_logo_url: str = "",
+    mark_only: bool = False,
     as_template: bool = False,
     placeholder_cta: bool = False,
 ) -> str:
@@ -180,6 +185,9 @@ def compose_email_html(
         brand:           Sender name for the header strip. Falls back to the platform.
         brand_logo_url:  Absolute http(s) image for the header mark. Empty, or
                          anything else, leaves the platform's own initials.
+        mark_only:       Show the header mark with nothing beside it. A template
+                         document defers this to ``email_mark_only`` at render
+                         time instead.
         as_template:     Compose a reusable template document (see above).
         placeholder_cta: Keep a non-http destination (a {{ variable }}).
 
@@ -209,6 +217,8 @@ def compose_email_html(
     cta_label = guard.mask(cta_label or "").strip() or f"Open in {brand}"
     headline = _clean(subject) or brand
     mark = _brand_mark_html(brand_logo_url, keep_placeholders=keep_placeholders)
+    mark_fill = _mark_fill(brand_logo_url, keep_placeholders=keep_placeholders)
+    header = _header_text_html(brand, mark_only=mark_only, as_template=as_template)
     content = _blocks_to_html(body or "", skip_url=cta_url)
     button = _button_html(cta_label, cta_url) if cta_url else ""
     brand_text = _text(brand)
@@ -242,15 +252,11 @@ style="width:100%;border-collapse:collapse;">
 <table role="presentation" width="42" cellpadding="0" cellspacing="0" \
 style="width:42px;border-collapse:separate;">
 <tr><td width="42" height="42" align="center" valign="middle" \
-style="width:42px;height:42px;background-color:{_HEADER};border-radius:11px;\
+style="width:42px;height:42px;{mark_fill}border-radius:11px;\
 color:#ffffff;font-size:13px;font-weight:800;letter-spacing:.5px;">{mark}</td></tr>
 </table>
 </td>
-<td valign="middle" style="padding-left:12px;">
-<div style="color:{_INK};font-size:16px;line-height:1.35;font-weight:700;">{brand_text}</div>
-<div style="padding-top:2px;color:{_MUTED};font-size:12px;line-height:1.4;">Secure notification</div>
-</td>
-</tr>
+{header}</tr>
 </table>
 </td></tr>
 <tr><td style="background-color:#ffffff;border:1px solid #dfe5ec;border-radius:16px;\
@@ -287,6 +293,40 @@ Powered by {brand_text}</p>
 """)
 
 
+def _header_text_html(brand: str, *, mark_only: bool, as_template: bool) -> str:
+    """The cell beside the header mark: the sender's name over "Secure notification".
+
+    Left out when the mark stands alone. A template document defers that choice
+    to ``email_mark_only`` when it is rendered, because one stored document
+    serves every audience; a render that never sets it keeps the cell.
+    """
+    cell = (
+        '<td valign="middle" style="padding-left:12px;">\n'
+        f'<div style="color:{_INK};font-size:16px;line-height:1.35;font-weight:700;">{_text(brand)}</div>\n'
+        f'<div style="padding-top:2px;color:{_MUTED};font-size:12px;line-height:1.4;">'
+        "Secure notification</div>\n</td>\n"
+    )
+    if as_template:
+        return f"{{% if not {EMAIL_MARK_ONLY_FLAG} %}}{cell}{{% endif %}}"
+    return "" if mark_only else cell
+
+
+def _mark_fill(logo_url: str, *, keep_placeholders: bool = False) -> str:
+    """The header square's fill: white behind a logo, navy behind the initials.
+
+    A school crest is usually drawn for a light page, so a dark square would
+    swallow it.
+    """
+    logo_fill = "background-color:#ffffff;border:1px solid #dfe5ec;"
+    initials_fill = f"background-color:{_HEADER};"
+    url = (logo_url or "").strip()
+    if keep_placeholders and _is_placeholder(url):
+        return f"{{% if brand_logo_url %}}{logo_fill}{{% else %}}{initials_fill}{{% endif %}}"
+    if url.lower().startswith(("http://", "https://")):
+        return logo_fill
+    return initials_fill
+
+
 # What sits in the 42px header square: a school's own logo, or the platform's
 # initials.
 def _brand_mark_html(logo_url: str, *, keep_placeholders: bool = False) -> str:
@@ -318,7 +358,7 @@ def _brand_mark_html(logo_url: str, *, keep_placeholders: bool = False) -> str:
             "{% if brand_logo_url %}"
             f'<img src="{url}" width="42" height="42" alt="" '
             'style="display:block;width:42px;height:42px;border-radius:11px;'
-            'object-fit:cover;border:0;">'
+            'object-fit:contain;border:0;">'
             "{% else %}CX{% endif %}"
         )
 
@@ -327,7 +367,7 @@ def _brand_mark_html(logo_url: str, *, keep_placeholders: bool = False) -> str:
     return (
         f'<img src="{_attr(url)}" width="42" height="42" alt="" '
         'style="display:block;width:42px;height:42px;border-radius:11px;'
-        'object-fit:cover;border:0;">'
+        'object-fit:contain;border:0;">'
     )
 
 

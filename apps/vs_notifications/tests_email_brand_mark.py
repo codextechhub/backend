@@ -74,12 +74,13 @@ class ProductEmailBrandTests(TestCase):
     def test_xvs_mail_uses_the_product_logo_for_its_tenant(self):
         from vs_notifications.services.branding import email_brand_context
 
-        context = email_brand_context(SimpleNamespace(kind="SCHOOL"))
+        context = email_brand_context(SimpleNamespace(kind="SCHOOL", slug="bright-star", name="Bright Star"))
 
         self.assertEqual(context["email_brand"], "XVS")
+        # On the school's own subdomain: the bare host serves the product site.
         self.assertEqual(
             context["brand_logo_url"],
-            "https://xvs.codexng.com/image/xvs-logo-square.png",
+            "https://bright-star.xvs.codexng.com/image/xvs-logo-square.png",
         )
 
 
@@ -172,31 +173,27 @@ class StoredTemplateMarkTests(TestCase):
         self.assertNotIn('src=""', cell)
 
 
-class TenantLogoUrlTests(TestCase):
-    """What the caller puts in the context, and when it puts nothing.
+@override_settings(SCHOOL_APP_BASE_URL="https://xvs.codexng.com")
+class SchoolEmailIdentityTests(TestCase):
+    """The identity the school product gives its own people's email.
 
-    Lives here rather than in vs_user because it is the other half of the same
-    behaviour: this engine deliberately does not know what a school is, so the
-    URL has to be built by a caller that does, and the two halves are only
-    correct together.
+    Lives here rather than beside the adapter because it is the other half of
+    the same behaviour: this engine deliberately does not know what a school
+    is, so the logo and the header style come from the product's provider.
     """
 
-    def setUp(self):
-        from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.tests.helpers import make_school
 
-        self.school = make_school(slug="holy-cross", name="Holy Cross College")
-        self.branch = make_branch(self.school)
-        self.user = make_school_admin(self.branch, email="mark@holy-cross.test")
+        cls.school = make_school(slug="holy-cross", name="Holy Cross College")
 
-    def logo_url(self):
-        from vs_user.tasks import _tenant_logo_url
+    def identity(self):
+        from schools.core.fal.notification_branding import email_brand_for_tenant
 
-        return _tenant_logo_url(self.user)
+        return email_brand_for_tenant(self.school.tenant)
 
-    def test_nothing_when_the_school_has_uploaded_no_logo(self):
-        self.assertEqual(self.logo_url(), "")
-
-    def test_the_public_route_when_it_has(self):
+    def upload_logo(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         from schools.vs_schools.models import SchoolBranding
 
@@ -206,27 +203,88 @@ class TenantLogoUrlTests(TestCase):
         )
         branding.save()
 
-        url = self.logo_url()
+    def test_the_school_signs_the_header_with_its_mark_alone(self):
+        identity = self.identity()
+        self.assertTrue(identity["email_mark_only"])
+        self.assertEqual(identity["sender_name"], "Holy Cross College")
+        self.assertEqual(identity["email_brand"], "XVS")
+
+    def test_the_schools_own_logo_at_its_public_route(self):
+        self.upload_logo()
+        url = self.identity()["brand_logo_url"]
         # The public route, not /media/: a mail client has no session, and the
         # signed media route refuses an unauthenticated read.
         self.assertTrue(url.endswith("/v1/i/public/schools/holy-cross/logo/"), url)
-        self.assertNotIn("/media/", url)
         self.assertTrue(url.startswith("http"), "an email needs an absolute URL")
 
-    def test_nothing_when_no_api_base_is_configured(self):
-        """Rather than a relative path a mail client cannot resolve."""
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        from django.test import override_settings
-        from schools.vs_schools.models import SchoolBranding
-
-        branding = SchoolBranding(school=self.school)
-        branding.logo = SimpleUploadedFile(
-            "crest.png", b"\x89PNG\r\n\x1a\n-bytes", content_type="image/png",
+    def test_without_an_upload_the_xvs_logo_on_the_schools_own_address(self):
+        """The bare school-app host serves the product site, which has no such file."""
+        self.assertEqual(
+            self.identity()["brand_logo_url"],
+            "https://holy-cross.xvs.codexng.com/image/xvs-logo-square.png",
         )
-        branding.save()
 
+    def test_without_an_api_address_the_xvs_logo_rather_than_a_relative_path(self):
+        self.upload_logo()
         with override_settings(API_PUBLIC_BASE_URL=""):
-            self.assertEqual(self.logo_url(), "")
+            url = self.identity()["brand_logo_url"]
+        self.assertTrue(url.endswith("/image/xvs-logo-square.png"), url)
+
+    def test_the_platform_keeps_its_own_identity(self):
+        from schools.core.fal.notification_branding import email_brand_for_tenant
+
+        self.assertEqual(email_brand_for_tenant(SimpleNamespace(kind="PLATFORM")), {})
+
+
+class MarkOnlyHeaderTests(TestCase):
+    """A school's email shows its crest with nothing beside it; CodeX keeps its name."""
+
+    def document(self):
+        return compose_email_html(
+            subject="Receipt", body="Hello.",
+            brand=EMAIL_BRAND_PLACEHOLDER,
+            brand_logo_url=EMAIL_BRAND_LOGO_PLACEHOLDER,
+            as_template=True,
+        )
+
+    def render(self, context):
+        from django.template import Context, Template
+
+        return Template(self.document()).render(Context(context))
+
+    def test_a_mark_only_render_drops_the_name_and_the_tagline(self):
+        html = self.render({"email_brand": "XVS", "brand_logo_url": LOGO, "email_mark_only": True})
+        self.assertNotIn("Secure notification", html)
+        self.assertNotIn('font-weight:700;">XVS</div>', html)
+        self.assertIn(LOGO, mark_cell(html))
+        self.assertIn("Powered by XVS", html)
+
+    def test_a_render_that_never_sets_it_keeps_the_header(self):
+        html = self.render({"email_brand": "CodeX"})
+        self.assertIn("Secure notification", html)
+        self.assertIn('font-weight:700;">CodeX</div>', html)
+
+    def test_the_square_is_white_behind_a_logo_and_navy_behind_initials(self):
+        self.assertIn("background-color:#ffffff", mark_cell(self.render({"brand_logo_url": LOGO})))
+        self.assertIn("background-color:#0f2747", mark_cell(self.render({})))
+
+    def test_the_live_path_honours_mark_only(self):
+        html = compose_email_html(subject="S", body="B", brand="XVS",
+                                  brand_logo_url=LOGO, mark_only=True)
+        self.assertNotIn("Secure notification", html)
+        self.assertIn("Secure notification",
+                      compose_email_html(subject="S", body="B", brand="CodeX"))
+
+    @override_settings(
+        NOTIFICATION_EMAIL_BRAND_PROVIDER=(
+            "schools.core.fal.notification_branding.email_brand_for_tenant"
+        ),
+    )
+    def test_dispatch_context_marks_school_email_only(self):
+        from vs_notifications.services.branding import email_brand_context
+
+        self.assertTrue(email_brand_context(SimpleNamespace(kind="SCHOOL", slug="x", name="X"))["email_mark_only"])
+        self.assertFalse(email_brand_context(SimpleNamespace(kind="PLATFORM"))["email_mark_only"])
 
 
 class ContextKeyFamilyTests(TestCase):
