@@ -25,6 +25,19 @@ def _product_override(tenant) -> dict:
     return dict(value or {})
 
 
+def email_sender_name(tenant) -> str:
+    """The From display name a product gives one audience's email, or "".
+
+    A product that names its own sender (a school tenant's emails are from the
+    school) replaces both the platform default and any per-message name, so
+    one audience always sees one sender. Line breaks and runs of whitespace
+    are collapsed, because a name is written into a mail header.
+    """
+    if tenant is None:
+        return ""
+    return " ".join(str(_product_override(tenant).get("sender_name") or "").split())
+
+
 def email_brand_context(tenant) -> dict[str, str]:
     """Return the trusted product name and public logo URL for one audience."""
     override = _product_override(tenant)

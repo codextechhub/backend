@@ -55,10 +55,14 @@ def deliver_email_notification(
           bypass tasks so migrating them onto the engine keeps that guarantee.
 
     From-address override:
-        - When notif.metadata carries a "from_name", the outgoing message's From
-          display name is built from it via build_from_email(from_name). This
-          preserves the per-message From parity the old bypass paths had (the
-          inviter's display name on invitations, sender_name on password resets).
+        - The recipient tenant's product sender name wins first
+          (services.branding.email_sender_name): a school tenant's email is from
+          the school, whoever triggered it.
+        - Otherwise, when notif.metadata carries a "from_name", the outgoing
+          message's From display name is built from it via
+          build_from_email(from_name) (the inviter's display name on
+          invitations, sender_name on password resets).
+        - The address is always the platform's configured sending address.
 
     Idempotency guard:
         - If the notification is already SENT when the task runs, exit without
@@ -99,6 +103,7 @@ def deliver_email_notification(
             html_body = notif.html_body
             metadata = notif.metadata or {}
             from_name = metadata.get("from_name")
+            owner_tenant = notif.tenant
             # An absent "bcc" key means "no opinion" and must fall through to the
             # platform EMAIL_BCC default. Only an explicit list overrides it - that
             # is how procurement and finance narrow (or empty) the monitoring copy
@@ -143,6 +148,10 @@ def deliver_email_notification(
 
     max_retries, retry_backoff = _read_retry_config()
 
+    from .services.branding import email_sender_name
+
+    sender_name = email_sender_name(owner_tenant) or from_name
+
     # ── Attempt delivery (outside any row lock) ────────────────────────────
     try:
         attachments = []
@@ -167,7 +176,7 @@ def deliver_email_notification(
             plain_message=body,
             html_message=html_body or None,
             recipient_list=[email_addr],
-            from_email=build_from_email(from_name) if from_name else None,
+            from_email=build_from_email(sender_name) if sender_name else None,
             bcc=bcc,
             attachments=attachments or None,
         )

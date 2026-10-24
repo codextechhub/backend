@@ -693,4 +693,4 @@ The rules that follow from it:
   supplies through `AppLogo` and `LoadingMark`, so each app shows its own brand
   on the shared screens.
 
-In this repository the brand reaches users through email: a school tenant's emails carry the XVS logo (`schools/core/fal/notification_branding.py`), and everything else signs as CodeX.
+In this repository the brand reaches users through email: a school tenant's emails carry the XVS logo and come from the school's own name ("Lagoon View Academy", at the platform's sending address, whoever triggered the email) (`schools/core/fal/notification_branding.py`), and everything else signs as CodeX.

@@ -632,20 +632,50 @@ class DeliveryTaskTests(_NotifFixture):
         ]
         self.assertEqual(html_parts, [f"<p>{secret}</p>"])
 
-    def test_from_name_metadata_sets_from_header(self):
+    def _email_from(self, tenant, metadata=None):
+        """Deliver one email owned by *tenant* and return its From header."""
         from .tasks import deliver_email_notification
-        et = self._event("ticket.created")
         notif = Notification.objects.create(
-            tenant=self.school_a.tenant, recipient=None,
+            tenant=tenant, recipient=None,
             unregistered_email="dest@test.com",
-            event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
-            body="plain", status=NotificationStatus.PENDING,
-            metadata={"from_name": "Ada Admin"},
+            event_type=self._event("ticket.created"), channel=ChannelChoices.EMAIL,
+            subject="Hi", body="plain", status=NotificationStatus.PENDING,
+            metadata=metadata or {},
         )
         deliver_email_notification(str(notif.id))
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("Ada Admin", mail.outbox[0].from_email)
-        self.assertIn("system@codexng.com", mail.outbox[0].from_email)
+        return mail.outbox[0].from_email
+
+    def test_from_name_metadata_sets_from_header(self):
+        """Outside a school, the per-message name (an inviter, an admin) is the sender."""
+        sender = self._email_from(self.cx.tenant, {"from_name": "Ada Admin"})
+        self.assertIn("Ada Admin", sender)
+        self.assertIn("system@codexng.com", sender)
+
+    def test_a_school_email_is_from_the_school(self):
+        """Alpha's people see Alpha as the sender, at the platform's address."""
+        self.assertEqual(self._email_from(self.school_a.tenant), "Alpha <system@codexng.com>")
+
+    def test_the_school_name_wins_over_a_person_who_triggered_it(self):
+        sender = self._email_from(self.school_a.tenant, {"from_name": "Ada Admin"})
+        self.assertEqual(sender, "Alpha <system@codexng.com>")
+
+    def test_platform_email_keeps_the_platform_sender(self):
+        sender = self._email_from(self.cx.tenant)
+        self.assertNotIn("Alpha", sender)
+        self.assertIn("system@codexng.com", sender)
+
+    def test_a_school_name_is_quoted_and_kept_on_one_line(self):
+        tenant = self.school_b.tenant
+        tenant.name = "St. Mary's, Ikeja\nLekki"
+        tenant.save(update_fields=["name"])
+        self.assertEqual(
+            self._email_from(tenant), '"St. Mary\'s, Ikeja Lekki" <system@codexng.com>',
+        )
+
+    @override_settings(NOTIFICATION_EMAIL_BRAND_PROVIDER="")
+    def test_without_a_product_sender_the_platform_default_stands(self):
+        self.assertNotIn("Alpha", self._email_from(self.school_a.tenant))
 
     def test_metadata_bcc_is_passed_to_the_email_backend(self):
         from .tasks import deliver_email_notification

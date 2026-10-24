@@ -574,7 +574,8 @@ class Notification(models.Model):
     #   activation_key - invitation tracking correlation for the delivery-signal
     #                    receivers (vs_user.receivers).
     #   from_name      - per-message From display name; deliver_email_notification
-    #                    builds the From address from it via build_from_email.
+    #                    builds the From address from it via build_from_email,
+    #                    unless the recipient tenant's product names the sender.
     metadata = models.JSONField(
         default=dict,
         blank=True,

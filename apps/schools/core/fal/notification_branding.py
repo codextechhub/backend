@@ -20,7 +20,13 @@ XVS_EMAIL_LOGO_PATH = "image/xvs-logo-square.png"
 
 
 def email_brand_for_tenant(tenant) -> dict[str, str]:
-    """Return XVS branding for a school tenant and no override otherwise."""
+    """Return XVS branding for a school tenant and no override otherwise.
+
+    ``sender_name`` is the school's own name, which every email to the
+    school's people carries as its From name: Lagoon View Academy's pupils,
+    parents and staff see "Lagoon View Academy", not the platform. The address
+    stays the platform's sending address.
+    """
     if getattr(tenant, "kind", None) != Tenant.Kind.SCHOOL:
         return {}
 
@@ -28,4 +34,5 @@ def email_brand_for_tenant(tenant) -> dict[str, str]:
     return {
         "email_brand": "XVS",
         "brand_logo_url": urljoin(base, XVS_EMAIL_LOGO_PATH) if base != "/" else "",
+        "sender_name": getattr(tenant, "name", "") or "",
     }
