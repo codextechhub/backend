@@ -56,6 +56,7 @@ from .money import format_naira
 from .posting import post_journal, resolve_period
 from .receivables import (
     _build_invoice_plan,
+    apply_held_credit,
     compute_line_net,
     compute_tax,
     stamp_allocation_effective_date,
@@ -101,7 +102,10 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
     list of ``(invoice, amount_kobo)``) settles further invoices after the named one;
     for a note naming none, ``allocations`` or ``auto_allocate`` applies it to open
     invoices oldest-first. Only invoices of the note's own branch and customer are
-    ever settled. DEBIT notes increase the receivable and are never allocated.
+    ever settled. A DEBIT note increases the receivable and settles nothing itself;
+    once posted it is paid from the receipt credit the customer already holds at its
+    branch (:func:`~vs_finance.receivables.apply_held_credit`), never from credit-note
+    credit, because a credit note's sub-ledger points at invoices only.
     """
     try:  # Atomic worker performs posting and optional allocation.
         result = _post_credit_note_atomic(  # Post the note.
@@ -332,6 +336,10 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         message=f"Posted {label.lower()} for {customer.code}.",  # Summary.
         journal_id=entry.pk, total=note.total, note_kind=note.kind,  # Structured metadata.
     )
+    if is_debit:  # A new charge is paid from receipt credit the customer already holds.
+        if apply_held_credit(
+                customer, branch_id=note.branch_id, targets=[note], actor_user=actor_user):
+            note.refresh_from_db()  # The caller sees the settlement just made.
     return note  # Return posted note.
 
 

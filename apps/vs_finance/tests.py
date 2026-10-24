@@ -74,6 +74,7 @@ from vs_finance.models import (
     ExpenseClaim,
     ExpenseClaimLine,
     FinanceAuditLog,
+    FinanceDocumentSettings,
     FiscalPeriod,
     FiscalYear,
     FixedAsset,
@@ -1554,8 +1555,11 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify stored credit settles debit note behavior.
     def test_stored_credit_settles_debit_note(self):
         # A receipt posted before the debit note leaves stored credit; allocating it
-        # later drains the credit onto the open debit note.
+        # later drains the credit onto the open debit note. The books keep credit on
+        # account, so posting the note does not pay it (see HeldCreditReapplyTests).
         entity, period, customer, _ = self.ar_ledger
+        FinanceDocumentSettings.objects.update_or_create(
+            entity=entity, defaults={"auto_apply_customer_credit": False})
         bank = Account.objects.get(entity=entity, code="1100")
         pay = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),

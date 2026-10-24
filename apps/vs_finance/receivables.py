@@ -286,42 +286,120 @@ def apply_customer_credit(invoice, *, actor_user=None) -> int:
     Money a customer already holds as credit (a payment made before the bill, an
     overpayment, an unapplied credit note, a credit transfer) pays each new bill of
     theirs as it posts, oldest credit first, so Mr Chukwu, who paid N420,000 in
-    August, is not shown as owing N420,000 when September's bill is raised. Only
-    credit of the invoice's own branch is used (the settlement rule of
-    :func:`_build_invoice_plan`), and each lot is applied through
-    :func:`allocate_payment` / :func:`~vs_finance.credit_notes.allocate_credit_note`,
+    August, is not shown as owing N420,000 when September's bill is raised. The work
+    is :func:`apply_held_credit` aimed at this one invoice, and a failure to apply
+    stops the posting: the bill is raised and settled in one step or not at all.
+    Returns the kobo applied.
+    """
+    if invoice.status != DocumentStatus.POSTED:
+        return 0
+    applied = apply_held_credit(
+        invoice.customer, branch_id=invoice.branch_id, targets=[invoice],
+        actor_user=actor_user, strict=True,
+    )
+    if applied:
+        invoice.refresh_from_db()  # The caller's copy carries the settlement.
+    return applied
+
+
+def apply_held_credit(customer, *, branch_id, targets=None, sources=None, actor_user=None,
+                      strict=False) -> int:
+    """Settle a customer's open receivables at one branch from the credit they hold there.
+
+    Held credit is used the moment an open item appears or credit comes back: when
+    an invoice or a debit note posts, when a void reopens a bill, and when a void
+    returns credit to a receipt or credit note. Tunde's bill is paid by card, his
+    mother's transfer parks as credit, and the card is charged back: voiding the
+    card receipt reopens the bill beside credit that can pay it, and this settles
+    it. Credit is drawn oldest first, each lot through
+    :func:`allocate_payment` or :func:`~vs_finance.credit_notes.allocate_credit_note`,
     so the reclassification journal, its date (the later of credit and bill) and its
     audit row are exactly those of a bursar pressing *allocate*.
 
+    * ``branch_id`` names the one branch whose credit and items meet; credit never
+      settles an item of another branch (the rule of :func:`_build_invoice_plan`).
+    * ``targets`` limits settlement to those invoices and debit notes, oldest first.
+      Callers pass the items that just appeared or reopened, so credit a bursar
+      parked on purpose against other bills is left alone. ``None`` settles every
+      open item of the customer at the branch.
+    * ``sources`` limits the credit to given ``(kind, document_id)`` lots, with
+      ``kind`` ``"RECEIPT"`` or ``"CREDIT_NOTE"``. A void that returns credit
+      passes the lots it returned. ``None`` uses every lot of the branch.
+    * A credit note's sub-ledger points at invoices only, so a debit note is
+      settled from receipt lots alone and credit-note lots are skipped for it.
+
     The entity's ``auto_apply_customer_credit`` setting turns this off, for books
-    that hold money on account on purpose. Returns the kobo applied.
+    that hold money on account on purpose. Receipts that park credit deliberately
+    (``auto_allocate=False``, gateway parking) never call this: it concerns bills
+    that appear or reopen, not receipts choosing their bills.
+
+    Each allocation runs in its own savepoint. With ``strict`` a failure (a closed
+    period on the date the reclassification needs) propagates, which is what a
+    posting that must settle its bill wants. Otherwise the failure is logged and that
+    pairing skipped: a void or a debit note never fails because held credit could
+    not be applied, and the bill simply stays open for a bursar to allocate.
+
+    Callers must not call it from a void that sits inside an inter-branch receivable
+    move (:func:`vs_finance.voids._void_payment_atomic` with ``forwarded``), where
+    the moved bills must stay exactly as the move left them. Returns the kobo applied.
     """
     from .chronology import credit_lots
     from .document_settings import resolve_finance_document_settings
     from .models import CreditNote, Payment
 
-    if invoice.status != DocumentStatus.POSTED or invoice.balance_due <= 0:
+    entity = customer.entity
+    if not resolve_finance_document_settings(entity).auto_apply_customer_credit:
         return 0
-    if not resolve_finance_document_settings(invoice.entity).auto_apply_customer_credit:
+    wanted = None if targets is None else {(type(t), t.pk) for t in targets}
+    items = [
+        item for item in open_receivable_items(entity, customer.pk, branch_id)
+        if wanted is None or (type(item[0]), item[0].pk) in wanted
+    ]
+    if not items:
         return 0
-    lots = credit_lots(
-        invoice.entity, [invoice.customer_id], branch=invoice.branch_id,
-    ).get(invoice.customer_id, [])
+    lots = credit_lots(entity, [customer.pk], branch=branch_id).get(customer.pk, [])
+    if sources is not None:
+        keys = {(kind, document_id) for kind, document_id in sources}
+        lots = [lot for lot in lots if (lot.kind, lot.document_id) in keys]
+    items.sort(key=lambda t: (t[2], t[0].pk))  # Oldest bill first, like an automatic plan.
+    left = {(lot.kind, lot.document_id): lot.remaining for lot in lots}
     applied = 0
-    for lot in lots:
-        if invoice.balance_due <= 0:  # The bill is paid.
-            break
-        take = min(lot.remaining, invoice.balance_due)
-        if lot.kind == "RECEIPT":
-            source = Payment.objects.get(pk=lot.document_id)
-            rows = allocate_payment(source, allocations=[(invoice, take)], actor_user=actor_user)
-        else:
-            from .credit_notes import allocate_credit_note
+    for target, _balance, _sort_date in items:
+        is_debit_note = isinstance(target, CreditNote)
+        for lot in lots:
+            key = (lot.kind, lot.document_id)
+            owed = target.balance_due
+            if owed <= 0:  # The bill is paid.
+                break
+            if left[key] <= 0 or (is_debit_note and lot.kind != "RECEIPT"):
+                continue
+            take = min(left[key], owed)
+            try:
+                with transaction.atomic():
+                    if lot.kind == "RECEIPT":
+                        source = Payment.objects.get(pk=lot.document_id)
+                        rows = allocate_payment(
+                            source, allocations=[(target, take)], actor_user=actor_user)
+                    else:
+                        from .credit_notes import allocate_credit_note
 
-            source = CreditNote.objects.get(pk=lot.document_id)
-            rows = allocate_credit_note(source, allocations=[(invoice, take)], actor_user=actor_user)
-        applied += sum(int(row.amount) for row in rows)
-        invoice.refresh_from_db()
+                        source = CreditNote.objects.get(pk=lot.document_id)
+                        rows = allocate_credit_note(
+                            source, allocations=[(target, take)], actor_user=actor_user)
+            except FinanceError:
+                if strict:
+                    raise
+                logger.warning(
+                    "Held credit %s %s could not settle %s %s for customer %s.",
+                    lot.kind, lot.document_id, type(target).__name__, target.pk, customer.pk,
+                    exc_info=True,
+                )
+                target.refresh_from_db()  # The failed attempt may have moved the in-memory copy.
+                continue
+            moved = sum(int(row.amount) for row in rows)
+            left[key] -= moved
+            applied += moved
+            target.refresh_from_db()
     return applied
 
 
@@ -679,8 +757,6 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
       says which date to use.
     """
     from .chronology import accounting_date, describe, ensure_on_or_after
-    from .constants import CreditNoteKind
-    from .models import CreditNote, Invoice
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
@@ -701,11 +777,37 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
                 )
         return plan  # Explicit plan passed its branch and date checks.
 
+    items = open_receivable_items(
+        source.entity, source.customer_id, source.branch_id,
+        include_debit_notes=include_debit_notes, as_of=as_of,
+    )
+    if strategy == "largest":  # Largest-balance-first strategy.
+        items.sort(key=lambda t: (-t[1], t[2], t[0].pk))  # Sort by balance descending, then date, then pk.
+    else:  # Default is oldest-first.
+        items.sort(key=lambda t: (t[2], t[0].pk))  # Sort by document date, then pk.
+    return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
+
+
+def open_receivable_items(entity, customer_id, branch_id, *, include_debit_notes=True, as_of=None):
+    """A customer's open, posted receivables at one branch, as ``[(item, balance, sort_date)]``.
+
+    An item is an :class:`Invoice` or, with ``include_debit_notes``, a posted DEBIT
+    :class:`CreditNote`; ``sort_date`` is the due date (invoice) or note date that
+    orders them oldest-first. Only items of ``branch_id``
+    (:func:`vs_rbac.scoping.same_transaction_branch`) are returned, and with ``as_of``
+    only those already raised by that date. The list is unsorted.
+
+    The one definition of "what a receipt or held credit may settle", shared by the
+    automatic allocation plan and :func:`apply_held_credit`.
+    """
     from vs_rbac.scoping import transaction_branch_match_q
 
-    same_branch = transaction_branch_match_q(source.entity.tenant_id, source.branch_id)
-    own = {"customer_id": source.customer_id, "status": DocumentStatus.POSTED}
-    open_invoices = list(  # Open posted invoices of the customer, in the source's branch.
+    from .constants import CreditNoteKind
+    from .models import CreditNote, Invoice
+
+    same_branch = transaction_branch_match_q(entity.tenant_id, branch_id)
+    own = {"customer_id": customer_id, "status": DocumentStatus.POSTED}
+    open_invoices = list(  # Open posted invoices of the customer, in the branch.
         Invoice.objects.filter(same_branch, **own)
         .exclude(payment_status=InvoicePaymentStatus.PAID)
     )
@@ -713,20 +815,15 @@ def _build_invoice_plan(source, allocations, *, strategy="oldest", include_debit
         open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
     # (target, balance_due, sort_date) - sort_date drives oldest-first across both types.
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
-    if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
-        open_notes = list(  # Open debit notes of the customer, in the source's branch.
+    if include_debit_notes:  # Optionally include posted debit notes.
+        open_notes = list(  # Open debit notes of the customer, in the branch.
             CreditNote.objects.filter(same_branch, kind=CreditNoteKind.DEBIT, **own)
             .exclude(settlement_status=InvoicePaymentStatus.PAID)
         )
         if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
             open_notes = [dn for dn in open_notes if dn.note_date <= as_of]
-        items += [(dn, dn.balance_due, dn.note_date) for dn in open_notes]  # Add debit notes to the same plan.
-
-    if strategy == "largest":  # Largest-balance-first strategy.
-        items.sort(key=lambda t: (-t[1], t[2], t[0].pk))  # Sort by balance descending, then date, then pk.
-    else:  # Default is oldest-first.
-        items.sort(key=lambda t: (t[2], t[0].pk))  # Sort by document date, then pk.
-    return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
+        items += [(dn, dn.balance_due, dn.note_date) for dn in open_notes]  # Add debit notes to the same list.
+    return items
 
 
 def _require_settlable_targets(source, targets):

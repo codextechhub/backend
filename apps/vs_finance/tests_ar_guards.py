@@ -6,8 +6,9 @@ Ikeja; each has been billed. The tests follow the owner's decisions one at a tim
 * money settles only a posted bill of its own customer, under a lock, and the
   database refuses a bill settled beyond its total;
 * money moves between customers only through an approved credit transfer;
-* credit a customer already holds pays each new bill as it posts, and dunning does
-  not chase what credit or an on-time payment plan covers;
+* credit a customer already holds pays each new bill as it posts, pays a debit
+  note as it posts, and pays a bill a void reopens, and dunning does not chase
+  what credit or an on-time payment plan covers;
 * a credit note naming a bill settles that bill first;
 * a fee run cannot bill twice, bills optional items only to those who take them,
   and stamps a period that cannot change once posted;
@@ -411,6 +412,311 @@ class CreditAutoApplyTests(_ArFixture):
         post_invoice(invoice)
         invoice.refresh_from_db()
         self.assertEqual(invoice.balance_due, 0)
+
+
+class HeldCreditReapplyTests(_ArFixture):
+    """Credit a customer holds pays a bill the moment it appears or reopens.
+
+    Tunde's N150,000 bill is paid by card; his mother's N150,000 transfer parks as
+    credit because the bill is already paid. The card is charged back and the card
+    receipt is voided: the bill reopens beside credit that can pay it at the same
+    branch, so it is paid from that credit at once rather than waiting for somebody
+    to allocate. The same holds when a debit note posts, or a void returns credit.
+    """
+
+    def debit_note(self, customer, amount, *, day=12, branch=None, entity=None):
+        from vs_finance.credit_notes import post_credit_note
+
+        entity = entity or self.books
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, branch=branch or self.ikeja,
+            kind=CreditNoteKind.DEBIT, note_date=D(2026, 1, day), reason="Late fee",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4100"),
+            quantity=1, unit_price=amount, line_no=1,
+        )
+        post_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    def card_then_transfer(self, customer=None, *, transfer_branch=None):
+        """A bill paid by card, then a transfer for the same amount that parks."""
+        customer = customer or self.eze
+        bill = self.bill(customer, 150_000)
+        card = self.receipt(customer, 150_000, day=12, auto=True)
+        mother = self.receipt(customer, 150_000, day=14, auto=True, branch=transfer_branch)
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 0)
+        self.assertEqual(mother.credit_remaining, 150_000)
+        return bill, card, mother
+
+    # -- a void reopens a bill ----------------------------------------------- #
+
+    def test_voiding_the_receipt_that_paid_a_bill_pays_it_from_other_credit(self):
+        from vs_finance.reports import reconcile_ar
+        from vs_finance.voids import void_payment
+
+        bill, card, mother = self.card_then_transfer()
+
+        void_payment(card, actor_user=self.bursar)
+
+        card.refresh_from_db()
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 0)
+        self.assertEqual(mother.credit_remaining, 0)
+        self.assertEqual(card.status, DocumentStatus.REVERSED)
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            action=FinanceAuditAction.PAYMENT_ALLOCATED, target_id=str(mother.pk),
+            actor=self.bursar).exists())
+        self.assertTrue(reconcile_ar(self.books).is_reconciled)
+
+    def test_credit_held_at_another_branch_does_not_pay_the_reopened_bill(self):
+        from vs_finance.voids import void_payment
+
+        bill, card, mother = self.card_then_transfer(transfer_branch=self.lekki)
+
+        void_payment(card)
+
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 150_000)
+        self.assertEqual(mother.credit_remaining, 150_000)
+
+    def test_the_entity_can_keep_credit_on_account_through_a_void(self):
+        from vs_finance.voids import void_payment
+
+        bill, card, mother = self.card_then_transfer()
+        self.settings(auto_apply_customer_credit=False)
+
+        void_payment(card)
+
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 150_000)
+        self.assertEqual(mother.credit_remaining, 150_000)
+
+    def test_a_void_pays_only_the_bill_it_reopened(self):
+        from vs_finance.voids import void_payment
+
+        self.settings(auto_apply_customer_credit=False)  # The bursar keeps credit on account for now.
+        older = self.bill(self.eze, 90_000, day=5)
+        reopened = self.bill(self.eze, 150_000, day=10)
+        card = self.receipt(self.eze, 150_000, day=12, allocations=[(reopened, 150_000)])
+        parked = self.receipt(self.eze, 100_000, day=14)
+        self.settings(auto_apply_customer_credit=True)
+
+        void_payment(card)
+
+        older.refresh_from_db()
+        reopened.refresh_from_db()
+        parked.refresh_from_db()
+        self.assertEqual(reopened.balance_due, 50_000)
+        self.assertEqual(older.balance_due, 90_000)
+        self.assertEqual(parked.credit_remaining, 0)
+
+    def test_a_reopened_bill_that_cannot_be_paid_does_not_block_the_void(self):
+        from unittest import mock
+
+        from django.utils import timezone
+
+        from vs_finance.constants import PeriodStatus
+        from vs_finance.models import FiscalPeriod
+        from vs_finance.voids import void_payment
+
+        bill, card, mother = self.card_then_transfer()
+        january = FiscalPeriod.objects.get(entity=self.books, period_no=1)
+        FiscalPeriod.objects.create(
+            entity=self.books, fiscal_year=january.fiscal_year, period_no=8,
+            name="Aug 2026", start_date=D(2026, 8, 1), end_date=D(2026, 8, 31),
+            status=PeriodStatus.OPEN,
+        )
+        january.status = PeriodStatus.CLOSED
+        january.save(update_fields=["status", "updated_at"])
+        now = timezone.make_aware(datetime.datetime(2026, 8, 1, 12, 0))
+
+        with mock.patch("vs_finance.posting.timezone.now", return_value=now), \
+                self.assertLogs("vs_finance.receivables", level="WARNING"):
+            void_payment(card)  # Applying the credit needs a January journal; January is closed.
+
+        card.refresh_from_db()
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(card.status, DocumentStatus.REVERSED)
+        self.assertEqual(bill.balance_due, 150_000)
+        self.assertEqual(mother.credit_remaining, 150_000)
+
+    def test_voiding_a_credit_note_pays_the_bill_it_reopened_from_receipt_credit(self):
+        from vs_finance.voids import void_credit_note
+
+        bill = self.bill(self.eze, 150_000)
+        note = self.note(self.eze, 150_000, invoice=bill)
+        mother = self.receipt(self.eze, 150_000, day=14, auto=True)
+        bill.refresh_from_db()
+        self.assertEqual((bill.balance_due, mother.credit_remaining), (0, 150_000))
+
+        void_credit_note(note)
+
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 0)
+        self.assertEqual(mother.credit_remaining, 0)
+
+    def test_voiding_a_concession_pays_the_bill_it_reopened(self):
+        from vs_finance.installments import post_concession
+        from vs_finance.voids import void_concession
+
+        bill = self.bill(self.eze, 150_000)
+        concession = self.concession(bill, 150_000)
+        post_concession(concession)
+        mother = self.receipt(self.eze, 150_000, day=14, auto=True)
+        bill.refresh_from_db()
+        self.assertEqual((bill.balance_due, mother.credit_remaining), (0, 150_000))
+
+        void_concession(concession)
+
+        bill.refresh_from_db()
+        mother.refresh_from_db()
+        self.assertEqual(bill.balance_due, 0)
+        self.assertEqual(mother.credit_remaining, 0)
+
+    # -- a void returns credit ----------------------------------------------- #
+
+    def refunded_credit(self, customer):
+        from vs_finance.credit_notes import post_refund
+        from vs_finance.models import Refund
+
+        parked = self.receipt(customer, 150_000, day=3)
+        refund = Refund.objects.create(
+            entity=self.books, customer=customer, branch=self.ikeja, refund_date=D(2026, 1, 5),
+            amount=150_000, deposit_account=self.bank,
+        )
+        post_refund(refund)
+        return parked, refund
+
+    def test_voiding_a_refund_pays_the_open_bill_from_the_credit_it_returns(self):
+        from vs_finance.voids import void_refund
+
+        parked, refund = self.refunded_credit(self.eze)
+        bill = self.bill(self.eze, 100_000, day=10)
+        self.assertEqual(bill.balance_due, 100_000)
+
+        void_refund(refund)
+
+        bill.refresh_from_db()
+        parked.refresh_from_db()
+        self.assertEqual(bill.balance_due, 0)
+        self.assertEqual(parked.credit_remaining, 50_000)
+
+    def test_voiding_a_refund_does_not_pay_a_bill_of_another_branch(self):
+        from vs_finance.voids import void_refund
+
+        parked, refund = self.refunded_credit(self.eze)
+        lekki_bill = self.bill(self.eze, 100_000, day=10, branch=self.lekki)
+
+        void_refund(refund)
+
+        lekki_bill.refresh_from_db()
+        parked.refresh_from_db()
+        self.assertEqual(lekki_bill.balance_due, 100_000)
+        self.assertEqual(parked.credit_remaining, 150_000)
+
+    def test_voiding_a_credit_transfer_pays_the_sources_bill_raised_since(self):
+        from vs_finance.credit_transfers import (
+            post_customer_credit_transfer, void_customer_credit_transfer,
+        )
+
+        self.bill(self.bello, 100_000)
+        overpaid = self.receipt(self.eze, 120_000, day=11, auto=True)
+        transfer = CustomerCreditTransfer.objects.create(
+            entity=self.books, branch=self.ikeja, from_customer=self.eze,
+            to_customer=self.bello, transfer_date=D(2026, 1, 15), amount=100_000,
+            status=DocumentStatus.APPROVED, created_by=self.bursar,
+        )
+        post_customer_credit_transfer(transfer)
+        later = self.bill(self.eze, 80_000, day=20)  # Takes the 20,000 left; 60,000 stays open.
+        self.assertEqual(later.balance_due, 60_000)
+
+        void_customer_credit_transfer(transfer)
+
+        later.refresh_from_db()
+        overpaid.refresh_from_db()
+        self.assertEqual(later.balance_due, 0)
+        self.assertEqual(overpaid.credit_remaining, 40_000)
+
+    # -- a debit note posts -------------------------------------------------- #
+
+    def test_a_debit_note_is_paid_from_receipt_credit_as_it_posts(self):
+        from vs_finance.reports import reconcile_ar
+
+        receipt = self.receipt(self.eze, 100_000, day=3)
+
+        note = self.debit_note(self.eze, 60_000)
+
+        receipt.refresh_from_db()
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual(receipt.credit_remaining, 40_000)
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            action=FinanceAuditAction.PAYMENT_ALLOCATED, target_id=str(receipt.pk)).exists())
+        self.assertTrue(reconcile_ar(self.books).is_reconciled)
+
+    def test_a_debit_note_is_not_paid_from_credit_note_credit(self):
+        credit = self.note(self.eze, 100_000, day=3)
+
+        note = self.debit_note(self.eze, 60_000)
+
+        credit.refresh_from_db()
+        self.assertEqual(note.balance_due, 60_000)
+        self.assertEqual(credit.credit_remaining, 100_000)
+
+    def test_a_debit_note_takes_receipt_credit_even_when_a_credit_note_is_older(self):
+        credit = self.note(self.eze, 100_000, day=2)
+        receipt = self.receipt(self.eze, 100_000, day=3)
+
+        note = self.debit_note(self.eze, 60_000)
+
+        credit.refresh_from_db()
+        receipt.refresh_from_db()
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual((credit.credit_remaining, receipt.credit_remaining), (100_000, 40_000))
+
+    def test_a_debit_note_does_not_use_credit_held_at_another_branch(self):
+        receipt = self.receipt(self.eze, 100_000, day=3, branch=self.lekki)
+
+        note = self.debit_note(self.eze, 60_000)
+
+        receipt.refresh_from_db()
+        self.assertEqual(note.balance_due, 60_000)
+        self.assertEqual(receipt.credit_remaining, 100_000)
+
+    def test_a_debit_note_leaves_credit_alone_when_the_entity_keeps_it_on_account(self):
+        self.settings(auto_apply_customer_credit=False)
+        receipt = self.receipt(self.eze, 100_000, day=3)
+
+        note = self.debit_note(self.eze, 60_000)
+
+        receipt.refresh_from_db()
+        self.assertEqual(note.balance_due, 60_000)
+        self.assertEqual(receipt.credit_remaining, 100_000)
+
+    def test_a_one_branch_school_pays_a_debit_note_from_credit_not_yet_given_a_branch(self):
+        from vs_finance.receivables import post_payment
+
+        e = self.solo_books
+        family = self.customer(e, "SOLO", None)
+        receipt = Payment.objects.create(
+            entity=e, customer=family, branch=None, payment_date=D(2026, 1, 3),
+            amount=80_000, deposit_account=Account.objects.get(entity=e, code="1100"),
+        )
+        post_payment(receipt, auto_allocate=False)
+
+        note = self.debit_note(family, 50_000, entity=e, branch=self.solo_main)
+
+        receipt.refresh_from_db()
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual(receipt.credit_remaining, 30_000)
 
 
 class DunningCoverTests(_ArFixture):

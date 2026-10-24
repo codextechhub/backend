@@ -44,6 +44,7 @@ from vs_finance.models import (
     FeeItem,
     FeeStructure,
     FinanceCalendarSettings,
+    FinanceDocumentSettings,
     FinanceReceivablesPolicy,
     FiscalPeriod,
     Invoice,
@@ -641,6 +642,9 @@ class DepositTests(_AccrualFixture):
         returned = self.deposit_bill(self.eze)
         paid = self.receipt(self.eze, 50_000, on=D(2026, 1, 12), invoice=returned)
         release_deposits(self.eze, note_date=D(2026, 7, 21))
+        # With credit kept on account, the returned deposit does not pay the reopened bill.
+        FinanceDocumentSettings.objects.update_or_create(
+            entity=self.books, defaults={"auto_apply_customer_credit": False})
         void_payment(paid)  # The bill is unpaid again, but its deposit was returned.
         with self.assertRaisesMessage(PostingError, "void the credit note that released it"):
             void_invoice(returned)

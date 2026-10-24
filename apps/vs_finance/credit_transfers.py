@@ -20,6 +20,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, NoReceivableAccountError, PostingError
 from .money import format_naira
+from .receivables import apply_held_credit
 from .wording import state_word
 
 
@@ -174,6 +175,11 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None):
     reverses its journal. It is refused once the destination has refunded or
     transferred the credit on, because that money has left the destination and
     giving it back to the source would count it twice.
+
+    The destination's reopened bills are offered the destination's other credit as
+    the receipt is voided. Once the source's lots are restored, the returned credit
+    is offered to the source's open bills at the transfer's branch, since a bill
+    raised after the credit left stayed open.
     """
     from .models import CreditNote, CustomerCreditTransfer, Payment
     from .voids import _void_payment_atomic
@@ -204,5 +210,11 @@ def _void_transfer_atomic(transfer, *, actor_user=None, date=None):
         actor_user=actor_user, target=transfer,
         message=f"Voided credit transfer {transfer.document_number}.",
         receipt=transfer.receipt.document_number,
+    )
+    apply_held_credit(  # The source holds the credit again; it pays any bill raised since.
+        transfer.from_customer, branch_id=transfer.branch_id,
+        sources=[("RECEIPT" if d.payment_id else "CREDIT_NOTE", d.payment_id or d.note_id)
+                 for d in draws],
+        actor_user=actor_user,
     )
     return transfer

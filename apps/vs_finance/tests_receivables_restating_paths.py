@@ -23,6 +23,7 @@ from vs_finance.models import (
     Account,
     CreditNote,
     CreditNoteLine,
+    FinanceDocumentSettings,
     Invoice,
     InvoiceLine,
     Payment,
@@ -363,7 +364,11 @@ class ReceiptOpenItemsAccessTests(_RestatingFixture):
         CreditNoteLine.objects.create(
             note=cls.debit_note, line_no=1, quantity=1, unit_price=5_000,
             revenue_account=cls.revenue)
+        FinanceDocumentSettings.objects.update_or_create(  # Credit held would pay the note as it posts.
+            entity=cls.books, defaults={"auto_apply_customer_credit": False})
         post_credit_note(cls.debit_note)
+        FinanceDocumentSettings.objects.filter(entity=cls.books).update(
+            auto_apply_customer_credit=True)
         lekki_bill = cls.posted_invoice(cls.family, cls.lekki, 70_000)
         cls.lekki_bill_number = lekki_bill.document_number
 

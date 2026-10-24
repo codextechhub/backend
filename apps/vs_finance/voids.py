@@ -3,6 +3,14 @@
 Every service unwinds the authoritative sub-ledger and reverses all GL journals in
 one transaction.  Allocation rows remain immutable history; document totals/statuses
 are the current-state read model.
+
+A void that reopens a bill, or returns credit to a receipt or credit note, leaves
+open receivables beside credit the customer may hold at the same branch. Each such
+void ends by offering that credit to the items it affected through
+:func:`vs_finance.receivables.apply_held_credit`: a failure to apply is logged and
+never fails the void, and the entity's ``auto_apply_customer_credit`` setting turns
+it off. Voids that only remove an item (an invoice, a debit note) free no credit and
+reopen nothing, so they do not call it.
 """
 from __future__ import annotations
 
@@ -18,6 +26,7 @@ from .constants import (
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import reverse_journal
+from .receivables import apply_held_credit
 from .wording import state_word
 
 
@@ -176,6 +185,14 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, 
     other branch's books short. A receipt that is one customer's share of a
     payer's payment is voided only with that payment (``payer_payment``), so the
     payer's money is never left half booked.
+
+    The bills and debit notes the receipt had settled are reopened, and other
+    credit the customer holds at the receipt's branch then pays them. The voided
+    receipt is no longer a lot, so its own credit is never offered back to them.
+    The one exception is a receipt voided through an inter-branch transfer
+    (``forwarded``): there the transfer returns the moved bills to the branch they
+    came from and refuses if any was paid since, so paying them here would block the
+    transfer's own void.
     """
     from .installments import refresh_plans_for_invoice
     from .models import (
@@ -275,6 +292,11 @@ def _void_payment_atomic(payment, *, actor_user=None, date=None, transfer=None, 
         allocation_reversals=[link.journal_id for link in allocation_journals],
         write_off_recoveries_reversed=recoveries,
     )
+    if forwarded is None:  # A receivable move restores its bills itself, and refuses if they were touched.
+        apply_held_credit(
+            payment.customer, branch_id=payment.branch_id,
+            targets=[*invoices.values(), *notes.values()], actor_user=actor_user,
+        )
     return payment
 
 
@@ -399,6 +421,11 @@ def _void_credit_note_atomic(note, *, actor_user=None, date=None):
         journal_id=note.journal_id, reversal_id=reversal.pk,
         allocation_reversals=[link.journal_id for link in allocation_journals],
     )
+    if allocations:  # Invoices the note had settled are open again; other credit may pay them.
+        apply_held_credit(
+            note.customer, branch_id=note.branch_id,
+            targets=list(invoices.values()), actor_user=actor_user,
+        )
     return note
 
 
@@ -449,6 +476,13 @@ def _void_refund_atomic(refund, *, actor_user=None, date=None):
         message=f"Voided refund {refund.document_number}.",
         journal_id=refund.journal_id, reversal_id=reversal.pk,
     )
+    if allocations:  # The refunded credit is held again; it pays whatever the customer still owes there.
+        apply_held_credit(
+            refund.customer, branch_id=refund.branch_id,
+            sources=[("RECEIPT" if row.payment_id else "CREDIT_NOTE", row.payment_id or row.note_id)
+                     for row in allocations],
+            actor_user=actor_user,
+        )
     return refund
 
 
@@ -484,5 +518,8 @@ def _void_concession_atomic(concession, *, actor_user=None, date=None):
         actor_user=actor_user, target=concession,
         message=f"Voided concession {concession.document_number}.",
         journal_id=concession.journal_id, reversal_id=reversal.pk,
+    )
+    apply_held_credit(  # The bill is owed again; credit held at its branch may pay it.
+        invoice.customer, branch_id=invoice.branch_id, targets=[invoice], actor_user=actor_user,
     )
     return concession

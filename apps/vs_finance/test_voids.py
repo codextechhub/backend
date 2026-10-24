@@ -17,6 +17,7 @@ from .models import (
     CreditNote,
     CreditNoteLine,
     Customer,
+    FinanceDocumentSettings,
     FiscalPeriod,
     FiscalYear,
     Invoice,
@@ -420,6 +421,9 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
 
     def test_reconcile_excludes_2140_credit_and_includes_debit_note_ar(self):
         entity, _, customer, _ = self.ar
+        # Held credit would otherwise pay the debit note as it posts; the books here keep it on account.
+        FinanceDocumentSettings.objects.update_or_create(
+            entity=entity, defaults={"auto_apply_customer_credit": False})
         payment = Payment.objects.create(
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
             amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
