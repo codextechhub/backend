@@ -32,6 +32,8 @@ Fee screens show what is owed beside credit, never netted; held credit settles b
 
 A school's emails come from the school's name (backend commit 629efbad, 2026-10-24): REVISE M08 (minor); M01 (patch) if it describes how a school's emails are branded; MRD (patch) only if it describes email sender identity. MUST SAY: every email whose recipient belongs to a school tenant carries the school's name as its From display name (e.g. "Lagoon View Academy <the platform's sending address>"), whoever triggered it, including invitations and admin password resets that used to show the person's name; the address stays the platform's; platform and console emails keep "CodeX System" or the per-message name; resolved at delivery from the recipient's tenant through the product brand provider.
 
+A school's email header shows the school's own logo, alone (backend commit 4e144e1a, 2026-10-24): REVISE M08 (minor); M01 (patch) if it describes the email header or school branding in email; MRD: no change unless it describes email branding. MUST SAY: an email to a school tenant's people shows the school's uploaded logo in the header square (white square, logo fitted), with no product name or "Secure notification" beside it; a school with no logo shows the XVS logo, served from the school's own subdomain; the footer still says "Powered by XVS"; platform email keeps "CodeX / Secure notification"; staff-authored HTML templates are unchanged.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
