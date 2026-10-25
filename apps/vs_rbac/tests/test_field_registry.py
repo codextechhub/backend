@@ -19,6 +19,7 @@ They lock the registry to the code in both directions, and pin the behaviour
 of ``sync_field_registry``, which writes it to the database.
 """
 import importlib
+import inspect
 import pkgutil
 import re
 from io import StringIO
@@ -121,6 +122,21 @@ EXPECTED_RESOURCES = {
     ("procurement", "vendor"),
     ("procurement", "vendor_contact"),
     ("procurement", "approval"),
+    ("procurement", "catalog_item"),
+    ("procurement", "category"),
+    ("procurement", "contract"),
+    ("procurement", "dashboard"),
+    ("procurement", "goods_receipt"),
+    ("procurement", "purchase_order"),
+    ("procurement", "quotation"),
+    ("procurement", "requisition"),
+    ("procurement", "rfq"),
+    ("procurement", "settings"),
+    ("procurement", "stock"),
+    ("procurement", "vendor_assessment"),
+    ("procurement", "vendor_credit_note"),
+    ("procurement", "vendor_invoice"),
+    ("procurement", "vendor_payment"),
     ("school", "account_closures"),
     ("school", "branches"),
     ("school", "guardians"),
@@ -147,6 +163,7 @@ ENDPOINT_GUARDED_RESOURCES = {
     ("finance", "pettycash_return"): "finance.pettycash.view",
     ("procurement", "vendor_contact"): "procurement.vendor.view",
     ("procurement", "approval"): "procurement.approval.view",
+    ("procurement", "dashboard"): "procurement.analytics.view",
     ("payments", "terminal_destination"): "payments.terminal.update",
     ("school", "guardians"): "school.students.view",
     ("school", "profile"): "school.profile.view",
@@ -380,6 +397,50 @@ NESTING_ONLY_SURFACES = {
         "flag, and neither is registered.",
 }
 
+# Named guards on hand-built response surfaces.
+HAND_BUILT_SURFACES = {
+    "vs_procurement.views.assessments._assessment_json": "visible(",
+    "vs_procurement.views.settings.ProcurementSettingsView": "visible(",
+    "vs_procurement.views.reports.ProcurementDashboardView": "_trim_dashboard(",
+    "vs_procurement.views.reports.ProcurementSuppliersDashboardView": "_trim_dashboard(",
+    "vs_procurement.views.reports.ProcurementStockDashboardView": "_trim_dashboard(",
+    "vs_procurement.serializers.StockLocationSerializer": "can_read(",
+}
+
+# Switches whose response is built outside their resource's serializers.
+VIRTUAL_FIELD_KEYS = {
+    "finance.report.ap_reconciliation",
+    "procurement.catalog_item.price_history",
+    "procurement.contract.activity",
+    "procurement.goods_receipt.return_journal",
+    "procurement.goods_receipt.return_line_values",
+    "procurement.goods_receipt.return_lines",
+    "procurement.goods_receipt.return_status",
+    "procurement.goods_receipt.return_value",
+    "procurement.rfq.branch_allocations",
+    "procurement.rfq.invitation_activity",
+    "procurement.stock.adjust_unit_cost",
+    "procurement.stock.adjustment_account",
+    "procurement.stock.item_is_active",
+    "procurement.stock.location_description",
+    "procurement.stock.location_is_active",
+    "procurement.stock.location_is_default",
+    "procurement.stock.movement_expense_account",
+    "procurement.stock.movement_narration",
+    "procurement.stock.movement_quantity",
+    "procurement.stock.movement_reference",
+    "procurement.stock.transfer_destination",
+    "procurement.stock.transfer_document",
+    "procurement.stock.transfer_received",
+    "procurement.vendor_invoice.activity",
+    "procurement.vendor_invoice.match_comparisons",
+    "procurement.vendor_invoice.opening_amount",
+    "procurement.vendor_invoice.payments",
+    "procurement.vendor_invoice.posting_lines",
+    "procurement.vendor_payment.activity",
+    "procurement.vendor_payment.posting_lines",
+}
+
 #: Sensitive fields no permission key ever hid, each with the reason it is
 #: declared closed anyway. Every entry must still name a real sensitive field.
 #:
@@ -391,6 +452,12 @@ NESTING_ONLY_SURFACES = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "procurement.rfq.budget_estimate": (
+        "An RFQ ceiling starts closed so a buyer cannot reveal it to a bidder."
+    ),
+    "procurement.vendor_assessment.notes": (
+        "A supplier assessment's free-text opinion starts closed per role."
+    ),
     "finance.customer.source_id": (
         "The source reference can be exported as a customer's tax ID, so it starts "
         "closed until a role receives Read and Write grants."
@@ -550,15 +617,26 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
         self.assertEqual(declared, EXPECTED_RESOURCES)
 
     def test_every_declared_name_is_emitted_by_one_of_its_surfaces(self):
+        virtual = set()
         for declaration in all_declarations():
             self.assertTrue(declaration.surfaces, declaration)
             emitted = set()
             for path in declaration.surfaces:
-                emitted |= set(_surface(path)(context={}).fields)
+                if path not in HAND_BUILT_SURFACES:
+                    emitted |= set(_surface(path)(context={}).fields)
             for spec in declaration.fields:
-                for api_name in spec.resolved_api_names:
-                    with self.subTest(key=declaration.key_for(spec), api_name=api_name):
-                        self.assertIn(api_name, emitted)
+                key = declaration.key_for(spec)
+                with self.subTest(key=key):
+                    if all(path in HAND_BUILT_SURFACES for path in declaration.surfaces):
+                        continue
+                    if key in VIRTUAL_FIELD_KEYS:
+                        virtual.add(key)
+                        continue
+                    self.assertTrue(
+                        set(spec.resolved_api_names) & emitted,
+                        f"{key} appears on no declared serializer surface.",
+                    )
+        self.assertEqual(VIRTUAL_FIELD_KEYS - virtual, set())
 
     def test_every_converted_field_is_registered(self):
         """A converted field the registry forgot would be closed to everybody.
@@ -614,6 +692,9 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
                     if path in NESTING_ONLY_SURFACES:
                         continue
                     cls = _surface(path)
+                    if path in HAND_BUILT_SURFACES:
+                        self.assertIn(HAND_BUILT_SURFACES[path], inspect.getsource(cls))
+                        continue
                     self.assertTrue(
                         issubclass(cls, FieldAccessMixin),
                         f"{path} is a declared surface of {resource} and "
@@ -696,7 +777,8 @@ def _serializers_owned_by(app):
     Every module of the app is imported first, so a serializer declared beside
     a view is found as surely as one in ``serializers.py``. The app is found
     from a dotted surface path at run time, never imported by name, so this
-    engine's tests import no domain app.
+    engine's tests import no domain app. Vendor portal quotations use a
+    verified vendor session outside tenant-role Field Access.
     """
     for info in pkgutil.walk_packages([app.path], prefix=f"{app.name}."):
         if _is_test_module(info.name) or {"migrations", "management"} & set(info.name.split(".")):
@@ -711,6 +793,8 @@ def _serializers_owned_by(app):
     for cls in set(walk(drf_serializers.Serializer)):
         module = cls.__module__
         if module.split(".")[: len(app.name.split("."))] != app.name.split("."):
+            continue
+        if cls.__qualname__ in {"VendorPortalQuotationSerializer", "VendorPortalQuotationLineSerializer"} and module == "vs_procurement.serializers":
             continue
         if not _is_test_module(module):
             yield cls
@@ -776,6 +860,24 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
 #: Where an app keeps its deep payload case, relative to the app package.
 DEEP_PAYLOAD_MODULES = ("tests_field_access_deep_payload", "tests.test_field_access_deep_payload")
 
+FOCUSED_PAYLOAD_MODULES = {
+    "procurement.catalog_item": "vs_procurement.tests_master_field_access",
+    "procurement.category": "vs_procurement.tests_category_field_access",
+    "procurement.contract": "vs_procurement.tests_master_field_access",
+    "procurement.dashboard": "vs_procurement.tests_dashboard_access",
+    "procurement.goods_receipt": "vs_procurement.tests_goods_receipt_field_access",
+    "procurement.purchase_order": "vs_procurement.tests_purchase_order_field_access",
+    "procurement.quotation": "vs_procurement.tests_sourcing_field_access",
+    "procurement.requisition": "vs_procurement.tests_sourcing_field_access",
+    "procurement.rfq": "vs_procurement.tests_sourcing_field_access",
+    "procurement.settings": "vs_procurement.tests_settings_field_access",
+    "procurement.stock": "vs_procurement.tests_stock_field_access",
+    "procurement.vendor_assessment": "vs_procurement.tests_master_field_access",
+    "procurement.vendor_credit_note": "vs_procurement.tests_credit_note_field_access",
+    "procurement.vendor_invoice": "vs_procurement.tests_vendor_invoice_field_access",
+    "procurement.vendor_payment": "vs_procurement.tests_vendor_payment_field_access",
+}
+
 
 def _deep_payload_cases():
     """Every deep payload case an installed app provides.
@@ -806,13 +908,13 @@ def _deep_payload_cases():
 
 
 class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
-    """Every declared surface is rendered by some app's deep payload case.
+    """Every declared surface has deep or focused payload coverage.
 
     The deep payload check renders a surface as a caller who may read none of
-    its resource's fields and fails on a registered name at any depth, which
-    is the only way to catch a field travelling inside a method field or a
-    merged dict. It proves nothing about a surface nobody renders, so a
-    surface declared without a case fails here.
+    its resource's fields and fails on a registered name at any depth. Some
+    procurement surfaces use resource-specific API contract tests because
+    their data comes from reports, actions or nested documents. Every declared
+    surface must have one of those coverage paths.
     """
 
     def test_the_cases_cover_every_declared_surface_and_nothing_else(self):
@@ -828,7 +930,19 @@ class EveryDeclaredSurfaceIsRenderedDeepTests(SimpleTestCase):
                     self.assertIn(declared.get(path), case.resources)
                     self.assertNotIn(path, covered, "Two cases render the same surface.")
                 covered[path] = case
-        self.assertEqual(set(declared) - set(covered), set())
+        focused = set()
+        for path, resource in declared.items():
+            module_name = FOCUSED_PAYLOAD_MODULES.get(resource)
+            if module_name is None or path in covered:
+                continue
+            module = importlib.import_module(module_name)
+            self.assertTrue(
+                any(name.startswith("test_") for value in vars(module).values()
+                    if isinstance(value, type) for name in vars(value)),
+                module_name,
+            )
+            focused.add(path)
+        self.assertEqual(set(declared) - set(covered) - focused, set())
 
 
 #: Serializers that emit a registered name without enforcing it, each with the

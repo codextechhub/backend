@@ -450,7 +450,10 @@ class VendorCategoryListCreateView(_VendorCategoryWriteMixin, _ProcBase):
                 "catalog_items", filter=Q(catalog_items__entity=entity), distinct=True,
             ),
         )
-        if (active := request.query_params.get("is_active")) in ("true", "false"):
+        active = request.query_params.get("is_active")
+        if active is not None and not can_read(request, "procurement.category.is_active"):
+            raise PermissionDenied("Category status is not available to this role.")
+        if active in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
@@ -463,6 +466,10 @@ class VendorCategoryListCreateView(_VendorCategoryWriteMixin, _ProcBase):
         """Create one taxonomy node while serializing hierarchy validation."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.category", {
+            key: body[key] for key in ("default_expense_account", "is_active")
+            if key in body
+        }, creating=True)
         code = _category_text(body, "code", 32, upper=True)
         name = _category_text(body, "name", 160)
         if not code or not name:
@@ -529,6 +536,10 @@ class VendorCategoryDetailView(_VendorCategoryWriteMixin, _ProcBase):
         entity = resolve_entity(request)
         category = self._get(entity, pk, lock=True)
         body = request.data
+        assert_writable(request, "procurement.category", {
+            key: body[key] for key in ("default_expense_account", "is_active")
+            if key in body
+        })
         # Lock the entity's bounded taxonomy before checking ancestry and subtree height.
         list(VendorCategory.objects.select_for_update().filter(entity=entity).values_list("pk", flat=True))
         if "code" in body and _normalise_code(body.get("code")) != category.code:
@@ -650,7 +661,10 @@ class VendorListCreateView(_ProcBase):
         )
         if request.query_params.get("own") == "true":
             qs = qs.filter(transaction_branch_q(request))
-        if (active := request.query_params.get("is_active")) in ("true", "false"):
+        active = request.query_params.get("is_active")
+        if active is not None:
+            require_vendor_field(request, "is_active", "Vendor active")
+        if active in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (hold := request.query_params.get("on_hold")) in ("true", "false"):
             require_vendor_field(request, "on_hold", "On hold")
@@ -699,6 +713,7 @@ class VendorListCreateView(_ProcBase):
                 "risk": VendorRisk.LOW.value,
                 "on_hold": False,
                 "payment_terms": policy.default_payment_terms,
+                "is_active": True,
             },
         )
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
@@ -771,15 +786,17 @@ class VendorSummaryView(_ProcBase):
             _branch_q(request, entity),
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=year_start,
         ).aggregate(total=Sum("total"))["total"] or 0
-        data = {
-            "active": vendors.filter(is_active=True).count(),
-            "inactive": vendors.filter(is_active=False).count(),
-            "total_spend_ytd": spend,
-        }
+        data = {}
+        if can_read(request, "procurement.vendor_invoice.total"):
+            data["total_spend_ytd"] = spend
+        if can_read(request, "procurement.vendor.is_active"):
+            data["active"] = vendors.filter(is_active=True).count()
+            data["inactive"] = vendors.filter(is_active=False).count()
         # A count by hold, KYC status or terms says how many vendors have them.
         if can_read(request, "procurement.vendor.on_hold"):
             data["on_hold"] = vendors.filter(on_hold=True).count()
-            data["active"] = vendors.filter(is_active=True, on_hold=False).count()
+            if can_read(request, "procurement.vendor.is_active"):
+                data["active"] = vendors.filter(is_active=True, on_hold=False).count()
         if can_read(request, "procurement.vendor.kyc_status"):
             data["kyc_pending"] = vendors.filter(kyc_status=VendorKycStatus.PENDING).count()
         if can_read(request, "procurement.vendor.payment_terms"):
@@ -951,7 +968,7 @@ class VendorInsightsView(_ProcBase):
                 entity, start_date=year_start, vendor=vendor, branch_scope=scope,
             ).rows if row.vendor_id == vendor.id
         ), None)
-        return success_response("Vendor insights retrieved.", data={
+        data = {
             "spend_ytd": spend_row.gross if spend_row else 0,
             "invoice_count": spend_row.invoice_count if spend_row else 0,
             "po_count": perf_row.po_count if perf_row else 0,
@@ -963,4 +980,17 @@ class VendorInsightsView(_ProcBase):
             "payment_count": perf_row.payment_count if perf_row else 0,
             "total_paid": perf_row.total_paid if perf_row else 0,
             "average_payment_days": perf_row.avg_payment_days if perf_row else None,
-        })
+        }
+        for key, names in {
+            "procurement.vendor_invoice.total": ("spend_ytd",),
+            "procurement.purchase_order.total": ("total_ordered",),
+            "procurement.vendor.active_po_count": ("po_count",),
+            "procurement.vendor_payment.net_amount": ("total_paid",),
+            "procurement.vendor_payment.payment_date": ("average_payment_days",),
+            "procurement.goods_receipt.received_date": (
+                "on_time_receipts", "late_receipts", "on_time_rate"),
+        }.items():
+            if not can_read(request, key):
+                for name in names:
+                    data.pop(name, None)
+        return success_response("Vendor insights retrieved.", data=data)

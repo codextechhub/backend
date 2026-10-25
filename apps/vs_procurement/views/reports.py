@@ -20,7 +20,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.pagination import XVSPagination
 from core.response import success_response
-from vs_rbac.field_enforcement import visible
+from vs_rbac.field_enforcement import can_read, visible
 from vs_rbac.permissions import HasAnyModuleAccess, IsAuthenticatedAndActive
 from vs_finance.constants import GRIR_NAME
 from vs_finance.views import resolve_entity
@@ -72,6 +72,145 @@ def _paginated_report(request, rows, data, *, key, render, message):
     response.data["message"] = message
     return response
 
+
+def _omit_closed(request, data, rules):
+    """Remove report aliases whose source business value is closed to the caller."""
+    for field_key, names in rules.items():
+        if not can_read(request, field_key):
+            for name in names:
+                data.pop(name, None)
+    return data
+
+
+_BILL_BALANCE = "procurement.vendor_invoice.settlement"
+_BILL_TOTAL = "procurement.vendor_invoice.total"
+_CREDIT_BALANCE = "procurement.credit_note.settlement"
+_RECEIPT_VALUE = "procurement.goods_receipt.total_value"
+
+
+def _ap_totals(request, data):
+    """Apply bill and credit settlement switches to AP aggregate figures."""
+    return _omit_closed(request, data, {
+        _BILL_BALANCE: ("bucket_totals", "total_outstanding", "total_net",
+                        "net_cash_requirement", "total_due", "bucket_amounts",
+                        "outstanding", "net", "buckets", "total", "net_total"),
+        _CREDIT_BALANCE: ("total_unallocated_credit", "total_net",
+                          "net_cash_requirement", "unallocated_credit", "net",
+                          "net_total"),
+    })
+
+
+def _trim_dashboard(request, data):
+    """Apply one read switch to each dashboard block and its KPI aliases."""
+    if data is None:
+        return data
+    for name in tuple(data):
+        if name == "kpis":
+            for kpi in tuple(data["kpis"]):
+                if not can_read(request, f"procurement.dashboard.{kpi}"):
+                    data["kpis"].pop(kpi, None)
+        elif name not in {"entity", "currency", "books", "reader_first_name",
+                          "as_of", "month_start", "narrowed", "window", "windows",
+                          "recent_activity", "branch"}:
+            if not can_read(request, f"procurement.dashboard.{name}"):
+                data.pop(name, None)
+    if isinstance(data.get("open_rfqs"), dict):
+        for row in data["open_rfqs"].get("items", ()):
+            _omit_closed(request, row, {
+                "procurement.rfq.title": ("title",),
+                "procurement.rfq.budget_estimate": ("budget",),
+                "procurement.rfq.response_due": ("closes", "ready"),
+                "procurement.rfq.invited_vendors": ("invited", "quoted", "ready"),
+            })
+    if isinstance(data.get("kpis"), dict) and isinstance(data["kpis"].get("pending_approvals"), dict):
+        if not can_read(request, "procurement.dashboard.approvals_awaiting_user"):
+            data["kpis"].pop("pending_approvals", None)
+    if data.get("approvals_awaiting_user"):
+        from .approval_queue import DOCUMENT_FIELD_KEYS, _trim_document_row
+
+        for row in data["approvals_awaiting_user"]:
+            document_type = row.get("document_type")
+            if document_type in DOCUMENT_FIELD_KEYS:
+                _trim_document_row(request, document_type, row)
+        if isinstance(data.get("kpis"), dict) and isinstance(data["kpis"].get("pending_approvals"), dict):
+            if any(not can_read(request, amount_key) for amount_key, _status_key in DOCUMENT_FIELD_KEYS.values()):
+                data["kpis"]["pending_approvals"].pop("amount", None)
+    if isinstance(data.get("kpis"), dict):
+        kpis = data["kpis"]
+        if not can_read(request, _BILL_TOTAL):
+            kpis.pop("spend", None)
+        if not can_read(request, "procurement.purchase_order.total") and isinstance(kpis.get("open_purchase_orders"), dict):
+            kpis["open_purchase_orders"].pop("amount", None)
+        if not can_read(request, _BILL_BALANCE):
+            kpis.pop("overdue_invoices", None)
+        if not can_read(request, "procurement.vendor.on_hold") and isinstance(kpis.get("active_vendors"), dict):
+            kpis["active_vendors"].pop("on_hold_count", None)
+    _omit_closed(request, data, {
+        _BILL_TOTAL: ("spend", "spend_by_category", "top_vendors", "committed_vs_spent",
+                      "by_branch", "non_po"),
+        "procurement.purchase_order.total": ("committed_vs_spent",),
+        "procurement.quotation.total": ("savings",),
+    })
+    if isinstance(data.get("scorecard"), list):
+        for row in data["scorecard"]:
+            _omit_closed(request, row, {
+                "procurement.vendor_assessment.scores": ("score", "grade"),
+                "procurement.vendor_assessment.grade": ("score", "grade"),
+                _BILL_TOTAL: ("spend",),
+                "procurement.vendor.category": ("category",),
+            })
+    if isinstance(data.get("vendor_base"), dict):
+        _omit_closed(request, data["vendor_base"], {
+            "procurement.vendor.on_hold": ("on_hold",),
+            "procurement.vendor.kyc_status": ("awaiting_kyc",),
+        })
+    if isinstance(data.get("position"), dict):
+        _omit_closed(request, data["position"], {
+            "procurement.stock.stock_value": ("value", "idle_value"),
+            "procurement.stock.on_hand_qty": ("items", "below_reorder", "out_within_week", "out_of_stock", "out_names", "idle"),
+            "procurement.stock.needs_reorder": ("below_reorder", "out_within_week", "out_of_stock", "out_names"),
+            "procurement.stock.reorder_level": ("below_reorder", "out_within_week", "out_of_stock", "out_names"),
+        })
+    if not all(can_read(request, key) for key in (
+        "procurement.stock.on_hand_qty", "procurement.stock.reorder_level",
+        "procurement.stock.needs_reorder",
+    )):
+        data.pop("running_low", None)
+    if not can_read(request, "procurement.stock.stock_value"):
+        data.pop("by_store", None)
+        data.pop("turns", None)
+    if not can_read(request, "procurement.stock.movement_value"):
+        data.pop("issued", None)
+        data.pop("turns", None)
+        if isinstance(data.get("adjustments"), dict):
+            data["adjustments"].pop("value", None)
+    if isinstance(data.get("movements"), list):
+        for row in data["movements"]:
+            _omit_closed(request, row, {
+                "procurement.stock.movement_type": ("type",),
+                "procurement.stock.movement_reference": ("reference",),
+                "procurement.stock.movement_cost_center": ("cost_center",),
+                "procurement.stock.movement_quantity": ("quantity",),
+                "procurement.stock.movement_recorded_by": ("occurred_at",),
+            })
+    if isinstance(data.get("unbilled"), dict):
+        _omit_closed(request, data["unbilled"], {
+            _RECEIPT_VALUE: ("amount",), _BILL_TOTAL: ("amount",),
+        })
+    if not can_read(request, "procurement.goods_receipt.quantities"):
+        data.pop("receipts", None)
+    if not can_read(request, "procurement.purchase_order.expected_date"):
+        data.pop("expected", None)
+    if isinstance(data.get("expected"), list):
+        for row in data["expected"]:
+            _omit_closed(request, row, {
+                "procurement.purchase_order.order_lines": ("title",),
+                "procurement.purchase_order.expected_date": ("expected_date", "days"),
+                "procurement.purchase_order.status": ("state",),
+                "procurement.purchase_order.fulfilment": ("partial",),
+            })
+    return data
+
 # --------------------------------------------------------------------------- #
 # AP reports                                                                  #
 # --------------------------------------------------------------------------- #
@@ -101,15 +240,15 @@ class APAgingView(_ProcBase):
             "total_net": _kobo(report.total_net),
         }
         return _paginated_report(
-            request, report.rows, data, key="rows",
-            render=lambda r: visible(request, "procurement.vendor", {
+            request, report.rows, _ap_totals(request, data), key="rows",
+            render=lambda r: _ap_totals(request, visible(request, "procurement.vendor", {
                 "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
                 "payment_terms": r.payment_terms,
                 "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
                 "outstanding": _kobo(r.outstanding),
                 "unallocated_credit": _kobo(r.unallocated_credit),
                 "net": _kobo(r.net),
-            }),
+            })),
             message="AP aging retrieved.",
         )
 
@@ -137,13 +276,15 @@ class APReconciliationView(_ProcBase):
         rec = reconcile_ap(entity, as_of=as_of)
         return success_response(
             "AP reconciliation retrieved.",
-            data={
+            data=visible(request, "finance.report", {
                 "entity": entity.code,
-                "subledger_total": _kobo(rec.subledger_total),
-                "control_total": _kobo(rec.control_total),
-                "difference": _kobo(rec.difference),
-                "is_reconciled": rec.is_reconciled,
-            },
+                "ap_reconciliation": {
+                    "subledger_total": _kobo(rec.subledger_total),
+                    "control_total": _kobo(rec.control_total),
+                    "difference": _kobo(rec.difference),
+                    "is_reconciled": rec.is_reconciled,
+                },
+            }).get("ap_reconciliation", {}),
         )
 
 
@@ -166,12 +307,12 @@ class GRIRBalanceView(_ProcBase):
         balance = grir_balance(entity, as_of=as_of)
         return success_response(
             f"{GRIR_NAME} balance retrieved.",
-            data={
+            data=_omit_closed(request, {
                 "entity": entity.code,
                 "as_of": str(as_of) if as_of else None,
                 "grir_balance": _kobo(balance),
                 "is_clear": balance == 0,
-            },
+            }, {_RECEIPT_VALUE: ("grir_balance", "is_clear")}),
         )
 
 
@@ -197,14 +338,14 @@ class APCashRequirementsView(_ProcBase):
             "net_cash_requirement": _kobo(report.net_cash_requirement),
         }
         return _paginated_report(
-            request, report.rows, data, key="rows",
-            render=lambda r: {
+            request, report.rows, _ap_totals(request, data), key="rows",
+            render=lambda r: _ap_totals(request, {
                 "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
                 "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
                 "total": _kobo(r.total),
                 "unallocated_credit": _kobo(r.unallocated_credit),
                 "net_total": _kobo(r.net_total),
-            },
+            }),
             message="AP cash-requirements forecast retrieved.",
         )
 
@@ -237,8 +378,10 @@ class GRIRAgingView(_ProcBase):
             ),
         }
         return _paginated_report(
-            request, report.rows, data, key="rows",
-            render=lambda r: {
+            request, report.rows, _omit_closed(request, data, {
+                _RECEIPT_VALUE: ("bucket_totals", "total_open", "control_balance", "difference"),
+            }), key="rows",
+            render=lambda r: _omit_closed(request, {
                 "grn_id": r.grn_id, "reference": r.reference,
                 "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
                 "received_date": str(r.received_date), "days": r.days,
@@ -246,7 +389,8 @@ class GRIRAgingView(_ProcBase):
                 "received_value": _kobo(r.received_value),
                 "invoiced_value": _kobo(r.invoiced_value),
                 "open_value": _kobo(r.open_value),
-            },
+            }, {_RECEIPT_VALUE: ("received_value", "invoiced_value", "open_value"),
+                _BILL_TOTAL: ("invoiced_value", "open_value")}),
             message=f"{GRIR_NAME} by age retrieved.",
         )
 
@@ -280,15 +424,16 @@ class APAgingVendorDetailView(_ProcBase):
             "net": _kobo(detail.net),
         }
         return _paginated_report(
-            request, detail.invoices, data, key="invoices",
-            render=lambda inv: {
+            request, detail.invoices, _ap_totals(request, data), key="invoices",
+            render=lambda inv: _omit_closed(request, {
                 "invoice_id": inv.invoice_id, "document_number": inv.document_number,
                 "invoice_date": str(inv.invoice_date),
                 "due_date": str(inv.due_date) if inv.due_date else None,
                 "days_overdue": inv.days_overdue, "bucket": inv.bucket,
                 "balance_due": _kobo(inv.balance_due),
                 "payment_status": inv.payment_status,
-            },
+            }, {_BILL_BALANCE: ("balance_due",),
+                "procurement.vendor_invoice.status": ("payment_status",)}),
             message="Vendor AP detail retrieved.",
         )
 
@@ -329,11 +474,14 @@ class GRIRGrnDetailView(_ProcBase):
             "open_value": _kobo(detail.open_value),
         }
         return _paginated_report(
-            request, detail.invoices, data, key="invoices",
-            render=lambda vi: {
+            request, detail.invoices, _omit_closed(request, data, {
+                _RECEIPT_VALUE: ("received_value", "invoiced_value", "open_value"),
+                _BILL_TOTAL: ("invoiced_value", "open_value"),
+            }), key="invoices",
+            render=lambda vi: _omit_closed(request, {
                 "id": vi["id"], "document_number": vi["document_number"],
                 "invoice_date": vi["invoice_date"], "net": _kobo(vi["net"]),
-            },
+            }, {_BILL_TOTAL: ("net",)}),
             message="Goods received note detail retrieved.",
         )
 
@@ -359,7 +507,7 @@ class GRIRPoLinesView(_ProcBase):
         }
         return _paginated_report(
             request, report.rows, data, key="rows",
-            render=lambda r: {
+            render=lambda r: _omit_closed(request, {
                 "po_line_id": r.po_line_id, "po_line_ref": r.po_line_ref,
                 "item": r.item,
                 "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
@@ -369,7 +517,10 @@ class GRIRPoLinesView(_ProcBase):
                 "invoiced_value": _kobo(r.invoiced_value),
                 "grir_balance": _kobo(r.grir_balance),
                 "status": r.status,
-            },
+            }, {_RECEIPT_VALUE: ("received_value", "invoiced_value", "grir_balance", "status"),
+                _BILL_TOTAL: ("invoiced_value", "grir_balance", "status"),
+                "procurement.purchase_order.fulfilment": ("ordered_qty", "received_qty"),
+                "procurement.vendor_invoice.bill_lines": ("invoiced_qty",)}),
             message=f"{GRIR_NAME} by order line retrieved.",
         )
 
@@ -419,13 +570,27 @@ class GRIRPoLineDetailView(_ProcBase):
                 for g in detail.grns
             ],
         }
+        data = _omit_closed(request, data, {
+            _RECEIPT_VALUE: ("received_value", "invoiced_value", "grir_balance", "status"),
+            _BILL_TOTAL: ("invoiced_value", "grir_balance", "status"),
+            "procurement.purchase_order.unit_price": ("unit_price",),
+            "procurement.purchase_order.fulfilment": ("ordered_qty", "received_qty"),
+            "procurement.vendor_invoice.bill_lines": ("invoiced_qty",),
+        })
+        if not can_read(request, "procurement.goods_receipt.receipt_unit_price"):
+            for row in data["grns"]:
+                row.pop("value", None)
+        if not can_read(request, "procurement.goods_receipt.quantities"):
+            for row in data["grns"]:
+                row.pop("accepted_qty", None)
         return _paginated_report(
             request, detail.invoices, data, key="invoices",
-            render=lambda vi: {
+            render=lambda vi: _omit_closed(request, {
                 "id": vi["id"], "document_number": vi["document_number"],
                 "invoice_date": vi["invoice_date"],
                 "quantity": vi["quantity"], "net": _kobo(vi["net"]),
-            },
+            }, {_BILL_TOTAL: ("net",),
+                "procurement.vendor_invoice.bill_lines": ("quantity",)}),
             message="Order line detail retrieved.",
         )
 
@@ -457,11 +622,11 @@ class ProcurementDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Procurement dashboard retrieved.",
-            data=trim_overview_dashboard(request, procurement_dashboard(
+            data=_trim_dashboard(request, trim_overview_dashboard(request, procurement_dashboard(
                 entity, user=request.user, branch_scope=_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
-            )),
+            ))),
         )
 
 
@@ -483,11 +648,11 @@ class ProcurementSuppliersDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Spend and suppliers dashboard retrieved.",
-            data=trim_suppliers_dashboard(request, suppliers_view(
+            data=_trim_dashboard(request, trim_suppliers_dashboard(request, suppliers_view(
                 entity, user=request.user, branch_scope=_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
-            )),
+            ))),
         )
 
 
@@ -510,12 +675,12 @@ class ProcurementStockDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Stock and receiving dashboard retrieved.",
-            data=stock_view(
+            data=_trim_dashboard(request, stock_view(
                 entity, user=request.user, doc_scope=_scope(request, entity),
                 store_scope=_branch_scope(request, entity),
                 reader=DashboardReader.for_user(request.user, getattr(request.user, "tenant", None)),
                 window=request.query_params.get("window"),
-            ),
+            )),
         )
 
 
@@ -557,11 +722,11 @@ class SpendAnalysisView(_ProcBase):
         def _rows(rows):
             """Render one grouped spend dimension with explicit money units."""
             return [
-                {
+                _omit_closed(request, {
                     "key": r.key, "label": r.label,
                     "net": _kobo(r.net), "tax": _kobo(r.tax), "gross": _kobo(r.gross),
                     "invoice_count": r.invoice_count,
-                }
+                }, {_BILL_TOTAL: ("net", "tax", "gross")})
                 for r in rows
             ]
 
@@ -585,13 +750,16 @@ class SpendAnalysisView(_ProcBase):
         if vendor_field_readable(request, "category"):
             data["category"] = category
             data["by_category"] = _rows(report.by_category)
+        data = _omit_closed(request, data, {
+            _BILL_TOTAL: ("total_net", "total_tax", "total_gross", "by_period"),
+        })
         return _paginated_report(
             request, report.by_vendor, data, key="by_vendor",
-            render=lambda r: {
+            render=lambda r: _omit_closed(request, {
                 "key": r.key, "label": r.label,
                 "net": _kobo(r.net), "tax": _kobo(r.tax), "gross": _kobo(r.gross),
                 "invoice_count": r.invoice_count,
-            },
+            }, {_BILL_TOTAL: ("net", "tax", "gross")}),
             message="Spend analysis retrieved.",
         )
 
@@ -622,7 +790,7 @@ class VendorPerformanceView(_ProcBase):
 
         def render_vendor(r):
             a = r.latest_assessment
-            return {
+            row = {
                 "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
                 **({"category": r.category} if show_category else {}),
                 "po_count": r.po_count, "total_ordered": _kobo(r.total_ordered),
@@ -636,16 +804,26 @@ class VendorPerformanceView(_ProcBase):
                 "total_paid": _kobo(r.total_paid),
                 "avg_payment_days": r.avg_payment_days,
                 "latest_assessment": (
-                    {
+                    visible(request, "procurement.vendor_assessment", {
                         "quality_acceptance": a.quality_acceptance,
                         "invoice_accuracy": a.invoice_accuracy,
                         "responsiveness": a.responsiveness,
                         "overall_score": a.overall_score,
                         "grade": a.grade,
                         "assessment_date": str(a.assessment_date),
-                    } if a else None
+                    }) if a else None
                 ),
             }
+            if a and not can_read(request, "procurement.vendor_assessment.scores"):
+                row["latest_assessment"].pop("overall_score", None)
+                row["latest_assessment"].pop("grade", None)
+            return _omit_closed(request, row, {
+                "procurement.purchase_order.total": ("total_ordered",),
+                _BILL_TOTAL: ("total_billed",),
+                "procurement.vendor_payment.net_amount": ("total_paid",),
+                "procurement.vendor_payment.payment_date": ("avg_payment_days",),
+                "procurement.goods_receipt.received_date": ("on_time_receipts", "late_receipts", "on_time_rate"),
+            })
 
         return _paginated_report(
             request, report.rows, data, key="rows", render=render_vendor,

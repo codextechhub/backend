@@ -10,6 +10,7 @@ which cannot be narrowed by branch.
 from __future__ import annotations
 
 from django.test import TestCase
+from vs_rbac.tests.helpers import install_declared_fields, set_field_access
 
 from .tests import _BranchTenantsFixture
 
@@ -66,6 +67,20 @@ class ProcurementDashboardAccessTests(_BranchTenantsFixture, TestCase):
             f"/v1/procurement/reports/dashboard/?entity={self.multi.entity.code}",
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_a_closed_block_disappears_without_hiding_other_blocks(self):
+        """An analyst can keep the pipeline while spend is closed to the role."""
+        from vs_rbac.models import TenantRoleTemplate
+
+        install_declared_fields("procurement.dashboard")
+        client = self.reader("limited-head@t.com", "procurement.analytics.view")
+        role = TenantRoleTemplate.objects.get(
+            tenant=self.multi_tenant, key="role-limited-head@t.com",
+        )
+        set_field_access(role, "procurement.dashboard.spend", read=False, write=False)
+        data = self.dashboard(client)
+        self.assertNotIn("spend", data["kpis"])
+        self.assertIn("pipeline", data)
 
 
 class ProcurementDashboardPlanTests(_BranchTenantsFixture, TestCase):

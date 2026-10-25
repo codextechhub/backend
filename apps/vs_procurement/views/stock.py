@@ -19,6 +19,7 @@ from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
 from vs_config.clock import branch_today
+from vs_rbac.field_enforcement import assert_writable, can_read
 
 from .. import stock
 from ..models import (
@@ -53,7 +54,7 @@ from .base import (
     _strict_kobo,
     _text,
 )
-from ..stock_transfer_access import interbranch_readable, trim_receiving_leg
+from ..stock_transfer_access import interbranch_readable
 from .catalog import _resolve_catalog_item
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +67,20 @@ def _strict_bool(value, field):
     if not isinstance(value, bool):
         raise ValidationError({field: "Enter a valid boolean value."})
     return value
+
+
+def _assert_stock_write(request, body, *, aliases=None, creating=False):
+    """Judge stock action inputs under their item or movement switches."""
+    assert_writable(
+        request, "procurement.stock", body, creating=creating,
+        aliases=aliases,
+    )
+
+
+def _require_stock_read(request, *fields):
+    """Refuse a selector that would reveal a hidden stock quantity or status."""
+    if not all(can_read(request, f"procurement.stock.{field}") for field in fields):
+        raise PermissionDenied("This stock filter requires Field Access to its source values.")
 
 
 def _readable_balances(request, entity, location=None):
@@ -318,17 +333,33 @@ class StockLocationListCreateView(_ProcBase):
         qs = _branch_visible(
             request, StockLocation.objects.filter(entity=entity),
         ).select_related("branch")
-        if (active := request.query_params.get("is_active")) not in (None, ""):
+        active = request.query_params.get("is_active")
+        if active not in (None, "") and not can_read(
+            request, "procurement.stock.location_is_active",
+        ):
+            raise PermissionDenied("Store status is not available to this role.")
+        if active not in (None, ""):
             qs = qs.filter(is_active=_flag(active, "is_active"))
+        ordering = ("-is_default", "code") if can_read(
+            request, "procurement.stock.location_is_default",
+        ) else ("code",)
         return self.paginate(
-            request, qs.order_by("-is_default", "code"), StockLocationSerializer)
+            request, qs.order_by(*ordering), StockLocationSerializer,
+            context={"request": request})
 
     @transaction.atomic
     def post(self, request):
         """Create a location, keeping exactly one default in the entity."""
         entity = resolve_entity(request)
         body = request.data or {}
-        serializer = StockLocationSerializer(data=body)
+        assert_writable(request, "procurement.stock", {
+            field: body[name] for name, field in (
+                ("description", "location_description"),
+                ("is_default", "location_is_default"),
+                ("is_active", "location_is_active"),
+            ) if name in body
+        }, creating=True)
+        serializer = StockLocationSerializer(data=body, context={"request": request})
         serializer.is_valid(raise_exception=True)
         branch = _raised_branch(request, entity, body)
 
@@ -352,7 +383,7 @@ class StockLocationListCreateView(_ProcBase):
                 {"code": "A stock location with this code already exists here."})
         return success_response(
             "Stock location created.",
-            data=StockLocationSerializer(location).data, status=201,
+            data=StockLocationSerializer(location, context={"request": request}).data, status=201,
         )
 
 
@@ -424,13 +455,21 @@ class StockLocationDetailView(_ProcBase):
     def get(self, request, pk):
         _entity, location = self._location(request, pk)
         return success_response(
-            "Stock location retrieved.", data=StockLocationSerializer(location).data)
+            "Stock location retrieved.",
+            data=StockLocationSerializer(location, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
         """Edit a location. Deactivating one that still holds stock is refused."""
         entity, location = self._location(request, pk)
         body = request.data or {}
+        assert_writable(request, "procurement.stock", {
+            field: body[name] for name, field in (
+                ("description", "location_description"),
+                ("is_default", "location_is_default"),
+                ("is_active", "location_is_active"),
+            ) if name in body
+        })
         for field, limit in (("name", 200), ("description", 255)):
             if field in body:
                 setattr(location, field, _text(body[field], field, limit))
@@ -457,7 +496,8 @@ class StockLocationDetailView(_ProcBase):
             location.is_active = active
         location.save()
         return success_response(
-            "Stock location updated.", data=StockLocationSerializer(location).data)
+            "Stock location updated.",
+            data=StockLocationSerializer(location, context={"request": request}).data)
 
 
 class StockBalanceListView(_ProcBase):
@@ -475,6 +515,8 @@ class StockBalanceListView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
+        if request.query_params.get("held_only") is not None:
+            _require_stock_read(request, "on_hand_qty", "stock_value")
         qs = _readable_balances(request, entity).select_related(
             "stock_item", "location")
         if (item_ref := request.query_params.get("stock_item")):
@@ -486,7 +528,7 @@ class StockBalanceListView(_ProcBase):
             qs = qs.exclude(on_hand_qty=0, stock_value=0)
         return self.paginate(
             request, qs.order_by("stock_item__code", "location__code"),
-            StockBalanceSerializer)
+            StockBalanceSerializer, context={"request": request})
 
 
 class StockItemListCreateView(_ProcBase):
@@ -520,6 +562,12 @@ class StockItemListCreateView(_ProcBase):
         hidden from the people who stock it.
         """
         entity = resolve_entity(request)
+        if request.query_params.get("location") not in (None, ""):
+            _require_stock_read(request, "on_hand_qty")
+        if request.query_params.get("needs_reorder") is not None:
+            _require_stock_read(request, "needs_reorder", "on_hand_qty", "reorder_level")
+        if request.query_params.get("is_active") is not None:
+            _require_stock_read(request, "item_is_active")
         location = _resolve_location(request, entity, request.query_params.get("location"))
         qs = StockItem.objects.filter(entity=entity).select_related(
             "inventory_account", "default_expense_account", "catalog_item")
@@ -551,13 +599,14 @@ class StockItemListCreateView(_ProcBase):
 
         return self.paginate(
             request, qs.order_by("code"), StockItemListSerializer,
-            page_context=page_balances,
+            context={"request": request}, page_context=page_balances,
         )
 
     def post(self, request):
         """Create a stock master with validated asset/expense accounting defaults."""
         entity = resolve_entity(request)
         body = request.data
+        _assert_stock_write(request, body, aliases={"is_active": "item_is_active"}, creating=True)
         # Codes are entity-unique identifiers - normalise to trimmed upper-case so the
         # uniqueness constraint and later immutability check compare like-for-like.
         code = _text(body.get("code"), "code", 40).upper()
@@ -628,6 +677,7 @@ class StockItemDetailView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
+        _assert_stock_write(request, body, aliases={"is_active": "item_is_active"})
         # The code is the item's stable identifier - sending a different one is an error,
         # never a silent rename (movements/valuation reference it). Compare on the same
         # trimmed upper-case normalisation used at create.
@@ -697,6 +747,7 @@ class StockIssueView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
+        _assert_stock_write(request, body)
         # quantity: strictly positive, finite, bounded (over-issue is caught in the service).
         quantity = _quantity(body.get("quantity"), "quantity")
         moved_on = _date(body.get("movement_date"), "movement_date")
@@ -751,6 +802,7 @@ class StockTransferView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
+        _assert_stock_write(request, body)
         quantity = _quantity(body.get("quantity"), "quantity")
         source = _movement_location(request, entity, body.get("location"))
         if source is None:
@@ -774,13 +826,17 @@ class StockTransferView(_ProcBase):
         received = StockMovementSerializer(movement.paired_movement, context=context).data
         # The receiving store may belong to a branch the sender cannot read.
         if not _readable_movements(request, entity).filter(pk=movement.paired_movement_id).exists():
-            received = trim_receiving_leg(received)
+            received = None
+        elif not can_read(request, "procurement.stock.transfer_received"):
+            received = None
         data = {
             "movement": StockMovementSerializer(movement, context=context).data,
-            "received": received,
             "stock_item": _detail_payload(request, entity, item.pk),
         }
-        if interbranch_readable(request, "related_documents"):
+        if received is not None:
+            data["received"] = received
+        if (can_read(request, "procurement.stock.transfer_document")
+                and interbranch_readable(request, "related_documents")):
             data["inter_branch_transfer_id"] = movement.inter_branch_transfer_id
         return success_response("Stock transferred.", data=data, status=201)
 
@@ -839,6 +895,7 @@ class StockAdjustView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
+        _assert_stock_write(request, body, aliases={"unit_cost": "adjust_unit_cost"})
         unit_cost = body.get("unit_cost")
         # A signed, non-zero, finite delta (+ write-up, − shrinkage); the service guards
         # a decrease against on-hand and picks the write-up/shrinkage accounts.
@@ -866,7 +923,7 @@ class StockAdjustView(_ProcBase):
         return success_response(
             "Stock adjusted.",
             data={
-                "movement": StockMovementSerializer(movement).data,
+                "movement": StockMovementSerializer(movement, context={"request": request}).data,
                 "stock_item": _detail_payload(request, entity, item.pk),
             },
             status=201,
@@ -890,6 +947,8 @@ class StockItemSummaryView(_ProcBase):
     def get(self, request):
         """Return stock counts and carried value in integer kobo, entity or store."""
         entity = resolve_entity(request)
+        if request.query_params.get("location") not in (None, ""):
+            _require_stock_read(request, "on_hand_qty")
         location = _resolve_location(request, entity, request.query_params.get("location"))
         held = _held_balances(request, entity, location)
         # ONE aggregate every way - conditional counts avoid loading any rows.
@@ -938,17 +997,25 @@ class StockItemSummaryView(_ProcBase):
         # total_value is a flat kobo integer (+ a formatted naira string), matching the
         # ContractSummary KPI shape the FE strip consumes with formatMoney().
         total_value = agg["total_value"] or 0
-        return success_response(
-            "Stock summary retrieved.",
-            data={
+        data = {
                 "tracked": agg["tracked"] or 0,
                 "active": agg["active"] or 0,
                 "low_stock": agg["low_stock"] or 0,
                 "out_of_stock": agg["out_of_stock"] or 0,
                 "total_value": total_value,
                 "total_value_naira": format_naira(total_value),
-            },
-        )
+        }
+        if not can_read(request, "procurement.stock.item_is_active"):
+            data.pop("active", None)
+        if not all(can_read(request, f"procurement.stock.{key}") for key in (
+            "needs_reorder", "on_hand_qty", "reorder_level", "item_is_active",
+        )):
+            data.pop("low_stock", None)
+            data.pop("out_of_stock", None)
+        if not can_read(request, "procurement.stock.stock_value"):
+            data.pop("total_value", None)
+            data.pop("total_value_naira", None)
+        return success_response("Stock summary retrieved.", data=data)
 
 
 class StockMovementListView(_ProcBase):
@@ -966,6 +1033,8 @@ class StockMovementListView(_ProcBase):
     def get(self, request):
         """List this caller's movement ledger with optional item/type filters."""
         entity = resolve_entity(request)
+        if request.query_params.get("movement_type") is not None:
+            _require_stock_read(request, "movement_type")
         qs = _readable_movements(request, entity).select_related(
             "stock_item", "created_by", "location")
         if (item_ref := request.query_params.get("stock_item")):

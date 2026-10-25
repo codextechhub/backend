@@ -16,6 +16,7 @@ import re
 from django.db.models import Q
 from rest_framework import serializers
 
+from core.attribution import person_label
 from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
@@ -121,7 +122,7 @@ def _is_exited(context, user_id):
 # Master data                                                                 #
 # --------------------------------------------------------------------------- #
 
-class VendorCategorySerializer(serializers.ModelSerializer):
+class VendorCategorySerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Category tree row with queryset-provided usage counts and parent labels.
 
     The view selects both parent levels and annotates the three counts. Keeping those
@@ -129,6 +130,7 @@ class VendorCategorySerializer(serializers.ModelSerializer):
     recursive count/parent queries.
     """
 
+    field_resource = "procurement.category"
     default_expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
@@ -276,6 +278,14 @@ class VendorListSerializer(FieldAccessMixin, serializers.ModelSerializer):
             "active_po_count", "branch_id", "branch_name",
         ]
 
+    def to_representation(self, instance):
+        """Expose the order count only when the order resource can be opened."""
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not can_read(request, "procurement.purchase_order.status"):
+            data.pop("active_po_count", None)
+        return data
+
 
 # --------------------------------------------------------------------------- #
 # Vendor contracts                                                            #
@@ -343,10 +353,12 @@ def _contract_activity(entity, contract_id):
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
-class VendorContractListSerializer(serializers.ModelSerializer):
+class VendorContractListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Lean contract list row. ``milestone_count`` is a queryset annotation (see
     :meth:`ContractListCreateView.get`) - never a per-row count, so the list stays O(1).
     ``is_expired`` is a computed display overlay, never a persisted status."""
+
+    field_resource = "procurement.contract"
 
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -371,9 +383,12 @@ class VendorContractListSerializer(serializers.ModelSerializer):
         return format_naira(obj.contract_value)
 
 
-class VendorContractSerializer(serializers.ModelSerializer):
+class VendorContractSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Full contract record for the detail drawer: header, milestones, renewal chain
     and the finance-audit activity feed."""
+
+    field_resource = "procurement.contract"
+    field_access_detail = True
 
     milestones = ContractMilestoneSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
@@ -416,12 +431,16 @@ class VendorContractSerializer(serializers.ModelSerializer):
 # Item catalog                                                                #
 # --------------------------------------------------------------------------- #
 
-class CatalogItemSerializer(serializers.ModelSerializer):
+class CatalogItemSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Catalog defaults plus their human-readable related labels and category path.
 
     ``stock_status`` is an optional queryset annotation used by catalog screens; it is
     not inventory state stored on :class:`CatalogItem` itself.
     """
+
+    field_resource = "procurement.catalog_item"
+    field_access_detail = True
+    field_write_aliases = True
 
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     category_name = serializers.CharField(source="category.name", read_only=True, default=None)
@@ -482,14 +501,31 @@ class CatalogItemSerializer(serializers.ModelSerializer):
     def get_standard_unit_price_naira(self, obj) -> str:
         return format_naira(obj.standard_unit_price)
 
+    def to_representation(self, instance):
+        """Show stock state only to readers of the quantity that determines it."""
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and any(
+            not can_read(request, key) for key in (
+                "procurement.stock.on_hand_qty",
+                "procurement.stock.reorder_level",
+                "procurement.stock.needs_reorder",
+            )
+        ):
+            data.pop("stock_status", None)
+        return data
+
 
 # --------------------------------------------------------------------------- #
 # Inventory / stock ledger                                                    #
 # --------------------------------------------------------------------------- #
 
-class StockItemListSerializer(serializers.ModelSerializer):
+class StockItemListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Lean stock-item list row. ``unit_cost``/``needs_reorder`` are model properties;
     the ``*_id`` fields carry the picker prefills the edit form re-hydrates from."""
+
+    field_resource = "procurement.stock"
+    field_aliases = {"is_active": "item_is_active"}
 
     inventory_code = serializers.CharField(
         source="inventory_account.code", read_only=True, default=None,
@@ -522,7 +558,13 @@ class StockItemListSerializer(serializers.ModelSerializer):
         if balance is not None:
             instance.on_hand_qty = balance.on_hand_qty
             instance.stock_value = balance.stock_value
-        return super().to_representation(instance)
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not all(can_read(request, f"procurement.stock.{key}") for key in (
+            "needs_reorder", "on_hand_qty", "reorder_level",
+        )):
+            data.pop("needs_reorder", None)
+        return data
 
     class Meta:
         model = StockItem
@@ -552,11 +594,20 @@ class StockItemDetailSerializer(StockItemListSerializer):
 
     movements = serializers.SerializerMethodField()
     activity = serializers.SerializerMethodField()
+    field_access_detail = True
+    field_aliases = {**StockItemListSerializer.field_aliases, "activity": "activity"}
 
     class Meta(StockItemListSerializer.Meta):
         fields = StockItemListSerializer.Meta.fields + ["movements", "activity"]
 
     def get_movements(self, obj):
+        request = self.context.get("request")
+        if request is not None and not any(can_read(request, f"procurement.stock.{key}") for key in (
+            "movement_type", "movement_date", "movement_quantity", "movement_value",
+            "balance_qty", "balance_value", "ledger_links", "movement_reference",
+            "movement_narration", "movement_cost_center", "movement_recorded_by",
+        )):
+            return []
         movements = getattr(obj, "_recent_movements", None)
         if movements is None:
             movements = list(
@@ -579,10 +630,22 @@ class StockItemDetailSerializer(StockItemListSerializer):
 
 class StockLocationSerializer(serializers.ModelSerializer):
     """A place stock physically sits, and the branch it belongs to if any."""
-
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
     )
+
+    def to_representation(self, instance):
+        """Use store switches where item and store payloads share client names."""
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        for name, field in (
+            ("description", "location_description"),
+            ("is_default", "location_is_default"),
+            ("is_active", "location_is_active"),
+        ):
+            if request is not None and not can_read(request, f"procurement.stock.{field}"):
+                data.pop(name, None)
+        return data
 
     class Meta:
         model = StockLocation
@@ -594,12 +657,14 @@ class StockLocationSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
-class StockBalanceSerializer(serializers.ModelSerializer):
+class StockBalanceSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """What one item holds at one location, with its own weighted-average cost.
 
     The item's own totals stay the roll-up across locations; these are the rows that
     add up to them.
     """
+
+    field_resource = "procurement.stock"
 
     stock_item_code = serializers.CharField(
         source="stock_item.code", read_only=True, default=None,
@@ -621,12 +686,18 @@ class StockBalanceSerializer(serializers.ModelSerializer):
         ]
 
 
-class StockMovementSerializer(serializers.ModelSerializer):
+class StockMovementSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One immutable stock-ledger event with signed and running-balance values.
 
     Raw integer values remain the accounting contract; ``*_naira`` fields are display
     mirrors. The surrounding detail queryset selects ``created_by`` and ``stock_item``.
     """
+
+    field_resource = "procurement.stock"
+    field_aliases = {
+        "quantity": "movement_quantity", "reference": "movement_reference",
+        "narration": "movement_narration", "created_by_is_exited": "created_by_name",
+    }
 
     stock_item_code = serializers.CharField(
         source="stock_item.code", read_only=True, default=None,
@@ -688,8 +759,18 @@ class StockMovementSerializer(serializers.ModelSerializer):
 # Purchase requisition                                                        #
 # --------------------------------------------------------------------------- #
 
-class RequisitionLineSerializer(serializers.ModelSerializer):
+class RequisitionLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Read-only requisition estimate line, including its derived kobo extension."""
+
+    field_resource = "procurement.requisition"
+
+    def to_representation(self, instance):
+        """The line extension needs the quantity and the estimate it multiplies."""
+        data = super().to_representation(instance)
+        if not (self.can_read_field("quantity", instance)
+                and self.can_read_field("estimated_unit_price", instance)):
+            data.pop("estimated_line_total", None)
+        return data
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
     estimated_line_total = serializers.IntegerField(read_only=True)
@@ -718,7 +799,7 @@ class FreeRequisitionLineSerializer(RequisitionLineSerializer):
         ]
 
 
-class RequisitionSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
+class RequisitionSerializer(FieldAccessMixin, ApprovalReturnedMixin, serializers.ModelSerializer):
     """Requisition header and lines with document and workflow states kept separate.
 
     ``status`` is the shared finance-document lifecycle while ``approval_state`` is the
@@ -728,6 +809,9 @@ class RequisitionSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
     human holding ``procurement.approval.override``. An APPROVED requisition carrying
     this flag was never reviewed, which is exactly what makes it worth showing.
     """
+
+    field_resource = "procurement.requisition"
+    field_access_detail = True
 
     lines = RequisitionLineSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(
@@ -839,8 +923,10 @@ def _quotation_is_expired(quotation, context=None) -> bool:
 # Request for quotation (sourcing)                                            #
 # --------------------------------------------------------------------------- #
 
-class RfqLineSerializer(serializers.ModelSerializer):
+class RfqLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """RFQ specification line; pricing arrives later on vendor quotation lines."""
+
+    field_resource = "procurement.rfq"
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
 
@@ -853,7 +939,7 @@ class RfqLineSerializer(serializers.ModelSerializer):
         ]
 
 
-def _shared_sourcing_payload(obj, *, include_allocations):
+def _shared_sourcing_payload(obj, *, include_allocations, request=None):
     """Describe branch participation to buyers while the vendor sees one RFQ."""
     if not hasattr(obj, "shared_sourcing_group"):
         return None
@@ -868,7 +954,7 @@ def _shared_sourcing_payload(obj, *, include_allocations):
             for branch_id in sorted(branches)
         ],
     }
-    if include_allocations:
+    if include_allocations and can_read(request, "procurement.rfq.branch_allocations"):
         payload["allocations"] = [
             {
                 "rfq_line_id": allocation.rfq_line_id,
@@ -884,9 +970,11 @@ def _shared_sourcing_payload(obj, *, include_allocations):
     return payload
 
 
-class RfqListSerializer(serializers.ModelSerializer):
+class RfqListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Lean list row. ``line_count``/``response_count`` are queryset annotations
     (see :func:`RfqListCreateView.get`) - never per-row counts, so the list stays O(1)."""
+
+    field_resource = "procurement.rfq"
 
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -910,11 +998,14 @@ class RfqListSerializer(serializers.ModelSerializer):
         ]
 
     def get_shared_sourcing(self, obj):
-        return _shared_sourcing_payload(obj, include_allocations=False)
+        return _shared_sourcing_payload(obj, include_allocations=False,
+                                       request=self.context.get("request"))
 
 
-class RfqQuotationSummarySerializer(serializers.ModelSerializer):
+class RfqQuotationSummarySerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A received quotation as it appears in the RFQ drawer's Quotations tab."""
+
+    field_resource = "procurement.quotation"
 
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -932,8 +1023,12 @@ class RfqQuotationSummarySerializer(serializers.ModelSerializer):
         return _quotation_is_expired(obj, self.context)
 
 
-class RfqDetailSerializer(serializers.ModelSerializer):
+class RfqDetailSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Full RFQ record for the detail drawer: lines, received quotations, activity."""
+
+    field_resource = "procurement.rfq"
+    field_access_detail = True
+    field_aliases = {"rfq_status": "status", "invitations": "invited_vendors"}
 
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -964,7 +1059,8 @@ class RfqDetailSerializer(serializers.ModelSerializer):
     amendments = serializers.SerializerMethodField()
 
     def get_shared_sourcing(self, obj):
-        return _shared_sourcing_payload(obj, include_allocations=True)
+        return _shared_sourcing_payload(obj, include_allocations=True,
+                                       request=self.context.get("request"))
 
     def get_line_count(self, obj) -> int:
         return len(obj.lines.all())
@@ -1017,6 +1113,16 @@ class RfqDetailSerializer(serializers.ModelSerializer):
                 "decline_reason": inv.decline_reason,
                 "recipients": self._recipients(inv),
             })
+        request = self.context.get("request")
+        for row in rows:
+            if not can_read(request, "procurement.rfq.invitation_activity"):
+                for key in ("responded", "opened_at", "draft_started_at", "submitted_at",
+                            "declined_at", "decline_reason"):
+                    row.pop(key, None)
+            if not can_read(request, "procurement.quotation.total"):
+                row.pop("quotation_total", None)
+            if not can_read(request, "procurement.quotation.status"):
+                row.pop("quotation_status", None)
         return rows
 
     def _recipients(self, invitation):
@@ -1044,7 +1150,8 @@ class RfqDetailSerializer(serializers.ModelSerializer):
 
     def get_quotations(self, obj):
         # Reuse the view's explicit newest-first prefetch cache; ordering here would re-query.
-        return RfqQuotationSummarySerializer(obj.quotations.all(), many=True).data
+        return RfqQuotationSummarySerializer(obj.quotations.all(), many=True,
+                                             context=self.context).data
 
     def get_activity(self, obj):
         return _sourcing_activity(obj.entity_id, "RequestForQuotation", obj.pk)
@@ -1054,8 +1161,18 @@ class RfqDetailSerializer(serializers.ModelSerializer):
 # Vendor quotation (sourcing)                                                 #
 # --------------------------------------------------------------------------- #
 
-class VendorQuotationLineSerializer(serializers.ModelSerializer):
+class VendorQuotationLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Priced vendor response line with integer-kobo net and tax amounts."""
+
+    field_resource = "procurement.quotation"
+
+    def to_representation(self, instance):
+        """Net and tax values imply the unit price when quantity is visible."""
+        data = super().to_representation(instance)
+        if not self.can_read_field("unit_price", instance):
+            data.pop("net_amount", None)
+            data.pop("tax_amount", None)
+        return data
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
 
@@ -1069,8 +1186,10 @@ class VendorQuotationLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class QuotationListSerializer(serializers.ModelSerializer):
+class QuotationListSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Lean quotation list row. ``is_expired`` is a display overlay, never persisted."""
+
+    field_resource = "procurement.quotation"
 
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -1098,8 +1217,11 @@ class QuotationListSerializer(serializers.ModelSerializer):
         return _quotation_is_expired(obj, self.context)
 
 
-class QuotationDetailSerializer(serializers.ModelSerializer):
+class QuotationDetailSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Full quotation record for the detail drawer: lines, totals, PO link, activity."""
+
+    field_resource = "procurement.quotation"
+    field_access_detail = True
 
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -1205,8 +1327,18 @@ class VendorPortalQuotationSerializer(serializers.ModelSerializer):
 # Purchase order                                                              #
 # --------------------------------------------------------------------------- #
 
-class POLineSerializer(serializers.ModelSerializer):
+class POLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """PO line including service-owned receipt and invoice progress counters."""
+
+    field_resource = "procurement.purchase_order"
+
+    def to_representation(self, instance):
+        """Line amounts restate the unit price when the quantity is visible."""
+        data = super().to_representation(instance)
+        if not self.can_read_field("unit_price", instance):
+            data.pop("net_amount", None)
+            data.pop("tax_amount", None)
+        return data
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
 
@@ -1219,8 +1351,11 @@ class POLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class POReceiptDocumentSerializer(serializers.ModelSerializer):
+class POReceiptDocumentSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Compact GRN link embedded in a PO detail response."""
+
+    field_resource = "procurement.goods_receipt"
+    field_aliases = {"item_count": "quantities"}
 
     item_count = serializers.SerializerMethodField()
 
@@ -1233,8 +1368,10 @@ class POReceiptDocumentSerializer(serializers.ModelSerializer):
         return len(obj.lines.all())
 
 
-class POInvoiceDocumentSerializer(serializers.ModelSerializer):
+class POInvoiceDocumentSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Compact vendor-invoice link embedded in a PO detail response."""
+
+    field_resource = "procurement.vendor_invoice"
 
     class Meta:
         model = VendorInvoice
@@ -1245,8 +1382,11 @@ class POInvoiceDocumentSerializer(serializers.ModelSerializer):
 _EMAIL_ADDRESS = re.compile(r"<?[\w.+'-]+@[\w-]+(?:\.[\w-]+)+>?")
 
 
-class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
+class PurchaseOrderVendorDeliverySerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Operational history without exposing recipient addresses through ordinary PO reads."""
+
+    field_resource = "procurement.purchase_order"
+    field_aliases = {"recipient_count": "email_history", "bcc_count": "email_history"}
 
     requested_by_name = serializers.SerializerMethodField()
     requested_by_is_exited = serializers.SerializerMethodField()
@@ -1302,13 +1442,16 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
         return len(obj.bcc or [])
 
 
-class PurchaseOrderSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
+class PurchaseOrderSerializer(FieldAccessMixin, ApprovalReturnedMixin, serializers.ModelSerializer):
     """Full PO read model: commercial totals, progress, source, and child documents.
 
     The API deliberately exposes inherited ``status``, workflow ``approval_state``, and
     the UI-only ``display_status`` together. Receipt/invoice arrays and progress methods
     rely on the detail view's prefetched relations; list responses use the subclass below.
     """
+
+    field_resource = "procurement.purchase_order"
+    field_access_detail = True
 
     lines = POLineSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(
@@ -1410,8 +1553,18 @@ class PurchaseOrderListSerializer(PurchaseOrderSerializer):
 # Goods received note                                                         #
 # --------------------------------------------------------------------------- #
 
-class GRNLineSerializer(serializers.ModelSerializer):
+class GRNLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Receipt line with a compatibility description for pre-snapshot rows."""
+
+    field_resource = "procurement.goods_receipt"
+
+    def to_representation(self, instance):
+        """A line value implies its unit price when the receipt quantity is visible."""
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"),
+                        "procurement.goods_receipt.receipt_unit_price"):
+            data.pop("value_amount", None)
+        return data
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -1439,13 +1592,16 @@ class GRNLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
+class GoodsReceivedNoteSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """GRN header/lines plus a delivery-quality overlay independent of posting status.
 
     ``status`` says whether the accounting document posted. ``receipt_status`` compares
     accepted/rejected quantities with the receipt-time expectation and therefore answers
     a different operational question.
     """
+
+    field_resource = "procurement.goods_receipt"
+    field_access_detail = True
 
     lines = GRNLineSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(
@@ -1486,7 +1642,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
         user = obj.received_by
         if user is None:
             return "System"
-        return getattr(user, "full_name", "") or user.get_full_name() or user.email
+        return person_label(user)
 
     def get_received_by_is_exited(self, obj):
         return _is_exited(self.context, obj.received_by_id)
@@ -1578,8 +1734,20 @@ class GoodsReceivedNoteListSerializer(GoodsReceivedNoteSerializer):
 # Vendor invoice                                                              #
 # --------------------------------------------------------------------------- #
 
-class VendorInvoiceLineSerializer(serializers.ModelSerializer):
+class VendorInvoiceLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """Billed line with optional PO/GRN provenance used by three-way matching."""
+
+    field_resource = "procurement.vendor_invoice"
+
+    def to_representation(self, instance):
+        """Computed line amounts follow visibility of the quantity and unit price."""
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if not all(can_read(request, f"procurement.vendor_invoice.{field}")
+                   for field in ("bill_lines", "bill_unit_price")):
+            data.pop("net_amount", None)
+            data.pop("tax_amount", None)
+        return data
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -1594,7 +1762,7 @@ class VendorInvoiceLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorInvoiceSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
+class VendorInvoiceSerializer(FieldAccessMixin, ApprovalReturnedMixin, serializers.ModelSerializer):
     """AP invoice read model spanning posting, approval, match, and settlement states.
 
     Each lifecycle remains available as an authoritative field. ``display_status`` is
@@ -1602,6 +1770,8 @@ class VendorInvoiceSerializer(ApprovalReturnedMixin, serializers.ModelSerializer
     ``amount_paid``/``balance_due`` reflect posted allocation authority.
     """
 
+    field_resource = "procurement.vendor_invoice"
+    field_access_detail = True
     lines = VendorInvoiceLineSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -1682,12 +1852,29 @@ class VendorInvoiceListSerializer(VendorInvoiceSerializer):
 # Vendor payment                                                              #
 # --------------------------------------------------------------------------- #
 
-class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
+class VendorPaymentAllocationSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A payment split enriched with the target invoice's current settlement snapshot.
 
     The allocation ``amount`` is gross AP settled; it is intentionally not the payment's
     net bank outflow when withholding tax is present.
     """
+
+    field_resource = "procurement.vendor_payment"
+    field_aliases = {"amount": "allocations"}
+
+    def to_representation(self, instance):
+        """Bill details inside an allocation follow the bill's own switches."""
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        invoice_fields = (
+            ("invoice_date", "invoice_date"), ("due_date", "due_date"),
+            ("invoice_total", "total"), ("invoice_balance", "settlement"),
+            ("invoice_payment_status", "status"),
+        )
+        for name, field in invoice_fields:
+            if not can_read(request, f"procurement.vendor_invoice.{field}"):
+                data.pop(name, None)
+        return data
 
     invoice_number = serializers.CharField(
         source="vendor_invoice.document_number", read_only=True,
@@ -1706,7 +1893,7 @@ class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorPaymentSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
+class VendorPaymentSerializer(FieldAccessMixin, ApprovalReturnedMixin, serializers.ModelSerializer):
     """Vendor disbursement with approval, posting, allocation, and bank context.
 
     Draft allocation rows express the intended split. Once POSTED, the header's
@@ -1718,6 +1905,9 @@ class VendorPaymentSerializer(ApprovalReturnedMixin, serializers.ModelSerializer
     source was kept (:class:`~vs_procurement.constants.WhtSource`).
     """
 
+    field_resource = "procurement.vendor_payment"
+    field_access_detail = True
+    field_write_aliases = True
     allocations = VendorPaymentAllocationSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,
@@ -1768,10 +1958,7 @@ class VendorPaymentSerializer(ApprovalReturnedMixin, serializers.ModelSerializer
     def get_created_by_name(self, obj) -> str:
         if not obj.created_by_id:
             return "System"
-        return (
-            f"{getattr(obj.created_by, 'first_name', '')} {getattr(obj.created_by, 'last_name', '')}".strip()
-            or getattr(obj.created_by, "email", "System")
-        )
+        return person_label(obj.created_by)
 
     def get_created_by_is_exited(self, obj):
         return _is_exited(self.context, obj.created_by_id)
@@ -1787,6 +1974,14 @@ class VendorPaymentSerializer(ApprovalReturnedMixin, serializers.ModelSerializer
         if amount < obj.gross_amount:
             return "PARTIAL"
         return "FULL"
+
+    def to_representation(self, instance):
+        """Derived withholding source is meaningful only beside the tax amount."""
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"),
+                        "procurement.vendor_payment.wht_amount"):
+            data.pop("wht_source", None)
+        return data
 
 
 class VendorPaymentListSerializer(VendorPaymentSerializer):
@@ -1830,9 +2025,11 @@ class VendorCreditNoteAllocationSerializer(serializers.ModelSerializer):
         fields = ["id", "vendor_invoice_id", "document_number", "amount", "effective_date"]
 
 
-class VendorCreditNoteSerializer(ApprovalReturnedMixin, serializers.ModelSerializer):
+class VendorCreditNoteSerializer(FieldAccessMixin, ApprovalReturnedMixin, serializers.ModelSerializer):
     """A vendor credit note with what it settled and what it left as vendor credit."""
 
+    field_resource = "procurement.vendor_credit_note"
+    field_access_detail = True
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -1854,6 +2051,13 @@ class VendorCreditNoteSerializer(ApprovalReturnedMixin, serializers.ModelSeriali
             "lines", "allocations",
         ]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is not None and not can_read(request, "procurement.vendor_credit_note.amounts"):
+            data.pop("advance_remaining", None)
+        return data
+
 
 class VendorCreditNoteListSerializer(VendorCreditNoteSerializer):
     """List rows omit the line and allocation arrays."""
@@ -1868,8 +2072,22 @@ class VendorCreditNoteListSerializer(VendorCreditNoteSerializer):
         ]
 
 
-class GoodsReturnLineSerializer(serializers.ModelSerializer):
+class GoodsReturnLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """One returned receipt line."""
+
+    field_resource = "procurement.goods_receipt"
+    field_aliases = {
+        "description": "return_lines", "quantity": "return_lines",
+        "value_amount": "return_line_values",
+    }
+
+    def to_representation(self, instance):
+        """The value of returned units follows visibility of their receipt price."""
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"),
+                        "procurement.goods_receipt.receipt_unit_price"):
+            data.pop("value_amount", None)
+        return data
 
     description = serializers.CharField(source="grn_line.description", read_only=True)
 
@@ -1878,8 +2096,14 @@ class GoodsReturnLineSerializer(serializers.ModelSerializer):
         fields = ["id", "line_no", "grn_line_id", "description", "quantity", "value_amount"]
 
 
-class GoodsReturnSerializer(serializers.ModelSerializer):
+class GoodsReturnSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A posted return of goods to the vendor against one receipt."""
+
+    field_resource = "procurement.goods_receipt"
+    field_aliases = {
+        "status": "return_status", "total_value": "return_value",
+        "journal_id": "return_journal", "lines": "return_lines",
+    }
 
     grn_number = serializers.CharField(source="grn.document_number", read_only=True)
     lines = GoodsReturnLineSerializer(many=True, read_only=True)

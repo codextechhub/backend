@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from core.media import register_policy
 from vs_rbac.evaluator import has_permission
+from vs_rbac.field_enforcement import can_read
 
 from .models import (
     VendorInvoiceAttachment,
@@ -21,12 +22,12 @@ from .models import (
 )
 
 
-def _document_policy(key: str, document_of):
+def _document_policy(key: str, document_of, *, field_key: str | None = None):
     def _predicate(request, row) -> bool:
         document = document_of(row)
         if document is None:
             return False
-        return has_permission(
+        return (field_key is None or can_read(request, field_key)) and has_permission(
             request.user, key,
             tenant=getattr(document.entity, "tenant", None),
             branch=getattr(document, "branch", None),
@@ -44,9 +45,11 @@ def register() -> None:
     )
     register_policy(
         VendorInvoiceAttachment,
-        _document_policy("procurement.vendor_invoice.view", lambda row: row.vendor_invoice),
+        _document_policy("procurement.vendor_invoice.view", lambda row: row.vendor_invoice,
+                         field_key="procurement.vendor_invoice.attachments"),
     )
     register_policy(
         VendorPaymentAttachment,
-        _document_policy("procurement.vendor_payment.view", lambda row: row.payment),
+        _document_policy("procurement.vendor_payment.view", lambda row: row.payment,
+                         field_key="procurement.vendor_payment.attachments"),
     )

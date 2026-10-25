@@ -11,6 +11,7 @@ import datetime
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework.test import APIRequestFactory
 
 from vs_admin_console.models import ImpersonationSession
 from vs_finance.audit import record
@@ -120,7 +121,10 @@ class VendorPaymentActivityProxyTests(_ProxyFixture):
             message="Posted the vendor payment.", mirror=False,
         )
         clear_request_context()
-        rows = _serialize_detail(self.payment)["activity"]
+        request = APIRequestFactory().get("/")
+        request.user = actor_user
+        request.tenant = self.entity.tenant
+        rows = _serialize_detail(self.payment, request)["activity"]
         self.assertEqual(len(rows), 1)
         return rows[0]
 

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from django.db import models, transaction
 from django.db.models import Count
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
+from vs_rbac.field_enforcement import assert_writable, can_read, readable_lookups, visible
 
 from core.response import success_response
 from vs_finance.money import format_naira
@@ -138,9 +139,13 @@ class ContractListCreateView(_ProcBase):
             milestone_count=Count("milestones", distinct=True),
         )
         if (status_ := request.query_params.get("status")):
+            if not can_read(request, "procurement.contract.status"):
+                raise PermissionDenied("Contract status is not readable.")
             qs = qs.filter(status=status_)
         # ``?expiring=1`` uses each contract's stored renewal-notice window.
         if request.query_params.get("expiring") in ("1", "true", "True"):
+            if not can_read(request, "procurement.contract.term"):
+                raise PermissionDenied("Contract term is not readable.")
             due = contracts.expiring_contracts(entity, as_of=today)
             qs = qs.filter(
                 pk__in=due.values("pk"),
@@ -149,17 +154,23 @@ class ContractListCreateView(_ProcBase):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() \
                 else qs.filter(vendor__code=vendor)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
-            qs = qs.filter(
-                models.Q(reference__icontains=q) | models.Q(title__icontains=q)
-                | models.Q(vendor__code__icontains=q) | models.Q(vendor__name__icontains=q),
-            )
-        return self.paginate(request, qs.order_by("-id"), VendorContractListSerializer)
+            lookups = readable_lookups(request, "procurement.contract", {
+                "reference__icontains": None, "title__icontains": "title",
+                "vendor__code__icontains": None, "vendor__name__icontains": None,
+            })
+            query = models.Q()
+            for lookup in lookups:
+                query |= models.Q(**{lookup: q})
+            qs = qs.filter(query)
+        return self.paginate(request, qs.order_by("-id"), VendorContractListSerializer,
+                             context={"request": request})
 
     @transaction.atomic
     def post(self, request):
         """Create a draft contract and optional integer-kobo milestones atomically."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.contract", body, creating=True)
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         from ..purchasing import vendor_purchase_block_reason
         if reason := vendor_purchase_block_reason(vendor):
@@ -190,7 +201,7 @@ class ContractListCreateView(_ProcBase):
         )
         _build_milestones(contract, body.get("milestones"))
         return success_response(
-            "Vendor contract created.", data=VendorContractSerializer(contract).data, status=201,
+            "Vendor contract created.", data=VendorContractSerializer(contract, context={"request": request}).data, status=201,
         )
 
 
@@ -218,7 +229,7 @@ class ContractDetailView(_ProcBase):
         """Return one contract with its vendor, renewal link, and milestones."""
         entity = resolve_entity(request)
         contract = self._get(entity, pk)
-        return success_response("Vendor contract retrieved.", data=VendorContractSerializer(contract).data)
+        return success_response("Vendor contract retrieved.", data=VendorContractSerializer(contract, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -230,6 +241,7 @@ class ContractDetailView(_ProcBase):
             raise ValidationError(
                 {"status": f"A {state_word(contract)} contract can no longer be edited."})
         body = request.data
+        assert_writable(request, "procurement.contract", body)
         if "title" in body:
             contract.title = _text(body.get("title"), "title", 200, required=True)
         if "start_date" in body:
@@ -251,7 +263,7 @@ class ContractDetailView(_ProcBase):
         # Milestones added on edit are appended (existing ones - some completed - are preserved).
         if body.get("milestones"):
             _build_milestones(contract, body["milestones"], start_line_no=contract.milestones.count())
-        return success_response("Vendor contract updated.", data=VendorContractSerializer(contract).data)
+        return success_response("Vendor contract updated.", data=VendorContractSerializer(contract, context={"request": request}).data)
 
 
 class ContractSummaryView(_ProcBase):
@@ -281,13 +293,13 @@ class ContractSummaryView(_ProcBase):
                 "contract_value", filter=models.Q(status=ContractStatus.ACTIVE),
             ),
         )
-        return success_response("Contract summary retrieved.", data={
+        return success_response("Contract summary retrieved.", data=visible(request, "procurement.contract", {
             "active": agg["active"] or 0,
             "expiring_soon": expiring_soon,
             "expired": agg["expired"] or 0,
             "total_active_value": agg["total_active_value"] or 0,
             "total_active_value_naira": format_naira(agg["total_active_value"] or 0),
-        })
+        }))
 
 
 class ContractLinkedPurchaseOrdersView(_ProcBase):
@@ -312,14 +324,14 @@ class ContractLinkedPurchaseOrdersView(_ProcBase):
 
         def _row(po, link_type):
             """Render a bounded PO association with explicit integer-kobo value."""
-            return {
+            return visible(request, "procurement.purchase_order", {
                 "id": po.id, "document_number": po.document_number,
                 "total": po.total, "total_naira": format_naira(po.total),
                 "status": po.status, "order_date": po.order_date,
                 # "linked" = an explicit call-off against THIS contract; "association" = a
                 # same-vendor PO inside the term with no explicit link (legacy/other scope).
                 "link_type": link_type,
-            }
+            })
 
         # 1) Explicit call-offs: POs whose contract FK points at this exact contract.
         explicit = PurchaseOrder.objects.filter(
@@ -364,7 +376,7 @@ class ContractActivateView(_ContractActionBase):
         """Delegate activation guards and audit effects to the contract service."""
         contract = self._get(request, pk)
         contracts.activate_contract(contract, actor_user=request.user)
-        return success_response("Vendor contract activated.", data=VendorContractSerializer(contract).data)
+        return success_response("Vendor contract activated.", data=VendorContractSerializer(contract, context={"request": request}).data)
 
 
 class ContractTerminateView(_ContractActionBase):
@@ -377,7 +389,7 @@ class ContractTerminateView(_ContractActionBase):
         contracts.terminate_contract(
             contract, reason=_text(request.data.get("reason"), "reason", 255),
             actor_user=request.user)
-        return success_response("Vendor contract terminated.", data=VendorContractSerializer(contract).data)
+        return success_response("Vendor contract terminated.", data=VendorContractSerializer(contract, context={"request": request}).data)
 
 
 class ContractRenewView(_ContractActionBase):
@@ -393,6 +405,8 @@ class ContractRenewView(_ContractActionBase):
         contract = self._get(request, pk)
         entity = contract.entity
         body = request.data
+        assert_writable(request, "procurement.contract", body, creating=True,
+                        aliases={"copy_milestones": "milestones"})
         # A reference is auto-generated (like create) when the renewal payload omits one.
         reference = _text(body.get("reference"), "reference", 64) or contracts.next_contract_reference(entity)
         start_date = _date(body.get("start_date"), "start_date", required=True)
@@ -410,7 +424,7 @@ class ContractRenewView(_ContractActionBase):
         )
         return success_response(
             f"Contract renewed → {successor.reference}.",
-            data=VendorContractSerializer(successor).data, status=201,
+            data=VendorContractSerializer(successor, context={"request": request}).data, status=201,
         )
 
 
@@ -429,13 +443,14 @@ class ContractMilestoneCompleteView(_ProcBase):
             contract__entity=entity, contract_id=pk, pk=milestone_id).first()
         if milestone is None:
             raise NotFound("No such milestone on this contract.")
+        assert_writable(request, "procurement.contract", {"milestones": True})
         contracts.complete_milestone(
             milestone, on=_date(request.data.get("completed_date"), "completed_date"),
             actor_user=request.user,
         )
         milestone.contract.refresh_from_db()
         return success_response(
-            "Milestone completed.", data=VendorContractSerializer(milestone.contract).data,
+            "Milestone completed.", data=VendorContractSerializer(milestone.contract, context={"request": request}).data,
         )
 
 
@@ -457,5 +472,5 @@ class ContractRenewalsView(_ProcBase):
         )
         return success_response(
             "Contracts due for renewal retrieved.",
-            data=VendorContractSerializer(rows, many=True).data,
+            data=VendorContractSerializer(rows, many=True, context={"request": request}).data,
         )

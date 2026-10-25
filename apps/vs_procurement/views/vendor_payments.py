@@ -12,7 +12,7 @@ from vs_workflow.services.approval_filter import (
 )
 from django.db import transaction
 from django.db.models import Q
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus, PaymentMethod
@@ -20,6 +20,7 @@ from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
 from vs_finance.views_ops.base import require_own_branch_bank
 from vs_config.clock import branch_today
+from vs_rbac.field_enforcement import assert_writable, can_read
 
 from .. import approvals, payables
 from ..constants import ProcApprovalState, VendorKycStatus, WhtSource
@@ -229,7 +230,7 @@ def _vendor_payment_activity(entity, payment_id):
     ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
 
 
-def _serialize_detail(payment):
+def _serialize_detail(payment, request):
     """Overlay workflow, posting, and audit context onto the canonical serializer.
 
     The overlay is read-only presentation data: it does not duplicate workflow or
@@ -238,13 +239,17 @@ def _serialize_detail(payment):
     """
     from vs_workflow.models import WorkflowInstance
 
-    data = VendorPaymentSerializer(payment).data
+    data = VendorPaymentSerializer(payment, context={"request": request}).data
     data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(payment)
-    data["posting_lines"] = [{
-        "account_code": line.account.code, "account_name": line.account.name,
-        "debit": line.debit, "credit": line.credit,
-    } for line in payment.journal.lines.all()] if payment.journal_id else []
-    data["activity"] = _vendor_payment_activity(payment.entity, payment.pk)
+    amounts_readable = all(can_read(request, f"procurement.vendor_payment.{field}")
+                           for field in ("gross_amount", "net_amount", "wht_amount"))
+    if can_read(request, "procurement.vendor_payment.posting_lines") and amounts_readable:
+        data["posting_lines"] = [{
+            "account_code": line.account.code, "account_name": line.account.name,
+            "debit": line.debit, "credit": line.credit,
+        } for line in payment.journal.lines.all()] if payment.journal_id else []
+    if can_read(request, "procurement.vendor_payment.activity") and amounts_readable:
+        data["activity"] = _vendor_payment_activity(payment.entity, payment.pk)
     return data
 
 
@@ -260,6 +265,9 @@ class VendorPaymentListCreateView(_ProcBase):
     def get(self, request):
         """Return a paginated, filterable payment console for the current entity."""
         entity = resolve_entity(request)
+        if (request.query_params.get("status") or request.query_params.get("approval_state")) \
+                and not can_read(request, "procurement.vendor_payment.status"):
+            raise PermissionDenied("The payment status filter is unavailable for this role.")
         qs = _branch_scoped(request, entity, _payment_list_queryset(entity), request.query_params)
         qs = filter_by_stored_status(qs, request.query_params.get("status"))
         # The approval pill: a payment sent back reads Sent back, not Pending.
@@ -269,11 +277,16 @@ class VendorPaymentListCreateView(_ProcBase):
             param="approval_state",
         )
         if search := request.query_params.get("search", "").strip():
-            qs = qs.filter(Q(document_number__icontains=search) | Q(reference__icontains=search)
-                           | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search))
+            match = (Q(document_number__icontains=search)
+                     | Q(vendor__code__icontains=search)
+                     | Q(vendor__name__icontains=search))
+            if can_read(request, "procurement.vendor_payment.reference"):
+                match |= Q(reference__icontains=search)
+            qs = qs.filter(match)
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-id"), VendorPaymentListSerializer,
+            context={"request": request},
             page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
         )
 
@@ -282,6 +295,7 @@ class VendorPaymentListCreateView(_ProcBase):
         """Create a draft from server-resolved invoices and derived kobo totals."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.vendor_payment", body, creating=True)
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
         bank = _resolve_bank_account(
@@ -307,7 +321,7 @@ class VendorPaymentListCreateView(_ProcBase):
         )
         _replace_plan(payment, plan)
         return success_response(
-            "Vendor payment draft created.", data=_serialize_detail(_payment_queryset(entity).get(pk=payment.pk)), status=201,
+            "Vendor payment draft created.", data=_serialize_detail(_payment_queryset(entity).get(pk=payment.pk), request), status=201,
         )
 
 
@@ -351,7 +365,7 @@ class VendorPaymentDetailView(_ProcBase):
             request, _payment_queryset(entity), pk,
             "No such vendor payment in this entity.",
         )
-        return success_response("Vendor payment retrieved.", data=_serialize_detail(payment))
+        return success_response("Vendor payment retrieved.", data=_serialize_detail(payment, request))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -377,9 +391,17 @@ class VendorPaymentDetailView(_ProcBase):
             refusal="Only an unsubmitted or rejected draft payment can be edited.",
         )
         body = request.data
+        assert_writable(request, "procurement.vendor_payment", body)
         vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
-        plan = _allocation_plan(request, entity, vendor, body.get("allocations"))
+        plan = (
+            _allocation_plan(request, entity, vendor, body["allocations"])
+            if "allocations" in body else
+            [(row.vendor_invoice, row.amount) for row in payment.allocations.select_related(
+                "vendor_invoice").all()]
+        )
+        if any(invoice.vendor_id != vendor.pk for invoice, _ in plan):
+            raise ValidationError({"vendor": "The selected vendor must match the payment's bills."})
         branch_id = _settled_branch_id(request, plan)
         if returned and branch_id != payment.branch_id:
             filed = f"for {payment.branch.name}" if payment.branch_id else "without a branch"
@@ -416,8 +438,9 @@ class VendorPaymentDetailView(_ProcBase):
         if not returned:
             payment.approval_state = ProcApprovalState.NOT_SUBMITTED
         payment.save()
-        _replace_plan(payment, plan)
-        return success_response("Vendor payment draft updated.", data=_serialize_detail(_payment_queryset(entity).get(pk=pk)))
+        if "allocations" in body:
+            _replace_plan(payment, plan)
+        return success_response("Vendor payment draft updated.", data=_serialize_detail(_payment_queryset(entity).get(pk=pk), request))
 
 
 class VendorPaymentSubmitView(_ProcBase):
@@ -442,7 +465,7 @@ class VendorPaymentSubmitView(_ProcBase):
 
         payment.refresh_from_db()
         return success_response("Vendor payment submitted for approval.", data={
-            "document": VendorPaymentSerializer(payment).data,
+            "document": VendorPaymentSerializer(payment, context={"request": request}).data,
             "workflow_instance_id": instance.pk,
             "approval_state": payment.approval_state,
             # See _approval_response in views/requisitions.py: same contract, so the
@@ -527,7 +550,7 @@ class VendorPaymentPostView(_ProcBase):
         post_payment_for_caller(request, entity, payment)
         return success_response(
             f"Vendor payment {payment.document_number} posted.",
-            data=_serialize_detail(_payment_queryset(entity).get(pk=pk)),
+            data=_serialize_detail(_payment_queryset(entity).get(pk=pk), request),
         )
 
 
@@ -563,6 +586,10 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
             request, _payment_queryset(entity), pk,
             "No such vendor payment in this entity.",
         )
+        body = request.data or {}
+        assert_writable(request, "procurement.vendor_payment", body,
+                        aliases={"auto_allocate": "allocations"})
+        assert_writable(request, "procurement.vendor_payment", ("allocations",))
         if payment.status != DocumentStatus.POSTED:
             raise ValidationError(
                 {"status": "Only a posted vendor payment holds an advance to apply."})
@@ -570,7 +597,6 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
             raise ValidationError(
                 {"allocations": "This payment has no advance left to apply."})
 
-        body = request.data or {}
         raw = body.get("allocations")
         before = payment.advance_remaining  # Report what this call did, not the total.
         if raw:
@@ -597,7 +623,7 @@ class VendorPaymentAllocateAdvanceView(_ProcBase):
             else f"No open bill could take {payment.document_number}'s advance."
         )
         return success_response(
-            message, data=_serialize_detail(_payment_queryset(entity).get(pk=pk)),
+            message, data=_serialize_detail(_payment_queryset(entity).get(pk=pk), request),
         )
 
 
@@ -617,7 +643,7 @@ class VendorPaymentCancelView(_ProcBase):
             raise ValidationError({"status": "Only a non-pending, unposted payment can be cancelled."})
         payment.status = DocumentStatus.CANCELLED
         payment.save(update_fields=["status", "updated_at"])
-        return success_response("Vendor payment cancelled.", data=VendorPaymentSerializer(payment).data)
+        return success_response("Vendor payment cancelled.", data=VendorPaymentSerializer(payment, context={"request": request}).data)
 
 
 class VendorPaymentReverseView(_ProcBase):
@@ -638,5 +664,5 @@ class VendorPaymentReverseView(_ProcBase):
         payables.reverse_vendor_payment(payment, actor_user=request.user, date=reversal_date)
         return success_response(
             f"Vendor payment {payment.document_number} reversed.",
-            data=_serialize_detail(_payment_queryset(entity).get(pk=pk)),
+            data=_serialize_detail(_payment_queryset(entity).get(pk=pk), request),
         )

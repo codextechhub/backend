@@ -597,7 +597,7 @@ def _transfer_stock_atomic(stock_item, *, quantity, movement_date, from_location
         transfer = book_goods_transfer(
             entity, from_branch=source.branch_id, to_branch=target.branch_id, amount=value,
             transfer_date=movement_date, inventory_account=stock_item.inventory_account,
-            purpose=narration or f"{quantity} of {stock_item.code} from {source.code} to {target.code}",
+            purpose="Goods transfer between branches",
             reference=reference, actor_user=actor_user,
         )
         legs = leg_journals(transfer)

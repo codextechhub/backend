@@ -1,15 +1,19 @@
 """What a stock transfer between branches shows to somebody who cannot read its inter-branch twin.
 
 A transfer between two branches' stores books an inter-branch goods transfer in
-finance: the value moved, the narration, the reference, the date, the two leg
-journals and the document itself are the same facts there and on the stock
+finance: the value moved, the reference, the date, the two leg journals and the
+document itself are the same facts there and on the stock
 movement. Finance lets a school close each of them per role, so a role that
 cannot read the amount on the inter-branch screen must not read the same naira
 figure off the movement it came from, nor off the running balance that the
 movement left behind (the step in the balance is the amount).
 
-Each movement key below is held to the finance switch that governs the same
-value, on top of whatever governs the stock ledger itself: a value shows only
+Finance records a generic purpose for goods transfers so its document does not
+carry an item, quantity, store code, or free-text stock narration. The stock
+narration still requires both the stock and finance purpose switches.
+
+Each movement key below is held to the finance switch that governs its transfer
+context, on top of whatever governs the stock ledger itself: a value shows only
 when every switch that governs it is readable. A transfer between two stores of
 one branch posts nothing and has no inter-branch twin, so it follows the stock
 ledger alone.

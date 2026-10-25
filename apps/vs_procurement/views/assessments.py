@@ -11,6 +11,7 @@ from rest_framework.exceptions import ValidationError
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_config.clock import tenant_today
+from vs_rbac.field_enforcement import assert_writable, can_read, visible
 
 from ..models import VendorAssessment
 from .base import _ProcBase, _date, _resolve_vendor, _text
@@ -36,13 +37,13 @@ def _assessor_name(user):
     return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
 
-def _assessment_json(a, states=None):
+def _assessment_json(a, states=None, request=None):
     """Serialize one assessment: raw scores + the computed overall_score/grade."""
     if states is None:
         from core.person_exit import prime_exit_states
 
         states = prime_exit_states({}, (a.assessor_id,))
-    return {
+    row = {
         "id": a.id,
         "vendor_id": a.vendor_id,
         "vendor_code": a.vendor.code,
@@ -58,6 +59,11 @@ def _assessment_json(a, states=None):
         "grade": a.grade,
         "notes": a.notes,
     }
+    row = visible(request, "procurement.vendor_assessment", row)
+    if not can_read(request, "procurement.vendor_assessment.scores"):
+        row.pop("overall_score", None)
+        row.pop("grade", None)
+    return row
 
 
 class VendorAssessmentListCreateView(_ProcBase):
@@ -92,13 +98,14 @@ class VendorAssessmentListCreateView(_ProcBase):
         states = prime_exit_states({}, (row.assessor_id for row in rows))
         return success_response(
             "Vendor assessments retrieved.",
-            data=[_assessment_json(a, states) for a in rows],
+            data=[_assessment_json(a, states, request) for a in rows],
         )
 
     def post(self, request):
         """Record a point-in-time scorecard; later corrections require a new row."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.vendor_assessment", body, creating=True)
         # Entity-scoped vendor resolution rejects assessing another entity's vendor.
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
         assessment = VendorAssessment.objects.create(
@@ -114,6 +121,6 @@ class VendorAssessmentListCreateView(_ProcBase):
         assessment.vendor = vendor  # attach so the serializer avoids a re-query
         return success_response(
             "Vendor assessment recorded.",
-            data=_assessment_json(assessment),
+            data=_assessment_json(assessment, request=request),
             status=201,
         )

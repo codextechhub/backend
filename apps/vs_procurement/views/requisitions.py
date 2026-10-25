@@ -21,7 +21,7 @@ from vs_finance.constants import BudgetStatus, DocumentStatus
 from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
-from vs_rbac.field_enforcement import can_read
+from vs_rbac.field_enforcement import assert_writable, can_read, readable_lookups
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import HasRBACPermission, is_vision_super_admin, user_has_rbac_permission
 from vs_config.clock import tenant_today
@@ -169,6 +169,7 @@ def _write_requisition_lines(request, req, entity, lines, *, new=False):
     for i, ln in enumerate(lines, start=1):
         if not isinstance(ln, dict):
             raise ValidationError({"lines": f"Line {i} must be an object."})
+        assert_writable(request, "procurement.requisition", ln, creating=new)
         line_id = None if new else ln.get("id")
         line = None
         if line_id not in (None, ""):
@@ -179,7 +180,19 @@ def _write_requisition_lines(request, req, entity, lines, *, new=False):
                     f"this requisition or is named twice."
                 )})
             seen.add(line.pk)
-        plan.append((line, _line_values(request, entity, ln, i)))
+        supplied = dict(ln)
+        if line is not None:
+            for key, value in (
+                ("catalog_item", line.catalog_item_id),
+                ("description", line.description),
+                ("quantity", line.quantity),
+                ("unit", line.unit),
+                ("estimated_unit_price", line.estimated_unit_price),
+                ("expense_account", line.expense_account_id),
+                ("tax_code", line.tax_code_id),
+            ):
+                supplied.setdefault(key, value)
+        plan.append((line, _line_values(request, entity, supplied, i)))
 
     for line, values in plan:
         if line is None:
@@ -277,7 +290,7 @@ def requisition_status_rules() -> dict:
     return rules
 
 
-def _filter_requisitions(qs, params):
+def _filter_requisitions(qs, params, request=None):
     """Apply the list/export filters from one shared source of truth."""
     qs = filter_by_status_word(qs, params.get("status"), requisition_status_rules())
     parked = _bool_param(params.get("parked"))
@@ -296,17 +309,23 @@ def _filter_requisitions(qs, params):
     qs = _filter_free_lines(qs, params)
     qs = filter_by_approval_param(qs, params)
     if (search := params.get("search", "").strip()):
-        qs = qs.filter(
-            Q(document_number__icontains=search) | Q(title__icontains=search)
-            | Q(justification__icontains=search) | Q(cost_center__name__icontains=search)
-            | Q(cost_center__code__icontains=search)
-            | Q(requested_by__first_name__icontains=search)
-            | Q(requested_by__last_name__icontains=search)
-            | Q(requested_by__email__icontains=search)
-            | Q(lines__description__icontains=search)
-            | Q(lines__catalog_item__name__icontains=search)
-            | Q(lines__catalog_item__code__icontains=search)
-        )
+        lookups = readable_lookups(request, "procurement.requisition", {
+            "document_number__icontains": None,
+            "title__icontains": "title",
+            "justification__icontains": "justification",
+            "cost_center__name__icontains": "cost_center",
+            "cost_center__code__icontains": "cost_center",
+            "requested_by__first_name__icontains": "requested_by",
+            "requested_by__last_name__icontains": "requested_by",
+            "requested_by__email__icontains": "requested_by",
+            "lines__description__icontains": "lines",
+            "lines__catalog_item__name__icontains": ("lines", "line_catalog_item"),
+            "lines__catalog_item__code__icontains": ("lines", "line_catalog_item"),
+        })
+        matches = Q(pk__in=[])
+        for lookup in lookups:
+            matches |= Q(**{lookup: search})
+        qs = qs.filter(matches)
         # Line-item joins can match several rows on one requisition; distinct keeps the paginated list unique.
         qs = qs.distinct()
     return qs
@@ -326,12 +345,16 @@ class RequisitionListCreateView(_ProcBase):
 
     def get(self, request):
         """List entity requisitions with requester, cost center, and lines preloaded."""
+        if request.query_params.get("status") and not can_read(
+            request, "procurement.requisition.status",
+        ):
+            raise PermissionDenied("Requisition status is not available to this role.")
         entity = resolve_entity(request)
         qs = requisition_reach(request, PurchaseRequisition.objects.filter(entity=entity)).select_related(
             "requested_by", "cost_center", "branch",
         ).prefetch_related("lines__expense_account")
         qs = _branch_scoped(request, entity, qs, request.query_params)
-        qs = _filter_requisitions(qs, request.query_params)
+        qs = _filter_requisitions(qs, request.query_params, request)
         return self.paginate(
             request, qs.order_by("-id"), RequisitionSerializer,
             # One pass per page: repair anything repairable, then report what is
@@ -341,6 +364,7 @@ class RequisitionListCreateView(_ProcBase):
                 "overridden_requisition_ids": approval_override.overridden_document_ids(page),
                 "returned_document_ids": approvals.returned_document_ids(page),
             },
+            context={"request": request},
         )
 
     @transaction.atomic
@@ -348,6 +372,7 @@ class RequisitionListCreateView(_ProcBase):
         """Create a draft estimate and its server-priced line snapshot atomically."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.requisition", body, creating=True)
         lines = _require_lines(body)
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
@@ -374,7 +399,7 @@ class RequisitionListCreateView(_ProcBase):
         )
         _write_requisition_lines(request, req, entity, lines, new=True)
         return success_response(
-            "Requisition created.", data=RequisitionSerializer(req).data, status=201,
+            "Requisition created.", data=RequisitionSerializer(req, context={"request": request}).data, status=201,
         )
 
 
@@ -397,7 +422,7 @@ class RequisitionDetailView(_ProcBase):
             ).prefetch_related("lines"),
             pk, "No such requisition in this entity.",
         )
-        data = RequisitionSerializer(req).data
+        data = RequisitionSerializer(req, context={"request": request}).data
         data["workflow_instance_id"] = WorkflowInstance.objects.latest_id_for(req)
         return success_response("Requisition retrieved.", data=data)
 
@@ -420,6 +445,7 @@ class RequisitionDetailView(_ProcBase):
             request, req, noun="requisition", refusal="Only a draft requisition can be edited.",
         )
         body = request.data
+        assert_writable(request, "procurement.requisition", body)
         req.title = str(body.get("title", req.title)).strip()
         req.request_date = _date(body.get("request_date", req.request_date), "request_date", required=True)
         req.needed_by = _date(body.get("needed_by"), "needed_by") if "needed_by" in body else req.needed_by
@@ -431,7 +457,7 @@ class RequisitionDetailView(_ProcBase):
         ])
         if "lines" in body:
             _write_requisition_lines(request, req, entity, _require_lines(body))
-        return success_response("Requisition updated.", data=RequisitionSerializer(req).data)
+        return success_response("Requisition updated.", data=RequisitionSerializer(req, context={"request": request}).data)
 
 
 class RequisitionSummaryView(_ProcBase):
@@ -496,7 +522,7 @@ class RequisitionSummaryView(_ProcBase):
             # A zero prior period has no valid percentage denominator, so the UI receives null rather than a false 0%.
             return round(((current - previous) / previous) * 100, 1) if previous else None
 
-        return success_response("Requisition summary retrieved.", data={
+        data = {
             "as_of": as_of.isoformat(),
             "pending_approval": {
                 "count": pending["count"], "amount": pending["amount"] or 0,
@@ -514,7 +540,13 @@ class RequisitionSummaryView(_ProcBase):
             "total_value_mtd": {
                 "amount": current_total, "change_pct": percent_change(current_total, prior_total),
             },
-        })
+        }
+        if not can_read(request, "procurement.requisition.estimated_total"):
+            for key in ("pending_approval", "approved_mtd", "draft", "sent_back",
+                        "total_value_mtd"):
+                data[key].pop("amount", None)
+            data["total_value_mtd"].pop("change_pct", None)
+        return success_response("Requisition summary retrieved.", data=data)
 
 
 class RequisitionBudgetAvailabilityView(_ProcBase):
@@ -616,7 +648,7 @@ class RequisitionSubmitView(_ProcBase):
             confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
         )
         return _approval_response("Requisition submitted for approval.",
-                                  req, instance, RequisitionSerializer)
+                                  req, instance, RequisitionSerializer, request=request)
 
 
 # --------------------------------------------------------------------------- #
@@ -634,17 +666,20 @@ def _approval_response(message, document, instance, serializer_cls, *, request=N
     from vs_workflow.services import release as release_svc
 
     document.refresh_from_db()
-    return success_response(message, data={
+    data = {
         "workflow_instance_id": instance.id,
-        "workflow_status": instance.status,
-        "approval_state": document.approval_state,
         # Tells the client in the submit response itself that nobody can approve what it
         # just submitted, so the "continue anyway" prompt costs no extra round trip.
         "approval": release_svc.approval_block(instance),
         "document": serializer_cls(
             document, **({} if request is None else {"context": {"request": request}}),
         ).data,
-    })
+    }
+    resource = getattr(serializer_cls, "field_resource", "")
+    if not resource or can_read(request, f"{resource}.status"):
+        data["approval_state"] = document.approval_state
+        data["workflow_status"] = instance.status
+    return success_response(message, data=data)
 
 
 class PurchaseOrderSubmitApprovalView(_ProcBase):
@@ -714,7 +749,7 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
             confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
         )
         return _approval_response("Vendor invoice submitted for approval.",
-                                  inv, instance, VendorInvoiceSerializer)
+                                  inv, instance, VendorInvoiceSerializer, request=request)
 
 
 # A school builds its approval steps through the workflow surface it already

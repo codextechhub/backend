@@ -64,6 +64,7 @@ PROCUREMENT_RESOURCES = [
     # AP and GRIR aging and vendor performance are the analytical tail. One key
     # served both and could only ever be banded at one of them.
     ("analytics",      "procurement analytics", [("view", "NORMAL")]),
+    ("dashboard",      "procurement dashboards", []),
     # ``submit`` asks for approval and approves nothing, so it is NORMAL: every
     # teacher holds it, and a restricted key on the Teacher role would send each
     # teacher's appointment through a role-grant approval.

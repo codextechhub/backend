@@ -509,6 +509,7 @@ def register():
                 ("aging_customers", "Amounts owed by each customer", "Receivables"),
                 ("aging_totals", "Receivables by age, totals", "Receivables"),
                 ("ar_reconciliation", "Receivables reconciliation", "Receivables"),
+                ("ap_reconciliation", "Payables reconciliation", "Payables"),
             ), start=1)
         ),
     )

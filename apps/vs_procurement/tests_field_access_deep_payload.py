@@ -53,6 +53,7 @@ class VendorDeepPayloadTests(DeepPayloadChecks, TestCase):
     allowlist = {
         (_VENDOR, "contacts[].email"): _NESTED_REASON,
         (_VENDOR, "contacts[].phone"): _NESTED_REASON,
+        (_VENDOR, "contacts[].is_active"): _NESTED_REASON,
     }
 
     @classmethod

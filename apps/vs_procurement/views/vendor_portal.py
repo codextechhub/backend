@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from core.response import success_response
 from core.models import StoredFile
 from vs_finance.views import resolve_entity
+from vs_rbac.field_enforcement import assert_writable
 
 from .. import vendor_portal
 from ..constants import QuotationStatus, RfqInvitationStatus, RfqStatus
@@ -188,6 +189,7 @@ class RfqInvitationExtendView(_ProcBase):
 
     @transaction.atomic
     def post(self, request, pk, invitation_id):
+        assert_writable(request, "procurement.rfq", {"response_due": request.data.get("deadline")})
         entity = resolve_entity(request)
         from .orders import _buyer_rfq_queryset
         rfq_ids = _buyer_rfq_queryset(
@@ -222,6 +224,11 @@ class RfqAmendmentCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request, pk):
+        assert_writable(request, "procurement.rfq", {"amendments": request.data.get("summary")})
+        if "deadline" in request.data:
+            assert_writable(request, "procurement.rfq", {"response_due": request.data["deadline"]})
+        if "lines" in request.data:
+            assert_writable(request, "procurement.rfq", {"lines": request.data["lines"]})
         entity = resolve_entity(request)
         from .orders import _buyer_rfq_queryset
         rfq = _buyer_rfq_queryset(

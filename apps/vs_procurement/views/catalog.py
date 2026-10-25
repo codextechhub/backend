@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from django.db import IntegrityError, transaction
 from django.db.models import Case, CharField, Count, F, Max, Min, Q, Sum, Value, When
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
 
 from core.response import success_response
 from vs_finance.constants import AccountType, DocumentStatus
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_rbac.scoping import WholeTenantWriteMixin
+from vs_rbac.field_enforcement import assert_writable, can_read, readable_lookups
 
 from ..models import CatalogItem, PurchaseOrderLine, Vendor, VendorCategory
 from ..purchasing import vendor_purchase_block_reason
@@ -227,26 +228,39 @@ class CatalogItemListCreateView(_CatalogWriteMixin, _ProcBase):
             entity, include_stock=_has_permission(request, "procurement.stock.view"),
         )
         if (active := request.query_params.get("is_active")) in ("true", "false"):
+            if not can_read(request, "procurement.catalog_item.is_active"):
+                raise PermissionDenied("Item active is not readable.")
             qs = qs.filter(is_active=active == "true")
         if (vendor := request.query_params.get("vendor")):
+            if not can_read(request, "procurement.catalog_item.preferred_vendor"):
+                raise PermissionDenied("Preferred vendor is not readable.")
             qs = qs.filter(preferred_vendor_id=vendor) if str(vendor).isdigit() \
                 else qs.filter(preferred_vendor__code__iexact=vendor)
         if (category := request.query_params.get("category")):
+            if not can_read(request, "procurement.catalog_item.category"):
+                raise PermissionDenied("Category is not readable.")
             qs = qs.filter(category_id=category) if str(category).isdigit() \
                 else qs.filter(category__code__iexact=category)
         if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
-            qs = qs.filter(
-                Q(code__icontains=search) | Q(name__icontains=search)
-                | Q(description__icontains=search) | Q(category__name__icontains=search)
-                | Q(preferred_vendor__name__icontains=search)
-            )
-        return self.paginate(request, qs.order_by("code", "id"), CatalogItemSerializer)
+            lookups = readable_lookups(request, "procurement.catalog_item", {
+                "code__icontains": None, "name__icontains": None,
+                "description__icontains": "description",
+                "category__name__icontains": "category",
+                "preferred_vendor__name__icontains": "preferred_vendor",
+            })
+            query = Q()
+            for lookup in lookups:
+                query |= Q(**{lookup: search})
+            qs = qs.filter(query)
+        return self.paginate(request, qs.order_by("code", "id"), CatalogItemSerializer,
+                             context={"request": request})
 
     @transaction.atomic
     def post(self, request):
         """Create an item from entity-validated defaults and integer-kobo price."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.catalog_item", body, creating=True)
         code = _clean_text(body, "code", 40, upper=True)
         name = _clean_text(body, "name", 200)
         if not name:
@@ -271,7 +285,7 @@ class CatalogItemListCreateView(_CatalogWriteMixin, _ProcBase):
         except IntegrityError as exc:
             raise _duplicate_error(exc) from exc
         return success_response(
-            "Catalog item created.", data=CatalogItemSerializer(item).data, status=201,
+            "Catalog item created.", data=CatalogItemSerializer(item, context={"request": request}).data, status=201,
         )
 
 
@@ -292,7 +306,7 @@ class CatalogItemDetailView(_CatalogWriteMixin, _ProcBase):
         ).filter(pk=pk).first()
         if item is None:
             raise NotFound("No such catalog item in this entity.")
-        return success_response("Catalog item retrieved.", data=CatalogItemSerializer(item).data)
+        return success_response("Catalog item retrieved.", data=CatalogItemSerializer(item, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -302,6 +316,7 @@ class CatalogItemDetailView(_CatalogWriteMixin, _ProcBase):
         if item is None:
             raise NotFound("No such catalog item in this entity.")
         body = request.data
+        assert_writable(request, "procurement.catalog_item", body)
         if "code" in body and _clean_text(body, "code", 40, upper=True) != item.code:
             raise ValidationError({"code": "Catalog item code cannot be changed after creation."})
         if "name" in body:
@@ -336,7 +351,7 @@ class CatalogItemDetailView(_CatalogWriteMixin, _ProcBase):
             item.is_active = _strict_bool(body.get("is_active"), "is_active")
         item.save()
         item = _catalog_queryset(entity, include_stock=False).get(pk=item.pk)
-        return success_response("Catalog item updated.", data=CatalogItemSerializer(item).data)
+        return success_response("Catalog item updated.", data=CatalogItemSerializer(item, context={"request": request}).data)
 
 
 class CatalogItemInsightsView(_ProcBase):
@@ -378,6 +393,8 @@ class CatalogItemInsightsView(_ProcBase):
         history = lines.select_related("purchase_order", "purchase_order__vendor").order_by(
             "-purchase_order__order_date", "-id",
         )[:10]
+        if not can_read(request, "procurement.catalog_item.price_history"):
+            return success_response("Catalog item insights retrieved.", data={})
         return success_response("Catalog item insights retrieved.", data={
             "usage": {
                 # Counts are scoped through both sides of every historical relationship.

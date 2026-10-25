@@ -664,11 +664,12 @@ def _open_bill_page(request, bills):
     (the subtotal for withholding tax, the branch for the bank it may use).
     """
     from core.pagination import XVSPagination
+    from vs_rbac.field_enforcement import can_read, visible
 
     paginator = XVSPagination()
     paginator.page_size = OPEN_BILL_PAGE_SIZE
     page = paginator.paginate_queryset(bills.select_related("vendor"), request)
-    return paginator.get_paginated_response([{
+    rows = [visible(request, "procurement.vendor_invoice", {
         "id": bill.id, "document_number": bill.document_number,
         "vendor_id": bill.vendor_id, "vendor_code": bill.vendor.code,
         "branch_id": bill.branch_id,
@@ -676,4 +677,9 @@ def _open_bill_page(request, bills):
         "subtotal": bill.subtotal, "tax_total": bill.tax_total,
         "total": bill.total, "amount_paid": bill.amount_paid,
         "balance_due": bill.balance_due, "payment_status": bill.payment_status,
-    } for bill in page])
+    }) for bill in page]
+    if not can_read(request, "procurement.vendor_payment.wht_amount"):
+        for row in rows:
+            row.pop("subtotal", None)
+            row.pop("tax_total", None)
+    return paginator.get_paginated_response(rows)

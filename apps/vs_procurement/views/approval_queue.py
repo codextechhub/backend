@@ -22,7 +22,7 @@ from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsTenantStaff
-from vs_rbac.field_enforcement import FieldAccessMixin
+from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 from vs_tenants.models import Branch
 from vs_workflow.models import (
     WorkflowStageAction,
@@ -59,6 +59,51 @@ DOCUMENT_MODELS = {
 }
 
 HISTORY_ACTIONS = {"APPROVED", "REJECTED", "RETURNED"}
+
+DOCUMENT_FIELD_KEYS = {
+    WF_DOCTYPE_REQUISITION: ("procurement.requisition.estimated_total",
+                             "procurement.requisition.status"),
+    WF_DOCTYPE_PURCHASE_ORDER: ("procurement.purchase_order.total",
+                               "procurement.purchase_order.status"),
+    WF_DOCTYPE_VENDOR_INVOICE: ("procurement.vendor_invoice.total",
+                               "procurement.vendor_invoice.status"),
+    WF_DOCTYPE_VENDOR_PAYMENT: ("procurement.vendor_payment.gross_amount",
+                               "procurement.vendor_payment.status"),
+    WF_DOCTYPE_VENDOR_CREDIT_NOTE: ("procurement.credit_note.amounts",
+                                   "procurement.credit_note.status"),
+}
+
+
+def _visible_document_title(request, document, document_type):
+    """Choose a title only from document values the actor may read."""
+    fields = {
+        WF_DOCTYPE_REQUISITION: (("title", "procurement.requisition.title"),
+                                 ("justification", "procurement.requisition.justification")),
+        WF_DOCTYPE_PURCHASE_ORDER: (("narration", "procurement.purchase_order.narration"),
+                                    ("reference", "procurement.purchase_order.reference")),
+        WF_DOCTYPE_VENDOR_INVOICE: (("narration", "procurement.vendor_invoice.narration"),
+                                    ("vendor_reference", "procurement.vendor_invoice.vendor_reference")),
+        WF_DOCTYPE_VENDOR_CREDIT_NOTE: (("reason", "procurement.credit_note.reason"),
+                                        ("vendor_reference", "procurement.credit_note.vendor_reference")),
+        WF_DOCTYPE_VENDOR_PAYMENT: (("narration", "procurement.vendor_payment.narration"),
+                                    ("reference", "procurement.vendor_payment.reference")),
+    }
+    for name, key in fields.get(document_type, ()):
+        if can_read(request, key) and getattr(document, name, None):
+            return getattr(document, name)
+    vendor = getattr(document, "vendor", None)
+    return getattr(vendor, "name", None)
+
+
+def _trim_document_row(request, document_type, row):
+    """Keep workflow identity while applying the underlying document switches."""
+    amount_key, status_key = DOCUMENT_FIELD_KEYS[document_type]
+    if not can_read(request, amount_key):
+        row.pop("amount", None)
+    if not can_read(request, status_key):
+        row.pop("document_status", None)
+        row.pop("approval_state", None)
+    return row
 
 
 class ProcurementApprovalHistoryReceiptSerializer(FieldAccessMixin, serializers.Serializer):
@@ -205,7 +250,9 @@ def _history_row(request, action, document, *, receipt_only):
         "reversed_at": action.reversed_at,
     }
     if not receipt_only:
-        payload["title"] = _document_title(document, instance.document_type)
+        title = _visible_document_title(request, document, instance.document_type)
+        if title is not None:
+            payload["title"] = title
     receipt = ProcurementApprovalHistoryReceiptSerializer(
         payload, context={"request": request},
     ).data
@@ -304,7 +351,7 @@ def _pending_snapshots(user, *, workflow_id=None):
     ]
 
 
-def _list_row(entity, snapshot, document, object_id, states=None):
+def _list_row(entity, snapshot, document, object_id, states=None, request=None):
     """Project one workflow snapshot into the procurement inbox response shape."""
     if states is None:
         from core.person_exit import prime_exit_states
@@ -315,13 +362,13 @@ def _list_row(entity, snapshot, document, object_id, states=None):
         ))
     instance = snapshot.stage_instance.instance
     amount_field = getattr(document, "workflow_amount_field", "")
-    return {
+    row = {
         "id": instance.id,
         "document_type": instance.document_type,
         "document_type_label": document_type_label(instance.document_type),
         "document_id": object_id,
         "reference": document.document_number or str(document.pk),
-        "title": _document_title(document, instance.document_type),
+        "title": _visible_document_title(request, document, instance.document_type),
         "requester": _user_name(instance.requested_by),
         "requester_is_exited": states.get(instance.requested_by_id)
         if instance.requested_by_id else None,
@@ -335,6 +382,9 @@ def _list_row(entity, snapshot, document, object_id, states=None):
         "on_behalf_of_is_exited": states.get(snapshot.on_behalf_of_id)
         if snapshot.on_behalf_of_id else None,
     }
+    if row["title"] is None:
+        row.pop("title")
+    return _trim_document_row(request, instance.document_type, row)
 
 
 def _pending_context(entity, user, workflow_id, branch_filter):
@@ -404,7 +454,7 @@ def _stage_rows(instance, states):
     return rows
 
 
-def _detail(entity, instance, snapshot, document, object_id):
+def _detail(entity, instance, snapshot, document, object_id, request=None):
     """Overlay workflow history on the entity-verified procurement summary row."""
     from core.person_exit import prime_exit_states
 
@@ -415,7 +465,7 @@ def _detail(entity, instance, snapshot, document, object_id):
     for log in instance.audit_logs.all():
         ids.update((log.actor_id, log.effective_user_id))
     states = prime_exit_states({}, ids)
-    data = _list_row(entity, snapshot, document, object_id, states)
+    data = _list_row(entity, snapshot, document, object_id, states, request)
     data.update({
         "document_status": getattr(document, "status", ""),
         "approval_state": getattr(document, "approval_state", ""),
@@ -434,7 +484,7 @@ def _detail(entity, instance, snapshot, document, object_id):
             "occurred_at": log.occurred_at,
         } for log in instance.audit_logs.all()],
     })
-    return data
+    return _trim_document_row(request, instance.document_type, data)
 
 
 def _entity_workflow_document(entity, workflow_id, branch_filter):
@@ -623,7 +673,7 @@ class ProcurementApprovalListView(APIView):
             instance = snapshot.stage_instance.instance
             document = documents[instance.document_type].get(object_id)
             if document is not None:
-                rows.append(_list_row(entity, snapshot, document, object_id, states))
+                rows.append(_list_row(entity, snapshot, document, object_id, states, request))
 
         document_type = request.query_params.get("document_type", "").strip()
         if document_type:
@@ -631,7 +681,7 @@ class ProcurementApprovalListView(APIView):
         search = request.query_params.get("search", "").strip().lower()
         if search:
             rows = [row for row in rows if search in " ".join((
-                row["reference"], row["title"], row["requester"], row["document_type_label"],
+                row["reference"], row.get("title", ""), row["requester"], row["document_type_label"],
             )).lower()]
 
         paginator = XVSPagination()
@@ -671,7 +721,7 @@ class ProcurementApprovalDetailView(APIView):
         )
         return success_response(
             "Procurement approval retrieved.",
-            data=_detail(entity, instance, snapshot, document, object_id),
+            data=_detail(entity, instance, snapshot, document, object_id, request),
         )
 
 

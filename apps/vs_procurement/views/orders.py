@@ -21,6 +21,7 @@ from vs_finance.constants import DocumentStatus
 from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.field_enforcement import assert_writable, can_read
 from vs_workflow.models import WorkflowInstance
 from vs_config.clock import tenant_today
 
@@ -290,6 +291,10 @@ class PurchaseOrderListCreateView(_ProcBase):
 
     def get(self, request):
         """List entity POs with server-derived receipt progress and filters."""
+        if request.query_params.get("status") and not can_read(
+            request, "procurement.purchase_order.status",
+        ):
+            raise PermissionDenied("Purchase order status is not available to this role.")
         entity = resolve_entity(request)
         qs = _branch_scoped(
             request, entity, _purchase_order_list_queryset(entity), request.query_params,
@@ -298,12 +303,14 @@ class PurchaseOrderListCreateView(_ProcBase):
         return self.paginate(
             request, qs.order_by("-id"), PurchaseOrderListSerializer,
             page_context=lambda page: {"returned_document_ids": returned_document_ids(page)},
+            context={"request": request},
         )
 
     def post(self, request):
         """Create a draft commitment from an entity-scoped approved requisition."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.purchase_order", body, creating=True)
         req = PurchaseRequisition.objects.filter(entity=entity, pk=body.get("requisition")).first()
         if req is None:
             raise ValidationError({"requisition": "An approved requisition is required."})
@@ -320,10 +327,18 @@ class PurchaseOrderListCreateView(_ProcBase):
             req, vendor=vendor,
             order_date=_date(body.get("order_date"), "order_date", required=True),
             expected_date=_date(body.get("expected_date"), "expected_date"),
-            delivery_address=str(
-                body.get("delivery_address", policy.default_delivery_address)
-            ).strip(),
-            payment_terms=str(body.get("payment_terms", vendor.payment_terms)).strip(),
+            delivery_address=str(body.get(
+                "delivery_address",
+                policy.default_delivery_address if can_read(
+                    request, "procurement.settings.default_delivery_address"
+                ) else "",
+            )).strip(),
+            payment_terms=str(body.get(
+                "payment_terms",
+                vendor.payment_terms if can_read(
+                    request, "procurement.vendor.payment_terms"
+                ) else "",
+            )).strip(),
             currency=_resolve_currency(entity, body.get("currency")),
             actor_user=request.user,
         )
@@ -375,6 +390,7 @@ class PurchaseOrderDetailView(_ProcBase):
         )
 
         body = request.data
+        assert_writable(request, "procurement.purchase_order", body)
         if "vendor" in body:
             candidate = _resolve_vendor(request, entity, body.get("vendor"))
             if reason := purchasing.vendor_purchase_block_reason(candidate):
@@ -454,12 +470,17 @@ class PurchaseOrderSummaryView(_ProcBase):
     def get(self, request):
         """Compute commitment KPIs over the caller's visible orders, not the page."""
         entity = resolve_entity(request)
-        return success_response("Purchase order summary retrieved.", data=purchase_order_summary(
+        data = purchase_order_summary(
             entity, branch_filter=(
                 _branch_q(request, entity, request.query_params)
                 & period_q(request, entity, PurchaseOrder)
             ),
-        ))
+        )
+        if not can_read(request, "procurement.purchase_order.total"):
+            data["open"].pop("amount", None)
+            data["po_value_mtd"].pop("amount", None)
+            data["po_value_mtd"].pop("change_pct", None)
+        return success_response("Purchase order summary retrieved.", data=data)
 
 
 class PurchaseOrderEmailPreviewView(_ProcBase):
@@ -717,6 +738,10 @@ def _write_rfq_lines(request, entity, rfq, lines, *, preserve_history=False):
     earlier lines are the same sourcing and are not. Every refusal is raised
     inside the caller's transaction, which rolls back the lines already written.
     """
+    for line in lines:
+        if isinstance(line, dict):
+            assert_writable(request, "procurement.rfq", line,
+                            creating=not rfq.pk)
     plan, releases_blindly = _rfq_line_plan(rfq, lines)
     if preserve_history:
         rfq.lines.filter(is_active=True).update(is_active=False)
@@ -824,6 +849,7 @@ def _shared_line_specs(request, entity, lines):
 def _write_shared_rfq_lines(request, entity, rfq, group, specs):
     """Create vendor-facing lines and retain their branch allocation evidence."""
     for i, (line, quantity, allocations) in enumerate(specs, start=1):
+        assert_writable(request, "procurement.rfq", line, creating=True)
         rfq_line = RfqLine.objects.create(
             rfq=rfq, line_no=line.get("line_no", i), version=rfq.version, is_active=True,
             description=_text(line.get("description"), "description", 255, required=True),
@@ -900,7 +926,8 @@ class RequisitionLinesFreeToSourceView(_ProcBase):
         qs = qs.select_related("requisition__branch", "expense_account").order_by(
             "requisition__request_date", "requisition_id", "line_no", "id",
         )
-        return self.paginate(request, qs, FreeRequisitionLineSerializer)
+        return self.paginate(request, qs, FreeRequisitionLineSerializer,
+                             context={"request": request})
 
 
 class RfqListCreateView(_ProcBase):
@@ -925,19 +952,32 @@ class RfqListCreateView(_ProcBase):
         qs = _buyer_rfq_queryset(request, _rfq_list_queryset(entity))
         qs = qs.filter(_rfq_branch_q(request, entity, request.query_params)).distinct()
         if (status_ := request.query_params.get("status")):
+            if not can_read(request, "procurement.rfq.status"):
+                raise PermissionDenied("RFQ status is not available to this role.")
             qs = qs.filter(rfq_status=status_)
         if request.query_params.get("has_responses") == "true":
             # Only RFQs with a vendor's actual reply, which compare-quotes lists.
             qs = qs.filter(response_count__gt=0)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
-            qs = qs.filter(Q(document_number__icontains=q) | Q(title__icontains=q))
-        return self.paginate(request, qs.order_by("-id"), RfqListSerializer)
+            matches = Q(document_number__icontains=q)
+            if can_read(request, "procurement.rfq.title"):
+                matches |= Q(title__icontains=q)
+            qs = qs.filter(matches)
+        return self.paginate(request, qs.order_by("-id"), RfqListSerializer,
+                             context={"request": request})
 
     @transaction.atomic
     def post(self, request):
         """Create an editable RFQ specification and optional invitation set."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.rfq", body, creating=True)
+        for line in body.get("lines", ()):
+            if isinstance(line, dict):
+                assert_writable(request, "procurement.rfq", line, creating=True)
+                if "allocations" in line:
+                    assert_writable(request, "procurement.rfq", ("branch_allocations",),
+                                    creating=True)
         lines = _require_lines(body)
         shared = any("allocations" in line for line in lines)
         if shared and any("allocations" not in line for line in lines):
@@ -1036,6 +1076,10 @@ class RfqDetailView(_ProcBase):
             raise ValidationError(
                 {"rfq_status": f"Only a draft RFQ can be edited (this one is {state_word(rfq, 'rfq_status')})."})
         body = request.data
+        assert_writable(request, "procurement.rfq", body)
+        for line in body.get("lines", ()):
+            if isinstance(line, dict):
+                assert_writable(request, "procurement.rfq", line)
         if "title" in body:
             rfq.title = _text(body.get("title"), "title", 200)
         if "issue_date" in body:
@@ -1196,6 +1240,9 @@ def _write_quotation_lines(request, entity, quotation, rfq, lines):
     Every ``rfq_line`` reference must belong to *this* RFQ (not merely the entity),
     closing a cross-RFQ line-leak: a quote may only price lines of the RFQ it answers.
     """
+    for line in lines:
+        if isinstance(line, dict):
+            assert_writable(request, "procurement.quotation", line)
     quotation.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
         rfq_line = None
@@ -1245,24 +1292,28 @@ class QuotationListCreateView(_ProcBase):
         ).select_related("vendor", "rfq", "branch")
         qs = qs.filter(_quotation_branch_q(request, entity, request.query_params)).distinct()
         if (status_ := request.query_params.get("status")):
+            if not can_read(request, "procurement.quotation.status"):
+                raise PermissionDenied("Quotation status is not available to this role.")
             qs = qs.filter(quotation_status=status_)
         if (rfq := request.query_params.get("rfq")):
             qs = qs.filter(rfq_id=rfq)
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
-            qs = qs.filter(
-                Q(document_number__icontains=q) | Q(reference__icontains=q)
-                | Q(vendor__name__icontains=q) | Q(vendor__code__icontains=q)
-                | Q(rfq__document_number__icontains=q)
-            )
-        return self.paginate(request, qs.order_by("-id"), QuotationListSerializer)
+            matches = (Q(document_number__icontains=q) | Q(vendor__name__icontains=q)
+                       | Q(vendor__code__icontains=q) | Q(rfq__document_number__icontains=q))
+            if can_read(request, "procurement.quotation.reference"):
+                matches |= Q(reference__icontains=q)
+            qs = qs.filter(matches)
+        return self.paginate(request, qs.order_by("-id"), QuotationListSerializer,
+                             context={"request": request})
 
     @transaction.atomic
     def post(self, request):
         """Capture an invited vendor's draft offer and derive totals server-side."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.quotation", body, creating=True)
         lines = _require_lines(body)
         rfq = _buyer_rfq_queryset(
             request, RequestForQuotation.objects.select_for_update().filter(
@@ -1354,6 +1405,7 @@ class QuotationDetailView(_ProcBase):
                 {"quotation_status": f"Only a draft quotation can be edited (this one is "
                                      f"{state_word(quotation, 'quotation_status')})."})
         body = request.data
+        assert_writable(request, "procurement.quotation", body)
         if "quote_date" in body:
             quotation.quote_date = _date(body.get("quote_date"), "quote_date", required=True)
         if "valid_until" in body:

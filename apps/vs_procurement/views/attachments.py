@@ -15,10 +15,11 @@ its evidence, which are not the same authority.
 """
 from __future__ import annotations
 
-from rest_framework.exceptions import MethodNotAllowed, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
+from vs_rbac.field_enforcement import assert_writable, can_read
 
 from .. import attachments as attachment_service
 from ..models import VendorInvoice, VendorPayment
@@ -47,6 +48,9 @@ class _AttachmentBase(_ProcBase):
             request, self._queryset(entity), pk, self.not_found_message,
         )
 
+    def _field_key(self):
+        return f"{self.permission_prefix}.attachments"
+
     @staticmethod
     def _reject_id_mismatch(attachment_id, *, required):
         """Both routes resolve to this view, so each verb must police its own shape.
@@ -65,6 +69,8 @@ class _AttachmentBase(_ProcBase):
         """List the document's attachments; ``?include_superseded=true`` adds superseded ones."""
         self._reject_id_mismatch(attachment_id, required=False)
         document = self._document(request, pk)
+        if not can_read(request, self._field_key()):
+            raise PermissionDenied("Attachments are not available to this role.")
         include = str(request.query_params.get("include_superseded", "")).lower() == "true"
         return success_response(
             "Attachments retrieved.",
@@ -77,6 +83,7 @@ class _AttachmentBase(_ProcBase):
         """Attach one file (multipart ``file``, optional ``caption``)."""
         self._reject_id_mismatch(attachment_id, required=False)
         document = self._document(request, pk)
+        assert_writable(request, self.permission_prefix, {"attachments": True})
         upload = request.FILES.get("file")
         if upload is None:
             raise ValidationError({"file": "A file is required."})
@@ -85,7 +92,11 @@ class _AttachmentBase(_ProcBase):
             caption=request.data.get("caption", ""),
             actor_user=request.user,
         )
-        return success_response("Attachment uploaded.", data=row, status=201)
+        return success_response(
+            "Attachment uploaded.",
+            data=row if can_read(request, self._field_key()) else {"id": row["id"]},
+            status=201,
+        )
 
     def delete(self, request, pk, attachment_id=None):
         """Remove one attachment: deleted from a draft, superseded (``reason`` required) after.
@@ -95,6 +106,7 @@ class _AttachmentBase(_ProcBase):
         """
         self._reject_id_mismatch(attachment_id, required=True)
         document = self._document(request, pk)
+        assert_writable(request, self.permission_prefix, {"attachments": True})
         reason = (request.data or {}).get("reason") if hasattr(request.data, "get") else None
         attachment_service.remove_attachment(
             document, attachment_id,
@@ -103,12 +115,10 @@ class _AttachmentBase(_ProcBase):
         )
         # The document was loaded with its attachments prefetched, so that cache still
         # holds the row we just deleted; re-read the relation rather than echo it back.
-        return success_response(
-            "Attachment removed.",
-            data={"attachments": attachment_service.serialize_attachments(
-                self._document(request, pk),
-            )},
-        )
+        data = {"attachments": attachment_service.serialize_attachments(
+            self._document(request, pk),
+        )} if can_read(request, self._field_key()) else {}
+        return success_response("Attachment removed.", data=data)
 
 
 class VendorInvoiceAttachmentView(_AttachmentBase):

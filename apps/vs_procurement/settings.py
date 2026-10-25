@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from vs_finance.wording import counted
+from core.attribution import person_label
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -88,7 +89,7 @@ def serialize_procurement_settings(settings):
         ),
         "non_po_spend_limit_pct": settings.non_po_spend_limit_pct,
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
-        "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
+        "updated_by": person_label(settings.updated_by) if settings.pk and settings.updated_by else None,
     }
 
 

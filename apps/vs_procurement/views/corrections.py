@@ -12,13 +12,14 @@ from vs_finance.wording import counted
 
 from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 from django.db import transaction
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_config.clock import branch_today
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
+from vs_rbac.field_enforcement import assert_writable, can_read
 
 from .. import approvals, corrections
 from ..constants import ProcApprovalState
@@ -81,7 +82,7 @@ def _note_queryset(entity):
     ).prefetch_related("lines", "allocations__vendor_invoice")
 
 
-def _serialize_note_detail(note):
+def _serialize_note_detail(note, request):
     """A credit note's read shape plus ``workflow_instance_id``, as the other four details carry.
 
     ``workflow_instance_id`` is the note's latest approval request, or ``None``
@@ -92,7 +93,7 @@ def _serialize_note_detail(note):
     """
     from vs_workflow.models import WorkflowInstance
 
-    data = VendorCreditNoteSerializer(note).data
+    data = VendorCreditNoteSerializer(note, context={"request": request}).data
     data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(note)
     return data
 
@@ -172,6 +173,14 @@ class VendorCreditNoteListCreateView(_ProcBase):
             request.query_params,
         )
         params = request.query_params
+        if (params.get("status") is not None or params.get("approval_state") is not None) and not can_read(
+            request, "procurement.vendor_credit_note.status",
+        ):
+            raise PermissionDenied("Credit note status is not available to this role.")
+        if params.get("vendor_invoice") is not None and not can_read(
+            request, "procurement.vendor_credit_note.vendor_invoice",
+        ):
+            raise PermissionDenied("The credited bill is not available to this role.")
         qs = filter_by_stored_status(qs, params.get("status"))
         if (vendor := params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
@@ -180,6 +189,7 @@ class VendorCreditNoteListCreateView(_ProcBase):
         qs = filter_by_approval_param(qs, params)
         return self.paginate(
             request, qs.order_by("-id"), VendorCreditNoteListSerializer,
+            context={"request": request},
             page_context=lambda page: {"returned_document_ids": approvals.returned_document_ids(page)},
         )
 
@@ -188,6 +198,7 @@ class VendorCreditNoteListCreateView(_ProcBase):
         """Draft the note and its lines; nothing posts until it is approved."""
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "procurement.vendor_credit_note", body, creating=True)
         bill_id = body.get("vendor_invoice")
         bill = None
         if str(bill_id or "").isdigit():
@@ -213,7 +224,7 @@ class VendorCreditNoteListCreateView(_ProcBase):
         _write_lines(note, instruction)
         return success_response(
             "Vendor credit note created.",
-            data=VendorCreditNoteSerializer(_note_queryset(entity).get(pk=note.pk)).data,
+            data=VendorCreditNoteSerializer(_note_queryset(entity).get(pk=note.pk), context={"request": request}).data,
             status=201,
         )
 
@@ -235,7 +246,7 @@ class VendorCreditNoteDetailView(_ProcBase):
         note = _document_or_404(
             request, _note_queryset(entity), pk, "No such vendor credit note in this entity.",
         )
-        return success_response("Vendor credit note retrieved.", data=_serialize_note_detail(note))
+        return success_response("Vendor credit note retrieved.", data=_serialize_note_detail(note, request))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -256,6 +267,7 @@ class VendorCreditNoteDetailView(_ProcBase):
             refusal="Only an unsubmitted or rejected draft credit note can be edited.",
         )
         body = request.data or {}
+        assert_writable(request, "procurement.vendor_credit_note", body)
         if "note_date" in body:
             note.note_date = _date(body.get("note_date"), "note_date", required=True)
         if "reason" in body:
@@ -272,7 +284,7 @@ class VendorCreditNoteDetailView(_ProcBase):
             _write_lines(note, instruction)
         return success_response(
             "Vendor credit note draft updated.",
-            data=_serialize_note_detail(_note_queryset(entity).get(pk=note.pk)),
+            data=_serialize_note_detail(_note_queryset(entity).get(pk=note.pk), request),
         )
 
 
@@ -298,7 +310,7 @@ class VendorCreditNoteSubmitView(_ProcBase):
         )
         return _approval_response(
             "Vendor credit note submitted for approval.", note, instance,
-            VendorCreditNoteSerializer,
+            VendorCreditNoteSerializer, request=request,
         )
 
 
@@ -320,7 +332,7 @@ class VendorCreditNotePostView(_ProcBase):
         note = _note_queryset(entity).get(pk=pk)
         return success_response(
             f"Vendor credit note {note.document_number} posted.",
-            data=VendorCreditNoteSerializer(note).data,
+            data=VendorCreditNoteSerializer(note, context={"request": request}).data,
         )
 
 
@@ -387,7 +399,7 @@ class VendorCreditNoteAllocateView(_ProcBase):
             f"Applied {format_naira(applied)} of {note.document_number} to open bills."
             if applied > 0 else f"No open bill could take {note.document_number}'s credit."
         )
-        return success_response(message, data=VendorCreditNoteSerializer(note).data)
+        return success_response(message, data=VendorCreditNoteSerializer(note, context={"request": request}).data)
 
 
 class VendorCreditNoteOpenBillsView(_ProcBase):
@@ -435,7 +447,7 @@ class VendorCreditNoteVoidView(_ProcBase):
         note = _note_queryset(entity).get(pk=pk)
         return success_response(
             f"Vendor credit note {note.document_number} voided.",
-            data=VendorCreditNoteSerializer(note).data,
+            data=VendorCreditNoteSerializer(note, context={"request": request}).data,
         )
 
 
@@ -467,7 +479,7 @@ class VendorInvoiceVoidView(_ProcBase):
         bill.refresh_from_db()
         return success_response(
             f"Vendor invoice {bill.document_number} voided.",
-            data=VendorInvoiceSerializer(bill).data,
+            data=VendorInvoiceSerializer(bill, context={"request": request}).data,
         )
 
 
@@ -495,6 +507,11 @@ class GoodsReceiptReverseView(_ProcBase):
             "No such goods receipt in this entity.",
         )
         body = request.data or {}
+        assert_writable(
+            request, "procurement.goods_receipt", body,
+            aliases={"lines": "return_lines"},
+        )
+        assert_writable(request, "procurement.goods_receipt", ("return_lines",))
         raw = body.get("lines")
         lines = None
         if raw is not None:
@@ -516,9 +533,11 @@ class GoodsReceiptReverseView(_ProcBase):
             f"Goods on {grn.document_number} returned to the vendor "
             f"({goods_return.document_number}).",
             data={
-                "goods_return": GoodsReturnSerializer(goods_return).data,
+                "goods_return": GoodsReturnSerializer(goods_return,
+                                                      context={"request": request}).data,
                 "goods_receipt": GoodsReceivedNoteSerializer(
-                    _read_grn_for_response(entity, grn.pk)).data,
+                    _read_grn_for_response(entity, grn.pk),
+                    context={"request": request}).data,
             },
         )
 
@@ -568,6 +587,7 @@ class VendorOpeningBillImportView(_ProcBase):
         for index, item in enumerate(raw):
             if not isinstance(item, dict):
                 raise ValidationError({"bills": {index: "Each bill is an object."}})
+            assert_writable(request, "procurement.vendor_invoice", item, creating=True)
             try:
                 invoice_date = _date(item.get("invoice_date"), "invoice_date", required=True)
                 due_date = _date(item.get("due_date"), "due_date")
@@ -603,5 +623,5 @@ class VendorOpeningBillImportView(_ProcBase):
             raise ValidationError({"bills": exc.message})
         return success_response(
             f"{counted(len(bills), 'opening bill')} carried in.",
-            data=[VendorInvoiceSerializer(bill).data for bill in bills], status=201,
+            data=[VendorInvoiceSerializer(bill, context={"request": request}).data for bill in bills], status=201,
         )

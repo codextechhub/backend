@@ -542,11 +542,12 @@ and book lines are not, and they restate the registered `book_balance`,
 
 ## 5. Area C: procurement
 
-Only `procurement.vendor` and `procurement.vendor_contact` are registered. Every
-other payload below is not: stock and transfers, supplier credit notes, goods
-returns and receipts, vendor payments with withholding tax (WHT), requisitions,
-RFQs and shared sourcing, quotations, purchase orders, vendor bills, contracts,
-catalogue, categories, assessments, settings, reports, dashboards.
+The listed procurement fields are registered across stock and transfers,
+supplier credit notes, goods returns and receipts, vendor payments with
+withholding tax (WHT), requisitions, RFQs and shared sourcing, quotations,
+purchase orders, vendor bills, contracts, catalogue, categories, assessments,
+settings, reports and dashboards. Vendor contacts keep their own resource
+switches.
 
 Routes are under `/v1/procurement/`, the entity comes from `?entity=`, and reach
 is the branch of the document or store. The vendor portal routes (`public-rfq-*`,
@@ -588,39 +589,39 @@ finance the value, narration, reference and date (`book_goods_transfer`).
 | `id`, `stock_item_id`, `location_id`, `updated_at`, `created_at`, `grn_id` | ids and metadata | Transport | none | - | - | - | - | no switch: transport |
 | item `code`, `name`, `stock_item_code`, `stock_item_name`, `location_code`, store `code`, `name`, destination row `code`, `name` | item and store identity | Stored | create; PATCH `name` | - | - | - | - | no switch: identifier |
 | `branch_id`, `branch_name`, `to_location` branch labels | store's branch | Stored | create, PATCH `branch` | - | - | - | - | no switch: owner decision |
-| item `description` | item description | Stored | create, PATCH | `procurement.stock.description` | Item description | RW | open | recorded |
-| `unit_of_measure` | unit | Stored | create, PATCH | `procurement.stock.unit_of_measure` | Unit of measure | RW | open | recorded |
-| `catalog_item_id`, `catalog_item_code` | catalogue link | Stored | create, PATCH `catalog_item` | `procurement.stock.catalog_item` | Catalogue item | RW | open | recorded |
-| `inventory_account_id`, `inventory_code` | inventory ledger account | Stored | create, PATCH `inventory_account` | `procurement.stock.inventory_account` | Inventory account | RW | open | recorded |
-| `default_expense_account_id`, `expense_code` | issue expense account | Stored | create, PATCH `default_expense_account` | `procurement.stock.default_expense_account` | Issue expense account | RW | open | recorded |
-| `reorder_level` | reorder level | Stored | create, PATCH | `procurement.stock.reorder_level` | Reorder level | RW | open | recorded |
-| `reorder_qty` | reorder quantity | Stored | create, PATCH | `procurement.stock.reorder_qty` | Reorder quantity | RW | open | recorded |
-| `on_hand_qty` | quantity on hand | Computed | none (movements only) | `procurement.stock.on_hand_qty` | Quantity on hand | RO | open | recorded |
-| `stock_value`, `stock_value_naira`, summary `total_value`, `total_value_naira` | stock value | Computed | none | `procurement.stock.stock_value` | Stock value | RO | open (Q-C2) | recorded |
-| `unit_cost`, `unit_cost_naira` | moving-average cost | Computed | none | `procurement.stock.unit_cost` | Unit cost | RO | open (Q-C2) | recorded |
-| `needs_reorder`, summary `low_stock`, `out_of_stock`, catalogue `stock_status` | reorder state | Computed | none | `procurement.stock.needs_reorder` | Needs reorder | RO | open; shown only if `on_hand_qty` and `reorder_level` are readable | recorded |
-| `is_active` (item) | item active | Stored | create, PATCH | `procurement.stock.item_is_active` | Item active | RW | open | recorded |
-| item detail `movements` | movement rows | Computed | none | - | - | - | rows follow the movement switches; the list is dropped if none is readable | recorded |
-| item detail `activity` | item timeline; carries amounts and store codes in the message | Computed | none | `procurement.stock.item_activity` | Item activity | RO | open; must be narrowed to the caller's branches (leak C-L3) | recorded |
-| store `description` | store description | Stored | create, PATCH | `procurement.stock.location_description` | Store description | RW | open | recorded |
-| store `is_default` | default store | Stored | create, PATCH | `procurement.stock.location_is_default` | Default store | RW | open | recorded |
-| store `is_active` | store active | Stored | create, PATCH | `procurement.stock.location_is_active` | Store active | RW | open | recorded |
-| movement `movement_type` | issue, transfer, adjustment, receipt, return | Computed | set by the action | `procurement.stock.movement_type` | Movement kind | RO | open | recorded |
-| movement `movement_date` | date | Stored | issue, transfer, adjust bodies | `procurement.stock.movement_date` | Movement date | RW | open | recorded |
-| movement `quantity` (body `quantity`, `quantity_delta`) | quantity moved | Stored | issue, transfer, adjust | `procurement.stock.movement_quantity` | Movement quantity | RW | open | recorded |
-| movement `value_amount`, `value_amount_naira` | cost times quantity | Computed | none | `procurement.stock.movement_value` | Movement value | RO | open (Q-C2); on a transfer leg between branches the stricter of this and `finance.interbranch.amount` wins | recorded |
-| movement `balance_qty` | quantity after the movement | Computed | none | `procurement.stock.balance_qty` | Quantity after movement | RO | open | recorded |
-| movement `balance_value`, `balance_value_naira` | stock value after the movement | Computed | none | `procurement.stock.balance_value` | Stock value after movement | RO | open (Q-C2) | recorded |
-| movement `journal_id`, `grn_id` | ledger and receipt links | Computed | none | `procurement.stock.ledger_links` | Ledger and receipt links | RO | open; on a transfer leg the stricter of this and `finance.interbranch.journals` wins | recorded |
-| movement `reference` | reference | Stored | issue, transfer, adjust | `procurement.stock.movement_reference` | Reference | RW | open; on a transfer it is copied into `finance.interbranch.reference` | recorded |
-| movement `narration` | narration | Stored | issue, transfer, adjust | `procurement.stock.movement_narration` | Narration | RW | open; on a transfer it becomes `finance.interbranch.purpose` | recorded |
-| movement `cost_center_id`, `cost_center_name` | cost centre issued to | Stored | issue `cost_center` | `procurement.stock.movement_cost_center` | Issued to cost centre | RW | open | recorded |
-| adjust body `unit_cost` (input only) | cost of stock found in a count | Stored | adjust | `procurement.stock.adjust_unit_cost` | Cost of written-up stock | RW | open; write-only, kept apart from the read-only `unit_cost` | recorded |
-| movement `created_by_name`, `created_at` | who recorded it | Computed | none | `procurement.stock.movement_recorded_by` | Recorded by | RO | open | recorded |
-| transfer response `movement` | sending-side leg | Computed | none | - | - | - | rendered through the movement switches | recorded |
-| transfer response `received` | receiving-side leg with that store's balance | Computed | none | `procurement.stock.transfer_received` | Receiving store movement | RO | open; returned only to a caller who can read the receiving store (leak C-L1) | recorded |
-| transfer response `inter_branch_transfer_id` | link to the finance document | Computed | none | `procurement.stock.transfer_document` | Inter-branch document | RO | shown only if a `finance.interbranch` field is readable | recorded |
-| transfer body `to_location` | destination store | Stored | transfer | `procurement.stock.transfer_destination` | Destination store | RW | open | recorded |
+| item `description` | item description | Stored | create, PATCH | `procurement.stock.description` | Item description | RW | open | registered |
+| `unit_of_measure` | unit | Stored | create, PATCH | `procurement.stock.unit_of_measure` | Unit of measure | RW | open | registered |
+| `catalog_item_id`, `catalog_item_code` | catalogue link | Stored | create, PATCH `catalog_item` | `procurement.stock.catalog_item` | Catalogue item | RW | open | registered |
+| `inventory_account_id`, `inventory_code` | inventory ledger account | Stored | create, PATCH `inventory_account` | `procurement.stock.inventory_account` | Inventory account | RW | open | registered |
+| `default_expense_account_id`, `expense_code` | issue expense account | Stored | create, PATCH `default_expense_account` | `procurement.stock.default_expense_account` | Issue expense account | RW | open | registered |
+| `reorder_level` | reorder level | Stored | create, PATCH | `procurement.stock.reorder_level` | Reorder level | RW | open | registered |
+| `reorder_qty` | reorder quantity | Stored | create, PATCH | `procurement.stock.reorder_qty` | Reorder quantity | RW | open | registered |
+| `on_hand_qty` | quantity on hand | Computed | none (movements only) | `procurement.stock.on_hand_qty` | Quantity on hand | RO | open | registered |
+| `stock_value`, `stock_value_naira`, summary `total_value`, `total_value_naira` | stock value | Computed | none | `procurement.stock.stock_value` | Stock value | RO | open (Q-C2) | registered |
+| `unit_cost`, `unit_cost_naira` | moving-average cost | Computed | none | `procurement.stock.unit_cost` | Unit cost | RO | open (Q-C2) | registered |
+| `needs_reorder`, summary `low_stock`, `out_of_stock`, catalogue `stock_status` | reorder state | Computed | none | `procurement.stock.needs_reorder` | Needs reorder | RO | open; shown only if `on_hand_qty` and `reorder_level` are readable | registered |
+| `is_active` (item) | item active | Stored | create, PATCH | `procurement.stock.item_is_active` | Item active | RW | open | registered |
+| item detail `movements` | movement rows | Computed | none | - | - | - | rows follow the movement switches; the list is dropped if none is readable | follows registered movement switches |
+| item detail `activity` | item timeline; carries amounts and store codes in the message | Computed | none | `procurement.stock.item_activity` | Item activity | RO | open; must be narrowed to the caller's branches (leak C-L3) | registered |
+| store `description` | store description | Stored | create, PATCH | `procurement.stock.location_description` | Store description | RW | open | registered |
+| store `is_default` | default store | Stored | create, PATCH | `procurement.stock.location_is_default` | Default store | RW | open | registered |
+| store `is_active` | store active | Stored | create, PATCH | `procurement.stock.location_is_active` | Store active | RW | open | registered |
+| movement `movement_type` | issue, transfer, adjustment, receipt, return | Computed | set by the action | `procurement.stock.movement_type` | Movement kind | RO | open | registered |
+| movement `movement_date` | date | Stored | issue, transfer, adjust bodies | `procurement.stock.movement_date` | Movement date | RW | open | registered |
+| movement `quantity` (body `quantity`, `quantity_delta`) | quantity moved | Stored | issue, transfer, adjust | `procurement.stock.movement_quantity` | Movement quantity | RW | open | registered |
+| movement `value_amount`, `value_amount_naira` | cost times quantity | Computed | none | `procurement.stock.movement_value` | Movement value | RO | open (Q-C2); on a transfer leg between branches the stricter of this and `finance.interbranch.amount` wins | registered |
+| movement `balance_qty` | quantity after the movement | Computed | none | `procurement.stock.balance_qty` | Quantity after movement | RO | open | registered |
+| movement `balance_value`, `balance_value_naira` | stock value after the movement | Computed | none | `procurement.stock.balance_value` | Stock value after movement | RO | open (Q-C2) | registered |
+| movement `journal_id`, `grn_id` | ledger and receipt links | Computed | none | `procurement.stock.ledger_links` | Ledger and receipt links | RO | open; on a transfer leg the stricter of this and `finance.interbranch.journals` wins | registered |
+| movement `reference` | reference | Stored | issue, transfer, adjust | `procurement.stock.movement_reference` | Reference | RW | open; on a transfer it is copied into `finance.interbranch.reference` | registered |
+| movement `narration` | narration | Stored | issue, transfer, adjust | `procurement.stock.movement_narration` | Narration | RW | open; finance records a generic goods-transfer purpose so the narration cannot reveal stock details there | registered |
+| movement `cost_center_id`, `cost_center_name` | cost centre issued to | Stored | issue `cost_center` | `procurement.stock.movement_cost_center` | Issued to cost centre | RW | open | registered |
+| adjust body `unit_cost` (input only) | cost of stock found in a count | Stored | adjust | `procurement.stock.adjust_unit_cost` | Cost of written-up stock | RW | open; write-only, kept apart from the read-only `unit_cost` | registered |
+| movement `created_by_name`, `created_at` | who recorded it | Computed | none | `procurement.stock.movement_recorded_by` | Recorded by | RO | open | registered |
+| transfer response `movement` | sending-side leg | Computed | none | - | - | - | rendered through the movement switches | follows registered movement switches |
+| transfer response `received` | receiving-side leg with that store's balance | Computed | none | `procurement.stock.transfer_received` | Receiving store movement | RO | open; returned only to a caller who can read the receiving store (leak C-L1) | registered |
+| transfer response `inter_branch_transfer_id` | link to the finance document | Computed | none | `procurement.stock.transfer_document` | Inter-branch document | RO | shown only if a `finance.interbranch` field is readable | registered |
+| transfer body `to_location` | destination store | Stored | transfer | `procurement.stock.transfer_destination` | Destination store | RW | open | registered |
 | summary `tracked`, `active` | counts | Computed | none | - | - | - | - | no switch: transport |
 
 ### 5.2 Supplier credit notes (`procurement.vendor_credit_note`)
@@ -637,16 +638,16 @@ correction path), `submit/`, `post/`, `allocate/` (`.allocate`), `void/`
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `workflow_instance_id`, `approval_returned`, `lines[].id`, `lines[].line_no` | ids and workflow metadata | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `branch_id`, `branch_name`, `vendor_id`, `vendor_code`, `vendor_name` | identity, inherited from the bill | Computed | none | - | - | - | - | no switch: owner decision |
-| `status`, `approval_state` | state | Computed | actions | `procurement.vendor_credit_note.status` | Status | RO | open | recorded |
-| `vendor_invoice_id`, `vendor_invoice_number` | bill credited | Stored, create only | create `vendor_invoice` | `procurement.vendor_credit_note.vendor_invoice` | Bill credited | RW (open on create) | open | recorded |
-| `note_date` | note date | Stored | create, PATCH | `procurement.vendor_credit_note.note_date` | Credit note date | RW | open | recorded |
-| `vendor_reference` | supplier's credit memo number | Stored | create, PATCH | `procurement.vendor_credit_note.vendor_reference` | Supplier's credit memo number | RW | open | recorded |
-| `reason` (also the approval queue title) | free text | Stored | create, PATCH | `procurement.vendor_credit_note.reason` | Reason | RW | open | recorded |
-| `subtotal`, `tax_total`, `total` | credit amounts | Computed | none | `procurement.vendor_credit_note.amounts` | Credit amounts | RO | open (Q-C3) | recorded |
-| `allocated_amount`, `advance_remaining` | applied and remaining credit | Computed | allocate action | `procurement.vendor_credit_note.settlement` | Applied and remaining credit | RO | open; `advance_remaining` shown only if total and allocated are readable | recorded |
-| `journal_id` | ledger link | Computed | none | `procurement.vendor_credit_note.journal` | Journal link | RO | open | recorded |
-| `lines[]` (`invoice_line_id`, `description`, `quantity`, `net_amount`, `tax_amount`); create `lines`, `amount`, `full` | credited lines | Stored | create, PATCH | `procurement.vendor_credit_note.credit_lines` | Credited lines | RW | open; one switch for the set | recorded |
-| `allocations[]` (`vendor_invoice_id`, `amount`, `effective_date`) | where the credit went | Computed | allocate action | `procurement.vendor_credit_note.applications` | Where the credit went | RO | open | recorded |
+| `status`, `approval_state` | state | Computed | actions | `procurement.vendor_credit_note.status` | Status | RO | open | registered |
+| `vendor_invoice_id`, `vendor_invoice_number` | bill credited | Stored, create only | create `vendor_invoice` | `procurement.vendor_credit_note.vendor_invoice` | Bill credited | RW (open on create) | open | registered |
+| `note_date` | note date | Stored | create, PATCH | `procurement.vendor_credit_note.note_date` | Credit note date | RW | open | registered |
+| `vendor_reference` | supplier's credit memo number | Stored | create, PATCH | `procurement.vendor_credit_note.vendor_reference` | Supplier's credit memo number | RW | open | registered |
+| `reason` (also the approval queue title) | free text | Stored | create, PATCH | `procurement.vendor_credit_note.reason` | Reason | RW | open | registered |
+| `subtotal`, `tax_total`, `total` | credit amounts | Computed | none | `procurement.vendor_credit_note.amounts` | Credit amounts | RO | open (Q-C3) | registered |
+| `allocated_amount`, `advance_remaining` | applied and remaining credit | Computed | allocate action | `procurement.vendor_credit_note.settlement` | Applied and remaining credit | RO | open; `advance_remaining` shown only if total and allocated are readable | registered |
+| `journal_id` | ledger link | Computed | none | `procurement.vendor_credit_note.journal` | Journal link | RO | open | registered |
+| `lines[]` (`invoice_line_id`, `description`, `quantity`, `net_amount`, `tax_amount`); create `lines`, `amount`, `full` | credited lines | Stored | create, PATCH | `procurement.vendor_credit_note.credit_lines` | Credited lines | RW | open; one switch for the set | registered |
+| `allocations[]` (`vendor_invoice_id`, `amount`, `effective_date`) | where the credit went | Computed | allocate action | `procurement.vendor_credit_note.applications` | Where the credit went | RO | open | registered |
 
 ### 5.3 Goods receipts and goods returns (`procurement.goods_receipt`)
 
@@ -662,23 +663,23 @@ return also appears in the stock ledger as a `RETURN` movement.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `grn_id`, `purchase_order_id`, `lines[].id`, `line_no`, `po_line_id`, `stock_item_id` | ids and links | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `grn_number`, `purchase_order_number`, `vendor_*`, `branch_*` | identity | Computed | none | - | - | - | - | no switch: owner decision |
-| receipt `status`, `receipt_status` | state | Computed | post, reverse | `procurement.goods_receipt.status` | Status | RO | open | recorded |
-| `received_by_name` | receiver | Computed | none | `procurement.goods_receipt.received_by` | Received by | RO | open | recorded |
-| `received_date` | received date | Stored | create, PATCH | `procurement.goods_receipt.received_date` | Received date | RW | open | recorded |
-| receipt `reference`, `narration` | free text | Stored | create, PATCH | `procurement.goods_receipt.reference`, `procurement.goods_receipt.narration` | Reference, Narration | RW | open | recorded |
-| `received_item_count`, `ordered_item_count`, `purchase_order_*_item_count`, `purchase_order_fulfilment_status`, `lines[].expected_qty`, `lines[].returned_qty` | received and ordered quantities | Computed | none | `procurement.goods_receipt.quantities` | Received and ordered quantities | RO | open; the order counts also follow the order's fulfilment switch; `returned_qty` reveals a return | recorded |
-| `total_value`, `total_value_naira` | receipt value | Computed | none | `procurement.goods_receipt.total_value` | Receipt value | RO | open (Q-C3) | recorded |
-| `journal_id` | ledger link | Computed | none | `procurement.goods_receipt.journal` | Journal link | RO | open | recorded |
-| `lines[]` (`description`, `expense_account`, `cost_center`, `stock_item_code`, `stock_item_name`, `accepted_qty`, `rejected_qty`) | receipt lines | Stored | create, PATCH | `procurement.goods_receipt.receipt_lines` | Receipt lines | RW | open | recorded |
-| `lines[].unit_price` | price on the receipt line | Stored | create, PATCH | `procurement.goods_receipt.receipt_unit_price` | Receipt unit price | RW | open (Q-C3); a storekeeper receiving goods needs no prices | recorded |
-| `lines[].value_amount` | line value | Computed | none | `procurement.goods_receipt.receipt_line_value` | Receipt line value | RO | open; shown only if the unit price is readable | recorded |
-| return `status` | return state | Computed | reverse action | `procurement.goods_receipt.return_status` | Return status | RO | open | recorded |
-| return `return_date` | return date | Stored | reverse body | `procurement.goods_receipt.return_date` | Return date | RW | open | recorded |
-| return `reason` | free text | Stored | reverse body (required) | `procurement.goods_receipt.return_reason` | Return reason | RW | open | recorded |
-| return `total_value` | value returned | Computed | none | `procurement.goods_receipt.return_value` | Value returned | RO | open (Q-C3) | recorded |
-| return `journal_id` | ledger link | Computed | none | `procurement.goods_receipt.return_journal` | Return journal link | RO | open | recorded |
-| return `lines[]` (`grn_line_id`, `description`, `quantity`) | returned lines | Stored | reverse body `lines` | `procurement.goods_receipt.return_lines` | Returned lines | RW | open | recorded |
-| return `lines[].value_amount` | value of returned lines | Computed | none | `procurement.goods_receipt.return_line_values` | Value of returned lines | RO | open; shown only if the receipt unit price is readable | recorded |
+| receipt `status`, `receipt_status` | state | Computed | post, reverse | `procurement.goods_receipt.status` | Status | RO | open | registered |
+| `received_by_name` | receiver | Computed | none | `procurement.goods_receipt.received_by` | Received by | RO | open | registered |
+| `received_date` | received date | Stored | create, PATCH | `procurement.goods_receipt.received_date` | Received date | RW | open | registered |
+| receipt `reference`, `narration` | free text | Stored | create, PATCH | `procurement.goods_receipt.reference`, `procurement.goods_receipt.narration` | Reference, Narration | RW | open | registered |
+| `received_item_count`, `ordered_item_count`, `purchase_order_*_item_count`, `purchase_order_fulfilment_status`, `lines[].expected_qty`, `lines[].returned_qty` | received and ordered quantities | Computed | none | `procurement.goods_receipt.quantities` | Received and ordered quantities | RO | open; the order counts also follow the order's fulfilment switch; `returned_qty` reveals a return | registered |
+| `total_value`, `total_value_naira` | receipt value | Computed | none | `procurement.goods_receipt.total_value` | Receipt value | RO | open (Q-C3) | registered |
+| `journal_id` | ledger link | Computed | none | `procurement.goods_receipt.journal` | Journal link | RO | open | registered |
+| `lines[]` (`description`, `expense_account`, `cost_center`, `stock_item_code`, `stock_item_name`, `accepted_qty`, `rejected_qty`) | receipt lines | Stored | create, PATCH | `procurement.goods_receipt.receipt_lines` | Receipt lines | RW | open | registered |
+| `lines[].unit_price` | price on the receipt line | Stored | create, PATCH | `procurement.goods_receipt.receipt_unit_price` | Receipt unit price | RW | open (Q-C3); a storekeeper receiving goods needs no prices | registered |
+| `lines[].value_amount` | line value | Computed | none | `procurement.goods_receipt.receipt_line_value` | Receipt line value | RO | open; shown only if the unit price is readable | registered |
+| return `status` | return state | Computed | reverse action | `procurement.goods_receipt.return_status` | Return status | RO | open | registered |
+| return `return_date` | return date | Stored | reverse body | `procurement.goods_receipt.return_date` | Return date | RW | open | registered |
+| return `reason` | free text | Stored | reverse body (required) | `procurement.goods_receipt.return_reason` | Return reason | RW | open | registered |
+| return `total_value` | value returned | Computed | none | `procurement.goods_receipt.return_value` | Value returned | RO | open (Q-C3) | registered |
+| return `journal_id` | ledger link | Computed | none | `procurement.goods_receipt.return_journal` | Return journal link | RO | open | registered |
+| return `lines[]` (`grn_line_id`, `description`, `quantity`) | returned lines | Stored | reverse body `lines` | `procurement.goods_receipt.return_lines` | Returned lines | RW | open | registered |
+| return `lines[].value_amount` | value of returned lines | Computed | none | `procurement.goods_receipt.return_line_values` | Value of returned lines | RO | open; shown only if the receipt unit price is readable | registered |
 
 ### 5.4 Vendor payments and withholding tax (`procurement.vendor_payment`)
 
@@ -700,26 +701,26 @@ any procurement payload; the rate lives on the finance tax code.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `workflow_instance_id`, `approval_returned`, `vendor_id`, `payment_account_id`, `bank_account_id` | ids | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `vendor_code`, `vendor_name`, `branch_id`, `branch_name` | identity | Computed | create `vendor` | - | - | - | - | no switch: owner decision |
-| `status`, `approval_state` | state | Computed | actions | `procurement.vendor_payment.status` | Status | RO | open | recorded |
-| `payment_date` | payment date | Stored | create, PATCH | `procurement.vendor_payment.payment_date` | Payment date | RW | open | recorded |
-| `method` | payment method | Stored | create, PATCH | `procurement.vendor_payment.method` | Payment method | RW | open | recorded |
-| `gross_amount` | sum of the allocations | Computed | none | `procurement.vendor_payment.gross_amount` | Amount settled (gross) | RO | open (Q-C3) | recorded |
-| `net_amount`, `net_naira` | gross minus WHT | Computed | none | `procurement.vendor_payment.net_amount` | Amount paid out (net) | RO | open (Q-C3) | recorded |
-| `wht_amount` | withholding tax, typed or computed | Stored | create, PATCH | `procurement.vendor_payment.wht_amount` | Withholding tax | RW | open | recorded |
-| `wht_tax_code_id`, `wht_tax_code_value` | tax code, defaults to the vendor's code | Stored | create, PATCH `wht_tax_code` | `procurement.vendor_payment.wht_tax_code` | Withholding tax code | RW | open; reveals the vendor's default WHT code | recorded |
-| `wht_source` | computed or entered (a typed value is a hand-set exemption) | Computed | none | `procurement.vendor_payment.wht_source` | How withholding tax was set | RO | open; shown only if `wht_amount` is readable | recorded |
-| `allocated_amount`, `unallocated_amount`, `advance_remaining`, `allocation_status` | applied to bills | Computed | allocate action | `procurement.vendor_payment.allocated_amount` | Applied to bills | RO | open | recorded |
-| `allocations[]` (`vendor_invoice_id`, `amount`) | bills settled | Stored | create, PATCH, allocate | `procurement.vendor_payment.allocations` | Bills settled | RW | open | recorded |
-| `allocations[].invoice_number`, `invoice_date`, `due_date`, `invoice_total`, `invoice_balance`, `invoice_payment_status` | the bill's own figures | Computed | none | `procurement.vendor_payment.allocations` | Bills settled | RO | the stricter of this and the bill amount switches wins | recorded |
-| `payment_code`, `payment_account_name`, `bank_account_name` | bank account chosen to pay from | Stored | create, PATCH `bank_account` | `procurement.vendor_payment.paid_from_account` | Paid from account | RW | open (Q-C4) | recorded |
-| `reference` | reference | Stored | create, PATCH | `procurement.vendor_payment.reference` | Reference | RW | open | recorded |
-| `narration` | narration | Stored | create, PATCH | `procurement.vendor_payment.narration` | Narration | RW | open | recorded |
-| `journal_id` | ledger link | Computed | none | `procurement.vendor_payment.journal` | Journal link | RO | open | recorded |
-| `created_at`, `created_by_name` | who recorded it | Computed | none | `procurement.vendor_payment.recorded_by` | Recorded by | RO | open | recorded |
-| `attachments[]` (`name`, `url`, `caption`, `uploaded_by_name`, `superseded_*`) | uploaded files | Stored | `vendor-payments/<pk>/attachments/` | `procurement.vendor_payment.attachments` | Attachments | RW | open (Q-C7); the uploader email fallback is personal data | recorded |
-| detail `posting_lines[]` (`account_code`, `account_name`, `debit`, `credit`) | journal lines including the WHT payable and bank legs | Computed | none | `procurement.vendor_payment.posting_lines` | Journal lines | RO | open; dropped if gross, net or WHT is unreadable | recorded |
-| detail `activity[]` | timeline; messages quote net and WHT | Computed | none | `procurement.vendor_payment.activity` | Activity | RO | open; built from the readable parts only | recorded |
-| eligible bills row `invoice_date`, `due_date`, `subtotal`, `tax_total`, `total`, `amount_paid`, `balance_due`, `payment_status` | the bill picker | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows the bill switches; `subtotal` and `tax_total` are the WHT base, so they also need `wht_amount` | recorded |
+| `status`, `approval_state` | state | Computed | actions | `procurement.vendor_payment.status` | Status | RO | open | registered |
+| `payment_date` | payment date | Stored | create, PATCH | `procurement.vendor_payment.payment_date` | Payment date | RW | open | registered |
+| `method` | payment method | Stored | create, PATCH | `procurement.vendor_payment.method` | Payment method | RW | open | registered |
+| `gross_amount` | sum of the allocations | Computed | none | `procurement.vendor_payment.gross_amount` | Amount settled (gross) | RO | open (Q-C3) | registered |
+| `net_amount`, `net_naira` | gross minus WHT | Computed | none | `procurement.vendor_payment.net_amount` | Amount paid out (net) | RO | open (Q-C3) | registered |
+| `wht_amount` | withholding tax, typed or computed | Stored | create, PATCH | `procurement.vendor_payment.wht_amount` | Withholding tax | RW | open | registered |
+| `wht_tax_code_id`, `wht_tax_code_value` | tax code, defaults to the vendor's code | Stored | create, PATCH `wht_tax_code` | `procurement.vendor_payment.wht_tax_code` | Withholding tax code | RW | open; reveals the vendor's default WHT code | registered |
+| `wht_source` | computed or entered (a typed value is a hand-set exemption) | Computed | none | `procurement.vendor_payment.wht_source` | How withholding tax was set | RO | open; shown only if `wht_amount` is readable | registered |
+| `allocated_amount`, `unallocated_amount`, `advance_remaining`, `allocation_status` | applied to bills | Computed | allocate action | `procurement.vendor_payment.allocated_amount` | Applied to bills | RO | open | registered |
+| `allocations[]` (`vendor_invoice_id`, `amount`) | bills settled | Stored | create, PATCH, allocate | `procurement.vendor_payment.allocations` | Bills settled | RW | open | registered |
+| `allocations[].invoice_number`, `invoice_date`, `due_date`, `invoice_total`, `invoice_balance`, `invoice_payment_status` | the bill's own figures | Computed | none | `procurement.vendor_payment.allocations` | Bills settled | RO | the stricter of this and the bill amount switches wins | registered |
+| `payment_code`, `payment_account_name`, `bank_account_name` | bank account chosen to pay from | Stored | create, PATCH `bank_account` | `procurement.vendor_payment.paid_from_account` | Paid from account | RW | open (Q-C4) | registered |
+| `reference` | reference | Stored | create, PATCH | `procurement.vendor_payment.reference` | Reference | RW | open | registered |
+| `narration` | narration | Stored | create, PATCH | `procurement.vendor_payment.narration` | Narration | RW | open | registered |
+| `journal_id` | ledger link | Computed | none | `procurement.vendor_payment.journal` | Journal link | RO | open | registered |
+| `created_at`, `created_by_name` | who recorded it | Computed | none | `procurement.vendor_payment.recorded_by` | Recorded by | RO | open | registered |
+| `attachments[]` (`name`, `url`, `caption`, `uploaded_by_name`, `superseded_*`) | uploaded files | Stored | `vendor-payments/<pk>/attachments/` | `procurement.vendor_payment.attachments` | Attachments | RW | open (Q-C7); the uploader email fallback is personal data | registered |
+| detail `posting_lines[]` (`account_code`, `account_name`, `debit`, `credit`) | journal lines including the WHT payable and bank legs | Computed | none | `procurement.vendor_payment.posting_lines` | Journal lines | RO | open; dropped if gross, net or WHT is unreadable | registered |
+| detail `activity[]` | timeline; messages quote net and WHT | Computed | none | `procurement.vendor_payment.activity` | Activity | RO | open; built from the readable parts only | registered |
+| eligible bills row `invoice_date`, `due_date`, `subtotal`, `tax_total`, `total`, `amount_paid`, `balance_due`, `payment_status` | the bill picker | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows the bill switches; `subtotal` and `tax_total` are the WHT base, so they also need `wht_amount` | registered |
 | eligible bills row `id`, `vendor_id`, `document_number`, `vendor_code`, `branch_id` | identity | Computed | none | - | - | - | - | no switch: owner decision |
 | submit response `approval` block | approval transport | Transport | none | - | - | - | - | no switch: transport |
 
@@ -744,52 +745,52 @@ buyer who does not reach every participant branch. Frontend:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `line_no`, `is_parked`, `approved_by_override`, `workflow_instance_id`, `approval_returned`, `requisition_id`, `rfq_id`, `awarded_po_id`, `currency_id` (as an id) | ids and workflow metadata | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `requisition_number`, `rfq_number`, `awarded_po_number`, `vendor_*`, `branch_id`, `branch_name`, `participant_branches[]` | identity | Computed or stored | create | - | - | - | - | no switch: owner decision |
-| requisition `status`, `approval_state` | state | Computed | submit | `procurement.requisition.status` | Status | RO | open | recorded |
-| requisition `title` | title | Stored | create, PATCH | `procurement.requisition.title` | Title | RW | open | recorded |
-| requisition `request_date` | request date | Stored | create, PATCH | `procurement.requisition.request_date` | Request date | RW | open | recorded |
-| requisition `needed_by` | date needed | Stored | create, PATCH | `procurement.requisition.needed_by` | Needed by | RW | open | recorded |
-| `requested_by_id`, `requested_by_name` | requester | Computed | none | `procurement.requisition.requested_by` | Requested by | RO | open | recorded |
-| requisition `cost_center_id`, `cost_center_code`, `cost_center_name` | cost centre | Stored | create, PATCH | `procurement.requisition.cost_center` | Cost centre | RW | open | recorded |
-| requisition `justification` | free text, also searched by `?search=` | Stored | create, PATCH | `procurement.requisition.justification` | Justification | RW | open | recorded |
-| `estimated_total`, `estimated_total_naira`, summary `pending_approval`, `approved_mtd`, `draft`, `sent_back`, `total_value_mtd` amounts | estimated total | Computed | none | `procurement.requisition.estimated_total` | Estimated total | RO | open (Q-C3) | recorded |
-| requisition `lines[]` (`description`, `quantity`, `unit`) | requested items | Stored | create, PATCH | `procurement.requisition.lines` | Requested items | RW | open | recorded |
-| `lines[].catalog_item_id` | catalogue link | Stored | create, PATCH | `procurement.requisition.line_catalog_item` | Line catalogue item | RW | open | recorded |
-| `lines[].estimated_unit_price` | budget holder's estimate | Stored | create, PATCH | `procurement.requisition.estimated_unit_price` | Estimated unit price | RW | open (Q-C3) | recorded |
-| `lines[].estimated_line_total` | line total | Computed | none | `procurement.requisition.estimated_line_total` | Estimated line total | RO | open; shown only if quantity and price are readable | recorded |
-| `lines[].expense_account_id`, `expense_code` | accounting coding | Stored | create, PATCH | `procurement.requisition.line_expense_account` | Line expense account | RW | open | recorded |
-| `lines[].tax_code_id` | tax code | Stored | create, PATCH | `procurement.requisition.line_tax_code` | Line tax code | RW | open | recorded |
+| requisition `status`, `approval_state` | state | Computed | submit | `procurement.requisition.status` | Status | RO | open | registered |
+| requisition `title` | title | Stored | create, PATCH | `procurement.requisition.title` | Title | RW | open | registered |
+| requisition `request_date` | request date | Stored | create, PATCH | `procurement.requisition.request_date` | Request date | RW | open | registered |
+| requisition `needed_by` | date needed | Stored | create, PATCH | `procurement.requisition.needed_by` | Needed by | RW | open | registered |
+| `requested_by_id`, `requested_by_name` | requester | Computed | none | `procurement.requisition.requested_by` | Requested by | RO | open | registered |
+| requisition `cost_center_id`, `cost_center_code`, `cost_center_name` | cost centre | Stored | create, PATCH | `procurement.requisition.cost_center` | Cost centre | RW | open | registered |
+| requisition `justification` | free text, also searched by `?search=` | Stored | create, PATCH | `procurement.requisition.justification` | Justification | RW | open | registered |
+| `estimated_total`, `estimated_total_naira`, summary `pending_approval`, `approved_mtd`, `draft`, `sent_back`, `total_value_mtd` amounts | estimated total | Computed | none | `procurement.requisition.estimated_total` | Estimated total | RO | open (Q-C3) | registered |
+| requisition `lines[]` (`description`, `quantity`, `unit`) | requested items | Stored | create, PATCH | `procurement.requisition.lines` | Requested items | RW | open | registered |
+| `lines[].catalog_item_id` | catalogue link | Stored | create, PATCH | `procurement.requisition.line_catalog_item` | Line catalogue item | RW | open | registered |
+| `lines[].estimated_unit_price` | budget holder's estimate | Stored | create, PATCH | `procurement.requisition.estimated_unit_price` | Estimated unit price | RW | open (Q-C3) | registered |
+| `lines[].estimated_line_total` | line total | Computed | none | `procurement.requisition.estimated_line_total` | Estimated line total | RO | open; shown only if quantity and price are readable | registered |
+| `lines[].expense_account_id`, `expense_code` | accounting coding | Stored | create, PATCH | `procurement.requisition.line_expense_account` | Line expense account | RW | open | registered |
+| `lines[].tax_code_id` | tax code | Stored | create, PATCH | `procurement.requisition.line_tax_code` | Line tax code | RW | open | registered |
 | free-line extras `request_date`, `requisition_number`, `branch_name` | labels and dates of the source requisition | Computed | none | - | - | - | - | no switch: identifier |
 | budget availability `has_budget`, `period` (budget name), `budget`, `committed`, `available` | plan against commitments at a cost centre | Computed | none | `finance.budget.amount` | Planned amount | RO | the plan figures need the budget switches (leaks A-L18, C-L10, C-L11) | registered in area A |
-| `shared_sourcing` (null for an ordinary RFQ) | branch shares of a shared RFQ | Computed | none | `procurement.rfq.shared_sourcing` | Branch shares | RO | open | recorded |
-| `allocations[]` (`rfq_line_id`, `requisition_line_id`, `quantity`) | quantity per branch on a shared RFQ | Stored | create `lines[].allocations` (PATCH refuses) | `procurement.rfq.branch_allocations` | Branch quantities | RW (create only) | open | recorded |
-| RFQ `rfq_status`, `version` | state | Computed | issue, close, cancel | `procurement.rfq.status` | Status | RO | open | recorded |
-| RFQ `title` | title | Stored | create, PATCH | `procurement.rfq.title` | Title | RW | open | recorded |
-| RFQ `issue_date` | issue date | Stored | create, PATCH | `procurement.rfq.issue_date` | Issue date | RW | open | recorded |
-| RFQ `response_due_date`, `response_due_at` | response deadline | Stored | create, PATCH, amendment | `procurement.rfq.response_due` | Response deadline | RW | open | recorded |
-| RFQ `budget_estimate` | the school's ceiling for the purchase | Stored | create, PATCH | `procurement.rfq.budget_estimate` | Budget estimate | RW | sensitive (recommended, Q-C3): a buyer who reads the ceiling can tip a vendor to bid just under it | recorded |
-| RFQ `notes` | free text | Stored | create, PATCH | `procurement.rfq.notes` | Notes | RW | open | recorded |
+| `shared_sourcing` (null for an ordinary RFQ) | branch shares of a shared RFQ | Computed | none | `procurement.rfq.shared_sourcing` | Branch shares | RO | open | registered |
+| `allocations[]` (`rfq_line_id`, `requisition_line_id`, `quantity`) | quantity per branch on a shared RFQ | Stored | create `lines[].allocations` (PATCH refuses) | `procurement.rfq.branch_allocations` | Branch quantities | RW (create only) | open | registered |
+| RFQ `rfq_status`, `version` | state | Computed | issue, close, cancel | `procurement.rfq.status` | Status | RO | open | registered |
+| RFQ `title` | title | Stored | create, PATCH | `procurement.rfq.title` | Title | RW | open | registered |
+| RFQ `issue_date` | issue date | Stored | create, PATCH | `procurement.rfq.issue_date` | Issue date | RW | open | registered |
+| RFQ `response_due_date`, `response_due_at` | response deadline | Stored | create, PATCH, amendment | `procurement.rfq.response_due` | Response deadline | RW | open | registered |
+| RFQ `budget_estimate` | the school's ceiling for the purchase | Stored | create, PATCH | `procurement.rfq.budget_estimate` | Budget estimate | RW | sensitive (recommended, Q-C3): a buyer who reads the ceiling can tip a vendor to bid just under it | registered |
+| RFQ `notes` | free text | Stored | create, PATCH | `procurement.rfq.notes` | Notes | RW | open | registered |
 | RFQ `line_count`, `response_count`, `invited_count` | counts | Computed | none | - | - | - | - | no switch: transport |
-| RFQ `lines[]` (`description`, `quantity`, `requisition_line_id`, `expense_account_id`, `expense_code`, `tax_code_id`, `version`, `is_active`) | quotation request lines | Stored | create, PATCH, amendment | `procurement.rfq.lines` | Quotation request lines | RW | open | recorded |
-| RFQ `invitations[]` (`vendor_id`, `status`, `deadline`) | invited vendors | Stored (through `invited_vendors` ids) | create, PATCH | `procurement.rfq.invited_vendors` | Invited vendors | RW | open | recorded |
-| invitation `opened_at`, `draft_started_at`, `submitted_at`, `declined_at`, `decline_reason`, `responded` | vendor behaviour | Computed | none | `procurement.rfq.invitation_activity` | Invitation activity | RO | open | recorded |
-| invitation `quotation_id`, `quotation_status`, `quotation_total` | the vendor's response | Computed | none | `procurement.quotation.total` | Quoted amount | RO | follows the quotation switches | recorded |
+| RFQ `lines[]` (`description`, `quantity`, `requisition_line_id`, `expense_account_id`, `expense_code`, `tax_code_id`, `version`, `is_active`) | quotation request lines | Stored | create, PATCH, amendment | `procurement.rfq.lines` | Quotation request lines | RW | open | registered |
+| RFQ `invitations[]` (`vendor_id`, `status`, `deadline`) | invited vendors | Stored (through `invited_vendors` ids) | create, PATCH | `procurement.rfq.invited_vendors` | Invited vendors | RW | open | registered |
+| invitation `opened_at`, `draft_started_at`, `submitted_at`, `declined_at`, `decline_reason`, `responded` | vendor behaviour | Computed | none | `procurement.rfq.invitation_activity` | Invitation activity | RO | open | registered |
+| invitation `quotation_id`, `quotation_status`, `quotation_total` | the vendor's response | Computed | none | `procurement.quotation.total` | Quoted amount | RO | follows the quotation switches | registered |
 | invitation `recipients[]` (`name`, `email`) | snapshot of contacts | Computed | none | `procurement.vendor_contact.name`, `procurement.vendor_contact.email` | as registered | RO | open | registered |
-| RFQ `quotations[]` summary (`quotation_status`, `total`, `lead_time_days`, `quote_date`, `valid_until`, `is_expired`) | quotation summary | Computed | none | `procurement.quotation.total` | Quoted amount | RO | follows the quotation switches | recorded |
-| RFQ `amendments[]` (`version`, `summary`, `response_required`, `published_at`) | amendments | Stored | `rfqs/<pk>/amendments/` | `procurement.rfq.amendments` | Amendments | RW | open | recorded |
-| RFQ `activity[]` | timeline; messages quote submitted amounts | Computed | none | `procurement.rfq.activity` | Activity | RO | open | recorded |
-| quotation `quotation_status` | state | Computed | submit, award | `procurement.quotation.status` | Status | RO | open | recorded |
-| quotation `quote_date` | quote date | Stored | create, PATCH | `procurement.quotation.quote_date` | Quote date | RW | open | recorded |
-| quotation `valid_until`, `is_expired` | validity | Stored, computed | create, PATCH | `procurement.quotation.valid_until` | Valid until | RW | open | recorded |
-| quotation `lead_time_days` | lead time | Stored | create, PATCH | `procurement.quotation.lead_time_days` | Lead time | RW | open | recorded |
-| quotation `currency` | quoted currency | Stored | create, PATCH | `procurement.quotation.currency` | Currency | RW | open | recorded |
-| quotation `reference`, `notes` | free text | Stored | create, PATCH | `procurement.quotation.reference`, `procurement.quotation.notes` | Reference, Notes | RW | open | recorded |
-| quotation `subtotal`, `tax_total`, `total`, `total_naira` | quoted amount | Computed | none | `procurement.quotation.total` | Quoted amount | RO | open (Q-C3): a vendor's bid seen by a requester before award | recorded |
-| quotation `lines[].unit_price` | quoted unit price typed by the buyer | Stored | create, PATCH | `procurement.quotation.unit_price` | Quoted unit price | RW | open (Q-C3) | recorded |
-| quotation `lines[]` (`description`, `rfq_line_id`, `expense_account_id`, `expense_code`, `quantity`, `tax_code_id`, `net_amount`, `tax_amount`, `response_type`, `alternative_for_id`) | quotation lines | Stored | create, PATCH | `procurement.quotation.quote_lines` | Quotation lines | RW | open | recorded |
-| quotation `attachments[]` (`name`, `content_type`, `size`, `revision`, `url`) | files the vendor uploaded | Computed | portal only | `procurement.quotation.attachments` | Attachments | RO | open | recorded |
-| quotation `submissions[]` (`revision`, `rfq_version`, `submitted_at`) | submission history | Computed | none | `procurement.quotation.submissions` | Submissions | RO | open | recorded |
+| RFQ `quotations[]` summary (`quotation_status`, `total`, `lead_time_days`, `quote_date`, `valid_until`, `is_expired`) | quotation summary | Computed | none | `procurement.quotation.total` | Quoted amount | RO | follows the quotation switches | registered |
+| RFQ `amendments[]` (`version`, `summary`, `response_required`, `published_at`) | amendments | Stored | `rfqs/<pk>/amendments/` | `procurement.rfq.amendments` | Amendments | RW | open | registered |
+| RFQ `activity[]` | timeline; messages quote submitted amounts | Computed | none | `procurement.rfq.activity` | Activity | RO | open | registered |
+| quotation `quotation_status` | state | Computed | submit, award | `procurement.quotation.status` | Status | RO | open | registered |
+| quotation `quote_date` | quote date | Stored | create, PATCH | `procurement.quotation.quote_date` | Quote date | RW | open | registered |
+| quotation `valid_until`, `is_expired` | validity | Stored, computed | create, PATCH | `procurement.quotation.valid_until` | Valid until | RW | open | registered |
+| quotation `lead_time_days` | lead time | Stored | create, PATCH | `procurement.quotation.lead_time_days` | Lead time | RW | open | registered |
+| quotation `currency` | quoted currency | Stored | create, PATCH | `procurement.quotation.currency` | Currency | RW | open | registered |
+| quotation `reference`, `notes` | free text | Stored | create, PATCH | `procurement.quotation.reference`, `procurement.quotation.notes` | Reference, Notes | RW | open | registered |
+| quotation `subtotal`, `tax_total`, `total`, `total_naira` | quoted amount | Computed | none | `procurement.quotation.total` | Quoted amount | RO | open (Q-C3): a vendor's bid seen by a requester before award | registered |
+| quotation `lines[].unit_price` | quoted unit price typed by the buyer | Stored | create, PATCH | `procurement.quotation.unit_price` | Quoted unit price | RW | open (Q-C3) | registered |
+| quotation `lines[]` (`description`, `rfq_line_id`, `expense_account_id`, `expense_code`, `quantity`, `tax_code_id`, `net_amount`, `tax_amount`, `response_type`, `alternative_for_id`) | quotation lines | Stored | create, PATCH | `procurement.quotation.quote_lines` | Quotation lines | RW | open | registered |
+| quotation `attachments[]` (`name`, `content_type`, `size`, `revision`, `url`) | files the vendor uploaded | Computed | portal only | `procurement.quotation.attachments` | Attachments | RO | open | registered |
+| quotation `submissions[]` (`revision`, `rfq_version`, `submitted_at`) | submission history | Computed | none | `procurement.quotation.submissions` | Submissions | RO | open | registered |
 | quotation `submissions[].submitted_by_email` | a vendor contact's email | Computed | none | `procurement.vendor_contact.email` | Email | RO | follows the registered contact switch (leak C-L7) | registered |
-| quotation `activity[]` | timeline | Computed | none | `procurement.quotation.activity` | Activity | RO | open | recorded |
+| quotation `activity[]` | timeline | Computed | none | `procurement.quotation.activity` | Activity | RO | open | registered |
 
 ### 5.6 Purchase orders (`procurement.purchase_order`)
 
@@ -807,20 +808,20 @@ the vendor's), `currency`.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `workflow_instance_id`, `approval_returned`, `can_email_vendor`, `contract_id`, `requisition_id`, `receipt_documents[]`, `invoice_documents[]` links | ids and links | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `quotation_number`, `requisition_number`, `contract_reference`, `vendor_*`, `branch_id`, `branch_name` | identity | Computed or stored | create | - | - | - | - | no switch: owner decision |
-| `status`, `approval_state`, `display_status` | state | Computed | actions | `procurement.purchase_order.status` | Status | RO | open | recorded |
-| `order_date` | order date | Stored | create, PATCH | `procurement.purchase_order.order_date` | Order date | RW | open | recorded |
-| `expected_date` | expected delivery | Stored | create, PATCH | `procurement.purchase_order.expected_date` | Expected date | RW | open | recorded |
-| `delivery_address` | delivery address, also sent to the vendor | Stored | create, PATCH | `procurement.purchase_order.delivery_address` | Delivery address | RW | open | recorded |
-| `payment_terms` | the order's agreed terms, copied from the vendor when omitted | Stored | create, PATCH | `procurement.purchase_order.payment_terms` | Payment terms | RW | open; the create default must not echo the vendor's terms when `procurement.vendor.payment_terms` is unreadable (leak C-L8e) | recorded |
-| `narration` | narration (comes from the requisition or award; no write path in the views) | Computed | none | `procurement.purchase_order.narration` | Narration | RO | open | recorded |
-| `subtotal`, `tax_total`, `total`, `total_naira` | order amount | Computed | none | `procurement.purchase_order.total` | Order amount | RO | open (Q-C3) | recorded |
-| `received_pct`, `invoiced_pct`, `lines[].received_qty`, `lines[].invoiced_qty` | fulfilment | Computed | none | `procurement.purchase_order.fulfilment` | Fulfilment | RO | open | recorded |
-| `contract_id` (as a choice) | contract the order sits under | Stored | create, PATCH `contract` | `procurement.purchase_order.contract` | Contract | RW | open | recorded |
-| `lines[]` (`description`, `expense_account_id`, `expense_code`, `quantity`, `tax_code_id`, `net_amount`, `tax_amount`) | snapshot of the requisition or award | Computed | none | `procurement.purchase_order.order_lines` | Order lines | RO | open | recorded |
-| `lines[].unit_price` | order unit price | Computed | none | `procurement.purchase_order.unit_price` | Order unit price | RO | open (Q-C3) | recorded |
+| `status`, `approval_state`, `display_status` | state | Computed | actions | `procurement.purchase_order.status` | Status | RO | open | registered |
+| `order_date` | order date | Stored | create, PATCH | `procurement.purchase_order.order_date` | Order date | RW | open | registered |
+| `expected_date` | expected delivery | Stored | create, PATCH | `procurement.purchase_order.expected_date` | Expected date | RW | open | registered |
+| `delivery_address` | delivery address, also sent to the vendor | Stored | create, PATCH | `procurement.purchase_order.delivery_address` | Delivery address | RW | open | registered |
+| `payment_terms` | the order's agreed terms, copied from the vendor when omitted | Stored | create, PATCH | `procurement.purchase_order.payment_terms` | Payment terms | RW | open; the create default must not echo the vendor's terms when `procurement.vendor.payment_terms` is unreadable (leak C-L8e) | registered |
+| `narration` | narration (comes from the requisition or award; no write path in the views) | Computed | none | `procurement.purchase_order.narration` | Narration | RO | open | registered |
+| `subtotal`, `tax_total`, `total`, `total_naira` | order amount | Computed | none | `procurement.purchase_order.total` | Order amount | RO | open (Q-C3) | registered |
+| `received_pct`, `invoiced_pct`, `lines[].received_qty`, `lines[].invoiced_qty` | fulfilment | Computed | none | `procurement.purchase_order.fulfilment` | Fulfilment | RO | open | registered |
+| `contract_id` (as a choice) | contract the order sits under | Stored | create, PATCH `contract` | `procurement.purchase_order.contract` | Contract | RW | open | registered |
+| `lines[]` (`description`, `expense_account_id`, `expense_code`, `quantity`, `tax_code_id`, `net_amount`, `tax_amount`) | snapshot of the requisition or award | Computed | none | `procurement.purchase_order.order_lines` | Order lines | RO | open | registered |
+| `lines[].unit_price` | order unit price | Computed | none | `procurement.purchase_order.unit_price` | Order unit price | RO | open (Q-C3) | registered |
 | `receipt_documents[]` (`document_number`, `received_date`, `status`, `item_count`) | link list of receipts | Computed | none | - | - | - | follows goods receipt visibility | no switch: transport |
-| `invoice_documents[]` (`invoice_date`, `total`, `status`, `match_status`) | link list of bills | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows the bill amount switch | recorded |
-| `email_deliveries[]` (`source`, `status`, `requested_by_name`, `buyer_message`, `queued_at`, `sent_at`, `cancelled_at`, `created_at`, `parent_id`) | vendor email history | Computed | none | `procurement.purchase_order.email_history` | Vendor email history | RO | open | recorded |
+| `invoice_documents[]` (`invoice_date`, `total`, `status`, `match_status`) | link list of bills | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows the bill amount switch | registered |
+| `email_deliveries[]` (`source`, `status`, `requested_by_name`, `buyer_message`, `queued_at`, `sent_at`, `cancelled_at`, `created_at`, `parent_id`) | vendor email history | Computed | none | `procurement.purchase_order.email_history` | Vendor email history | RO | open | registered |
 | `email_deliveries[].recipient_count`, `bcc_count`, `failure_reason` | counts of contacts holding routing flags; the gateway's text may quote an address | Computed | none | `procurement.vendor_contact.is_active` | Active contact | RO | shown only if the contact routing flags and email are readable (leak C-L8d) | registered |
 
 ### 5.7 Vendor bills (`procurement.vendor_invoice`)
@@ -838,26 +839,26 @@ invoice_date, due_date, vendor_reference, amount, branch, narration}]`.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `workflow_instance_id`, `approval_returned`, `purchase_order_id`, `lines[].po_line_id`, `lines[].grn_line_id` | ids | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `purchase_order_number`, `vendor_*`, `branch_*` | identity | Computed or stored | create | - | - | - | - | no switch: owner decision |
-| `status`, `approval_state`, `match_status`, `payment_status`, `display_status`, `is_overdue`, `is_opening` | state | Computed | actions | `procurement.vendor_invoice.status` | Status | RO | open | recorded |
-| `invoice_date` | bill date | Stored | create, PATCH, opening import | `procurement.vendor_invoice.invoice_date` | Bill date | RW | open | recorded |
-| `due_date` | due date | Stored | create, PATCH, opening import | `procurement.vendor_invoice.due_date` | Due date | RW | open | recorded |
-| `vendor_reference` | supplier's invoice number | Stored | create, PATCH, opening import | `procurement.vendor_invoice.vendor_reference` | Supplier's invoice number | RW | open | recorded |
-| `narration` | narration | Stored | create, PATCH, opening import | `procurement.vendor_invoice.narration` | Narration | RW | open | recorded |
-| `subtotal`, `tax_total`, `total`, `total_naira` | bill amount | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | open (Q-C3) | recorded |
-| opening import body `amount` | opening balance owed | Stored | opening import | `procurement.vendor_invoice.opening_amount` | Opening balance owed | RW | open; write-only | recorded |
-| `amount_paid`, `amount_credited`, `balance_due` | paid, credited and owed | Computed | none | `procurement.vendor_invoice.settlement` | Paid, credited and owed | RO | open | recorded |
-| `journal_id` | ledger link | Computed | none | `procurement.vendor_invoice.journal` | Journal link | RO | open | recorded |
-| `lines[]` (`description`, `expense_*`, `cost_center_*`, `quantity`, `tax_code_id`) | bill lines | Stored | create, PATCH | `procurement.vendor_invoice.bill_lines` | Bill lines | RW | open | recorded |
-| `lines[].unit_price` | bill unit price | Stored | create, PATCH | `procurement.vendor_invoice.bill_unit_price` | Bill unit price | RW | open (Q-C3) | recorded |
-| `lines[].net_amount`, `lines[].tax_amount` | line amounts | Computed | none | `procurement.vendor_invoice.bill_line_amounts` | Bill line amounts | RO | open | recorded |
-| `attachments[]` | uploaded files | Stored | `vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.attachments` | Attachments | RW | open (Q-C7) | recorded |
-| detail `match_comparisons[]` (quantities, `po_unit_price`, `invoice_unit_price`, `grn_number`, `grn_accepted_quantity`) | three-way match | Computed | none | `procurement.vendor_invoice.match_comparisons` | Three-way match | RO | open; each column follows the source document's switch | recorded |
-| detail `payments[]` (`document_number`, `payment_date`, `amount`, `status`) | payments applied | Computed | none | `procurement.vendor_invoice.payments` | Payments | RO | `amount` follows the vendor payment amount switches | recorded |
-| detail `posting_lines[]` | journal lines | Computed | none | `procurement.vendor_invoice.posting_lines` | Journal lines | RO | open; dropped if `total` is unreadable | recorded |
-| detail `activity[]` | timeline; messages quote the amount | Computed | none | `procurement.vendor_invoice.activity` | Activity | RO | open | recorded |
-| reference check `same_vendor_duplicate`, `other_vendor_matches[]` (`document_number`, `vendor_code`, `vendor_name`, `invoice_date`, `total`, `status`) | duplicate-bill check | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | must be narrowed to the caller's branches (leak C-L2) | recorded |
+| `status`, `approval_state`, `match_status`, `payment_status`, `display_status`, `is_overdue`, `is_opening` | state | Computed | actions | `procurement.vendor_invoice.status` | Status | RO | open | registered |
+| `invoice_date` | bill date | Stored | create, PATCH, opening import | `procurement.vendor_invoice.invoice_date` | Bill date | RW | open | registered |
+| `due_date` | due date | Stored | create, PATCH, opening import | `procurement.vendor_invoice.due_date` | Due date | RW | open | registered |
+| `vendor_reference` | supplier's invoice number | Stored | create, PATCH, opening import | `procurement.vendor_invoice.vendor_reference` | Supplier's invoice number | RW | open | registered |
+| `narration` | narration | Stored | create, PATCH, opening import | `procurement.vendor_invoice.narration` | Narration | RW | open | registered |
+| `subtotal`, `tax_total`, `total`, `total_naira` | bill amount | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | open (Q-C3) | registered |
+| opening import body `amount` | opening balance owed | Stored | opening import | `procurement.vendor_invoice.opening_amount` | Opening balance owed | RW | open; write-only | registered |
+| `amount_paid`, `amount_credited`, `balance_due` | paid, credited and owed | Computed | none | `procurement.vendor_invoice.settlement` | Paid, credited and owed | RO | open | registered |
+| `journal_id` | ledger link | Computed | none | `procurement.vendor_invoice.journal` | Journal link | RO | open | registered |
+| `lines[]` (`description`, `expense_*`, `cost_center_*`, `quantity`, `tax_code_id`) | bill lines | Stored | create, PATCH | `procurement.vendor_invoice.bill_lines` | Bill lines | RW | open | registered |
+| `lines[].unit_price` | bill unit price | Stored | create, PATCH | `procurement.vendor_invoice.bill_unit_price` | Bill unit price | RW | open (Q-C3) | registered |
+| `lines[].net_amount`, `lines[].tax_amount` | line amounts | Computed | none | `procurement.vendor_invoice.bill_line_amounts` | Bill line amounts | RO | open | registered |
+| `attachments[]` | uploaded files | Stored | `vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.attachments` | Attachments | RW | open (Q-C7) | registered |
+| detail `match_comparisons[]` (quantities, `po_unit_price`, `invoice_unit_price`, `grn_number`, `grn_accepted_quantity`) | three-way match | Computed | none | `procurement.vendor_invoice.match_comparisons` | Three-way match | RO | open; each column follows the source document's switch | registered |
+| detail `payments[]` (`document_number`, `payment_date`, `amount`, `status`) | payments applied | Computed | none | `procurement.vendor_invoice.payments` | Payments | RO | `amount` follows the vendor payment amount switches | registered |
+| detail `posting_lines[]` | journal lines | Computed | none | `procurement.vendor_invoice.posting_lines` | Journal lines | RO | open; dropped if `total` is unreadable | registered |
+| detail `activity[]` | timeline; messages quote the amount | Computed | none | `procurement.vendor_invoice.activity` | Activity | RO | open | registered |
+| reference check `same_vendor_duplicate`, `other_vendor_matches[]` (`document_number`, `vendor_code`, `vendor_name`, `invoice_date`, `total`, `status`) | duplicate-bill check | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | must be narrowed to the caller's branches (leak C-L2) | registered |
 | summary `under_review`, `approved`, `overdue.count`, `disputed`, `sent_back` | counts | Computed | none | - | - | - | - | no switch: transport |
-| summary `overdue.amount` | overdue amount | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows `total`, `amount_paid`, `amount_credited` | recorded |
+| summary `overdue.amount` | overdue amount | Computed | none | `procurement.vendor_invoice.total` | Bill amount | RO | follows `total`, `amount_paid`, `amount_credited` | registered |
 
 ### 5.8 Vendors (unswitched keys), categories, catalogue, contracts, assessments, settings
 
@@ -878,57 +879,57 @@ whole-tenant reach), `settings/history/`.
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | vendor `id`, `code`, `name`, `branch_id`, `branch_name` | vendor identity | Stored | create; PATCH `name` | - | - | - | - | no switch: owner decision |
-| vendor `is_active` | active flag | Stored | create, PATCH | `procurement.vendor.is_active` | Vendor active | RW | open | recorded |
-| vendor `payable_account_id`, `payable_code` | AP control account | Stored | create, PATCH `payable_account` | `procurement.vendor.payable_account` | Payable account | RW | open (Q-C6) | recorded |
-| vendor `default_expense_account_id`, `default_expense_code` | default expense account | Stored | create, PATCH `default_expense_account` | `procurement.vendor.default_expense_account` | Default expense account | RW | open (Q-C6) | recorded |
-| vendor `default_wht_tax_code_id`, `default_wht_tax_code_value` | decides the WHT on every payment to the vendor | Stored | create, PATCH `default_wht_tax_code` | `procurement.vendor.default_wht_tax_code` | Default withholding tax code | RW | open; moves money (Q-C6) | recorded |
-| vendor list `active_po_count` | active orders | Computed | none | `procurement.vendor.active_po_count` | Active orders | RO | open; or dropped when order access is closed | recorded |
+| vendor `is_active` | active flag | Stored | create, PATCH | `procurement.vendor.is_active` | Vendor active | RW | open | registered |
+| vendor `payable_account_id`, `payable_code` | AP control account | Stored | create, PATCH `payable_account` | `procurement.vendor.payable_account` | Payable account | RW | open (Q-C6) | registered |
+| vendor `default_expense_account_id`, `default_expense_code` | default expense account | Stored | create, PATCH `default_expense_account` | `procurement.vendor.default_expense_account` | Default expense account | RW | open (Q-C6) | registered |
+| vendor `default_wht_tax_code_id`, `default_wht_tax_code_value` | decides the WHT on every payment to the vendor | Stored | create, PATCH `default_wht_tax_code` | `procurement.vendor.default_wht_tax_code` | Default withholding tax code | RW | open; moves money (Q-C6) | registered |
+| vendor list `active_po_count` | active orders | Computed | none | `procurement.vendor.active_po_count` | Active orders | RO | open; or dropped when order access is closed | registered |
 | category `id`, `code`, `name`, `parent_*`, `level`, `child_count`, `catalog_item_count` | category identity and structure | Stored | create, PATCH | - | - | - | - | no switch: identifier |
-| category `default_expense_account_id`, `default_expense_code` | default expense account | Stored | create, PATCH | `procurement.category.default_expense_account` | Default expense account | RW | open | recorded |
-| category `is_active` | active flag | Stored | create, PATCH | `procurement.category.is_active` | Category active | RW | open | recorded |
+| category `default_expense_account_id`, `default_expense_code` | default expense account | Stored | create, PATCH | `procurement.category.default_expense_account` | Default expense account | RW | open | registered |
+| category `is_active` | active flag | Stored | create, PATCH | `procurement.category.is_active` | Category active | RW | open | registered |
 | category `vendor_count`; insights `spend_mtd`, `spend_prior_month`, `spend_ytd` | vendors and spend per category | Computed | none | `procurement.vendor.category` | Category | RW | registered switch; both must be dropped when it is hidden (leak C-L8a, C-L8b) | registered |
 | catalogue `id`, `code`, `name` | item identity | Stored | create, PATCH | - | - | - | - | no switch: identifier |
-| catalogue `description` | description | Stored | create, PATCH | `procurement.catalog_item.description` | Description | RW | open | recorded |
-| catalogue `unit_of_measure` | unit | Stored | create, PATCH | `procurement.catalog_item.unit_of_measure` | Unit of measure | RW | open | recorded |
-| catalogue `category_id`, `category_code`, `category_name`, `category_level`, `category_path` | the item's category (a different field from the vendor's) | Stored | create, PATCH `category` | `procurement.catalog_item.category` | Category | RW | open | recorded |
-| catalogue `preferred_vendor_id`, `preferred_vendor_code`, `preferred_vendor_name` | preferred vendor | Stored | create, PATCH | `procurement.catalog_item.preferred_vendor` | Preferred vendor | RW | open | recorded |
-| catalogue `default_expense_account_id`, `expense_code`, `expense_name` | default expense account | Stored | create, PATCH | `procurement.catalog_item.default_expense_account` | Default expense account | RW | open | recorded |
-| catalogue `default_tax_code_id`, `tax_code`, `tax_name` | default tax code | Stored | create, PATCH | `procurement.catalog_item.default_tax_code` | Default tax code | RW | open | recorded |
-| catalogue `lead_time_days` | lead time | Stored | create, PATCH | `procurement.catalog_item.lead_time_days` | Lead time | RW | open | recorded |
-| catalogue `standard_unit_price`, `standard_unit_price_naira` | standard price | Stored | create, PATCH | `procurement.catalog_item.standard_unit_price` | Standard unit price | RW | open (Q-C3) | recorded |
-| catalogue `is_active` | active flag | Stored | create, PATCH | `procurement.catalog_item.is_active` | Item active | RW | open | recorded |
-| catalogue `stock_status` | stock state, only for stock viewers | Computed | none | `procurement.stock.needs_reorder` | Needs reorder | RO | shown only if `on_hand_qty` is readable | recorded |
-| catalogue insights `usage`, `vendor_pricing[]`, `purchase_history[]` | prices paid, by vendor and order | Computed | none | `procurement.catalog_item.price_history` | Purchase price history | RO | open; derived from the order unit price; must be branch narrowed (leak C-L12) | recorded |
+| catalogue `description` | description | Stored | create, PATCH | `procurement.catalog_item.description` | Description | RW | open | registered |
+| catalogue `unit_of_measure` | unit | Stored | create, PATCH | `procurement.catalog_item.unit_of_measure` | Unit of measure | RW | open | registered |
+| catalogue `category_id`, `category_code`, `category_name`, `category_level`, `category_path` | the item's category (a different field from the vendor's) | Stored | create, PATCH `category` | `procurement.catalog_item.category` | Category | RW | open | registered |
+| catalogue `preferred_vendor_id`, `preferred_vendor_code`, `preferred_vendor_name` | preferred vendor | Stored | create, PATCH | `procurement.catalog_item.preferred_vendor` | Preferred vendor | RW | open | registered |
+| catalogue `default_expense_account_id`, `expense_code`, `expense_name` | default expense account | Stored | create, PATCH | `procurement.catalog_item.default_expense_account` | Default expense account | RW | open | registered |
+| catalogue `default_tax_code_id`, `tax_code`, `tax_name` | default tax code | Stored | create, PATCH | `procurement.catalog_item.default_tax_code` | Default tax code | RW | open | registered |
+| catalogue `lead_time_days` | lead time | Stored | create, PATCH | `procurement.catalog_item.lead_time_days` | Lead time | RW | open | registered |
+| catalogue `standard_unit_price`, `standard_unit_price_naira` | standard price | Stored | create, PATCH | `procurement.catalog_item.standard_unit_price` | Standard unit price | RW | open (Q-C3) | registered |
+| catalogue `is_active` | active flag | Stored | create, PATCH | `procurement.catalog_item.is_active` | Item active | RW | open | registered |
+| catalogue `stock_status` | stock state, only for stock viewers | Computed | none | `procurement.stock.needs_reorder` | Needs reorder | RO | shown only if `on_hand_qty` is readable | registered |
+| catalogue insights `usage`, `vendor_pricing[]`, `purchase_history[]` | prices paid, by vendor and order | Computed | none | `procurement.catalog_item.price_history` | Purchase price history | RO | open; derived from the order unit price; must be branch narrowed (leak C-L12) | registered |
 | contract `id`, `reference`, `vendor_*`, `milestone_count`, `renews_*`, `renewed_by_reference` | identity and counts | Stored | create | - | - | - | - | no switch: owner decision |
-| contract `title`, `notes` | free text | Stored | create, PATCH | `procurement.contract.title`, `procurement.contract.notes` | Title, Notes | RW | open | recorded |
-| contract `status`, `is_expired` | state | Computed | activate, terminate, renew | `procurement.contract.status` | Status | RO | open | recorded |
-| contract `start_date`, `end_date`, `renewal_notice_days`, `auto_renew`; `renewal_window_start` (computed) | contract term | Stored | create, PATCH | `procurement.contract.term` | Contract term | RW | open | recorded |
-| contract `contract_value`, `contract_value_naira`; summary `total_active_value` | contract value | Stored | create, PATCH | `procurement.contract.contract_value` | Contract value | RW | open (Q-C3) | recorded |
-| contract `payment_terms` | the contract's own terms, defaults from a setting | Stored | create, PATCH | `procurement.contract.payment_terms` | Payment terms | RW | open | recorded |
-| contract `milestones[]` (`name`, `due_date`, `amount`, `status`, `completed_date`, `note`) | milestones | Stored | create, PATCH, milestone-complete | `procurement.contract.milestones` | Milestones | RW | open | recorded |
-| contract `activity[]`; summary `active`, `expiring_soon`, `expired` | timeline and counts | Computed | none | `procurement.contract.activity` | Activity | RO | open | recorded |
-| contract linked orders `total`, `total_naira` | order totals | Computed | none | `procurement.purchase_order.total` | Order amount | RO | must be branch narrowed (leak C-L12) | recorded |
-| assessment `assessment_date` | date | Stored | create | `procurement.vendor_assessment.assessment_date` | Assessment date | RW | open | recorded |
-| assessment `on_time_delivery`, `quality_acceptance`, `invoice_accuracy`, `responsiveness` | the four 0 to 100 criterion scores | Stored | create | `procurement.vendor_assessment.scores` | Criterion scores | RW | open; one set; also restated in vendor performance (leak C-L13) | recorded |
-| assessment `overall_score`, `grade` | derived rating | Computed | none | `procurement.vendor_assessment.grade` | Grade | RO | open; shown only if `scores` is readable | recorded |
-| assessment `notes` | free-text opinion about a supplier | Stored | create | `procurement.vendor_assessment.notes` | Assessment notes | RW | sensitive (recommended, Q-C3): the most sensitive text in the area | recorded |
-| assessment `assessor`, `assessor_is_exited` | the person assessing | Computed | none | `procurement.vendor_assessment.assessor` | Assessor | RO | open | recorded |
-| settings `default_payment_terms`, `default_payment_terms_label` | default payment terms | Stored | PATCH | `procurement.settings.default_payment_terms` | Default payment terms | RW | open | recorded |
-| settings `default_delivery_address` | default delivery address | Stored | PATCH | `procurement.settings.default_delivery_address` | Default delivery address | RW | open | recorded |
-| settings `quantity_tolerance_bps` | quantity tolerance | Stored | PATCH | `procurement.settings.quantity_tolerance_bps` | Quantity tolerance | RW | open | recorded |
-| settings `price_tolerance_bps` | price tolerance | Stored | PATCH | `procurement.settings.price_tolerance_bps` | Price tolerance | RW | open | recorded |
-| settings `allow_non_po_invoices` | allow bills without an order | Stored | PATCH | `procurement.settings.allow_non_po_invoices` | Allow bills without an order | RW | open | recorded |
-| settings `vendor_purchase_kyc_requirement`, `vendor_purchase_kyc_requirement_label` | KYC needed before buying | Stored | PATCH | `procurement.settings.vendor_purchase_kyc_requirement` | KYC requirement for purchases | RW | open | recorded |
-| settings `require_purchase_order_for_receipts` | order needed before receiving | Stored | PATCH | `procurement.settings.require_purchase_order_for_receipts` | Require an order for receipts | RW | open | recorded |
-| settings `default_requisition_lead_days` | default lead days | Stored | PATCH | `procurement.settings.default_requisition_lead_days` | Default requisition lead days | RW | open | recorded |
-| settings `contract_renewal_notice_days` | contract renewal notice | Stored | PATCH | `procurement.settings.contract_renewal_notice_days` | Contract renewal notice days | RW | open | recorded |
-| settings `default_rfq_response_days` | default response window | Stored | PATCH | `procurement.settings.default_rfq_response_days` | Default RFQ response days | RW | open | recorded |
-| settings `rfq_closing_soon_days` | closing-soon window | Stored | PATCH | `procurement.settings.rfq_closing_soon_days` | RFQ closing-soon days | RW | open | recorded |
-| settings `minimum_rfq_invited_vendors` | minimum invited vendors | Stored | PATCH | `procurement.settings.minimum_rfq_invited_vendors` | Minimum invited vendors | RW | open | recorded |
-| settings `minimum_submitted_quotations_before_award` | minimum quotations before award | Stored | PATCH | `procurement.settings.minimum_submitted_quotations_before_award` | Minimum quotations before award | RW | open | recorded |
-| settings `non_po_spend_limit_pct` | limit on spend without an order | Stored | PATCH | `procurement.settings.non_po_spend_limit_pct` | Non-order spend limit | RW | open | recorded |
-| settings `history[]` | before and after per setting | Computed | none | `procurement.settings.history` | Settings history | RO | each line follows its setting's switch | recorded |
-| settings `updated_at`, `updated_by` | last change; `updated_by` is the editor's email, to become a display name | Computed | none | `procurement.settings.updated_by` | Last changed by | RO | open; personal data (leak C-L14) | recorded |
+| contract `title`, `notes` | free text | Stored | create, PATCH | `procurement.contract.title`, `procurement.contract.notes` | Title, Notes | RW | open | registered |
+| contract `status`, `is_expired` | state | Computed | activate, terminate, renew | `procurement.contract.status` | Status | RO | open | registered |
+| contract `start_date`, `end_date`, `renewal_notice_days`, `auto_renew`; `renewal_window_start` (computed) | contract term | Stored | create, PATCH | `procurement.contract.term` | Contract term | RW | open | registered |
+| contract `contract_value`, `contract_value_naira`; summary `total_active_value` | contract value | Stored | create, PATCH | `procurement.contract.contract_value` | Contract value | RW | open (Q-C3) | registered |
+| contract `payment_terms` | the contract's own terms, defaults from a setting | Stored | create, PATCH | `procurement.contract.payment_terms` | Payment terms | RW | open | registered |
+| contract `milestones[]` (`name`, `due_date`, `amount`, `status`, `completed_date`, `note`) | milestones | Stored | create, PATCH, milestone-complete | `procurement.contract.milestones` | Milestones | RW | open | registered |
+| contract `activity[]`; summary `active`, `expiring_soon`, `expired` | timeline and counts | Computed | none | `procurement.contract.activity` | Activity | RO | open | registered |
+| contract linked orders `total`, `total_naira` | order totals | Computed | none | `procurement.purchase_order.total` | Order amount | RO | must be branch narrowed (leak C-L12) | registered |
+| assessment `assessment_date` | date | Stored | create | `procurement.vendor_assessment.assessment_date` | Assessment date | RW | open | registered |
+| assessment `on_time_delivery`, `quality_acceptance`, `invoice_accuracy`, `responsiveness` | the four 0 to 100 criterion scores | Stored | create | `procurement.vendor_assessment.scores` | Criterion scores | RW | open; one set; also restated in vendor performance (leak C-L13) | registered |
+| assessment `overall_score`, `grade` | derived rating | Computed | none | `procurement.vendor_assessment.grade` | Grade | RO | open; shown only if `scores` is readable | registered |
+| assessment `notes` | free-text opinion about a supplier | Stored | create | `procurement.vendor_assessment.notes` | Assessment notes | RW | sensitive (Q-C3) | registered |
+| assessment `assessor`, `assessor_is_exited` | the person assessing | Computed | none | `procurement.vendor_assessment.assessor` | Assessor | RO | open | registered |
+| settings `default_payment_terms`, `default_payment_terms_label` | default payment terms | Stored | PATCH | `procurement.settings.default_payment_terms` | Default payment terms | RW | open | registered |
+| settings `default_delivery_address` | default delivery address | Stored | PATCH | `procurement.settings.default_delivery_address` | Default delivery address | RW | open | registered |
+| settings `quantity_tolerance_bps` | quantity tolerance | Stored | PATCH | `procurement.settings.quantity_tolerance_bps` | Quantity tolerance | RW | open | registered |
+| settings `price_tolerance_bps` | price tolerance | Stored | PATCH | `procurement.settings.price_tolerance_bps` | Price tolerance | RW | open | registered |
+| settings `allow_non_po_invoices` | allow bills without an order | Stored | PATCH | `procurement.settings.allow_non_po_invoices` | Allow bills without an order | RW | open | registered |
+| settings `vendor_purchase_kyc_requirement`, `vendor_purchase_kyc_requirement_label` | KYC needed before buying | Stored | PATCH | `procurement.settings.vendor_purchase_kyc_requirement` | KYC requirement for purchases | RW | open | registered |
+| settings `require_purchase_order_for_receipts` | order needed before receiving | Stored | PATCH | `procurement.settings.require_purchase_order_for_receipts` | Require an order for receipts | RW | open | registered |
+| settings `default_requisition_lead_days` | default lead days | Stored | PATCH | `procurement.settings.default_requisition_lead_days` | Default requisition lead days | RW | open | registered |
+| settings `contract_renewal_notice_days` | contract renewal notice | Stored | PATCH | `procurement.settings.contract_renewal_notice_days` | Contract renewal notice days | RW | open | registered |
+| settings `default_rfq_response_days` | default response window | Stored | PATCH | `procurement.settings.default_rfq_response_days` | Default RFQ response days | RW | open | registered |
+| settings `rfq_closing_soon_days` | closing-soon window | Stored | PATCH | `procurement.settings.rfq_closing_soon_days` | RFQ closing-soon days | RW | open | registered |
+| settings `minimum_rfq_invited_vendors` | minimum invited vendors | Stored | PATCH | `procurement.settings.minimum_rfq_invited_vendors` | Minimum invited vendors | RW | open | registered |
+| settings `minimum_submitted_quotations_before_award` | minimum quotations before award | Stored | PATCH | `procurement.settings.minimum_submitted_quotations_before_award` | Minimum quotations before award | RW | open | registered |
+| settings `non_po_spend_limit_pct` | limit on spend without an order | Stored | PATCH | `procurement.settings.non_po_spend_limit_pct` | Non-order spend limit | RW | open | registered |
+| settings `history[]` | before and after per setting | Computed | none | `procurement.settings.history` | Settings history | RO | each line follows its setting's switch | registered |
+| settings `updated_at`, `updated_by` | last change and the editor's display name | Computed | none | `procurement.settings.updated_by` | Last changed by | RO | open; personal data (C-L14 fixed) | registered |
 | settings `consumers` | where a setting is used | Computed | none | - | - | - | - | no switch: transport |
 
 ### 5.9 Reports, dashboards, exports and approvals (restating paths)
@@ -938,18 +939,18 @@ so each shows a value only to a caller who can read the switch it restates.
 
 | Surface | Restated values | Switch family | Status |
 | --- | --- | --- | --- |
-| `reports/ap-aging/` (guarded `procurement.analytics.view`), `ap-aging/vendor/`, `ap-cash-requirements`, `grir*`, `spend-analysis`, `vendor-performance`, `vendor-summary` (`procurement.report.view`), `vendor-insights` | bill, payment, credit note and receipt amounts, `payment_terms` (already filtered), `by_category` (already trimmed), assessment scores, `total_spend_ytd`, `average_payment_days` | follows `procurement.vendor_invoice.*`, `procurement.vendor_payment.*`, `procurement.goods_receipt.*`, `procurement.vendor_assessment.*` | recorded |
-| `reports/ap-reconciliation/` | `subledger_total`, `control_total`, `difference`, `is_reconciled` | a read-only report switch in the family of `finance.report`; name to be chosen at registration | recorded |
+| `reports/ap-aging/` (guarded `procurement.analytics.view`), `ap-aging/vendor/`, `ap-cash-requirements`, `grir*`, `spend-analysis`, `vendor-performance`, `vendor-summary` (`procurement.report.view`), `vendor-insights` | bill, payment, credit note and receipt amounts, `payment_terms` (already filtered), `by_category` (already trimmed), assessment scores, `total_spend_ytd`, `average_payment_days` | follows `procurement.vendor_invoice.*`, `procurement.vendor_payment.*`, `procurement.goods_receipt.*`, `procurement.vendor_assessment.*` | registered |
+| `reports/ap-reconciliation/` | `subledger_total`, `control_total`, `difference`, `is_reconciled` | `finance.report.ap_reconciliation`, read-only and open | registered |
 | `reports/cycle-time/` | stage averages and counts, no money | - | no switch: transport |
-| overview dashboard | `kpis.spend`, `spend_by_category`, `top_vendors`, `committed_vs_spent`, `kpis.open_purchase_orders`, `pipeline`, `bills_due`, `overdue_invoices`, exceptions, `contracts_ending`, `approvals_awaiting_user` | `procurement.dashboard`, one read-only switch per block, as `finance.dashboard` | recorded |
-| suppliers dashboard | `spend.plan` (`against_plan`), `by_branch`, `open_rfqs[].budget`, `savings`, `scorecard`, `vendor_base` | `procurement.dashboard`, one switch per block | recorded |
-| stock dashboard | `position`, `by_store`, `issued`, `adjustments`, `running_low`, `movements`, `turns` | `procurement.dashboard`, one switch per block; derived from the stock switches | recorded |
+| overview dashboard | `kpis.spend`, `spend_by_category`, `top_vendors`, `committed_vs_spent`, `kpis.open_purchase_orders`, `pipeline`, `bills_due`, `overdue_invoices`, exceptions, `contracts_ending`, `approvals_awaiting_user` | `procurement.dashboard`, one read-only switch per block, as `finance.dashboard` | registered |
+| suppliers dashboard | `spend.plan` (`against_plan`), `by_branch`, `open_rfqs[].budget`, `savings`, `scorecard`, `vendor_base` | `procurement.dashboard`, one switch per block | registered |
+| stock dashboard | `position`, `by_store`, `issued`, `adjustments`, `running_low`, `movements`, `turns`, `receipts`, `unbilled`, `expected` | `procurement.dashboard`, one switch per block; derived values also follow the stock and document switches | registered |
 | overview `recent_activity` | action label and document number only | - | no switch: transport |
-| export `procurement.purchase_orders` | `payment_terms`, `narration`, `expected_date` | `access=` keys on every column once registered | recorded |
-| export `procurement.vendor_invoices` | `vendor_reference`, `narration`, `due_date`, `match_status`, `payment_status` | `access=` keys | recorded |
-| export `procurement.requisitions` | `estimated_total`, `cost_center`, `justification` | `access=` keys | recorded |
-| export `procurement.vendors` | 13 vendor columns carry `access=`; the `payable_account` column does not | `procurement.vendor.payable_account` | recorded |
-| approval handlers (requisition, purchase order, bill, payment, credit note) and the approval queue row | amounts, unit prices, WHT, payment terms, bill totals, vendor-free titles | the document switches; fixed at the inbox choke point (section 7.5) | recorded |
+| export `procurement.purchase_orders` | `payment_terms`, `narration`, `expected_date` | `access=` keys on every governed column | registered |
+| export `procurement.vendor_invoices` | `vendor_reference`, `narration`, `due_date`, `match_status`, `payment_status` | `access=` keys | registered |
+| export `procurement.requisitions` | `estimated_total`, `cost_center`, `justification` | `access=` keys | registered |
+| export `procurement.vendors` | payable account follows the vendor switch | `procurement.vendor.payable_account` | registered |
+| approval handlers (requisition, purchase order, bill, payment, credit note) and the approval queue row | amounts, unit prices, WHT, payment terms, bill totals, vendor-free titles | the document switches, applied at the inbox choke point (section 7.5) | registered |
 
 ---
 
@@ -1532,34 +1533,28 @@ address is open on create like the other contact fields.
 
 ### 8.4 Area C: procurement
 
-**Q-C2. Does stock valuation ship open or sensitive?** Tunde, Ikeja Branch's
+**Q-C2. Decided: stock valuation ships open.** Tunde, Ikeja Branch's
 storekeeper, issues 20 reams of paper and sees a unit cost of N4,200 and a stock
-value of N84,000. Open: every role with `procurement.stock.view` sees cost, and a
-school closes it per role. Sensitive: Tunde sees quantities only until the bursar
-opens cost and value. Recommendation: open.
+value of N84,000. A school can close cost and value separately for his role.
 
-**Q-C3. Does entered money on procurement documents ship open or sensitive?**
-Ikeja's bursar sets a N2.5m ceiling on an RFQ for generators. Open: a buyer who
-reads the ceiling can tip a vendor to bid just under it. Sensitive: buyers do not
-see the ceiling until the bursar grants it, and no other price field works this
-way. The same question covers unit prices, estimated totals, quoted prices,
-contract value, standard price and the free-text assessment of a supplier.
-Recommendation: open for all, with two sensitive exceptions: RFQ `budget_estimate`
-and vendor assessment `notes`.
+**Q-C3. Decided: entered prices ship open, with two sensitive exceptions.**
+Ikeja's bursar sets a N2.5m ceiling on an RFQ for generators. A buyer who reads
+the ceiling could tip a vendor to bid just under it, so RFQ `budget_estimate`
+starts sensitive. Vendor assessment `notes` also starts sensitive. Unit prices,
+estimated totals, quoted prices, contract value and standard price start open.
 
-**Q-C6. Are a vendor's accounting defaults one switch or three?** Mrs Eze, Ikeja
-Branch's purchasing clerk, may pick the stationery vendor's expense account. One
-switch "Accounting defaults": she also changes its withholding tax code, which
-alters the tax withheld on every payment to that vendor. Three switches (payable
-account, default expense account, default WHT code): she keeps the expense account
-and loses the WHT code, which only the bursar changes. Recommendation: three.
+**Q-C6. Decided: a vendor's accounting defaults have three switches.** Mrs Eze,
+Ikeja Branch's purchasing clerk, may pick the stationery vendor's expense
+account. Separate payable account, default expense account and default WHT code
+switches let her change that expense account without changing the tax withheld
+on every payment to the vendor.
 
-**Q-C7. Do attachments on bills and payments ship open?** Ada's role hides
-`procurement.vendor.bank_account_number`, yet she opens Adex's invoice scan, which
-prints "GTBank 0123456789". An uploaded file cannot be filtered. One RW
-`attachments` switch per document, open by default: a school closes it for roles
-whose bank details are hidden. Sensitive by default: nobody reads scans until the
-school grants it. Recommendation: open, one switch per document.
+**Q-C7. Decided: attachments on bills and payments ship open, one switch per
+document.** Ada's role hides `procurement.vendor.bank_account_number`, yet she
+opens Adex's invoice scan, which prints "GTBank 0123456789". An uploaded file
+cannot be filtered, so the school closes the bill attachment switch for Ada's
+role. Bill and payment attachments each have their own open Read and Write
+switch.
 
 ### 8.5 Area D: settings
 
@@ -1701,21 +1696,21 @@ B-L16 and B-L17 follow the identifier rule in section 2.
 | C-L2 | `VendorInvoiceReferenceCheckView` returns other branches' bills (number, total, date, status, vendor), scoped by entity only. | fixed: `vs_procurement.tests_restated_reach.VendorInvoiceReferenceCheckReachTests` |
 | C-L3 | The stock item `activity` feed is entity-wide, not narrowed to the caller's branches, and carries store codes and values. | fixed: `vs_procurement.tests_stock_transfer_restated.StockTransferRestatedTests.test_the_activity_feed_holds_only_the_callers_branches_entries` |
 | C-L4 | Stock transfer value, narration, reference, date, journal link and `inter_branch_transfer_id` are served by procurement regardless of the registered `finance.interbranch` amount, purpose, reference, transaction date, journals and related-documents switches. | fixed: `vs_procurement.tests_stock_transfer_restated.StockTransferRestatedTests.test_each_switch_takes_out_only_the_values_it_governs` |
-| C-L5 | A vendor payment's `posting_lines`, `activity`, audit sentence and eligible-bills WHT base restate gross, net and WHT outside any amount switch. | recorded |
+| C-L5 | A vendor payment's `posting_lines`, `activity`, audit sentence and eligible-bills WHT base restate gross, net and WHT outside any amount switch. | fixed: `vs_procurement.tests_vendor_payment_field_access`, `vs_procurement.tests_report_field_access` |
 | C-L6 | A gateway payout line copies the vendor's bank account name, number and bank code into `payments.payout` beneficiary fields governed by a different switch than `procurement.vendor.bank_*`. | fixed: `vs_payments.tests_payout_vendor_banking` (`PayoutVendorBankingTests`, `MovementsFeedTests`, `ApprovalDocumentTests`, `ExportTests`) |
 | C-L7 | `QuotationDetailSerializer.submissions[].submitted_by_email` serves a vendor contact's email outside `procurement.vendor_contact.email`. | fixed: `vs_procurement.tests_restated_vendor_values.SubmittedByEmailTests` |
 | C-L8 | Registered vendor values still leak: (a) `VendorCategorySerializer.vendor_count`, (b) `VendorCategoryInsightsView` spend per category, (c) refusal sentences and the `?purchase_eligible=true` filter state hold and KYC, (d) the PO delivery history `recipient_count`, `bcc_count`, `failure_reason`, (e) a new order echoes the vendor's `payment_terms`. | fixed in parts: (a) `vs_procurement.tests_restated_vendor_values.VendorCategoryCountTests`; (b) `CategorySpendFieldAccessTests` (the insights answer 403 when the category is hidden); (c) exempt by owner decision: business-rule refusal sentences and the `?purchase_eligible=true` verdict stay; (d) `DeliveryHistoryFieldAccessTests`; (e) no change: payment terms copied onto an order are the order's own field |
-| C-L9 | Double-sourcing refusals name a shared RFQ number the buyer cannot open; document numbers are identifiers. | recorded |
+| C-L9 | Double-sourcing refusals name a shared RFQ number the buyer cannot open; document numbers are identifiers. | exempt: document numbers have no switch by owner decision |
 | C-L10 | A plan amount is readable under a procurement key only: budget availability and the suppliers dashboard `spend.plan`. | fixed: both paths require `finance.budget.amount` |
 | C-L11 | Requisition budget availability `committed` sums every branch's PO lines at a cost centre, not the caller's branches. | fixed: `vs_procurement.tests_restated_reach.RequisitionBudgetReachTests` |
 | C-L12 | `CatalogItemInsightsView` (vendor pricing, purchase history) and `ContractLinkedPurchaseOrdersView` (order totals) are not branch narrowed. | fixed: `vs_procurement.tests_restated_reach.CatalogItemInsightsReachTests`, `ContractLinkedOrdersReachTests` |
-| C-L13 | Assessment scores and grade are restated in vendor performance and the suppliers dashboard scorecard. | recorded |
-| C-L14 | Personal data in unregistered payloads: `updated_by` email in procurement settings, the uploader's email fallback in attachment rows, requisition `?search=` matching the requester's email. | recorded |
-| C-L15 | Procurement approval summaries, details and queue rows restate amounts, unit prices, WHT, payment terms and bill totals (no registered source yet). | recorded |
-| C-L16 | Procurement dashboards restate unregistered values block by block (bill and order amounts, RFQ `budget_estimate`, stock value, issued value). | recorded |
-| C-L17 | Export datasets for requisitions (`estimated_total`) and orders (`payment_terms`) have no `access=` keys. | recorded |
+| C-L13 | Assessment scores and grade are restated in vendor performance and the suppliers dashboard scorecard. | fixed: `vs_procurement.tests_master_field_access`, `vs_procurement.tests_report_field_access` |
+| C-L14 | Personal data in unregistered payloads: `updated_by` email in procurement settings, the uploader's email fallback in attachment rows, requisition `?search=` matching the requester's email. | fixed: settings attribution uses a person label and a read switch, attachment rows follow their document switch, and requisition search follows `requested_by` |
+| C-L15 | Procurement approval summaries, details and queue rows restate amounts, unit prices, WHT, payment terms and bill totals (no registered source yet). | fixed: `vs_procurement.tests_approval_field_access` |
+| C-L16 | Procurement dashboards restate unregistered values block by block (bill and order amounts, RFQ `budget_estimate`, stock value, issued value). | fixed: `vs_procurement.tests_dashboard_access`, `vs_procurement.tests_report_field_access` |
+| C-L17 | Export datasets for requisitions (`estimated_total`) and orders (`payment_terms`) have no `access=` keys. | fixed: `vs_procurement.tests_export_branch_scope` and the dataset column access declarations |
 | C-L18 | Finance audit rows written by procurement carry values and addresses: stock transfer value, PO email recipients and bcc, payment net and WHT, credit note totals, return value. Only the recipient addresses concern a registered field; the amounts are recorded. | fixed: the sentences carry no figure or address and the central copy none either, `vs_procurement.tests_audit_figures.PurchaseOrderEmailAuditTests`, `vs_procurement.tests_audit_figures.ProcurementSentenceTests` |
-| C-L19 | The inter-branch `purpose` of a goods transfer carries the item code, quantity and both store codes, readable with `finance.interbranch.purpose` while `procurement.stock` is closed. | recorded |
+| C-L19 | The inter-branch `purpose` of a goods transfer carried the item code, quantity and both store codes, readable with `finance.interbranch.purpose` while `procurement.stock` was closed. | fixed: `vs_procurement.tests_stock_transfer_restated.StockTransferRestatedTests.test_finance_purpose_does_not_restate_stock_details` |
 
 ### 9.4 Area D: settings
 
@@ -1837,11 +1832,11 @@ one area, so the total is two lower than the sum of the areas.
 | --- | --- | --- | --- | --- | --- |
 | A. Budgets and financial statements | 0 | 25 | 3 | 3 | 3 |
 | B. Receivables, ledger and banking documents | 0 | 119 | 3 | 17 | 12 |
-| C. Procurement | 193 | 4 | 4 | 13 | 10 |
+| C. Procurement | 0 | 230 | 4 | 13 | 10 |
 | D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
 | E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 343 | 159 | 14 | 50 | 32 |
+| Total | 150 | 385 | 14 | 50 | 32 |
 
 Where the new switches sit:
 
@@ -1857,7 +1852,8 @@ Where the new switches sit:
   `procurement.purchase_order` 12, `procurement.vendor_invoice` 17,
   `procurement.vendor` 5, `procurement.category` 2, `procurement.catalog_item` 10,
   `procurement.contract` 8, `procurement.vendor_assessment` 5,
-  `procurement.settings` 16.
+  `procurement.settings` 16, `procurement.dashboard` 33 and
+  `finance.report.ap_reconciliation` 1.
 * Area D: `school.settings` 70, `school.teachers.leave_group` 1,
   `finance.settings` 36.
 * Area E: `finance.payment` 12, `finance.pettycash` 11,
@@ -1881,11 +1877,11 @@ questions in section 8.
 | --- | --- | --- | --- | --- | --- | --- |
 | A. Budgets and financial statements | 20 | 8 | 0 | 1 | 11 | 0 |
 | B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
-| C. Procurement | 19 | 11 | 0 | 8 | 0 | 0 |
+| C. Procurement | 19 | 18 | 0 | 0 | 1 | 0 |
 | D. School settings | 9 | 6 | 0 | 2 | 1 | 0 |
 | E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 25 | 0 | 10 | 3 | 2 |
 | X. Found outside the five areas | 17 | 10 | 0 | 6 | 0 | 1 |
-| Total | 122 | 74 | 0 | 28 | 17 | 3 |
+| Total | 122 | 81 | 0 | 20 | 18 | 3 |
 
 Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34
@@ -1896,7 +1892,7 @@ owner decision. Three reviewed paths in area D were clear and are not rows
 
 ### 10.3 Open product questions
 
-12 questions: area A 0, area B 0,
-area C 4 (Q-C2, Q-C3, Q-C6, Q-C7), area D 5 (Q-D1 to Q-D5),
+8 questions: area A 0, area B 0,
+area C 0, area D 5 (Q-D1 to Q-D5),
 area E 3 (Q-E4, Q-E5, Q-E12). Fourteen more (Q-A1 to Q-A7, Q-D6,
 Q-D7, Q-E9, Q-E10, Q-E11, Q-E13, Q-C4) are answered in 8.1; Q-B4, Q-B5, Q-B8 and Q-B10 are answered in 8.3.

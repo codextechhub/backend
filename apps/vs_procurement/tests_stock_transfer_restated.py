@@ -18,7 +18,7 @@ import datetime
 from decimal import Decimal
 
 from core.test_utils import TenantAPIClient
-from vs_finance.models import Account, FinanceAuditLog
+from vs_finance.models import Account, FinanceAuditLog, InterBranchTransfer
 from vs_finance.tests_branch_scope import _FinanceBranchFixture
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.tests.helpers import install_declared_fields, make_branch, set_field_access
@@ -132,10 +132,7 @@ class StockTransferRestatedTests(_FinanceBranchFixture):
     def test_a_sender_outside_the_receiving_branch_is_not_told_its_balance(self):
         data = self.transfer(self.open_keeper, "LEK")
 
-        for key in RECEIVING_ONLY:
-            self.assertNotIn(key, data["received"])
-        self.assertEqual(Decimal(data["received"]["quantity"]), Decimal(1))
-        self.assertEqual(data["received"]["movement_type"], "TRANSFER")
+        self.assertNotIn("received", data)
         self.assertEqual(data["movement"]["location_code"], "IKJ")
         self.assertEqual(Decimal(data["movement"]["balance_qty"]), Decimal(9))
 
@@ -223,6 +220,12 @@ class StockTransferRestatedTests(_FinanceBranchFixture):
         self.assertEqual(data["movement"]["narration"], "Textbooks for Lekki")
         self.assertNotIn("inter_branch_transfer_id", data)
         self.assertIsNone(self.transfer(self.open_keeper, "IKJ-LAB")["inter_branch_transfer_id"])
+
+    def test_finance_purpose_does_not_restate_stock_details(self):
+        self.transfer(self.open_keeper, "LEK")
+        transfer = InterBranchTransfer.objects.get(entity=self.books, kind="GOODS")
+        self.assertEqual(transfer.purpose, "Goods transfer between branches")
+        self.assertNotIn("Textbooks", transfer.purpose)
 
     def test_a_single_branch_school_moves_stock_between_stores_in_full(self):
         data = self.transfer(

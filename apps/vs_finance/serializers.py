@@ -3151,6 +3151,7 @@ AUDIT_SNAPSHOT_FIELDS = {
     "PayerPayment": "finance.payer_payment",
     "PayrollRun": "finance.payrollrun",
     "FiscalYear": "finance.fiscalyear",
+    "ProcurementSettings": "procurement.settings",
 }
 
 

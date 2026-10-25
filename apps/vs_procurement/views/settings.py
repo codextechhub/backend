@@ -8,6 +8,7 @@ from vs_finance.constants import FinanceAuditAction
 from vs_finance.settings_history import settings_history, settings_history_for_actions
 from vs_finance.views import resolve_entity
 from vs_finance.views_settings import WholeTenantSettingsMixin
+from vs_rbac.field_enforcement import assert_writable, can_read, visible
 
 from ..settings import (
     HISTORY_FIELDS,
@@ -19,14 +20,17 @@ from ..settings_ownership import PROCUREMENT_SETTING_CONSUMERS
 from .base import _ProcBase
 
 
-def _history(entity):
+def _history(entity, request):
     """The last ten changes to the entity's procurement settings, labelled.
 
     See :func:`vs_finance.settings_history.settings_history`; the labels are
     :data:`vs_procurement.settings.HISTORY_FIELDS`.
     """
+    if not can_read(request, "procurement.settings.history"):
+        return None
     return settings_history(
         entity, FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED, HISTORY_FIELDS,
+        request=request,
     )
 
 
@@ -50,28 +54,31 @@ class ProcurementSettingsView(WholeTenantSettingsMixin, _ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
+        history = _history(entity, request)
         return success_response(
             "Procurement settings retrieved.",
             data={
-                "settings": serialize_procurement_settings(
+                "settings": visible(request, "procurement.settings", serialize_procurement_settings(
                     resolve_procurement_settings(entity),
-                ),
+                )),
                 "consumers": PROCUREMENT_SETTING_CONSUMERS,
-                "history": _history(entity),
+                **({"history": history} if history is not None else {}),
             },
         )
 
     def patch(self, request):
         entity = resolve_entity(request)
+        assert_writable(request, "procurement.settings", request.data or {})
         settings = update_procurement_settings(
             entity=entity, data=request.data or {}, actor_user=request.user,
         )
+        history = _history(entity, request)
         return success_response(
             "Procurement settings saved.",
             data={
-                "settings": serialize_procurement_settings(settings),
+                "settings": visible(request, "procurement.settings", serialize_procurement_settings(settings)),
                 "consumers": PROCUREMENT_SETTING_CONSUMERS,
-                "history": _history(entity),
+                **({"history": history} if history is not None else {}),
             },
         )
 
@@ -83,6 +90,8 @@ class ProcurementSettingsHistoryView(WholeTenantSettingsMixin, _ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
+        if not can_read(request, "procurement.settings.history"):
+            return success_response("Procurement settings changes retrieved.", data={})
         return success_response(
             "Procurement settings changes retrieved.",
             data={

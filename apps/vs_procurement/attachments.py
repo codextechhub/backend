@@ -30,6 +30,7 @@ from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.media import signed_url
+from core.attribution import person_label
 from core.uploads import validate_upload
 
 from vs_finance.audit import record
@@ -66,10 +67,7 @@ def _serialize(row, states) -> dict:
 
 
 def _uploader_name(user) -> str:
-    if user is None:
-        return "System"
-    full = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
-    return full or getattr(user, "email", "System")
+    return person_label(user)
 
 
 def serialize_attachments(document, *, include_superseded=False) -> list[dict]:

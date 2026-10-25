@@ -23,6 +23,7 @@ from core.response import success_response
 from vs_finance.period_filter import period_q
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+from vs_rbac.field_enforcement import assert_writable, can_read, visible
 from vs_config.clock import branch_day_q, tenant_today
 
 from .. import payables, purchasing
@@ -101,6 +102,16 @@ def _write_grn_lines(request, entity, grn, po, lines):
     is the same baseline whether the receipt is being created or re-edited, and the
     delete-recreate is safe because nothing references a draft receipt's lines yet.
     """
+    for line in lines:
+        assert_writable(
+            request, "procurement.goods_receipt", line,
+            creating=grn._state.adding,
+            aliases={
+                "expense_account": "expense_account_id",
+                "cost_center": "cost_center_id",
+                "stock_item": "stock_item_id",
+            },
+        )
     grn.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
         accepted = _nonneg_qty(ln.get("accepted_qty", 0), "accepted_qty")
@@ -183,7 +194,10 @@ class GoodsReceiptListCreateView(_ProcBase):
         qs = _branch_scoped(request, entity, qs, request.query_params)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteListSerializer)
+        if request.query_params.get("status") and not can_read(request, "procurement.goods_receipt.status"):
+            raise PermissionDenied("The receipt status filter is unavailable for this role.")
+        return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteListSerializer,
+                             context={"request": request})
 
     @transaction.atomic
     def post(self, request):
@@ -191,6 +205,7 @@ class GoodsReceiptListCreateView(_ProcBase):
         # Invalid line quantities must roll back the receipt header created earlier in this request.
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.goods_receipt", body, creating=True)
         lines = _require_lines(body)
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
@@ -225,7 +240,8 @@ class GoodsReceiptListCreateView(_ProcBase):
         _write_grn_lines(request, entity, grn, po, lines)
         return success_response(
             "Goods receipt created.",
-            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk)).data,
+            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk),
+                                             context={"request": request}).data,
             status=201,
         )
 
@@ -254,11 +270,12 @@ class GoodsReceiptDetailView(_ProcBase):
         )
         from ..serializers import GoodsReturnSerializer
 
-        data = GoodsReceivedNoteSerializer(grn).data
+        data = GoodsReceivedNoteSerializer(grn, context={"request": request}).data
         # The returns taken off this receipt, which a goods return's journal points to.
         data["returns"] = GoodsReturnSerializer(
             grn.returns.prefetch_related("lines__grn_line").order_by("return_date", "id"),
             many=True,
+            context={"request": request},
         ).data
         return success_response("Goods receipt retrieved.", data=data)
 
@@ -275,6 +292,7 @@ class GoodsReceiptDetailView(_ProcBase):
         if grn.status != "DRAFT":
             raise ValidationError({"status": "Only a draft goods receipt can be edited."})
         body = request.data
+        assert_writable(request, "procurement.goods_receipt", body)
         if "received_date" in body:
             grn.received_date = _date(body.get("received_date"), "received_date", required=True)
         if "reference" in body:
@@ -288,7 +306,8 @@ class GoodsReceiptDetailView(_ProcBase):
         # Re-read so the response reflects the rewritten lines, not the pre-edit prefetch cache.
         return success_response(
             "Goods receipt draft updated.",
-            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk)).data,
+            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk),
+                                             context={"request": request}).data,
         )
 
 
@@ -311,7 +330,7 @@ class GoodsReceiptPostView(_ProcBase):
         grn = _read_grn_for_response(entity, grn.pk)
         return success_response(
             f"Goods receipt {grn.document_number} posted.",
-            data=GoodsReceivedNoteSerializer(grn).data,
+            data=GoodsReceivedNoteSerializer(grn, context={"request": request}).data,
         )
 
 
@@ -477,6 +496,12 @@ def _idempotent_invoice(entity, key, request_hash, actor):
 
 def _write_invoice_lines(request, entity, invoice, po, lines):
     """Replace draft lines after validating every PO/GRN join inside the entity."""
+    for line in lines:
+        assert_writable(
+            request, "procurement.vendor_invoice", line,
+            aliases={"expense_account": "expense_account_id",
+                     "cost_center": "cost_center_id", "tax_code": "tax_code_id"},
+        )
     invoice.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
         quantity = _quantity(ln.get("quantity", 1), "quantity")
@@ -534,20 +559,21 @@ def _write_invoice_lines(request, entity, invoice, po, lines):
     invoice.save(update_fields=["match_status", "updated_at"])
 
 
-def _serialize_invoice_detail(invoice):
+def _serialize_invoice_detail(invoice, request):
     """Enrich the base invoice with safe, authoritative drawer-only data."""
     from vs_finance.models import FinanceAuditLog
     from vs_workflow.models import WorkflowInstance
 
-    data = VendorInvoiceSerializer(invoice).data
+    data = VendorInvoiceSerializer(invoice, context={"request": request}).data
     # Workflow, match comparisons, allocations, journal lines, and activity are
     # response overlays; their authoritative state remains in their owning models.
     data["workflow_instance_id"] = WorkflowInstance.all_objects.latest_id_for(invoice)
     comparisons = []
-    for line in invoice.lines.all():
+    if can_read(request, "procurement.vendor_invoice.match_comparisons"):
+      for line in invoice.lines.all():
         po_line = line.po_line
         grn_line = line.grn_line
-        comparisons.append({
+        row = {
             "invoice_line_id": line.id,
             "description": line.description,
             "po_line_id": line.po_line_id,
@@ -559,16 +585,35 @@ def _serialize_invoice_detail(invoice):
             "invoice_unit_price": line.unit_price,
             "grn_number": grn_line.grn.document_number if grn_line else None,
             "grn_accepted_quantity": str(grn_line.accepted_qty) if grn_line else None,
-        })
-    data["match_comparisons"] = comparisons
-    data["payments"] = [{
+        }
+        if not can_read(request, "procurement.vendor_invoice.bill_lines"):
+            for name in ("description", "invoice_quantity"):
+                row.pop(name, None)
+        if not can_read(request, "procurement.vendor_invoice.bill_unit_price"):
+            row.pop("invoice_unit_price", None)
+        if not can_read(request, "procurement.purchase_order.unit_price"):
+            row.pop("po_unit_price", None)
+        if not can_read(request, "procurement.purchase_order.fulfilment"):
+            for name in ("po_quantity", "received_quantity", "previously_invoiced_quantity"):
+                row.pop(name, None)
+        if not can_read(request, "procurement.goods_receipt.quantities"):
+            row.pop("grn_accepted_quantity", None)
+        comparisons.append(row)
+      data["match_comparisons"] = comparisons
+    if can_read(request, "procurement.vendor_invoice.payments"):
+      data["payments"] = [{
         "id": allocation.payment_id,
         "document_number": allocation.payment.document_number,
-        "payment_date": allocation.payment.payment_date,
-        "amount": allocation.amount,
-        "status": allocation.payment.status,
+        **({"payment_date": allocation.payment.payment_date}
+           if can_read(request, "procurement.vendor_payment.payment_date") else {}),
+        **({"amount": allocation.amount}
+           if can_read(request, "procurement.vendor_payment.allocations") else {}),
+        **({"status": allocation.payment.status}
+           if can_read(request, "procurement.vendor_payment.status") else {}),
     } for allocation in invoice.allocations.all()]
-    data["posting_lines"] = [{
+    if can_read(request, "procurement.vendor_invoice.posting_lines") and can_read(
+            request, "procurement.vendor_invoice.total"):
+      data["posting_lines"] = [{
         "account_code": line.account.code,
         "account_name": line.account.name,
         "debit": line.debit,
@@ -576,9 +621,11 @@ def _serialize_invoice_detail(invoice):
     } for line in invoice.journal.lines.all()] if invoice.journal_id else []
     from vs_finance.audit import activity_entry, prime_activity_actors
 
-    data["activity"] = [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
-        entity=invoice.entity, target_type="VendorInvoice", target_id=str(invoice.pk),
-    ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
+    if can_read(request, "procurement.vendor_invoice.activity") and can_read(
+            request, "procurement.vendor_invoice.total"):
+        data["activity"] = [activity_entry(log) for log in prime_activity_actors(FinanceAuditLog.objects.filter(
+            entity=invoice.entity, target_type="VendorInvoice", target_id=str(invoice.pk),
+        ).select_related("actor", "effective_user").order_by("-created_at")[:20])]
     return data
 
 class VendorInvoiceReferenceCheckView(_ProcBase):
@@ -593,6 +640,8 @@ class VendorInvoiceReferenceCheckView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
+        if not can_read(request, "procurement.vendor_invoice.vendor_reference"):
+            raise PermissionDenied("Supplier invoice numbers are unavailable for this role.")
         vendor = _resolve_vendor(request, entity, request.query_params.get("vendor"))
         reference = str(request.query_params.get("reference") or "").strip()
         exclude = request.query_params.get("exclude")
@@ -618,16 +667,17 @@ class VendorInvoiceReferenceCheckView(_ProcBase):
         def match_data(invoice):
             if invoice is None:
                 return None
-            serialized = VendorInvoiceListSerializer(invoice).data
-            return {
+            serialized = VendorInvoiceListSerializer(invoice, context={"request": request}).data
+            return visible(request, "procurement.vendor_invoice", {
                 "id": invoice.id,
                 "document_number": invoice.document_number,
                 "vendor_code": invoice.vendor.code,
                 "vendor_name": invoice.vendor.name,
                 "invoice_date": invoice.invoice_date,
                 "total": invoice.total,
-                "status": serialized["display_status"],
-            }
+                **({"status": serialized["display_status"]}
+                   if "display_status" in serialized else {}),
+            })
 
         return success_response("Vendor invoice number checked.", data={
             "same_vendor_duplicate": match_data(same_vendor),
@@ -651,6 +701,11 @@ class VendorInvoiceListCreateView(_ProcBase):
     def get(self, request):
         """List entity bills using persisted lifecycle fields for console tabs."""
         entity = resolve_entity(request)
+        status_filters = ("status", "payment_status", "match_status", "display_status",
+                          "approval_state")
+        if any(request.query_params.get(name) for name in status_filters) and not can_read(
+                request, "procurement.vendor_invoice.status"):
+            raise PermissionDenied("Bill status filters are unavailable for this role.")
         qs = _branch_scoped(request, entity, _invoice_list_queryset(entity), request.query_params)
         qs = filter_by_stored_status(qs, request.query_params.get("status"))
         for param in ("payment_status", "match_status"):
@@ -662,12 +717,17 @@ class VendorInvoiceListCreateView(_ProcBase):
             qs, request.query_params.get("display_status"), tenant=entity.tenant,
         )
         if (search := request.query_params.get("search", "").strip()):
-            qs = qs.filter(Q(document_number__icontains=search) | Q(vendor_reference__icontains=search)
-                           | Q(vendor__code__icontains=search) | Q(vendor__name__icontains=search)
-                           | Q(purchase_order__document_number__icontains=search))
+            match = (Q(document_number__icontains=search)
+                     | Q(vendor__code__icontains=search)
+                     | Q(vendor__name__icontains=search)
+                     | Q(purchase_order__document_number__icontains=search))
+            if can_read(request, "procurement.vendor_invoice.vendor_reference"):
+                match |= Q(vendor_reference__icontains=search)
+            qs = qs.filter(match)
         qs = filter_by_approval_param(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-id"), VendorInvoiceListSerializer,
+            context={"request": request},
             page_context=lambda page: {"returned_document_ids": returned_document_ids(page)},
         )
 
@@ -676,6 +736,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         """Create and price a draft bill from entity-validated PO/GRN references."""
         entity = resolve_entity(request)
         body = request.data
+        assert_writable(request, "procurement.vendor_invoice", body, creating=True)
         idempotency_key, request_hash = _creation_idempotency(request)
         replay = _idempotent_invoice(
             entity, idempotency_key, request_hash, request.user,
@@ -683,7 +744,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         if replay is not None:
             return success_response(
                 "Vendor invoice already created.",
-                data=_serialize_invoice_detail(replay),
+                data=_serialize_invoice_detail(replay, request),
             )
         lines = _require_lines(body)
         vendor = _resolve_vendor(request, entity, body.get("vendor"))
@@ -730,12 +791,12 @@ class VendorInvoiceListCreateView(_ProcBase):
                 if replay is not None:
                     return success_response(
                         "Vendor invoice already created.",
-                        data=_serialize_invoice_detail(replay),
+                        data=_serialize_invoice_detail(replay, request),
                     )
             _raise_vendor_reference_conflict(exc)
         _write_invoice_lines(request, entity, invoice, po, lines)
         return success_response(
-            "Vendor invoice created.", data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)), status=201,
+            "Vendor invoice created.", data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk), request), status=201,
         )
 
 
@@ -773,6 +834,9 @@ class VendorInvoiceSummaryView(_ProcBase):
             "disputed": {"count": tab("DISPUTED").count()},
             "sent_back": {"count": qs.filter(returned_condition(VendorInvoice)).count()},
         }
+        if not all(can_read(request, f"procurement.vendor_invoice.{field}")
+                   for field in ("total", "settlement")):
+            data["overdue"].pop("amount", None)
         return success_response("Vendor invoice summary retrieved.", data=data)
 
 
@@ -791,7 +855,7 @@ class VendorInvoiceDetailView(_ProcBase):
             request, _invoice_queryset(entity), pk,
             "No such vendor invoice in this entity.",
         )
-        return success_response("Vendor invoice retrieved.", data=_serialize_invoice_detail(invoice))
+        return success_response("Vendor invoice retrieved.", data=_serialize_invoice_detail(invoice, request))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -817,6 +881,7 @@ class VendorInvoiceDetailView(_ProcBase):
             refusal="Only an unsubmitted or rejected draft vendor invoice can be edited.",
         )
         body = request.data
+        assert_writable(request, "procurement.vendor_invoice", body)
         vendor = _resolve_vendor(request, entity, body.get("vendor", invoice.vendor_id))
         po = invoice.purchase_order
         if "purchase_order" in body:
@@ -866,7 +931,7 @@ class VendorInvoiceDetailView(_ProcBase):
             _write_invoice_lines(request, entity, invoice, po, _require_lines(body))
         return success_response(
             "Vendor invoice draft updated.",
-            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)),
+            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk), request),
         )
 
 
@@ -890,7 +955,7 @@ class VendorInvoiceMatchView(_ProcBase):
         invoice.refresh_from_db()
         return success_response(
             f"Three-way match: {invoice.match_status}.",
-            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)),
+            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk), request),
         )
 
 
@@ -932,5 +997,5 @@ class VendorInvoicePostView(_ProcBase):
         invoice.refresh_from_db()
         return success_response(
             f"Vendor invoice {invoice.document_number} posted.",
-            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)),
+            data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk), request),
         )
