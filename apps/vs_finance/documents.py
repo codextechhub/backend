@@ -440,6 +440,26 @@ def _provider_reference(payment) -> str:
     return intent.provider_reference if intent is not None else ""  # Return provider ref or blank.
 
 
+def receipt_closing_line(received: int, applied: int) -> str:
+    """The sentence a receipt closes on, worked out from its own figures.
+
+    ``received`` is what the customer paid and ``applied`` the part of it settled
+    against invoices, both in kobo; the rest sits as credit on the account. The
+    printed document and the plain-layout PDF take their wording from here, so a
+    receipt never claims money was applied to bills when some or all of it is
+    held as credit.
+    """
+    held = max(received - applied, 0)
+    if held == 0:
+        return "Thank you - your payment has been received and applied to your bills."
+    if applied <= 0:
+        return "Thank you - your payment has been received and is held as credit on the account."
+    return (
+        f"Thank you - your payment has been received. {format_naira(applied)} was applied "
+        f"to your bills and {format_naira(held)} is held as credit on the account."
+    )
+
+
 # Build printable receipt template context.
 def receipt_document_context(payment) -> dict:
     """Build the render context for the branded receipt document."""
@@ -447,8 +467,10 @@ def receipt_document_context(payment) -> dict:
 
     entity = payment.entity  # Payment entity drives issuer and bank details.
     allocations = []  # Template-ready settlement rows.
+    applied = 0  # Kobo of this receipt settled against invoices.
     for alloc in payment.allocations.select_related("invoice").order_by("id"):
         inv = alloc.invoice  # Linked invoice for this allocation.
+        applied += alloc.amount
         allocations.append({  # Append allocation display row.
             "invoice_ref": inv.document_number,  # Settled invoice number.
             "sub": inv.narration or inv.reference or "",  # Secondary invoice text.
@@ -476,6 +498,9 @@ def receipt_document_context(payment) -> dict:
             "amount": format_naira(payment.amount),  # Display receipt amount.
             "amount_in_words": naira_in_words(payment.amount),  # Display amount in words.
             "allocations": allocations,  # Prepared allocation rows.
+            # The part not settled against an invoice, blank when none of it is held.
+            "credit_held": format_naira(payment.amount - applied) if payment.amount > applied else "",
+            "closing_line": receipt_closing_line(payment.amount, applied),  # Thank-you sentence.
             # Frozen at posting; worked out now only for receipts posted before that.
             "customer_balance_after": account_balance_words(
                 payment.customer_balance_after if payment.customer_balance_after is not None

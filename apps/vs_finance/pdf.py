@@ -596,26 +596,22 @@ def _plain_receipt_pdf(context, *, note: str = "") -> bytes:
     ]))
     story.append(received)
 
-    # An unallocated receipt has no settlement rows; say so rather than printing
-    # an empty table the customer has to interpret.
-    if rcp["allocations"]:
+    # Money held as credit is a row of its own, so the table accounts for the whole receipt.
+    rows = []
+    for alloc in rcp["allocations"]:
+        label = f"<b>{_text(alloc['invoice_ref'])}</b>"
+        if alloc.get("sub"):
+            label += f"<br/><font color='#667085'>{_text(alloc['sub'])}</font>"
+        rows.append([Paragraph(label, styles["Small"]),
+                     _bare(alloc["amount_applied"]), _bare(alloc["invoice_balance_after"])])
+    if rcp["credit_held"]:
+        rows.append([Paragraph("<b>Held as credit on the account</b>", styles["Small"]),
+                     _bare(rcp["credit_held"]), "-"])
+    if rows:
         widths = [CONTENT_WIDTH * 0.40, CONTENT_WIDTH * 0.30, CONTENT_WIDTH * 0.30]
-        rows = []
-        for alloc in rcp["allocations"]:
-            label = f"<b>{_text(alloc['invoice_ref'])}</b>"
-            if alloc.get("sub"):
-                label += f"<br/><font color='#667085'>{_text(alloc['sub'])}</font>"
-            rows.append([Paragraph(label, styles["Small"]),
-                         _bare(alloc["amount_applied"]), _bare(alloc["invoice_balance_after"])])
         story.extend([
             Spacer(1, 6 * mm),
             _grid(["Settled against", "Applied (NGN)", "Balance after (NGN)"], rows, widths, styles),
-        ])
-    else:
-        story.extend([
-            Spacer(1, 5 * mm),
-            Paragraph("This receipt is held as credit on your account and has not yet been "
-                      "applied to a specific invoice.", styles["Muted"]),
         ])
 
     story.extend([Spacer(1, 4 * mm), _totals([("Account balance after this payment", rcp["customer_balance_after"])], styles)])
@@ -623,6 +619,8 @@ def _plain_receipt_pdf(context, *, note: str = "") -> bytes:
     note_block = _note_block(note, styles)
     if note_block is not None:
         story.extend([Spacer(1, 6 * mm), note_block])
+
+    story.extend([Spacer(1, 6 * mm), Paragraph(_text(rcp["closing_line"]), styles["Muted"])])
 
     return _build(story, title=f"Receipt {rcp['document_number']}")
 

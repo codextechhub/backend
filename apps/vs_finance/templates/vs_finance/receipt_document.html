@@ -174,13 +174,14 @@
         <td class="num">{{ allocation.amount_applied }}</td>
         <td class="num">{{ allocation.invoice_balance_after }}</td>
       </tr>
-      {% empty %}
+      {% endfor %}
+      {% if receipt.credit_held %}
       <tr>
-        <td><span class="inv-ref">Unallocated credit</span></td>
-        <td class="num">{{ receipt.amount }}</td>
+        <td><span class="inv-ref">Held as credit on the account</span></td>
+        <td class="num">{{ receipt.credit_held }}</td>
         <td class="num">-</td>
       </tr>
-      {% endfor %}
+      {% endif %}
     </tbody>
   </table>
 
@@ -196,7 +197,7 @@
       {% if note %}<p class="note"><strong>Note:</strong> {{ note|linebreaksbr }}</p>{% endif %}
       This is a computer-generated receipt and is valid without a physical signature.
       Retain it as proof of payment.
-      <div class="thanks">Thank you - your payment has been received and applied.</div>
+      <div class="thanks">{{ receipt.closing_line }}</div>
     </div>
     <div class="sign">
       <div class="sign-line"></div>
