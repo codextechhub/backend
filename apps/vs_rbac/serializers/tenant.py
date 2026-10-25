@@ -798,6 +798,16 @@ class TenantRoleTemplateDetailSerializer(
         instance.save()
         if branch_ids is not None:
             instance.additional_branches.set(branch_ids[1:])
+        if branch_ids is not None or "status" in validated_data:
+            # Narrowing or archiving a role can hide classes its holders teach.
+            from ..reach_guards import assert_reach_kept
+
+            assert_reach_kept(instance.tenant, [
+                grant.user for grant in TenantUserRoleAssignment.objects.filter(
+                    role=instance,
+                    assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                ).select_related("user")
+            ])
 
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
@@ -1119,7 +1129,11 @@ class TenantUserRoleAssignmentSerializer(
         for field, value in validated_data.items():
             setattr(instance, field, value)
 
-        instance.save()
+        from ..reach_guards import assert_reach_kept
+
+        with transaction.atomic():
+            instance.save()
+            assert_reach_kept(instance.tenant, [instance.user])
         return instance
 
 

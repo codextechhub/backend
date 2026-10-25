@@ -27,8 +27,10 @@ class ClassTeacherBranchTests(StaffFixture):
         response = self.appoint(self.ikeja_class, self.eze)
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(response.data["error"]["code"], "TEACHER_NOT_AT_BRANCH")
-        self.assertIn("Chukwuemeka Eze works at Lekki", response.data["message"])
-        self.assertIn("Teacher role at Ikeja", response.data["message"])
+        self.assertEqual(
+            response.data["message"],
+            "Chukwuemeka Eze does not work at Ikeja. Give them the Teacher role there first.",
+        )
         self.ikeja_class.refresh_from_db()
         self.assertIsNone(self.ikeja_class.class_teacher_id)
 
@@ -61,7 +63,6 @@ class ClassTeacherBranchTests(StaffFixture):
         )
         teaching.assert_teacher_reaches_class(
             self.solo.tenant, self.solo_staff.user, school_class,
-            as_what="class teacher of Basic 1",
         )
 
 
@@ -74,7 +75,6 @@ class SubjectDutyBranchTests(StaffFixture):
         )
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(response.data["error"]["code"], "TEACHER_NOT_AT_BRANCH")
-        self.assertIn("given Mathematics in JSS1 C", response.data["message"])
         self.assertFalse(TeachingAssignment.objects.filter(staff=self.eze).exists())
 
     def test_a_subject_in_their_own_branchs_class_is_assigned(self):

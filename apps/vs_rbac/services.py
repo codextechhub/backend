@@ -726,6 +726,10 @@ def grant_role(*, tenant, user, role, branch, actor, replaces=None,
     ``replaces`` is an active grant this one takes the place of. Granted
     directly, it is withdrawn here; requested, it stays in force until approval.
     """
+    if replaces is not None:
+        _assert_replacement_keeps_reach(
+            tenant=tenant, user=user, role=role, branch=branch, replaces=replaces,
+        )
     if grant_needs_approval(actor, role):
         return GrantOutcome(request=raise_role_grant_request(
             tenant=tenant, requested_by=actor, user=user, role=role,
@@ -738,6 +742,27 @@ def grant_role(*, tenant, user, role, branch, actor, replaces=None,
         reason_note=reason_note,
     )
     return GrantOutcome(assignment=assignment)
+
+
+def _assert_replacement_keeps_reach(*, tenant, user, role, branch, replaces) -> None:
+    """Refuse a role change that would hide work the person still holds.
+
+    Tried inside a savepoint that is always rolled back, so a change headed for
+    the approval ladder is refused when it is asked for, not when it is decided.
+    """
+    from .reach_guards import assert_reach_kept
+
+    savepoint = transaction.savepoint()
+    try:
+        # A copy: the caller's instance goes on to be retired for real.
+        trial = TenantUserRoleAssignment.objects.select_related("role").get(pk=replaces.pk)
+        _retire(trial, by_user=None, role=role, reason_note="")
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=user, role=role, branch=branch,
+        )
+        assert_reach_kept(tenant, [user])
+    finally:
+        transaction.savepoint_rollback(savepoint)
 
 
 def _retire(assignment, *, by_user, role, reason_note: str) -> None:
@@ -848,17 +873,30 @@ def apply_role_grant_request(obj: TenantRoleGrantRequest, reviewer, notes: str =
             obj.save(update_fields=fields)
             return obj
 
-        if still_replacing:
-            _retire(replaces, by_user=obj.requested_by, role=obj.role, reason_note=obj.reason_note)
+        from .reach_guards import ReachRefused, assert_reach_kept
 
-        assignment = TenantUserRoleAssignment(
-            tenant=obj.tenant, user=obj.user, role=obj.role, branch=obj.branch,
-            assigned_by=obj.requested_by, reason_note=obj.reason_note,
-        )
-        # Read by the assignment audit signal.
-        assignment._grant_request = obj
-        assignment._grant_reviewer = reviewer
-        assignment.save()
+        try:
+            with transaction.atomic():
+                if still_replacing:
+                    _retire(
+                        replaces, by_user=obj.requested_by, role=obj.role,
+                        reason_note=obj.reason_note,
+                    )
+                assignment = TenantUserRoleAssignment(
+                    tenant=obj.tenant, user=obj.user, role=obj.role, branch=obj.branch,
+                    assigned_by=obj.requested_by, reason_note=obj.reason_note,
+                )
+                # Read by the assignment audit signal.
+                assignment._grant_request = obj
+                assignment._grant_reviewer = reviewer
+                assignment.save()
+                if still_replacing:
+                    assert_reach_kept(obj.tenant, [obj.user])
+        except ReachRefused as refusal:
+            # Work handed out while the request waited: recorded, not raised.
+            obj.mark_apply_failed(reviewer=reviewer, notes=str(refusal))
+            obj.save(update_fields=fields)
+            return obj
 
         obj.assignment = assignment
         obj.mark_approved(reviewer=reviewer, notes=notes)

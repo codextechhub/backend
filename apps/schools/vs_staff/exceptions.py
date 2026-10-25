@@ -14,6 +14,8 @@ FRD M12 v2.1 section 11.
 """
 from __future__ import annotations
 
+from vs_rbac.reach_guards import ReachRefused
+
 
 class StaffError(Exception):
     error_code = "STAFF_ERROR"
@@ -209,6 +211,29 @@ class TeacherNotAtBranch(StaffError):
 
     error_code = "TEACHER_NOT_AT_BRANCH"
     default_message = "This teacher does not work at that class's branch."
+    http_status = 422
+
+
+class TeacherStillHoldsClasses(StaffError, ReachRefused):
+    """A role change that would hide classes the person still teaches.
+
+    ``extra.held`` maps each branch to its classes, and each class to what the
+    person holds in it: ``"class teacher"``, a subject name, or ``"lessons"``.
+    """
+
+    error_code = "TEACHER_STILL_HOLDS_CLASSES"
+    default_message = "This person still teaches classes at that branch. Hand them over first."
+    http_status = 422
+
+
+class ClassTeachersNotAtBranch(StaffError):
+    """A class moved to a branch where its teachers do not work.
+
+    ``extra`` carries the teachers by name and the branch.
+    """
+
+    error_code = "CLASS_TEACHERS_NOT_AT_BRANCH"
+    default_message = "This class's teachers do not work at that branch."
     http_status = 422
 
 

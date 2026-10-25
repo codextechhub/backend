@@ -18,7 +18,14 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..constants import TeachingPart
-from ..exceptions import LeadAlreadySet, SessionArchived, StaffHasLeft, TeacherNotAtBranch
+from ..exceptions import (
+    ClassTeachersNotAtBranch,
+    LeadAlreadySet,
+    SessionArchived,
+    StaffHasLeft,
+    TeacherNotAtBranch,
+    TeacherStillHoldsClasses,
+)
 from . import audit
 
 
@@ -38,7 +45,26 @@ def assert_session_open(session):
         )
 
 
-def assert_teacher_reaches_class(tenant, user, school_class, *, as_what):
+def _full_name(user) -> str:
+    return " ".join(p for p in (user.first_name, user.last_name) if p).strip() or "This teacher"
+
+
+def _names(people: list) -> str:
+    """"A", "A and B", "A, B and C", or "A, B, C and 2 others"."""
+    if len(people) > 3:
+        people = people[:3] + [f"{len(people) - 3} others"]
+    if len(people) == 1:
+        return people[0]
+    return f"{', '.join(people[:-1])} and {people[-1]}"
+
+
+def _several_branches(tenant) -> bool:
+    from vs_rbac.scoping import only_branch_id_or_several
+
+    return only_branch_id_or_several(tenant) is None
+
+
+def assert_teacher_reaches_class(tenant, user, school_class):
     """Refuse a teacher whose roles do not cover *school_class*'s branch.
 
     A teacher sees the classes at the branches their roles cover, and being put
@@ -48,32 +74,142 @@ def assert_teacher_reaches_class(tenant, user, school_class, *, as_what):
     names the branch to give them a role at. A teacher who works at both holds
     the Teacher role at both.
 
-    *as_what* finishes the sentence "so they cannot be ...", for example
-    ``"class teacher of JSS2 B"``. Nothing is checked at a school with one
-    branch, or for a class shared across a school with several: neither has a
-    branch for the teacher to be missing from.
+    Nothing is checked at a school with one branch, or for a class shared
+    across a school with several: neither has a branch for the teacher to be
+    missing from.
     """
-    from vs_rbac.scoping import WHOLE_TENANT, only_branch_id_or_several, visible_branch_ids
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
     from vs_tenants.models import Branch
 
-    if user is None or school_class.branch_id is None:
-        return
-    if only_branch_id_or_several(tenant) is not None:
+    if user is None or school_class.branch_id is None or not _several_branches(tenant):
         return
     visible = visible_branch_ids(user, tenant)
     if visible is WHOLE_TENANT or school_class.branch_id in visible:
         return
-
-    name = " ".join(p for p in (user.first_name, user.last_name) if p).strip() or "This teacher"
+    name = _full_name(user)
     branch = Branch.all_objects.get(pk=school_class.branch_id).name
-    held = list(
-        Branch.all_objects.filter(pk__in=visible).order_by("name").values_list("name", flat=True),
-    )
-    works = f"works at {' and '.join(held)}" if held else "has no branch at this school yet"
     raise TeacherNotAtBranch(
-        f"{name} {works}, so they cannot be {as_what}, which is at {branch}. "
-        f"Give {name} the Teacher role at {branch} as well, then try again.",
+        f"{name} does not work at {branch}. Give them the Teacher role there first.",
         teacher=name, branch=branch,
+    )
+
+
+def assert_still_reaches_own_classes(tenant, user):
+    """Refuse a change to *user*'s roles that hides a class they still teach.
+
+    The reach guard :mod:`vs_rbac.reach_guards` runs after a grant is revoked,
+    moved or replaced, inside the same transaction, so the reach read here is
+    the one the change leaves behind and raising undoes the change. A class
+    counts when this person leads it, holds a subject duty in it, or has a
+    lesson in it on the timetable, in any year not yet archived. The message
+    names the branch and the classes; ``extra`` carries what is held in each.
+    """
+    from schools.vs_academics.models import SchoolClass, SessionStatus
+    from schools.vs_calendar.models import TimetableSlot
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+    from vs_user.models import User
+
+    from ..models import TeachingAssignment
+
+    if not _several_branches(tenant):
+        return
+    # A fresh instance: the reach memo on the one in hand predates the change.
+    fresh = User.objects.filter(pk=user.pk).first()
+    if fresh is None:
+        return
+    visible = visible_branch_ids(fresh, tenant)
+    if visible is WHOLE_TENANT:
+        return
+
+    live = {"tenant": tenant}
+    held = {}
+    for school_class in (
+        SchoolClass.all_objects.filter(class_teacher__user_id=user.pk, **live)
+        .exclude(session__status=SessionStatus.ARCHIVED)
+        .filter(branch__isnull=False).exclude(branch_id__in=visible)
+        .select_related("branch")
+    ):
+        held.setdefault(school_class.branch.name, {}).setdefault(school_class.name, []).append(
+            "class teacher",
+        )
+    for duty in (
+        TeachingAssignment.all_objects.filter(staff__user_id=user.pk, **live)
+        .exclude(session__status=SessionStatus.ARCHIVED)
+        .filter(school_class__branch__isnull=False)
+        .exclude(school_class__branch_id__in=visible)
+        .select_related("school_class__branch", "subject")
+    ):
+        held.setdefault(duty.school_class.branch.name, {}).setdefault(
+            duty.school_class.name, [],
+        ).append(duty.subject.name)
+    for slot in (
+        TimetableSlot.all_objects.filter(teacher_id=user.pk, **live)
+        .exclude(session__status=SessionStatus.ARCHIVED)
+        .filter(school_class__branch__isnull=False)
+        .exclude(school_class__branch_id__in=visible)
+        .select_related("school_class__branch")
+    ):
+        roles = held.setdefault(slot.school_class.branch.name, {}).setdefault(
+            slot.school_class.name, [],
+        )
+        if "lessons" not in roles:
+            roles.append("lessons")
+    if not held:
+        return
+
+    branch = sorted(held)[0]
+    classes = sorted(held[branch])
+    raise TeacherStillHoldsClasses(
+        f"{_full_name(fresh)} still teaches {_names(classes)} at {branch}. "
+        f"Hand {'it' if len(classes) == 1 else 'them'} to someone there first.",
+        teacher=_full_name(fresh), held=held,
+    )
+
+
+def assert_class_teachers_reach(tenant, school_class):
+    """Refuse moving *school_class* to a branch its teachers do not work at.
+
+    Its class teacher, its subject teachers and its timetabled lesson teachers
+    each have to see the class at its new branch, or they lose it. Run after the
+    move is saved, inside the same transaction, so raising undoes the move. A
+    class made school-wide, and any class at a school with one branch, passes.
+    """
+    from schools.vs_calendar.models import TimetableSlot
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids_for
+    from vs_tenants.models import Branch
+    from vs_user.models import User
+
+    from ..models import TeachingAssignment
+
+    if school_class.branch_id is None or not _several_branches(tenant):
+        return
+    ids = set()
+    if school_class.class_teacher_id is not None:
+        ids.add(school_class.class_teacher.user_id)
+    ids.update(
+        TeachingAssignment.all_objects.filter(tenant=tenant, school_class=school_class)
+        .values_list("staff__user_id", flat=True),
+    )
+    ids.update(
+        TimetableSlot.all_objects.filter(
+            tenant=tenant, school_class=school_class, teacher__isnull=False,
+        ).values_list("teacher_id", flat=True),
+    )
+    people = list(User.objects.filter(pk__in=ids).order_by("first_name", "last_name"))
+    reach = visible_branch_ids_for(people, tenant)
+    outside = [
+        _full_name(person) for person in people
+        if reach.get(person.pk) is not WHOLE_TENANT
+        and school_class.branch_id not in reach.get(person.pk, frozenset())
+    ]
+    if not outside:
+        return
+    branch = Branch.all_objects.get(pk=school_class.branch_id).name
+    raise ClassTeachersNotAtBranch(
+        f"{_names(outside)} {'does' if len(outside) == 1 else 'do'} not work at {branch}. "
+        f"Give {'them' if len(outside) == 1 else 'each of them'} a role there first, "
+        f"or hand {school_class.name} to someone who does.",
+        teachers=outside, branch=branch,
     )
 
 
@@ -112,10 +248,7 @@ def assign(*, tenant, staff, school_class, subject, session, part, actor):
             f"{subject.name} in {school_class.name}. Reinstate them first if "
             f"they are coming back.",
         )
-    assert_teacher_reaches_class(
-        tenant, staff.user, school_class,
-        as_what=f"given {subject.name} in {school_class.name}",
-    )
+    assert_teacher_reaches_class(tenant, staff.user, school_class)
     if part == TeachingPart.LEAD:
         held = current_lead(tenant, session, school_class, subject)
         if held is not None and held.staff_id != staff.pk:
@@ -206,10 +339,7 @@ def set_class_teacher(school_class, staff, *, actor, tenant):
             f"coming back.",
         )
     if staff is not None:
-        assert_teacher_reaches_class(
-            tenant, staff.user, school_class,
-            as_what=f"class teacher of {school_class.name}",
-        )
+        assert_teacher_reaches_class(tenant, staff.user, school_class)
 
     now = timezone.now()
     actor_id = getattr(actor, "pk", None)

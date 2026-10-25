@@ -167,10 +167,7 @@ def validate_slot(tenant, session, *, school_class, day_of_week, period,
     assert_day_taught(day_of_week, rules.teaching_days)
     assert_period_usable(period, day_of_week=day_of_week)
     assert_is_teacher(tenant, teacher)
-    assert_teacher_reaches_class(
-        tenant, teacher, school_class,
-        as_what=f"put on {school_class.name}'s {subject.name} lessons",
-    )
+    assert_teacher_reaches_class(tenant, teacher, school_class)
     assert_teacher_has_duty(
         tenant, session, school_class=school_class, subject=subject,
         teacher=teacher, mode=rules.teacher_duty_match,
@@ -313,10 +310,7 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
     for draft in drafts:
         if draft.teacher_id and draft.teacher_id not in seen:
             seen.add(draft.teacher_id)
-            assert_teacher_reaches_class(
-                tenant, draft.teacher, target_class,
-                as_what=f"put on {target_class.name}'s {draft.subject.name} lessons",
-            )
+            assert_teacher_reaches_class(tenant, draft.teacher, target_class)
     no_duty = duty_warnings(
         tenant, session, drafts, mode=rules.teacher_duty_match,
     )

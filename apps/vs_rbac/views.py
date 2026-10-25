@@ -1186,10 +1186,14 @@ class TenantUserRoleAssignmentRevokeView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        assignment.revoke(by_user=request.user, reason=reason)
-        assignment.save(update_fields=[
-            "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
-        ])
+        from .reach_guards import assert_reach_kept
+
+        with transaction.atomic():
+            assignment.revoke(by_user=request.user, reason=reason)
+            assignment.save(update_fields=[
+                "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
+            ])
+            assert_reach_kept(tenant, [assignment.user])
 
         return success_response(
             message="Assignment revoked successfully.",

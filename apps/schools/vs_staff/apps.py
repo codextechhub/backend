@@ -72,3 +72,10 @@ class VsStaffConfig(AppConfig):
         from . import sign_in
 
         sign_in.register()
+
+        # A role change that would hide a class the person still teaches.
+        from vs_rbac.reach_guards import register_reach_guard
+
+        from .services.teaching import assert_still_reaches_own_classes
+
+        register_reach_guard(assert_still_reaches_own_classes)

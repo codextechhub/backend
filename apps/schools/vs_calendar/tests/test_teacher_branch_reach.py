@@ -29,7 +29,10 @@ class LessonTeacherBranchTests(_Base):
         )
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(response.data["error"]["code"], "TEACHER_NOT_AT_BRANCH")
-        self.assertIn("Teacher role at Ikeja Branch", response.data["message"])
+        self.assertEqual(
+            response.data["message"],
+            "Ngozi Okafor does not work at Ikeja Branch. Give them the Teacher role there first.",
+        )
         self.assertFalse(TimetableSlot.all_objects.filter(school_class=self.sss2).exists())
 
     def test_a_lesson_at_their_own_branch_is_saved(self):

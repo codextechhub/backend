@@ -244,9 +244,15 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
         # Moving a class to a level in another year moves the class with it -
         # the two must agree, and the level is the one that decides.
         klass.session_id = level.session_id
+        moved = "branch" in data and data["branch"] != klass.branch
         for field, value in data.items():
             setattr(klass, field, value)
         klass.save()
+        if moved:
+            # Its teachers have to work at the branch it moves to.
+            from schools.vs_staff.services.teaching import assert_class_teachers_reach
+
+            assert_class_teachers_reach(self.tenant, klass)
         self._audit(
             AuditActionType.UPDATE, klass, klass.name, f"{klass.name} updated.",
         )
