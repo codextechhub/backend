@@ -40,6 +40,7 @@ from ..models import Level, SchoolClass, Subject, SubjectOffering
 from ..serializers import (
     GenerateArmsSerializer,
     OfferingsWriteSerializer,
+    SchoolClassDetailSerializer,
     SchoolClassSerializer,
     SchoolClassWriteSerializer,
     SubjectSerializer,
@@ -206,7 +207,10 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
 
     def retrieve(self, request, *args, **kwargs):
         return success_response(
-            "Class retrieved.", data=self.get_serializer(self.get_object()).data,
+            "Class retrieved.",
+            data=SchoolClassDetailSerializer(
+                self.get_object(), context=self.get_serializer_context(),
+            ).data,
         )
 
     @transaction.atomic

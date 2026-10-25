@@ -184,9 +184,11 @@ class _ScopedSerializer(_BranchAware):
         return obj.branch.name if obj.branch_id else "School-wide"
 
 
-#: The Field Access resource of a department, and of who takes which elective.
+#: The Field Access resource of a department, of who takes which elective, and
+#: of a class's past class teachers.
 DEPARTMENT_FIELD_RESOURCE = "academics.department"
 ELECTIVES_FIELD_RESOURCE = "academics.electives"
+CLASS_FIELD_RESOURCE = "academics.classes"
 
 
 class DepartmentSerializer(FieldAccessMixin, _ScopedSerializer):
@@ -452,6 +454,67 @@ class SchoolClassSerializer(_ScopedSerializer):
                 part for part in (user.first_name, user.last_name) if part
             ).strip(),
         }
+
+
+
+def _person(user):
+    """A user as ``{id, name}``, or None for nobody or an account since removed."""
+    if user is None:
+        return None
+    name = " ".join(part for part in (user.first_name, user.last_name) if part).strip()
+    return {"id": user.pk, "name": name or "Somebody"}
+
+
+class ClassTeacherTermSerializer(FieldAccessMixin, serializers.Serializer):
+    """One stretch of somebody being the class teacher.
+
+    ``ended_at`` is null for the person holding the class now, and
+    ``started_at`` is null where they were in place before the school's history
+    of the class begins. ``set_by`` and ``ended_by`` are the administrators who
+    made each change, under a switch of their own: a school can show who taught
+    a class without showing which administrator moved them.
+    """
+
+    field_resource = CLASS_FIELD_RESOURCE
+
+    id = serializers.IntegerField()
+    staff_id = serializers.IntegerField()
+    name = serializers.SerializerMethodField()
+    started_at = serializers.DateTimeField()
+    ended_at = serializers.DateTimeField()
+    set_by = serializers.SerializerMethodField()
+    ended_by = serializers.SerializerMethodField()
+
+    def get_name(self, term) -> str:
+        return _person(term.staff.user)["name"]
+
+    def get_set_by(self, term):
+        return _person(term.started_by)
+
+    def get_ended_by(self, term):
+        return _person(term.ended_by)
+
+
+class SchoolClassDetailSerializer(FieldAccessMixin, SchoolClassSerializer):
+    """One class as its own page reads it, with its class teachers over the year.
+
+    The list does not carry the history: it is one query per class, and only the
+    page about one class shows it.
+    """
+
+    field_resource = CLASS_FIELD_RESOURCE
+
+    class_teacher_history = serializers.SerializerMethodField()
+
+    class Meta(SchoolClassSerializer.Meta):
+        fields = [*SchoolClassSerializer.Meta.fields, "class_teacher_history"]
+
+    def get_class_teacher_history(self, obj):
+        from schools.vs_staff.services.teaching import class_teacher_terms
+
+        return ClassTeacherTermSerializer(
+            class_teacher_terms(obj), many=True, context=self.context,
+        ).data
 
 
 class SchoolClassWriteSerializer(serializers.ModelSerializer):

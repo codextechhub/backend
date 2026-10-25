@@ -15,9 +15,10 @@ FRD M12 v2.1, FR-011 and FR-017.
 from __future__ import annotations
 
 from django.db import transaction
+from django.utils import timezone
 
 from ..constants import TeachingPart
-from ..exceptions import LeadAlreadySet, SessionArchived
+from ..exceptions import LeadAlreadySet, SessionArchived, StaffHasLeft
 from . import audit
 
 
@@ -59,10 +60,19 @@ def assign(*, tenant, staff, school_class, subject, session, part, actor):
     somebody over a colleague should do it deliberately, in two steps it can see,
     rather than discovering afterwards that the person who had the class no
     longer does.
+
+    Refuses somebody who has left. A duty carries no end date of its own, so a
+    resigned teacher given a subject would stay on it with nothing to say so.
     """
     from ..models import TeachingAssignment
 
     assert_session_open(session)
+    if not staff.is_on_roll:
+        raise StaffHasLeft(
+            f"{_name(staff)} no longer works here, so they cannot be given "
+            f"{subject.name} in {school_class.name}. Reinstate them first if "
+            f"they are coming back.",
+        )
     if part == TeachingPart.LEAD:
         held = current_lead(tenant, session, school_class, subject)
         if held is not None and held.staff_id != staff.pk:
@@ -126,17 +136,65 @@ def set_class_teacher(school_class, staff, *, actor, tenant):
     """Designate, replace or clear the class teacher.
 
     Written to ``SchoolClass.class_teacher``, which is unique per class by
-    construction, and this module declares no second copy. Replacing audits both
-    the old designation and the new, because a trail that records only the
-    arrival cannot say why the previous holder stopped appearing.
+    construction. Replacing audits both the old designation and the new,
+    because a trail that records only the arrival cannot say why the previous
+    holder stopped appearing.
+
+    Each change also closes the class's open :class:`~..models.ClassTeacherTerm`
+    and opens the next, which is the class's history as a school reads it. The
+    class row is locked first, so two administrators saving at once take turns
+    rather than opening two terms.
+
+    Refuses somebody who has left: the designation carries no end date, so a
+    resigned teacher made class teacher would stay one with nothing to say so.
     """
-    previous = school_class.class_teacher_id
+    from schools.vs_academics.models import SchoolClass
+
+    from ..models import ClassTeacherTerm
+
+    locked = SchoolClass.all_objects.select_for_update().get(pk=school_class.pk)
+    previous = locked.class_teacher_id
     if previous == getattr(staff, "pk", None):
         return school_class
+    if staff is not None and not staff.is_on_roll:
+        raise StaffHasLeft(
+            f"{_name(staff)} no longer works here, so they cannot be class "
+            f"teacher of {school_class.name}. Reinstate them first if they are "
+            f"coming back.",
+        )
+
+    now = timezone.now()
+    actor_id = getattr(actor, "pk", None)
+    ClassTeacherTerm.all_objects.filter(
+        school_class_id=school_class.pk, ended_at__isnull=True,
+    ).update(ended_at=now, ended_by_id=actor_id, updated_at=now)
+    if staff is not None:
+        ClassTeacherTerm.all_objects.create(
+            tenant_id=school_class.tenant_id, school_class_id=school_class.pk,
+            staff=staff, started_at=now, started_by_id=actor_id,
+        )
+
     school_class.class_teacher = staff
     school_class.save(update_fields=["class_teacher", "updated_at"])
     audit.emit_class_teacher_set(school_class, previous, actor=actor, tenant=tenant)
     return school_class
+
+
+def class_teacher_terms(school_class):
+    """The class's terms, the one running now first and the oldest last.
+
+    A term whose start is unknown predates every recorded one, so it sorts
+    last; ties fall back to the order the terms were written.
+    """
+    from django.db.models import F
+
+    from ..models import ClassTeacherTerm
+
+    return (
+        ClassTeacherTerm.all_objects.filter(school_class_id=school_class.pk)
+        .select_related("staff__user", "started_by", "ended_by")
+        .order_by(F("started_at").desc(nulls_last=True), "-id")
+    )
 
 
 def coverage(tenant, user, session):

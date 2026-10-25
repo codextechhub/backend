@@ -1441,6 +1441,30 @@ Rules the registration settles:
   "a staff group" or "a broadcast". Tests: `schools.vs_messages.tests.test_field_access`,
   `test_field_access_deep_payload` and `test_alerts` (`FieldAccessInAlertsTests`).
 
+## 7B. Area G: a class's past class teachers (`academics.classes`, registered with the feature)
+
+Who has been a class's class teacher, from when to when, and who made each
+change. Recorded as `vs_staff.ClassTeacherTerm` by every change of class teacher
+(`services.teaching.set_class_teacher`), filled in from the audit trail for the
+changes made before terms were kept (migration `vs_staff.0016`), and read on one
+class's detail, `GET /v1/academics/classes/<id>/`, as `class_teacher_history`.
+Declared in `schools/vs_academics/field_access.py`, tenant scope, both fields
+open by default and nothing writable. The owner chose two switches over one on
+25 October 2026, so a school can show who taught a class without showing which
+administrator moved them.
+
+| Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `class_teacher_history` and, inside it, each term's `name`, `staff_id`, `started_at`, `ended_at` | who held the class this year and when | Computed | none (written by PUT `/v1/i/me/staff/teaching/class-teacher/` as a side effect of the change) | `academics.classes.class_teacher_history` | Past class teachers | RO | open | registered |
+| `set_by`, `ended_by` inside each term | the administrator who set or ended it | Computed | none | `academics.classes.class_teacher_changed_by` | Who changed the class teacher | RO | open | registered |
+| `class_teacher` on the class list and detail | who holds the class now | Stored | PUT `/v1/i/me/staff/teaching/class-teacher/` | `academics.classes.class_teacher` | Class teacher | RW | open; the department head, the same kind of fact, already has Read and Write | recorded |
+| each term's `id` | identifier | Computed | none | - | - | - | - | no switch: transport |
+
+Hiding Past class teachers removes the list and leaves `class_teacher`. Hiding
+Who changed the class teacher removes `set_by` and `ended_by` from every term and
+leaves the names and dates. Tests: `schools.vs_staff.tests.test_class_teacher_history`
+(`ClassPageHistoryTests`) and `schools.vs_academics.tests.test_field_access_deep_payload`.
+
 ---
 
 ## 8. Open product questions

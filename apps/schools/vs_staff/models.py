@@ -529,6 +529,63 @@ class TeachingAssignment(_Owned):
         return f"{self.staff_id}: {self.subject_id} to {self.school_class_id}"
 
 
+class ClassTeacherTerm(_Owned):
+    """One stretch of somebody being a class's class teacher.
+
+    ``SchoolClass.class_teacher`` answers who holds the class now; a term
+    answers who held it before, from when to when, and who made each change.
+    Every designation goes through
+    :func:`~.services.teaching.set_class_teacher`, which closes the open term
+    and opens the next in one transaction, so a class has at most one open term
+    and it names the current holder. A class left with nobody has no open term.
+
+    ``started_at`` is null where the holder was already in place before terms
+    were kept and the audit trail does not say since when: an unknown start,
+    not one at the beginning of time.
+
+    A class belongs to one academic year, so its terms are that year's. The
+    same arm next year is a different class with terms of its own.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="class_teacher_terms",
+    )
+    school_class = models.ForeignKey(
+        "vs_academics.SchoolClass", on_delete=models.PROTECT,
+        related_name="class_teacher_terms",
+    )
+    #: PROTECT, as on a teaching duty: the record of who looked after a class
+    #: outlives the person leaving.
+    staff = models.ForeignKey(
+        StaffProfile, on_delete=models.PROTECT, related_name="class_teacher_terms",
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+",
+    )
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+",
+    )
+
+    class Meta(_Owned.Meta):
+        constraints = [
+            # One holder at a time, which is what lets the open term stand for
+            # SchoolClass.class_teacher rather than compete with it.
+            models.UniqueConstraint(
+                fields=["school_class"], condition=Q(ended_at__isnull=True),
+                name="uq_class_teacher_term_open",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "school_class"])]
+
+    def __str__(self):
+        return f"{self.staff_id} for {self.school_class_id} from {self.started_at}"
+
+
 # =============================================================================
 # The organogram
 # =============================================================================

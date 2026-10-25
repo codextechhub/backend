@@ -56,6 +56,7 @@ SYNC = "vs_rbac.management.commands.sync_field_registry.all_declarations"
 
 #: Every resource with a registered field. Adding one is a deliberate change.
 EXPECTED_RESOURCES = {
+    ("academics", "classes"),
     ("academics", "department"),
     ("academics", "electives"),
     ("attendance", "correction"),
