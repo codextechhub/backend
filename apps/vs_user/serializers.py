@@ -672,16 +672,16 @@ class _LinkPreviewFields:
         return sign_in_label(obj)
 
     def get_device_app(self, obj):
-        from .services.device_sessions import device_session_policy
+        from .services.device_sessions import browser_sign_in_policy
 
-        policy = device_session_policy(obj)
+        policy = browser_sign_in_policy(obj)
         return {'path': policy.app_path} if policy else None
 
     def get_home_app(self, obj):
-        from .services.device_sessions import device_session_policy
+        from .services.device_sessions import browser_sign_in_policy
         from .services.home_apps import home_app_payload
 
-        return None if device_session_policy(obj) else home_app_payload(obj)
+        return None if browser_sign_in_policy(obj) else home_app_payload(obj)
 
 
 class ActivationPreviewSerializer(_LinkPreviewFields, serializers.ModelSerializer):

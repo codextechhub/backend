@@ -64,11 +64,13 @@ class LoginService:
         DEVICE_SESSION_NOT_OFFERED once its password is proven, before anything
         is issued. A browser sign-in by an account that IS offered one answers
         ``device_app`` with the app's path, so the sign-in page can hand the
-        person over to it. One that is not, but belongs in another app (a
-        parent with no staff role), answers ``home_app`` with that app's path
-        (``services.home_apps``), so the page can send them there, and
-        ``other_apps`` lists the apps it can open beside this one (a teacher
-        who is a parent too).
+        person over to it, unless its policy keeps the browser sign-in where it
+        is (``sends_browser_sign_in_to_app`` False: a teacher who is also a
+        parent), which then answers as an account with no policy does. One that
+        is not offered a device session but belongs in another app answers
+        ``home_app`` with that app's path (``services.home_apps``), so the page
+        can send them there, and ``other_apps`` lists the apps it can open
+        beside this one (a teacher who is a parent too).
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
@@ -154,6 +156,9 @@ class LoginService:
         from .device_sessions import device_session_policy
 
         policy = device_session_policy(authed)
+        # The app a browser sign-in is sent to; an account that only opens its
+        # app on a device (a teacher who is also a parent) is sent nowhere.
+        browser_policy = policy if policy and policy.sends_browser_sign_in_to_app else None
 
         # 5. Check account status
         status_error = LoginService._check_status(authed)
@@ -237,9 +242,9 @@ class LoginService:
             {'account': session.device_key}
             if device else
             {
-                'device_app': {'path': policy.app_path} if policy else None,
-                'home_app': None if policy else home_app_payload(authed),
-                'other_apps': [] if policy else other_apps_payload(authed),
+                'device_app': {'path': browser_policy.app_path} if browser_policy else None,
+                'home_app': None if browser_policy else home_app_payload(authed),
+                'other_apps': [] if browser_policy else other_apps_payload(authed),
             }
         )
         return {

@@ -348,6 +348,13 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "INTEGER", 30, {"min": 1, "max": 90},
     ),
     (
+        "parents.portal.session_days", "Parent App Sign-In Length",
+        "How many days a parent stays signed in to the parent app on their "
+        "phone or tablet without opening it. Each use starts the count again, "
+        "so a parent who opens the app every week never has to sign in.",
+        "INTEGER", 30, {"min": 1, "max": 90},
+    ),
+    (
         "fees.student_payment_enabled", "Students Pay Their Own Fees",
         "Whether a student may pay their own fees in the student portal, as a "
         "fallback when their family cannot pay through their own app. Off "

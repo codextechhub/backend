@@ -28,6 +28,10 @@ PASSWORD = "Str0ng!pass123"
 ORIGIN = "http://localhost:5174"
 PREFIX = "device_session_"
 APP = DeviceSessionPolicy(lifetime=dt.timedelta(days=30), app_path="/app/")
+#: An app the account opens on a device but whose browser sign-in stays put.
+SIDE_APP = DeviceSessionPolicy(
+    lifetime=dt.timedelta(days=30), app_path="/app/", sends_browser_sign_in_to_app=False,
+)
 
 
 @override_settings(
@@ -107,6 +111,27 @@ class DeviceSessionTests(TestCase):
             {"path": "/app/"},
         )
         self.assertIsNone(self.sign_in(self.femi, session="browser").json()["data"]["device_app"])
+
+    def test_a_policy_that_keeps_the_browser_sign_in_sends_it_nowhere_but_still_offers_a_device(self):
+        from .services import home_apps
+
+        self.offered = set()
+        register_device_session_policy("side_app", lambda user: SIDE_APP if user == self.femi else None)
+        self.addCleanup(device_sessions._providers.pop, "side_app", None)
+        home_apps.register_home_app("test_home", lambda user: "/home/" if user == self.femi else None)
+        home_apps.register_other_app("test_other", lambda user: "/other/" if user == self.femi else None)
+        self.addCleanup(home_apps._providers.pop, "test_home", None)
+        self.addCleanup(home_apps._other_providers.pop, "test_other", None)
+
+        browser = self.sign_in(self.femi, session="browser").json()["data"]
+        self.assertIsNone(browser["device_app"])
+        self.assertEqual(browser["home_app"], {"path": "/home/"})
+        self.assertEqual(browser["other_apps"], [{"key": "test_other", "path": "/other/"}])
+
+        device = self.sign_in(self.femi)
+        self.assertEqual(device.status_code, 200, device.content)
+        self.assertIn("account", device.json()["data"])
+        self.assertGreater(int(device.cookies[f"{PREFIX}{device.json()['data']['account']}"]["max-age"]), 29 * 86400)
 
     # ── refreshing ────────────────────────────────────────────────────────
 

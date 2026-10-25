@@ -13,6 +13,15 @@ session lives between uses and where the account's own app is served, and an
 account no provider answers for is never given a device session. Staff and
 platform accounts therefore keep the browser session they always had.
 
+**An account that works in two apps.** A policy normally also decides where an
+ordinary browser sign-in goes: the sign-in answers ``device_app`` and the
+school's page sends the person into their own app. An account whose main app
+is another one (a member of staff who is also a parent keeps the staff app) is
+given a policy with ``sends_browser_sign_in_to_app`` False. Its browser sign-in
+then behaves exactly as for an account with no policy, while the same account
+can still sign in for a device from the other app, and only the sessions made
+that way are tied to the policy's app (see :func:`browser_sign_in_policy`).
+
 **Where the credential lives.** Each device session has a random ``account``
 key. In a browser the refresh credential sits in an HttpOnly cookie named
 ``AUTH_DEVICE_COOKIE_PREFIX + key``, one per account: the page keeps only the
@@ -68,10 +77,18 @@ class DeviceSessionPolicy:
     ``app_path`` is where the account's own app is served on its tenant's
     address (``/student/``), so a sign-in made elsewhere can send the person
     there.
+
+    ``sends_browser_sign_in_to_app`` says whether an ordinary browser sign-in
+    is sent to that app. It is True for an account whose home is the app. It is
+    False for an account that keeps another app as its home and only opens this
+    one on a device: that account's browser sign-in answers no ``device_app``
+    and keeps its ``home_app`` and ``other_apps``, and a push to a browser it
+    subscribed outside a device session opens the root, not this app.
     """
 
     lifetime: timedelta
     app_path: str
+    sends_browser_sign_in_to_app: bool = True
 
 
 PolicyProvider = Callable[[User], Optional[DeviceSessionPolicy]]
@@ -135,6 +152,20 @@ def device_session_policy(user) -> Optional[DeviceSessionPolicy]:
         if policy is not None:
             return policy
     return None
+
+
+def browser_sign_in_policy(user) -> Optional[DeviceSessionPolicy]:
+    """The policy to send *user*'s browser sign-in by, or None to leave it be.
+
+    This is :func:`device_session_policy` for an account whose policy sends
+    the browser sign-in to its app, and None for one that does not, so the
+    sign-in answers and the link previews treat that account as one with no
+    device session.
+    """
+    policy = device_session_policy(user)
+    if policy is None or not policy.sends_browser_sign_in_to_app:
+        return None
+    return policy
 
 
 def cookie_name(account: str) -> str:

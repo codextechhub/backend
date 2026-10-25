@@ -11,6 +11,7 @@ subscription drops the one seen least recently.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from unittest import mock
 
@@ -204,6 +205,31 @@ class PushTests(_NotifFixture):
         payload = json.loads(webpush.call_args.kwargs["data"])
         self.assertEqual(payload["url"], push._app_path(self.tunde))
         self.assertNotIn("child", payload)
+
+    def test_a_push_opens_the_policy_app_only_on_a_device_session_device(self):
+        from vs_user.services import device_sessions
+
+        policy = device_sessions.DeviceSessionPolicy(
+            lifetime=dt.timedelta(days=30), app_path="/side/", sends_browser_sign_in_to_app=False,
+        )
+        device_sessions.register_device_session_policy("side_app", lambda user: policy)
+        self.addCleanup(device_sessions._providers.pop, "side_app", None)
+        self.subscribe(account=self.tunde_session.device_key)
+        self.subscribe(endpoint="https://push.example.com/staff-browser")
+
+        with mock.patch(WEBPUSH) as webpush, self.captureOnCommitCallbacks(execute=True):
+            send_notification(
+                event_key="notices.published", context=NOTICE,
+                recipients=[self.tunde], school=self.school_a,
+            )
+        opens = {
+            call.kwargs["subscription_info"]["endpoint"]: json.loads(call.kwargs["data"])["url"]
+            for call in webpush.call_args_list
+        }
+        self.assertEqual(opens, {
+            "https://push.example.com/abc": "/side/",
+            "https://push.example.com/staff-browser": "/",
+        })
 
     @override_settings(WEB_PUSH_VAPID_PUBLIC_KEY="", WEB_PUSH_VAPID_PRIVATE_KEY="")
     def test_without_keys_nothing_is_pushed(self):

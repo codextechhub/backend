@@ -218,10 +218,19 @@ def _destination(notification) -> PushDestination | None:
     return None
 
 
-def _app_path(user) -> str:
-    """Where tapping the push opens: the recipient's own app, else the root."""
+def _app_path(user, device_key: str = "") -> str:
+    """Where tapping the push opens on one device: the recipient's own app, else the root.
+
+    Only a device made from a device session (one with a ``device_key``) opens
+    the app its policy names. A browser or phone that subscribed outside a
+    device session opens the root, so a member of staff who is also a parent
+    has their staff pushes open the staff app and only the pushes to their
+    parent-app device open the parent app.
+    """
     from vs_user.services.device_sessions import device_session_policy
 
+    if not device_key:
+        return "/"
     policy = device_session_policy(user)
     return policy.app_path if policy else "/"
 
@@ -263,15 +272,24 @@ def deliver(notification) -> bool:
     if not subscriptions and not phones:
         return False
     destination = _destination(notification)
-    url = destination.url if destination is not None else _app_path(user)
     child = destination.child if destination is not None else None
+
+    def url_for(device_key):
+        return destination.url if destination is not None else _app_path(user, device_key)
+
     delivered = False
     for subscription in subscriptions:
-        message = build_message(notification, url=url, child=child, device_key=subscription.device_key)
+        message = build_message(
+            notification, url=url_for(subscription.device_key), child=child,
+            device_key=subscription.device_key,
+        )
         if _send_to_browser(subscription, message):
             delivered = True
     for phone in phones:
-        message = build_message(notification, url=url, child=child, device_key=phone.device_key)
+        message = build_message(
+            notification, url=url_for(phone.device_key), child=child,
+            device_key=phone.device_key,
+        )
         if _send_to_phone(phone, message):
             delivered = True
     return delivered

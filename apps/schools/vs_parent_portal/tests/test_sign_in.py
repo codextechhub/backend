@@ -1,7 +1,8 @@
 """A parent who signs in on the school's own page is sent to the parent app.
 
 Mrs. Adaeze Nwosu is a parent at Brightfield with no staff role, so her sign-in
-answers ``home_app`` ``/parent/``, and so do the pages that set her password.
+answers ``device_app`` ``/parent/`` (the parent app's device session), and so
+do the pages that set her password.
 Brightfield's administrator is a guardian too, of her niece, but holds a staff
 role, so she keeps the staff app. A member of staff who is nobody's parent is
 sent nowhere new, and neither is a parent of another school's child.
@@ -58,8 +59,8 @@ class ParentSignInTests(_SignInFixture):
         response = self.sign_in(self.nwosu_user.email)
         self.assertEqual(response.status_code, 200, response.data)
         data = response.data["data"]
-        self.assertEqual(data["home_app"], {"path": "/parent/"})
-        self.assertIsNone(data["device_app"])
+        self.assertEqual(data["device_app"], {"path": "/parent/"})
+        self.assertIsNone(data["home_app"])
 
     def test_a_member_of_staff_who_is_also_a_parent_keeps_the_staff_app(self):
         self.assertIsNone(parent_home_app(self.admin))
@@ -79,7 +80,9 @@ class ParentSignInTests(_SignInFixture):
 
         for serializer in (ActivationPreviewSerializer, PasswordResetPreviewSerializer):
             with self.subTest(page=serializer.__name__):
-                self.assertEqual(serializer(self.nwosu_user).data["home_app"], {"path": "/parent/"})
+                self.assertEqual(serializer(self.nwosu_user).data["device_app"], {"path": "/parent/"})
+                self.assertIsNone(serializer(self.nwosu_user).data["home_app"])
+                self.assertIsNone(serializer(self.admin).data["device_app"])
                 self.assertIsNone(serializer(self.admin).data["home_app"])
 
 
