@@ -468,3 +468,40 @@ class TeacherHubTests(_Hub):
         )
         [card] = self.data(self.today_mine(self.eze))["classes"]
         self.assertEqual(set(card), {"class_id", "class_name"})
+
+
+class ClassTeacherSwitchTests(_Hub):
+    """The class teacher's name on the hub follows the Class teacher switch."""
+
+    def hide_class_teacher(self):
+        install_declared_fields("academics.classes")
+        set_field_access(
+            self.admin_role, "academics.classes.class_teacher", read=False, write=False,
+        )
+
+    def test_a_reader_who_may_not_read_it_gets_the_row_without_the_name(self):
+        self.take_both()
+        self.hide_class_teacher()
+        [row] = self.get()["not_taken"]
+        self.assertNotIn("class_teacher_name", row)
+        self.assertEqual(row["class_name"], "JSS1 B")
+
+    def test_the_reminder_answer_leaves_it_out_too(self):
+        self.hide_class_teacher()
+        response = self.remind(self.admin, self.jss1a)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertNotIn("class_teacher_name", self.data(response))
+
+    def test_the_register_header_leaves_it_out(self):
+        self.hide_class_teacher()
+        response = self.read(self.admin, self.jss1a)
+        self.assertEqual(response.status_code, 200, response.data)
+        school_class = self.data(response)["school_class"]
+        self.assertNotIn("class_teacher_name", school_class)
+        self.assertEqual(school_class["name"], "JSS1 A")
+
+    def test_the_name_is_there_with_the_switch_open(self):
+        install_declared_fields("academics.classes")
+        self.take_both()
+        [row] = self.get()["not_taken"]
+        self.assertEqual(row["class_teacher_name"], "Sade Bello")

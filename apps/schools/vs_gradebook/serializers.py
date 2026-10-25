@@ -32,6 +32,7 @@ from collections.abc import Mapping
 
 from rest_framework import serializers
 
+from schools.vs_academics.class_teacher_field import ClassTeacherReadGate
 from schools.vs_students.serializers import GuardianSerializer
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
@@ -730,7 +731,7 @@ class HubKpisSerializer(serializers.Serializer):
     held = serializers.IntegerField(read_only=True)
 
 
-class HubClassSerializer(serializers.Serializer):
+class HubClassSerializer(ClassTeacherReadGate, serializers.Serializer):
     """One class on the results hub. ``branch`` is null at a school with one branch."""
 
     id = serializers.IntegerField(read_only=True)
@@ -1273,7 +1274,7 @@ class SubmitBlockersSerializer(serializers.Serializer):
     comments_missing = serializers.IntegerField(read_only=True)
 
 
-class BroadsheetSerializer(_WithClass, serializers.Serializer):
+class BroadsheetSerializer(ClassTeacherReadGate, _WithClass, serializers.Serializer):
     """The broadsheet of a class for a term.
 
     ``attendance_warning`` is null when no school day is without a register or
@@ -1387,7 +1388,7 @@ class HeldStudentSerializer(serializers.Serializer):
     placed_at = serializers.DateTimeField(read_only=True)
 
 
-class ApprovalRowSerializer(_WithClass, serializers.Serializer):
+class ApprovalRowSerializer(ClassTeacherReadGate, _WithClass, serializers.Serializer):
     branch = RefSerializer(read_only=True, allow_null=True)
     class_teacher = RefSerializer(read_only=True, allow_null=True)
     subjects_in = serializers.IntegerField(read_only=True)

@@ -32,6 +32,7 @@ from django.utils.text import slugify
 
 from vs_config.display import format_date
 from vs_finance.exports import ReportTable
+from schools.vs_academics.class_teacher_field import may_read_class_teacher
 from vs_rbac.field_enforcement import can_read
 
 from ..constants import FIELD_RESOURCE
@@ -120,13 +121,15 @@ def build_table(request, tenant, report: dict, table: str, *, branch, narrowed: 
                 row += [_rate(item["rate"]), item["absent"], item["excused"], item["not_taken"]]
             rows.append(row)
     else:
-        columns = ["Date", "Class", "Class teacher", where]
+        teacher_open = may_read_class_teacher(request)
+        columns = ["Date", "Class", *(["Class teacher"] if teacher_open else []), where]
         rows = []
         if status_open:
             for item in report.get("not_taken", []):
                 rows.append([
                     format_date(item["date"], tenant), _text(item["class_name"]),
-                    _text(item["class_teacher_name"]), _where(item, several),
+                    *([_text(item["class_teacher_name"])] if teacher_open else []),
+                    _where(item, several),
                 ])
 
     term = report.get("term")

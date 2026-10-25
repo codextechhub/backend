@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 from vs_audit.models import AuditEvent
 from vs_rbac.models import PermissionScope
 from vs_rbac.tests.helpers import (
+    install_declared_fields,
     make_assignment,
     make_branch,
     make_permission,
@@ -17,6 +18,7 @@ from vs_rbac.tests.helpers import (
     make_role_permission,
     make_school,
     make_school_admin,
+    set_field_access,
 )
 from vs_user.tokens import CodeXRefreshToken
 from schools.vs_academics.models import (
@@ -171,6 +173,18 @@ class ClassLifecycleTests(_Base):
         self.assertEqual(restored.status_code, 200, restored.data)
         klass.refresh_from_db()
         self.assertTrue(klass.is_active)
+
+    def test_the_answer_follows_the_class_teacher_switch(self):
+        """Archive and restore answer through the class serializer with the caller's access."""
+        install_declared_fields("academics.classes")
+        klass = self.klass()
+        archived = self.post(self.admin, "academics-class-archive", {}, pk=klass.pk)
+        self.assertIsNone(archived.data["data"]["class_teacher"])
+
+        set_field_access(self.role, "academics.classes.class_teacher", read=False, write=False)
+        restored = self.post(self.admin, "academics-class-restore", {}, pk=klass.pk)
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertNotIn("class_teacher", restored.data["data"])
 
     def test_both_state_changes_are_audited(self):
         klass = self.klass()

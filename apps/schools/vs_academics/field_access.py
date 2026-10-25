@@ -23,11 +23,20 @@ admission number on the roll, and the subject's name and code, are the roll
 and the subject list, fields of the student records and the subjects, and
 carry no switch here.
 
-**``academics.classes``: a class's past class teachers.** Two Read switches, and
-nothing writes either: the history is written by the change of class teacher
-itself. ``class_teacher_history`` is the list on one class's read, each term's
-person and dates; hiding it removes the list and leaves the current class
-teacher, which every reader of the class sees. ``class_teacher_changed_by`` is
+**``academics.classes``: a class's class teacher, now and earlier.**
+``class_teacher`` is who looks after the class now, with Read and Write. Read
+covers every staff screen that names them: the class list and page here, and
+the attendance and gradebook payloads that carry the person under their own
+names (:mod:`.class_teacher_field`). Hiding it also drops the term that is
+running now from the history, which would otherwise name the same person.
+Write governs ``PUT /v1/i/me/staff/teaching/class-teacher/``, the one path that
+sets, changes or clears it. Report cards and the family portals print the class
+teacher regardless: they are documents for families, who hold no role.
+
+The history has two Read switches, and nothing writes either: it is written by
+the change of class teacher itself. ``class_teacher_history`` is the list on
+one class's read, each term's person and dates; hiding it removes the list and
+leaves the current class teacher. ``class_teacher_changed_by`` is
 the administrator who set or ended each term, as ``set_by`` and ``ended_by``
 inside the list, so a school can show who taught a class without showing who
 moved them.
@@ -46,6 +55,7 @@ DEPARTMENT_SURFACES = (
 )
 
 CLASS_SURFACES = (
+    "schools.vs_academics.serializers.SchoolClassSerializer",
     "schools.vs_academics.serializers.SchoolClassDetailSerializer",
     "schools.vs_academics.serializers.ClassTeacherTermSerializer",
 )
@@ -76,6 +86,12 @@ def register():
         "classes",
         surfaces=CLASS_SURFACES,
         fields=(
+            FieldSpec("class_teacher", "Class teacher", group="Class teacher",
+                      scope=_TENANT, sort_order=5,
+                      description="Who looks after the class now, on the class list "
+                                  "and page, Teaching duties, and the attendance and "
+                                  "gradebook screens that name them. Write allows "
+                                  "setting, changing and clearing it."),
             FieldSpec("class_teacher_history", "Past class teachers", group="Class teacher",
                       scope=_TENANT, sort_order=10, writable=False,
                       description="Who has been the class's class teacher this year, "

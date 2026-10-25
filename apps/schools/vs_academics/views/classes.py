@@ -293,7 +293,7 @@ class _ClassStateView(_ClassBase, APIView):
             f"{klass.name} {self.verb}.",
             data=SchoolClassSerializer(
                 _classes_for(self.tenant).get(pk=klass.pk),
-                context={"multi_branch": self.multi_branch},
+                context={"request": request, "multi_branch": self.multi_branch},
             ).data,
         )
 
@@ -403,7 +403,7 @@ class GenerateArmsView(_ClassBase, APIView):
             data=SchoolClassSerializer(
                 _classes_for(self.tenant)
                 .filter(pk__in=[c.pk for c in created]).order_by("name"),
-                many=True, context={"multi_branch": self.multi_branch},
+                many=True, context={"request": request, "multi_branch": self.multi_branch},
             ).data,
             status=201 if created else 200,
         )
@@ -660,7 +660,7 @@ class SubjectOfferingsView(_SubjectBase, APIView):
             f"{subject.name} updated.",
             data=SubjectSerializer(
                 _subjects_for(self.tenant, session=self.session).get(pk=subject.pk),
-                context={"multi_branch": self.multi_branch},
+                context={"request": request, "multi_branch": self.multi_branch},
             ).data,
         )
 

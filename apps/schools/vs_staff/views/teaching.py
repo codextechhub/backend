@@ -13,7 +13,10 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_rbac.field_enforcement import assert_writable
 
+from schools.vs_academics.class_teacher_field import may_read_class_teacher
+from schools.vs_academics.serializers import CLASS_FIELD_RESOURCE
 from schools.vs_academics.services.scoping import (
     assert_may_change,
     scope_to_visible_branches,
@@ -208,6 +211,11 @@ class ClassTeacherView(StaffViewMixin, APIView):
     is unique per class by construction and a copy on a row that is not would
     let two people claim it.
 
+    Governed by the Class teacher switch (``academics.classes.class_teacher``):
+    without Write the change is refused, and without Read the answer leaves out
+    who now holds the class. Sending the person who already holds it is not a
+    change and passes, for a reader who may read it.
+
     docstring-name: Set a class teacher
     """
 
@@ -232,27 +240,32 @@ class ClassTeacherView(StaffViewMixin, APIView):
             raise NotFound("No such class at this school.")
         assert_may_change(request.user, self.tenant, school_class)
         teaching.assert_session_open(school_class.session)
+        assert_writable(
+            request, CLASS_FIELD_RESOURCE, {"staff": data.get("staff")},
+            aliases={"staff": "class_teacher"},
+            current={"staff": school_class.class_teacher_id},
+        )
 
         staff = self.get_staff(data["staff"]) if data.get("staff") else None
         teaching.set_class_teacher(
             school_class, staff, actor=request.user, tenant=self.tenant,
         )
+        answer = {"school_class": {"id": school_class.pk, "name": school_class.name}}
+        if may_read_class_teacher(request):
+            answer["class_teacher"] = (
+                {
+                    "id": staff.pk,
+                    "name": f"{staff.user.first_name} {staff.user.last_name}".strip(),
+                }
+                if staff is not None else None
+            )
         return success_response(
             message=(
                 f"{school_class.name} has a class teacher."
                 if staff is not None
                 else f"{school_class.name} has no class teacher."
             ),
-            data={
-                "school_class": {"id": school_class.pk, "name": school_class.name},
-                "class_teacher": (
-                    {
-                        "id": staff.pk,
-                        "name": f"{staff.user.first_name} {staff.user.last_name}".strip(),
-                    }
-                    if staff is not None else None
-                ),
-            },
+            data=answer,
         )
 
 

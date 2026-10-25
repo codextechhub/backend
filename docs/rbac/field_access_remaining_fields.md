@@ -1441,7 +1441,7 @@ Rules the registration settles:
   "a staff group" or "a broadcast". Tests: `schools.vs_messages.tests.test_field_access`,
   `test_field_access_deep_payload` and `test_alerts` (`FieldAccessInAlertsTests`).
 
-## 7B. Area G: a class's past class teachers (`academics.classes`, registered with the feature)
+## 7B. Area G: a class's class teacher, now and earlier (`academics.classes`, registered with the feature)
 
 Who has been a class's class teacher, from when to when, and who made each
 change. Recorded as `vs_staff.ClassTeacherTerm` by every change of class teacher
@@ -1457,13 +1457,28 @@ administrator moved them.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `class_teacher_history` and, inside it, each term's `name`, `staff_id`, `started_at`, `ended_at` | who held the class this year and when | Computed | none (written by PUT `/v1/i/me/staff/teaching/class-teacher/` as a side effect of the change) | `academics.classes.class_teacher_history` | Past class teachers | RO | open | registered |
 | `set_by`, `ended_by` inside each term | the administrator who set or ended it | Computed | none | `academics.classes.class_teacher_changed_by` | Who changed the class teacher | RO | open | registered |
-| `class_teacher` on the class list and detail | who holds the class now | Stored | PUT `/v1/i/me/staff/teaching/class-teacher/` | `academics.classes.class_teacher` | Class teacher | RW | open; the department head, the same kind of fact, already has Read and Write | recorded |
+| `class_teacher` on the class list, the class page and the answer to archive, restore and the change itself; `class_teacher_name` on the attendance hub's and report's registers not taken and on a reminder's answer, and the export's Class teacher column; `class_teacher` on the gradebook results hub, broadsheet and approvals queue; the term running now in `class_teacher_history` | who holds the class now | Stored | PUT `/v1/i/me/staff/teaching/class-teacher/` (body `staff`) | `academics.classes.class_teacher` | Class teacher | RW | open | registered |
+| `class_teacher` in a published result's snapshot: the report card's "Chidi Eze, class teacher" line and the student and parent portals' results | who signed the result | Computed (copied at publishing) | none | - | - | - | documents for families, who hold no role; a card already issued must print the same again (owner decision of 25 October 2026) | no switch: owner decision |
 | each term's `id` | identifier | Computed | none | - | - | - | - | no switch: transport |
+
+The owner decided on 25 October 2026 that Class teacher reaches every staff
+screen that names the person (option "every staff screen"), and not the family
+documents. A serializer enforces one resource, so the attendance and gradebook
+payloads apply it through `schools.vs_academics.class_teacher_field`
+(`ClassTeacherReadGate`, `may_read_class_teacher`) rather than as declared
+surfaces. Hidden means absent, never null: null is a class with nobody. Hiding
+it also drops the term running now from the history. Without Write the change
+is refused; sending the current holder again is not a change.
 
 Hiding Past class teachers removes the list and leaves `class_teacher`. Hiding
 Who changed the class teacher removes `set_by` and `ended_by` from every term and
 leaves the names and dates. Tests: `schools.vs_staff.tests.test_class_teacher_history`
-(`ClassPageHistoryTests`) and `schools.vs_academics.tests.test_field_access_deep_payload`.
+(`ClassPageHistoryTests`, `ClassTeacherSwitchTests`),
+`schools.vs_academics.tests.test_field_access_deep_payload`,
+`schools.vs_academics.tests.test_class_subject_endpoints` (archive and restore),
+`schools.vs_attendance.tests.test_hub` (`ClassTeacherSwitchTests`),
+`schools.vs_attendance.tests.test_report_export` and
+`schools.vs_gradebook.tests.test_class_teacher_switch`.
 
 ---
 

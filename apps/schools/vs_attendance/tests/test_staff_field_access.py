@@ -208,6 +208,14 @@ class StaffManagementSwitchTests(_Switches):
 
         self.assertEqual(row["role"], "Class teacher · JSS1 A")
 
+    def test_the_classes_a_person_leads_follow_the_class_teacher_switch(self):
+        install_declared_fields("academics.classes")
+        set_field_access(
+            self.staff_role, "academics.classes.class_teacher", read=False, write=False,
+        )
+
+        self.assertNotIn("JSS1 A", repr(self.row(self.eze_staff)))
+
     def declares_employment_status(self):
         if EMPLOYMENT_STATUS not in self.keys:
             self.skipTest("Staff Management declares no employment status switch.")

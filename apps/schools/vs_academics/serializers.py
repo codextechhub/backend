@@ -403,7 +403,15 @@ class BulkLevelSerializer(serializers.Serializer):
 
 # ── Classes ────────────────────────────────────────────────────────────────
 
-class SchoolClassSerializer(_ScopedSerializer):
+class SchoolClassSerializer(FieldAccessMixin, _ScopedSerializer):
+    """A class on the list, and the answer to a change made to one.
+
+    ``class_teacher`` follows the Class teacher switch: absent for a reader who
+    may not read it, which is not the same as null, a class with nobody.
+    """
+
+    field_resource = CLASS_FIELD_RESOURCE
+
     level_name = serializers.CharField(source="level.name", read_only=True)
     subject_count = serializers.SerializerMethodField()
     class_teacher = serializers.SerializerMethodField()
@@ -495,14 +503,14 @@ class ClassTeacherTermSerializer(FieldAccessMixin, serializers.Serializer):
         return _person(term.ended_by)
 
 
-class SchoolClassDetailSerializer(FieldAccessMixin, SchoolClassSerializer):
+class SchoolClassDetailSerializer(SchoolClassSerializer):
     """One class as its own page reads it, with its class teachers over the year.
 
     The list does not carry the history: it is one query per class, and only the
-    page about one class shows it.
+    page about one class shows it. A reader who may not read the current class
+    teacher gets the history without the term running now, which names the same
+    person.
     """
-
-    field_resource = CLASS_FIELD_RESOURCE
 
     class_teacher_history = serializers.SerializerMethodField()
 
@@ -512,9 +520,12 @@ class SchoolClassDetailSerializer(FieldAccessMixin, SchoolClassSerializer):
     def get_class_teacher_history(self, obj):
         from schools.vs_staff.services.teaching import class_teacher_terms
 
-        return ClassTeacherTermSerializer(
-            class_teacher_terms(obj), many=True, context=self.context,
-        ).data
+        from .class_teacher_field import may_read_class_teacher
+
+        terms = class_teacher_terms(obj)
+        if not may_read_class_teacher(self.context.get("request")):
+            terms = terms.exclude(ended_at__isnull=True)
+        return ClassTeacherTermSerializer(terms, many=True, context=self.context).data
 
 
 class SchoolClassWriteSerializer(serializers.ModelSerializer):

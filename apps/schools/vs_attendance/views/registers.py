@@ -10,6 +10,7 @@ from __future__ import annotations
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_academics.class_teacher_field import may_read_class_teacher
 from vs_rbac.field_enforcement import assert_writable
 
 from ..constants import (
@@ -128,8 +129,7 @@ class RemindView(AttendanceViewMixin, APIView):
         ctx = self.register_context(class_id, on_date)
         reminder = reminders.remind(ctx, request.user)
         teacher = ctx.school_class.class_teacher
-        return success_response("Reminder sent.", {
-            "reminded": True,
-            "reminded_at": reminder.sent_at,
-            "class_teacher_name": teacher.user.full_name if teacher is not None else None,
-        }, status=201)
+        answer = {"reminded": True, "reminded_at": reminder.sent_at}
+        if may_read_class_teacher(request):
+            answer["class_teacher_name"] = teacher.user.full_name if teacher is not None else None
+        return success_response("Reminder sent.", answer, status=201)

@@ -232,3 +232,61 @@ class RebuiltFromTheAuditTrailTests(_Base):
         AuditEvent.objects.filter(entity_type="SchoolClass").delete()
         self.rebuild()
         self.assertEqual(self.terms(), [])
+
+
+class ClassTeacherSwitchTests(_Base):
+    """The Class teacher switch on the class's own reads and on the change.
+
+    Read off: the class list and page leave the class teacher out (absent, not
+    null), and the history drops the term running now, which names the same
+    person. Write off: the change is refused and the class keeps its teacher.
+    """
+
+    CLASS_TEACHER = "academics.classes.class_teacher"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        install_declared_fields("academics.classes")
+
+    def listed(self):
+        response = self.client_for(self.admin).get(
+            "/v1/academics/classes/", {"tenant": self.tenant.slug, "session": self.year.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return next(r for r in response.data["data"] if r["id"] == self.shared_class.pk)
+
+    def test_without_read_the_list_and_the_page_leave_it_out(self):
+        self.designate(self.eze)
+        self.designate(self.registrar)
+        set_field_access(self.role, self.CLASS_TEACHER, read=False, write=False)
+
+        self.assertNotIn("class_teacher", self.listed())
+        page = self.class_page()
+        self.assertEqual(page.status_code, 200, page.data)
+        self.assertNotIn("class_teacher", page.data["data"])
+        history = page.data["data"]["class_teacher_history"]
+        self.assertEqual([t["staff_id"] for t in history], [self.eze.pk])
+        self.assertNotIn(self.registrar.pk, [t["staff_id"] for t in history])
+
+    def test_without_write_the_change_is_refused(self):
+        self.designate(self.eze)
+        set_field_access(self.role, self.CLASS_TEACHER, read=True, write=False)
+
+        for staff in (self.registrar, None):
+            with self.subTest(staff=staff):
+                response = self.designate(staff)
+                self.assertEqual(response.status_code, 403, response.data)
+        self.shared_class.refresh_from_db()
+        self.assertEqual(self.shared_class.class_teacher_id, self.eze.pk)
+        self.assertEqual(len(self.terms()), 1)
+
+    def test_without_write_resending_the_holder_is_not_a_change(self):
+        self.designate(self.eze)
+        set_field_access(self.role, self.CLASS_TEACHER, read=True, write=False)
+        self.assertEqual(self.designate(self.eze).status_code, 200)
+
+    def test_open_by_default(self):
+        self.designate(self.eze)
+        self.assertEqual(self.listed()["class_teacher"]["staff_id"], self.eze.pk)
+        self.assertEqual(self.class_page().data["data"]["class_teacher"]["staff_id"], self.eze.pk)

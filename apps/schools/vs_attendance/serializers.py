@@ -30,6 +30,11 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from schools.vs_academics.class_teacher_field import (
+    ClassTeacherReadGate,
+    may_read_class_teacher,
+)
+
 from schools.vs_students.serializers import GuardianSerializer
 from vs_rbac.field_enforcement import FieldAccessMixin, can_read
 
@@ -172,7 +177,10 @@ class MarkChangeSerializer(FieldAccessMixin, serializers.Serializer):
 
 
 class RegisterSerializer(FieldAccessMixin, serializers.Serializer):
-    """A class's register for one day, as the register screen reads it."""
+    """A class's register for one day, as the register screen reads it.
+
+    ``school_class.class_teacher_name`` follows the Class teacher switch.
+    """
 
     field_resource = FIELD_RESOURCE
 
@@ -192,6 +200,10 @@ class RegisterSerializer(FieldAccessMixin, serializers.Serializer):
     def to_representation(self, instance):
         """The register, with the leave of the teacher it was taken for cut to the leave switches."""
         data = super().to_representation(instance)
+        if data.get("school_class") and not may_read_class_teacher(self.context.get("request")):
+            data["school_class"] = {
+                k: v for k, v in data["school_class"].items() if k != "class_teacher_name"
+            }
         taken = data.get("taken_by")
         if taken and taken.get("on_leave"):
             data["taken_by"] = {**taken, "on_leave": _cut_leave(
@@ -383,7 +395,8 @@ class StaffRowSerializer(FieldAccessMixin, serializers.Serializer):
     """One member of staff's line on a branch's staff register.
 
     The role line is made of the job title, which is Staff Management's field and
-    is held to its switch, and the classes the person leads, which are not. The
+    is held to its switch, and the classes the person leads, which follow the
+    Class teacher switch. The
     exit block says what the person's employment status is and when they last
     work, which are Staff Management's employment status and exit date under other
     names: each part is sent only to a caller who may read the field it comes from,
@@ -409,7 +422,7 @@ class StaffRowSerializer(FieldAccessMixin, serializers.Serializer):
         # A job title of "Class teacher" says what the classes part says already.
         if title and not (obj.get("leads") and title.strip().lower() == "class teacher"):
             parts.append(title)
-        if obj.get("leads"):
+        if obj.get("leads") and may_read_class_teacher(self.context.get("request")):
             parts.append("Class teacher \u00b7 " + ", ".join(obj["leads"]))
         return " \u00b7 ".join(parts) if parts else None
 
@@ -589,8 +602,13 @@ class StudentCorrectionSerializer(FieldAccessMixin, serializers.Serializer):
 
 # ── Today ──────────────────────────────────────────────────────────────────
 
-class NotTakenRowSerializer(serializers.Serializer):
-    """A class whose register is due and has not been submitted."""
+class NotTakenRowSerializer(ClassTeacherReadGate, serializers.Serializer):
+    """A class whose register is due and has not been submitted.
+
+    The class teacher's name follows the Class teacher switch.
+    """
+
+    class_teacher_names = ("class_teacher_name",)
 
     class_id = serializers.IntegerField(read_only=True)
     class_name = serializers.CharField(read_only=True)
@@ -850,8 +868,13 @@ class ReportChronicRowSerializer(serializers.Serializer):
     not_taken = serializers.IntegerField(read_only=True)
 
 
-class ReportNotTakenRowSerializer(serializers.Serializer):
-    """A day a class owed a register and none was submitted."""
+class ReportNotTakenRowSerializer(ClassTeacherReadGate, serializers.Serializer):
+    """A day a class owed a register and none was submitted.
+
+    The class teacher's name follows the Class teacher switch.
+    """
+
+    class_teacher_names = ("class_teacher_name",)
 
     date = serializers.DateField(read_only=True)
     class_id = serializers.IntegerField(read_only=True)

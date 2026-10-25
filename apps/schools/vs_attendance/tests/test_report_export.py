@@ -285,6 +285,25 @@ class FieldAccessTests(_Export):
         # The figures stay.
         self.assertEqual(len(self.export("by_class", user)[2]), 7)
 
+    def test_a_hidden_class_teacher_drops_the_column_and_the_names(self):
+        install_declared_fields("academics.classes")
+        role = make_key_role(
+            self.tenant, "No class teacher", "no_class_teacher",
+            (PERM_REGISTER_VIEW, PERM_REPORT_VIEW, PERM_REPORT_EXPORT),
+        )
+        user = make_school_admin(None, email="noct@brightfield.test", tenant=self.tenant)
+        make_assignment(self.tenant, user, role, branch=None)
+        set_field_access(role, "academics.classes.class_teacher", read=False, write=False)
+
+        _, _, headers, rows = self.export("not_taken", user)
+        self.assertEqual(headers, ["Date", "Class", "Branch"])
+        self.assertEqual(rows[1], ["10 Oct 2025", "JSS1 A", "Lekki Branch"])
+
+        report = TenantAPIClient(user).get(reverse("attendance-reports"))
+        self.assertEqual(report.status_code, 200, report.data)
+        for row in report.data["data"]["not_taken"]:
+            self.assertNotIn("class_teacher_name", row)
+
     def test_the_figures_come_back_with_the_switch(self):
         install_declared_fields("attendance.register")
         _, _, headers, _ = self.export("by_class")

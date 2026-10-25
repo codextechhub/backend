@@ -27,6 +27,7 @@ class AcademicsDeepPayloadTests(DeepPayloadChecks, ElectivesFixture):
         _SURFACE + "ElectiveSubjectSerializer",
         _SURFACE + "ElectiveStudentSerializer",
         _SURFACE + "ElectiveChangeSerializer",
+        _SURFACE + "SchoolClassSerializer",
         _SURFACE + "SchoolClassDetailSerializer",
         _SURFACE + "ClassTeacherTermSerializer",
     })
@@ -49,6 +50,7 @@ class AcademicsDeepPayloadTests(DeepPayloadChecks, ElectivesFixture):
         payload["can_edit"] = True
         terms = list(teaching.class_teacher_terms(self.jss1a))
         return [
+            Sample(_SURFACE + "SchoolClassSerializer", self.jss1a),
             Sample(_SURFACE + "SchoolClassDetailSerializer", self.jss1a),
             Sample(_SURFACE + "ClassTeacherTermSerializer", terms, many=True),
             Sample(_SURFACE + "DepartmentSerializer", self.sciences),
