@@ -31,6 +31,8 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.checks import Warning as CheckWarning, register
 
+from .app_versions import configuration_problems
+
 # Stable id so a deployment that has accepted the gap can silence exactly this
 # one via SILENCED_SYSTEM_CHECKS.
 CHECK_ID = "core.W001"
@@ -83,4 +85,30 @@ def check_scheduled_tasks_can_run(app_configs=None, **kwargs):
             ),
             id=CHECK_ID,
         )
+    ]
+
+
+APP_VERSIONS_CHECK_ID = "core.W002"
+
+
+@register()
+def check_native_app_versions(app_configs=None, **kwargs):
+    """Warn about every problem in ``NATIVE_APP_VERSIONS``.
+
+    A bad value never stops the server, because the route treats it as absent;
+    what it costs is a store app that is never blocked or nudged when CodeX
+    meant it to be. A Warning keeps it visible on every command without turning
+    a deploy away. Reads settings only.
+    """
+    problems = configuration_problems(
+        getattr(settings, "NATIVE_APP_VERSIONS", {}),
+        getattr(settings, "NATIVE_APP_VERSIONS_ERROR", ""),
+    )
+    return [
+        CheckWarning(
+            problem,
+            hint="Fix NATIVE_APP_VERSIONS: app id -> android|ios -> minimum, latest, store_url.",
+            id=APP_VERSIONS_CHECK_ID,
+        )
+        for problem in problems
     ]

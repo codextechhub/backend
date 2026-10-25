@@ -156,6 +156,7 @@ unaffected.
 """
 
 from datetime import timedelta
+import json
 import os
 import sys
 from pathlib import Path
@@ -306,6 +307,9 @@ REST_FRAMEWORK = {
         # whole staff room on one address, so it is set to bound scraping rather
         # than to pace a browser.
         "school_brand":      "240/hour",
+        # A phone asking which app versions are acceptable, before sign-in.
+        # Cacheable and answered from settings, so this bounds scraping only.
+        "app_versions":      "240/hour",
         "guide_analytics": "120/minute",
         "payments_webhook": "120/minute",
         # The payer's return page asking how its payment went: by IP as a
@@ -501,6 +505,20 @@ NATIVE_APP_ORIGINS = [
     if origin.strip()
 ]
 CORS_ALLOWED_ORIGINS += [o for o in NATIVE_APP_ORIGINS if o not in CORS_ALLOWED_ORIGINS]
+
+# The store-app versions a phone may run, the same for every tenant. "minimum"
+# blocks an older app; "latest" only nudges it. Read by core.app_versions.
+# Example (env var, one line of JSON):
+#   NATIVE_APP_VERSIONS={"com.codexng.xvs.parent": {"android": {"minimum": "1.0.0", "latest": "1.2.0", "store_url": "https://play.google.com/store/apps/details?id=com.codexng.xvs.parent"}}}
+# A malformed value leaves the setting empty and is reported by a system check.
+NATIVE_APP_VERSIONS_ERROR = ""
+try:
+    NATIVE_APP_VERSIONS = json.loads(config("NATIVE_APP_VERSIONS", default="{}") or "{}")
+    if not isinstance(NATIVE_APP_VERSIONS, dict):
+        raise ValueError("expected a JSON object")
+except ValueError as exc:
+    NATIVE_APP_VERSIONS = {}
+    NATIVE_APP_VERSIONS_ERROR = str(exc)
 
 # Browser authentication is limited to the same first-party origins that may
 # call the API with credentials, the native app origins among them.

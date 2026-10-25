@@ -18,6 +18,7 @@ from django.conf import settings
 from django.urls import path, include
 
 from core.views import MediaView
+from core.views_app_versions import AppVersionView
 
 urlpatterns = [
     # Mounted BEFORE "v1/i/": the staff surface keeps the address a school
@@ -68,6 +69,8 @@ urlpatterns = [
     path("v1/health/", include("vs_health.urls")),
     path("v1/tenants/", include("vs_tenants.urls")),
     path("v1/search/", include("vs_search.urls")),
+    # Public, tenant-free: a store app asks this before anyone signs in.
+    path("v1/app-versions/", AppVersionView.as_view(), name="app-versions"),
 ]
 
 # Media is database-backed (core.storage.DatabaseStorage) and served with
