@@ -346,10 +346,16 @@ def receipt_notice_context(payment) -> dict:
 
 
 def _receipt_context(payment, delivery) -> dict:
-    allocation = payment.allocations.select_related("invoice").first()
+    from .documents import receipt_settlement_lines
+
+    allocations = list(payment.allocations.select_related("invoice").order_by("id"))
+    invoice_numbers = list(dict.fromkeys(a.invoice.document_number for a in allocations))
     return {
         "customer_name": payment.customer.name,
-        "invoice_number": allocation.invoice.document_number if allocation is not None else "",
+        "invoice_number": allocations[0].invoice.document_number if allocations else "",
+        "settlement_summary": receipt_settlement_lines(
+            invoice_numbers, received=payment.amount, applied=sum(a.amount for a in allocations),
+        ),
         "amount_paid": _naira(payment.amount),
         "payment_date": format_date(payment.payment_date, payment.entity.tenant) or "-",
         "receipt_number": payment.document_number,

@@ -460,6 +460,23 @@ def receipt_closing_line(received: int, applied: int) -> str:
     )
 
 
+def receipt_settlement_lines(invoice_numbers, *, received: int, applied: int) -> str:
+    """The lines a receipt email prints about where the money went, never empty.
+
+    Names the invoices the payment was applied to when there are any, and the
+    amount held as credit when some or all of it is. ``received`` and ``applied``
+    are the same kobo figures :func:`receipt_closing_line` reads, so the email and
+    the receipt cannot tell different stories.
+    """
+    lines = []
+    if invoice_numbers:
+        label = "Applied to invoice" if len(invoice_numbers) == 1 else "Applied to invoices"
+        lines.append(f"{label}: {', '.join(invoice_numbers)}")
+    if received > applied:
+        lines.append(f"Held as credit on the account: {format_naira(received - applied)}")
+    return "\n".join(lines)
+
+
 # Build printable receipt template context.
 def receipt_document_context(payment) -> dict:
     """Build the render context for the branded receipt document."""
