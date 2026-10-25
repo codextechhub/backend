@@ -30,6 +30,7 @@ from .models import (
     AuthAttempt,
     AccountLockout,
     PasswordResetRequest,
+    AccountClosureRequest,
     PlatformStaffProfile,
     OrgNode,
     Position,
@@ -1555,3 +1556,59 @@ class OrgTreeNodeSerializer(serializers.Serializer):
     def get_direct_reports(self, obj):
         children = obj.get('direct_reports', [])
         return OrgTreeNodeSerializer(children, many=True, context=self.context).data
+
+
+# =============================================================================
+# Account closure
+# =============================================================================
+
+class AccountClosureRequestSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    """One person's request to close their own account, as a reviewer reads it.
+
+    Every field is set by the server, so each is registered read-only under
+    ``school.account_closures``: the person (``user_id``, ``user_name`` and
+    ``user_email`` travel together), the account type, the channel, the status,
+    when it was asked and decided, and who decided. The branch is the
+    reviewer's own scope and is never a switch.
+    """
+
+    field_resource = "school.account_closures"
+
+    user_id = serializers.IntegerField(read_only=True)
+    user_name = serializers.CharField(source='user.full_name', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    decided_by_id = serializers.IntegerField(read_only=True)
+    decided_by_name = serializers.CharField(
+        source='decided_by.full_name', read_only=True, default=None,
+    )
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default=None)
+
+    class Meta:
+        model = AccountClosureRequest
+        fields = (
+            'id', 'user_id', 'user_name', 'user_email', 'kind', 'channel', 'status',
+            'requested_at', 'decided_at', 'decided_by_id', 'decided_by_name',
+            'branch_id', 'branch_name',
+        )
+        read_only_fields = fields
+
+
+class AccountClosureConfirmSerializer(serializers.Serializer):
+    """The signed-in person's explicit confirmation that they want the account deleted."""
+
+    confirm = serializers.BooleanField(required=True)
+
+    def validate_confirm(self, value):
+        if value is not True:
+            raise serializers.ValidationError('Confirm that you want to delete your account.')
+        return value
+
+
+class AccountClosureLinkRequestSerializer(PasswordResetRequestSerializer):
+    """Who the confirmation link is for: read exactly as a password reset names a person."""
+
+
+class AccountClosureLinkConfirmSerializer(serializers.Serializer):
+    """The token from the emailed link."""
+
+    token = serializers.CharField(max_length=255)

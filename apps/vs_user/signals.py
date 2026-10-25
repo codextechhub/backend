@@ -30,6 +30,17 @@ than being imported from here.
       user       - the :class:`~vs_user.models.User` the session belonged to.
       device_key - the session's random key.
 
+``account_closed``
+    Fires when a person's account has been closed at their own request or on a
+    reviewer's decision (:mod:`vs_user.services.account_closure`), after its
+    sessions have ended. A module that holds anything tied to the person's
+    devices (push subscriptions, phone tokens) lets all of it go here, because
+    a closed account must never be sent another message.
+
+    Fires inside the closing transaction with two keyword arguments:
+      user - the :class:`~vs_user.models.User` whose account has just closed.
+      actor - the account that closed it: the person themselves, or a reviewer.
+
 ``invitation_dispatch_settled``
     Fires once the invitation email has either been handed to the broker or
     refused by it, from inside the ``on_commit`` callback that does the handing
@@ -66,3 +77,5 @@ account_activated = django.dispatch.Signal()
 invitation_dispatch_settled = django.dispatch.Signal()
 
 device_session_ended = django.dispatch.Signal()
+
+account_closed = django.dispatch.Signal()

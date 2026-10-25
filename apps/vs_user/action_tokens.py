@@ -16,9 +16,11 @@ from django.utils.crypto import salted_hmac
 
 INVITATION_PREFIX = "iv_"
 PASSWORD_RESET_PREFIX = "pr_"
+ACCOUNT_CLOSURE_PREFIX = "ac_"
 
 _INVITATION_SALT = "vs_user.invitation"
 _PASSWORD_RESET_SALT = "vs_user.password_reset"
+_ACCOUNT_CLOSURE_SALT = "vs_user.account_closure"
 
 
 def _issue(prefix: str, salt: str) -> tuple[str, str]:
@@ -58,3 +60,15 @@ def password_reset_token_digest(token: str) -> str | None:
     if not token.startswith(PASSWORD_RESET_PREFIX):
         return None
     return _digest(token, _PASSWORD_RESET_SALT)
+
+
+def issue_account_closure_token() -> tuple[str, str]:
+    """Return a new account-closure token and the digest safe to persist."""
+    return _issue(ACCOUNT_CLOSURE_PREFIX, _ACCOUNT_CLOSURE_SALT)
+
+
+def account_closure_token_digest(token: str) -> str | None:
+    """Return the closure-family digest, or ``None`` for another family."""
+    if not token.startswith(ACCOUNT_CLOSURE_PREFIX):
+        return None
+    return _digest(token, _ACCOUNT_CLOSURE_SALT)

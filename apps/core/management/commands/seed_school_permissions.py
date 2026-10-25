@@ -214,6 +214,14 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "administrators", "suspend",    _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "administrators", "reactivate", _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
+    # People asking to delete their own sign-in. Both administrator roles read
+    # the requests of their reach and decide them, because a request that waits
+    # for a decision with nobody holding the key to make it would leave a pupil
+    # with a request that is never answered. Deciding closes an account, so it
+    # is SENSITIVE; reading who asked is NORMAL.
+    ("school", "account_closures", "view",     _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "account_closures", "update",   _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
     # The school's own fee rules: when a bill falls due and whether pupils may
     # pay their own fees. They sit in Finance Settings beside the finance
     # console's own sections, so the role that runs the money holds both.
@@ -438,6 +446,7 @@ FIELD_ONLY_RESOURCES: list[tuple[str, str]] = [
 RESOURCE_LABELS: dict[tuple[str, str], str] = {
     ("school", "guardians"): "Guardians",
     ("school", "portal_access"): "Pupil portal access",
+    ("school", "account_closures"): "Account deletion requests",
     ("school", "notices"): "Notices",
     ("school", "class_notices"): "Class notices",
     ("school", "messages"): "Messages",
@@ -486,6 +495,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "leave"):          "Staff leave requests",
     ("school", "organogram"):     "The school's org chart: units, posts, appointments and reporting lines",
     ("school", "administrators"): "School administrator accounts",
+    ("school", "account_closures"): "People asking to delete their own sign-in account: reading the requests and closing or declining them",
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",
     ("school", "profile"):        "The school's own identity record (ownership, term structure, currency, branding)",

@@ -18,11 +18,17 @@ class VsNotificationsConfig(AppConfig):
         from . import checks  # noqa: F401
 
         # A device session that ends takes its pushes with it.
-        from vs_user.signals import device_session_ended
+        from vs_user.signals import account_closed, device_session_ended
 
-        from .services.push import forget_device
+        from .services.push import forget_device, forget_user_devices
 
         device_session_ended.connect(
             lambda sender, device_key, **kwargs: forget_device(device_key),
             weak=False, dispatch_uid="vs_notifications.forget_push_device",
+        )
+
+        # A closed account is never pushed to again, on any device.
+        account_closed.connect(
+            lambda sender, user, **kwargs: forget_user_devices(user.pk),
+            weak=False, dispatch_uid="vs_notifications.forget_closed_account_devices",
         )

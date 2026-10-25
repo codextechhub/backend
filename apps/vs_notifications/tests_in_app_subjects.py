@@ -72,6 +72,8 @@ _ALREADY_TITLED = {
     "billing.transfer_account_changed",
     "billing.guardian_transfer_account_changed",
     "billing.guardian_invoice_issued",
+    "user.deletion_requested",
+    "user.account_deleted",
 }
 
 

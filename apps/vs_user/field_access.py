@@ -23,6 +23,12 @@ user. Reaching the account at all is ``platform.team.view``, which a school's
 own administrators hold too; which of these facts they see is the switch. The
 server records every one of them (sign-in, password change, invitation), so
 none is writable.
+
+``school.account_closures`` holds the facts of a person's request to close
+their own account, as a reviewer reads them. The server sets all of them, so
+none is writable and none is sensitive: a reviewer who may open the request
+reads who asked, how, and what was decided, until a school switches a field off
+for a role. The branch is the reviewer's own scope and is not a switch.
 """
 from vs_rbac.field_registry import FieldSpec, register_fields
 
@@ -117,5 +123,29 @@ def register():
             FieldSpec("invitation_expires_at", "Invitation expires",
                       group="Invitation", sensitive=True, writable=False,
                       scope=_TENANT, sort_order=30),
+        ),
+    )
+    register_fields(
+        "school",
+        "account_closures",
+        surfaces=("vs_user.serializers.AccountClosureRequestSerializer",),
+        fields=(
+            FieldSpec("person", "Person", group="Request", writable=False,
+                      scope=_TENANT, sort_order=10,
+                      api_names=("user_id", "user_name", "user_email"),
+                      description="Who asked to close their account."),
+            FieldSpec("kind", "Account type", group="Request", writable=False,
+                      scope=_TENANT, sort_order=20),
+            FieldSpec("channel", "How it was asked", group="Request", writable=False,
+                      scope=_TENANT, sort_order=30),
+            FieldSpec("requested_at", "Asked on", group="Request", writable=False,
+                      scope=_TENANT, sort_order=40),
+            FieldSpec("status", "Status", group="Decision", writable=False,
+                      scope=_TENANT, sort_order=10),
+            FieldSpec("decided_at", "Decided on", group="Decision", writable=False,
+                      scope=_TENANT, sort_order=20),
+            FieldSpec("decided_by", "Decided by", group="Decision", writable=False,
+                      scope=_TENANT, sort_order=30,
+                      api_names=("decided_by_id", "decided_by_name")),
         ),
     )

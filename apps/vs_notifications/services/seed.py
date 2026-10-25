@@ -1734,6 +1734,75 @@ def _build_default_templates() -> dict:
             "cta_url": "{{ invitation_url }}",
         },
 
+        # ── user.account_closure_link (EMAIL only, transactional) ───────────
+        # The link is the proof the person owns the account, so the mail says
+        # what following it does, and that school records are not deleted.
+        ("user.account_closure_link", C.EMAIL): {
+            "subject": "Confirm deleting your {{ tenant_name }} account",
+            "body": (
+                "Hello {{ user_first_name }},\n\n"
+                "We received a request to delete your {{ tenant_name }} account.\n\n"
+                "Account: {{ user_email }}\n"
+                "Link expires: {{ expires_at }}\n\n"
+                "{% if closes_at_once %}When you confirm, your account closes straight away "
+                "and you are signed out everywhere. An administrator can reopen it later."
+                "{% else %}When you confirm, your request goes to {{ tenant_name }}. Your "
+                "account keeps working until an administrator closes it or declines "
+                "the request.{% endif %} Records the school keeps, such as results, "
+                "fees and attendance, are not deleted.\n\n"
+                "{{ closure_url }}\n\n"
+                "The link can only be used once. If you did not ask for this, ignore "
+                "this email and your account stays as it is."
+            ),
+            "cta_label": "Confirm deleting my account",
+            "cta_url": "{{ closure_url }}",
+        },
+
+        # ── user.deletion_requested / user.account_deleted ──────────────────
+        # Plain headlines naming who asked. The person is "Someone" to a
+        # reader whose Field Access hides the person.
+        ("user.deletion_requested", C.IN_APP): {
+            "subject": "{{ person_label }} asked to delete their account",
+            "body": (
+                "Their sign-in keeps working until you decide. Close the account "
+                "or decline the request. The school's records are kept."
+            ),
+        },
+        ("user.deletion_requested", C.EMAIL): {
+            "subject": "{{ person_label }} asked to delete their account",
+            "body": (
+                "Hello,\n\n"
+                "{{ person_label }} asked to delete their account at {{ tenant_name }}. "
+                "Their sign-in keeps working until an administrator closes it or "
+                "declines the request. The school's records about them are kept.\n\n"
+                "Open Account deletion requests to decide."
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+        },
+        ("user.account_deleted", C.IN_APP): {
+            "subject": (
+                "{{ person_label }} deleted their {% if kind %}{{ kind }} {% endif %}account"
+            ),
+            "body": (
+                "Their sign-in is closed and every device is signed out. The "
+                "school's records are kept, and the account can be reopened."
+            ),
+        },
+        ("user.account_deleted", C.EMAIL): {
+            "subject": (
+                "{{ person_label }} deleted their {% if kind %}{{ kind }} {% endif %}account"
+            ),
+            "body": (
+                "Hello,\n\n"
+                "{{ person_label }} deleted their {% if kind %}{{ kind }} {% endif %}account "
+                "at {{ tenant_name }}. Their sign-in is closed and every device is "
+                "signed out. The school's records about them are kept, and an "
+                "administrator can reopen the account.\n\n"
+                "Open Account deletion requests to see it."
+                "\n\n{{ tenant_name }} via {{ email_brand }}"
+            ),
+        },
+
         # ── user.account_locked ─────────────────────────────────────────────
         ("user.account_locked", C.IN_APP): {
             "subject": "Your account is locked{% if locked_at %} since {{ locked_at }}{% endif %}",

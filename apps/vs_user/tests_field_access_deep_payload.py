@@ -1,12 +1,14 @@
-"""No account security fact or staff bank detail reaches a caller who may read none.
+"""No account security fact, staff bank detail or closure request detail reaches a caller who may read none.
 
-Every declared surface of ``platform.team`` and ``platform.staff_profile`` is
+Every declared surface of ``platform.team``, ``platform.staff_profile`` and
+``school.account_closures`` is
 rendered on a real account or staff profile whose registered fields are filled
 in, as a caller whose role has every field of that resource switched off and
 who is not the person the record is about. The whole payload is walked.
 
-``platform.team`` is rendered in a tenant with two branches and in one with a
-single branch; ``platform.staff_profile`` exists only on the platform tenant.
+``platform.team`` and ``school.account_closures`` are rendered in a tenant with
+two branches and in one with a single branch; ``platform.staff_profile`` exists
+only on the platform tenant.
 """
 from __future__ import annotations
 
@@ -21,13 +23,15 @@ from vs_rbac.tests.helpers import (
     make_vision_user,
     platform_tenant,
 )
-from vs_user.models import PlatformStaffProfile, User
+from vs_user.models import AccountClosureRequest, PlatformStaffProfile, User
 
 _SURFACE = "vs_user.serializers."
 
 
 class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
-    resources = frozenset({"platform.team", "platform.staff_profile"})
+    resources = frozenset({
+        "platform.team", "platform.staff_profile", "school.account_closures",
+    })
     covers = frozenset({
         _SURFACE + "UserReadSerializer",
         _SURFACE + "UserListSerializer",
@@ -35,6 +39,7 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
         _SURFACE + "PlatformStaffProfileListSerializer",
         _SURFACE + "PlatformStaffProfileBriefSerializer",
         _SURFACE + "StaffProfileAccountSerializer",
+        _SURFACE + "AccountClosureRequestSerializer",
     })
 
     @classmethod
@@ -58,6 +63,11 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
             account.last_login_at = timezone.now()
             account.save(update_fields=["invited_by", "password_changed_at", "last_login_at"])
             cls.accounts.append((tenant, account))
+            AccountClosureRequest.all_objects.create(
+                tenant=tenant, user=account, branch=branch, kind="pupil", channel="web",
+                status=AccountClosureRequest.Status.CLOSED,
+                decided_at=timezone.now(), decided_by=inviter,
+            )
 
         cls.platform = platform_tenant()
         colleague = make_vision_user(email="colleague@deep-user.test")
@@ -81,9 +91,15 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
             account = User.objects.select_related("tenant", "branch", "invited_by").get(
                 pk=account.pk,
             )
+            closure = AccountClosureRequest.all_objects.select_related(
+                "user", "decided_by", "branch",
+            ).get(user=account)
             samples += [
                 Sample(_SURFACE + "UserReadSerializer", account, tenant=tenant),
                 Sample(_SURFACE + "UserListSerializer", [account], many=True, tenant=tenant),
+                Sample(_SURFACE + "AccountClosureRequestSerializer", [closure], many=True,
+                       tenant=tenant),
+                Sample(_SURFACE + "AccountClosureRequestSerializer", closure, tenant=tenant),
             ]
         profile = PlatformStaffProfile.objects.select_related("user").get(pk=self.profile.pk)
         samples += [

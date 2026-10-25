@@ -149,6 +149,22 @@ def forget_device(device_key: str) -> int:
     return removed
 
 
+def forget_user_devices(user_id) -> int:
+    """Delete every browser and phone device a person registered, whatever session made it.
+
+    For an account that has been closed: nothing may be pushed to it again, on
+    a device that was signed in or one that registered without a device
+    session.
+    """
+    from ..models import NativePushDevice, PushSubscription
+
+    removed = 0
+    for model in (PushSubscription, NativePushDevice):
+        deleted, _ = model.all_objects.filter(user_id=user_id).delete()
+        removed += deleted
+    return removed
+
+
 def subscribed_user_ids(user_ids) -> set:
     """Which of *user_ids* have at least one device to push to."""
     from ..models import NativePushDevice, PushSubscription

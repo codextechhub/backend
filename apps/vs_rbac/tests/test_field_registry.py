@@ -121,6 +121,7 @@ EXPECTED_RESOURCES = {
     ("procurement", "vendor"),
     ("procurement", "vendor_contact"),
     ("procurement", "approval"),
+    ("school", "account_closures"),
     ("school", "branches"),
     ("school", "guardians"),
     ("school", "leave"),

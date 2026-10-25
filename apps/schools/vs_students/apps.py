@@ -43,3 +43,9 @@ class VsStudentsConfig(AppConfig):
         from . import sign_in
 
         sign_in.register()
+
+        # Pupils ask the school to close their sign-in; parents close theirs
+        # at once. The account engine is told, and imports nothing from here.
+        from . import account_closure
+
+        account_closure.register()

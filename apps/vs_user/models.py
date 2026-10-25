@@ -1191,6 +1191,125 @@ class PasswordResetRequest(TimeStampedModel):
             ),
         ]
 
+
+# =============================================================================
+# Account closure
+# =============================================================================
+
+class AccountClosureRequest(TimeStampedModel):
+    """One person's ask to have their own sign-in account closed.
+
+    The row is the trail the tenant keeps of every self-service deletion, in
+    both of the shapes the product allows (:mod:`vs_user.services.account_closure`):
+    a request that waits for a reviewer is ``pending`` until somebody closes or
+    declines it, and an account that closed at once is recorded as ``closed``
+    with the person themselves as the decider.
+
+    ``branch`` is the one branch the person's record belongs to, or null when
+    they span several or none. A reviewer reads it as a transaction branch
+    (:func:`vs_rbac.scoping.transaction_branch_q`): a branch-bound reviewer
+    sees only their own branches' requests, and a request with no branch is
+    visible to a reviewer whose reach is the whole tenant.
+
+    ``kind`` is the product's own word for the account ("parent", "pupil"),
+    kept so a notification and a review screen can say what was closed after
+    the policy that named it has changed.
+    """
+
+    class Channel(models.TextChoices):
+        APP = 'app', 'In the app'
+        WEB = 'web', 'On the web page'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Waiting for the tenant'
+        CLOSED = 'closed', 'Closed'
+        DECLINED = 'declined', 'Declined'
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name='account_closure_requests',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='account_closure_requests',
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='account_closure_requests',
+    )
+    kind = models.CharField(max_length=32, blank=True, default='')
+    channel = models.CharField(max_length=8, choices=Channel.choices)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING,
+    )
+    requested_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = 'objects'
+        base_manager_name = 'all_objects'
+        ordering = ['-requested_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=Q(status='pending'),
+                name='one_pending_closure_per_user',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'status', '-requested_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'AccountClosureRequest<{self.user_id}:{self.status}>'
+
+
+class AccountClosureLink(TimeStampedModel):
+    """The one-time email link that proves a person owns the account they want closed.
+
+    Only the HMAC-SHA-256 digest of the token is stored, so a copy of the table
+    cannot be turned into working links. A link is used once and expires; asking
+    for another retires the one before it.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='account_closure_links',
+    )
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    requested_ip = models.GenericIPAddressField(null=True, blank=True)
+    requested_user_agent = models.TextField(blank=True, default='')
+
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_valid(self) -> bool:
+        return self.used_at is None and not self.is_expired()
+
+    def __str__(self) -> str:
+        state = 'used' if self.used_at else 'active'
+        return f'AccountClosureLink<{self.user_id}:{state}>'
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=Q(used_at__isnull=True),
+                name='one_active_closure_link_per_user',
+            ),
+        ]
+
+
 # =============================================================================
 # PlatformStaffProfile
 # =============================================================================

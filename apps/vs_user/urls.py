@@ -40,6 +40,13 @@ from .views import (
     AdminPasswordResetView,
     PasswordResetListView,
     RevokePasswordResetView,
+    # Account closure
+    AccountClosureView,
+    AccountClosureLinkRequestView,
+    AccountClosureLinkConfirmView,
+    AccountClosureRequestListView,
+    AccountClosureRequestCloseView,
+    AccountClosureRequestDeclineView,
     # User management
     UserAccountViewSet,
     UserEmailChangeView,
@@ -102,6 +109,16 @@ urlpatterns = [
     path('auth/password/reset/request/',     PasswordResetRequestView.as_view(),    name='password-reset-request'),
     path('auth/reset-password/<str:token>/preview/', PasswordResetPreviewView.as_view(),    name='password-reset-preview'),
     path('auth/password/reset/<str:token>/confirm/', PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
+
+    # ── Account closure ───────────────────────────────────────────────────────
+    # The signed-in person's own deletion, the public page's two steps, and the
+    # tenant's review of the requests that wait for a decision.
+    path('me/account-closure/',               AccountClosureView.as_view(),                name='me-account-closure'),
+    path('account-closure/request/',          AccountClosureLinkRequestView.as_view(),     name='account-closure-request'),
+    path('account-closure/confirm/',          AccountClosureLinkConfirmView.as_view(),     name='account-closure-confirm'),
+    path('account-closures/',                 AccountClosureRequestListView.as_view(),     name='account-closure-list'),
+    path('account-closures/<int:pk>/close/',  AccountClosureRequestCloseView.as_view(),    name='account-closure-close'),
+    path('account-closures/<int:pk>/decline/', AccountClosureRequestDeclineView.as_view(), name='account-closure-decline'),
 
     # ── User management actions ───────────────────────────────────────────────
     #

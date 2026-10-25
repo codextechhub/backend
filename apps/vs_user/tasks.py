@@ -35,6 +35,14 @@ Dispatched for both self-service and admin-triggered password resets.
 The raw token (never stored) is embedded in the reset link.
 Messaging adapts based on origin: SELF or ADMIN.
 ─────────────────────────────────────────────────────────────────────────────
+
+SECTION 3 - ACCOUNT CLOSURE EMAIL
+─────────────────────────────────────────────────────────────────────────────
+Dispatched when a person asks, on the web page, to delete their own account.
+The link carries a one-time closure-family token; only its digest is stored on
+AccountClosureLink. The wording follows the product's rule for the account:
+one that closes at once says so, one that goes to the tenant says that.
+─────────────────────────────────────────────────────────────────────────────
 """
 import logging
 from math import ceil
@@ -44,12 +52,13 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.display import format_datetime
-from vs_tenants.app_urls import account_link_base
+from vs_tenants.app_urls import account_link_base, school_app_url
 
 logger = logging.getLogger('vs_user.tasks')
 
 _INVITATION_TOKEN_MARKER = "__XVS_INVITATION_TOKEN__"
 _PASSWORD_RESET_TOKEN_MARKER = "__XVS_PASSWORD_RESET_TOKEN__"
+_ACCOUNT_CLOSURE_TOKEN_MARKER = "__XVS_ACCOUNT_CLOSURE_TOKEN__"
 
 
 def _recipients_for(user):
@@ -408,5 +417,103 @@ def queue_password_reset_email(*, reset_request_id, token, origin,
                 'Password reset email dispatch failed for reset request %s',
                 reset_request_id,
             )
+
+    transaction.on_commit(_dispatch)
+
+
+# =============================================================================
+# SECTION 3 - ACCOUNT CLOSURE EMAIL
+# =============================================================================
+
+def _account_closure_url(tenant) -> str:
+    """The confirmation page on the tenant's own app, with the token marker in place."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    base = school_app_url(getattr(tenant, "slug", ""))
+    if not base:
+        raise ImproperlyConfigured(
+            "SCHOOL_APP_BASE_URL must be set, and the tenant must have a slug, "
+            "to address a tenant's own app."
+        )
+    return f"{base.rstrip('/')}/account/delete?token={_ACCOUNT_CLOSURE_TOKEN_MARKER}"
+
+
+@shared_task(bind=True, name="vs_user.send_account_closure_email_task")
+def send_account_closure_email_task(self, link_id: int, token: str):
+    """Dispatch the confirm-your-deletion email via the notification engine.
+
+    The raw token is embedded in the link and never stored: only its digest is
+    on the AccountClosureLink. The mail says whether the account closes the
+    moment the link is followed or goes to the tenant to decide.
+    """
+    from vs_notifications.notify import send_notification
+
+    from .action_tokens import account_closure_token_digest
+    from .models import AccountClosureLink
+    from .services.account_closure import MODE_CLOSE, closure_policy
+
+    try:
+        link = AccountClosureLink.objects.select_related('user__tenant__school_profile').get(pk=link_id)
+    except AccountClosureLink.DoesNotExist:
+        logger.error('send_account_closure_email_task: no link with id=%s', link_id)
+        return
+
+    if account_closure_token_digest(token) != link.token_hash or not link.is_valid:
+        logger.info('send_account_closure_email_task: link %s is no longer valid', link_id)
+        return
+
+    user = link.user
+    policy = closure_policy(user)
+    if policy is None or not user.may_sign_in:
+        logger.info('send_account_closure_email_task: user %s can no longer close', user.pk)
+        return
+
+    expires_at = format_datetime(
+        link.expires_at, user.tenant, branch=user.branch_id, with_zone=True,
+    )
+    registered, extras = _recipients_for(user)
+    send_notification(
+        event_key="user.account_closure_link",
+        context={
+            'user_first_name': user.first_name,
+            'user_email':      user.email or '',
+            'tenant_name':     _tenant_display_name(user),
+            'closure_url':     _account_closure_url(user.tenant),
+            'closes_at_once':  policy.mode == MODE_CLOSE,
+            'expires_at':      expires_at,
+        },
+        recipients=registered,
+        unregistered_recipients=extras,
+        tenant=user.tenant,
+        delivery_replacements={_ACCOUNT_CLOSURE_TOKEN_MARKER: token},
+    )
+    logger.info('Account closure email dispatched for user %s', user.pk)
+
+
+def queue_account_closure_email(*, link_id, token):
+    """Queue the closure link email for after the caller's transaction commits.
+
+    Same ordering as :func:`queue_password_reset_email`: the worker only has the
+    link's id, and it can outrun the commit that makes the row readable. A
+    refused hand-off to the broker falls back to running the task inline, and a
+    failure of either never reaches the caller, who has already been given the
+    same answer as for an unknown account.
+    """
+    def _dispatch():
+        try:
+            try:
+                send_account_closure_email_task.delay(
+                    link_id=link_id,
+                    token=token,
+                    _job_label="Account deletion email",
+                    _job_kind="email",
+                    _job_notify=False,
+                )
+            except Exception:
+                send_account_closure_email_task.apply(
+                    kwargs=dict(link_id=link_id, token=token)
+                )
+        except Exception:
+            logger.exception('Account closure email dispatch failed for link %s', link_id)
 
     transaction.on_commit(_dispatch)

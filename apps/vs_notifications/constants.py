@@ -957,6 +957,46 @@ EVENT_TYPE_REGISTRY = [
         "is_transactional": True,
     },
     {
+        "key": "user.account_closure_link",
+        "label": "Confirm deleting an account",
+        "description": (
+            "Fires when a person asks, on the web page, to delete their own "
+            "account. It carries a one-time link that expires, sent to the "
+            "addresses the account is reachable at. EMAIL channel only. "
+            "Transactional: always sent."
+        ),
+        "source_module": "vs_user",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "user.deletion_requested",
+        "label": "Account deletion requested",
+        "description": (
+            "Fires when a person whose account the tenant must decide on asks "
+            "to delete it, and is sent to the people who may review account "
+            "deletion requests at the person's branch. It names who asked "
+            "unless the reader's Field Access hides the person."
+        ),
+        "source_module": "vs_user",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "user.account_deleted",
+        "label": "Account deleted by its owner",
+        "description": (
+            "Fires when a person deletes their own account and it closes at "
+            "once, and is sent to the people who may review account deletion "
+            "requests at the person's branch. It names who closed it unless "
+            "the reader's Field Access hides the person."
+        ),
+        "source_module": "vs_user",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
         "key": "user.account_locked",
         "label": "User account locked",
         "description": "Fires when a user account is locked after repeated failed login attempts.",

@@ -291,6 +291,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "login":          "5/minute",
         "password_reset": "3/minute",
+        "account_closure_request": "3/minute",
+        "account_closure_confirm": "10/minute",
         "activation":     "10/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
