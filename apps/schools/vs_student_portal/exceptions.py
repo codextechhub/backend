@@ -37,6 +37,17 @@ class StudentPaymentOff(PortalError):
     http_status = 403
 
 
+class CardPaymentsOff(PortalError):
+    """The school's families pay by bank transfer, so no card checkout is started."""
+
+    error_code = "CARD_PAYMENTS_OFF"
+    default_message = (
+        "Your school takes fee payments by bank transfer. Pay into the "
+        "account number shown on the Fees screen, or ask the school office."
+    )
+    http_status = 409
+
+
 class PaymentAmountInvalid(PortalError):
     """An amount the school would not take; ``error_code`` says which rule."""
 

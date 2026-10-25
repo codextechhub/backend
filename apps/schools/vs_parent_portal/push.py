@@ -9,8 +9,9 @@ when the app loads. It recognises the three notifications a parent is pushed:
   ``gradebook.result_released_parent`` to the others where the school tells
   every parent) opens Results with that child showing
   (``/parent/results?child=<id>``);
-- a confirmed payment opens Fees with the child it paid for, and a new bill
-  sent to the primary guardian opens Fees with the child it is for
+- a confirmed payment opens its receipt with the child it paid for
+  (``/parent/fees/receipts/<payment_id>``), and a new bill sent to the
+  primary guardian opens Fees with the child it is for
   (``/parent/fees?child=<id>``).
 
 A child is named only when the recipient is that child's parent at the school
@@ -39,18 +40,19 @@ def destination(notification):
         )
     if key in (EVENT_REPORT_CARD_READY, EVENT_RESULT_RELEASED_PARENT):
         child = _own_child(notification.recipient, metadata.get("student_id"))
-        screen = "results"
+        page = f"results?child={child}"
     elif key == "billing.payment_received":
-        child = _own_child(notification.recipient, _paid_for(metadata.get("payment_id")))
-        screen = "fees"
+        payment_id = metadata.get("payment_id")
+        child = _own_child(notification.recipient, _paid_for(payment_id))
+        page = f"fees/receipts/{payment_id}" if payment_id not in (None, "") else f"fees?child={child}"
     elif key == "billing.guardian_invoice_issued":
         child = _own_child(notification.recipient, metadata.get("student_id"))
-        screen = "fees"
+        page = f"fees?child={child}"
     else:
         return None
     if child is None:
         return None
-    return PushDestination(url=f"{PARENT_APP_PATH}{screen}?child={child}", child=child)
+    return PushDestination(url=f"{PARENT_APP_PATH}{page}", child=child)
 
 
 def _paid_for(payment_id):

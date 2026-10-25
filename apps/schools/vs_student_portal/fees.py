@@ -25,6 +25,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from .links import student_app_url
 from .exceptions import (
+    CardPaymentsOff,
     DepositSinceInvalid,
     AmountAboveBalance,
     AmountBelowMinimum,
@@ -217,6 +218,7 @@ def fee_summary(student) -> dict:
         "invoices": [invoice_row(invoice) for invoice in status.invoices],
         "debit_notes": [debit_note_row(note) for note in status.debit_notes],
         "can_pay": rules.enabled,
+        "card_payments": rules.family_card_payments,
         "min_part_payment": rules.min_part_payment,
     }
 
@@ -281,14 +283,18 @@ def validated_amount(amount, *, balance, minimum) -> int:
 def start_payment(student, *, actor, invoice_ref, amount) -> dict:
     """Check the payment against the school's rules and hand back a checkout.
 
-    The rules are read here, at the school's end, and the balance from the
-    pupil's own invoices, so an invoice that is not theirs is not found before
+    A school whose families pay by bank transfer (``card_payments`` false)
+    refuses every card checkout with ``CARD_PAYMENTS_OFF``, whatever the
+    pupil-payment switch says. The rules are read here, at the school's end,
+    and the balance from the pupil's own invoices, so an invoice that is not theirs is not found before
     anything is asked of the gateway. The checkout returns the pupil to the
     student app's paid page (``/student/fees/paid``).
     """
     rules = read_student_payment_rules(student.tenant)
     if not rules.enabled:
         raise StudentPaymentOff()
+    if not rules.family_card_payments:
+        raise CardPaymentsOff()
     summary = fee_summary(student)
     invoice = next(
         (row for row in summary["invoices"] if str(row["invoice_ref"]) == str(invoice_ref)),
@@ -381,10 +387,24 @@ def receipt_pdf(student, payment_ref) -> bytes:
 
 # ── Bank transfer ─────────────────────────────────────────────────────────
 
+#: What a family reads when the school has no account number for the pupil yet.
 TRANSFER_UNAVAILABLE_SENTENCE = (
+    "Your payment account is being set up. Try again later, or contact the "
+    "school office."
+)
+
+#: The same moment at a school whose families may also pay by card.
+TRANSFER_UNAVAILABLE_OR_CARD_SENTENCE = (
     "Your school cannot take bank transfers here yet. Pay by card, or ask the "
     "school office how to pay."
 )
+
+
+def unavailable_sentence(tenant) -> str:
+    """What to tell a family with no account number: the card sentence only where card is on."""
+    if read_student_payment_rules(tenant).family_card_payments:
+        return TRANSFER_UNAVAILABLE_OR_CARD_SENTENCE
+    return TRANSFER_UNAVAILABLE_SENTENCE
 
 
 def _transfer_rules(student):
@@ -406,14 +426,17 @@ def _account_body(account) -> dict:
     }
 
 
-def account_answer(result) -> dict:
-    """A transfer account read or issue, as the portals answer it (ISSUED, NONE or UNAVAILABLE)."""
+def account_answer(result, tenant) -> dict:
+    """A transfer account read or issue, as the portals answer it (ISSUED, NONE or UNAVAILABLE).
+
+    *tenant* is the school, which decides the sentence an UNAVAILABLE answer carries.
+    """
     from schools.core.fal.contracts import Unavailable
 
     if result.is_available:
         return _account_body(result.value)
     if result.reason == Unavailable.NOT_CONFIGURED:
-        return {"state": "UNAVAILABLE", "message": TRANSFER_UNAVAILABLE_SENTENCE}
+        return {"state": "UNAVAILABLE", "message": unavailable_sentence(tenant)}
     raise PaymentProviderUnavailable()
 
 
@@ -425,7 +448,7 @@ def transfer_account(student) -> dict:
     """
     _transfer_rules(student)
     return account_answer(
-        registry.get_student_payment().transfer_account(_ref(student)),
+        registry.get_student_payment().transfer_account(_ref(student)), student.tenant,
     )
 
 
@@ -434,6 +457,7 @@ def open_transfer_account(student, *, actor) -> dict:
     _transfer_rules(student)
     return account_answer(
         registry.get_student_payment().open_transfer_account(_ref(student), actor=actor),
+        student.tenant,
     )
 
 

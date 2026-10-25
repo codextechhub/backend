@@ -1,13 +1,23 @@
-"""Whether a school's pupils may pay their own fees, and the smallest part payment.
+"""How a school's families pay fees: pupils paying, the smallest part payment, and card.
 
 Fees are normally paid by a family; a pupil paying their own invoice in the
 student portal is the fallback for a family that cannot pay through their own
-app. Whether a school offers that fallback at all, and the smallest part
-payment it accepts, are the school's choices, each a ``vs_config`` setting
-with a default:
+app. Whether a school offers that fallback at all, the smallest part
+payment it accepts, and whether families may pay by card at all are the
+school's choices, each a ``vs_config`` setting with a default:
 
 * ``fees.student_payment_enabled`` (default on): off removes the Pay action
-  from every pupil's fees screen, and a payment started anyway is refused.
+  from every pupil's fees screen, and a payment started anyway is refused. It
+  decides what a pupil may do and see; it never decides whether the pupil has
+  an account number (:mod:`schools.core.fal.transfer_accounts`), because a
+  parent pays into it.
+* ``fees.family_card_payments_enabled`` (default off): families pay by bank
+  transfer to the pupil's own account number. Off, the parent and student
+  portals refuse to start a card checkout, the emailed pay link and the
+  invoice's pay-online block give way to the account number
+  (:mod:`schools.core.fal.family_payments`), and the apps hide card. On,
+  everything behaves as it did before the switch existed. The school's own
+  desk, payment terminals, refunds and payouts are not governed by it.
 * ``fees.min_part_payment`` (whole Naira, default ₦1,000): a part payment below
   it is refused; paying the whole balance is always allowed, however small.
   Stored in Naira because a person types it, as every money setting is; the
@@ -30,6 +40,7 @@ from vs_rbac.scoping import assert_caller_may_configure
 
 CFG_STUDENT_PAYMENT_ENABLED = "fees.student_payment_enabled"
 CFG_MIN_PART_PAYMENT = "fees.min_part_payment"
+CFG_FAMILY_CARD_PAYMENTS = "fees.family_card_payments_enabled"
 
 DEFAULT_MIN_PART_PAYMENT = 100_000  # ₦1,000.00 in kobo.
 _KOBO_PER_NAIRA = 100
@@ -39,19 +50,25 @@ _KOBO_PER_NAIRA = 100
 class StudentPaymentRules:
     enabled: bool = True
     min_part_payment: int = DEFAULT_MIN_PART_PAYMENT
+    family_card_payments: bool = False
 
     def as_dict(self) -> dict:
-        return {"enabled": self.enabled, "min_part_payment": self.min_part_payment}
+        return {
+            "enabled": self.enabled,
+            "min_part_payment": self.min_part_payment,
+            "family_card_payments": self.family_card_payments,
+        }
 
 
 def read_student_payment_rules(tenant) -> StudentPaymentRules:
-    """The school's two choices, with each default applied."""
+    """The school's choices, with each default applied."""
     from vs_config.models import ConfigurationDefinition
     from vs_config.services.resolution import resolve_value
 
     found = {}
     for definition in ConfigurationDefinition.objects.filter(
-        key__in=(CFG_STUDENT_PAYMENT_ENABLED, CFG_MIN_PART_PAYMENT), is_active=True,
+        key__in=(CFG_STUDENT_PAYMENT_ENABLED, CFG_MIN_PART_PAYMENT, CFG_FAMILY_CARD_PAYMENTS),
+        is_active=True,
     ):
         found[definition.key], _ = resolve_value(definition, tenant=tenant)
     enabled = found.get(CFG_STUDENT_PAYMENT_ENABLED, True)
@@ -60,13 +77,25 @@ def read_student_payment_rules(tenant) -> StudentPaymentRules:
         minimum = max(0, int(naira)) * _KOBO_PER_NAIRA
     except (TypeError, ValueError):
         minimum = DEFAULT_MIN_PART_PAYMENT
-    return StudentPaymentRules(enabled=enabled is not False, min_part_payment=minimum)
+    return StudentPaymentRules(
+        enabled=enabled is not False, min_part_payment=minimum,
+        family_card_payments=found.get(CFG_FAMILY_CARD_PAYMENTS, False) is True,
+    )
+
+
+def family_card_payments_enabled(tenant) -> bool:
+    """Whether families of *tenant* may pay by card: the school's setting, off unless switched on."""
+    return read_student_payment_rules(tenant).family_card_payments
 
 
 class StudentPaymentRulesSerializer(serializers.Serializer):
     enabled = serializers.BooleanField(
         required=False,
         error_messages={"invalid": "Say whether students may pay their own fees: true or false."},
+    )
+    family_card_payments = serializers.BooleanField(
+        required=False,
+        error_messages={"invalid": "Say whether families may pay by card: true or false."},
     )
     min_part_payment = serializers.IntegerField(
         required=False, min_value=0, max_value=100_000_000,
@@ -90,9 +119,10 @@ class StudentPaymentRulesView(APIView):
     """GET, PATCH /v1/school-finance/settings/student-payments/
 
     Whether pupils may pay their own fees in the student portal, and the
-    smallest part payment (kobo) the school accepts. PATCH takes either or
-    both. Reading needs ``school.fees.view``; changing needs
-    ``school.fees.update`` and a whole-school reach.
+    smallest part payment (kobo) the school accepts, and whether families may
+    pay by card (``family_card_payments``, off unless the school switches it
+    on). PATCH takes any of the three. Reading needs ``school.fees.view``;
+    changing needs ``school.fees.update`` and a whole-school reach.
 
     docstring-name: Student payment rules
     """
@@ -123,6 +153,7 @@ class StudentPaymentRulesView(APIView):
         wanted = {
             CFG_STUDENT_PAYMENT_ENABLED: data.get("enabled"),
             CFG_MIN_PART_PAYMENT: kobo // _KOBO_PER_NAIRA if kobo is not None else None,
+            CFG_FAMILY_CARD_PAYMENTS: data.get("family_card_payments"),
         }
         for key, value in wanted.items():
             if value is None:

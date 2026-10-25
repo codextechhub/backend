@@ -31,14 +31,50 @@ def issue_transfer_account(self, customer_id: int):
     and no retry: a retry there would run at once, inside the request of
     whoever posted the bill, instead of waiting.
     """
-    from .transfer_accounts import ProviderUnavailable, give_up, issue_after_first_bill
+    from .transfer_accounts import ProviderUnavailable, give_up, issue_for_customer
 
     try:
-        return issue_after_first_bill(customer_id)
+        return issue_for_customer(customer_id)
     except ProviderUnavailable as exc:
         if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False) or self.request.retries >= self.max_retries:
             return give_up(customer_id)
         raise self.retry(exc=exc, countdown=TRANSFER_ACCOUNT_FIRST_WAIT * 2 ** self.request.retries)
+
+
+@shared_task(
+    bind=True, name="fal.issue_pupil_transfer_account",
+    max_retries=TRANSFER_ACCOUNT_RETRIES, acks_late=True,
+)
+def issue_pupil_transfer_account(self, student_id: int):
+    """Issue a pupil's transfer account when they join the roll.
+
+    Queued by the status machine once a pupil becomes enrolled. Opens the
+    pupil's finance account first if the school has not billed them yet, then
+    issues the number as :func:`issue_transfer_account` does, with the same
+    backoff and the same last-attempt record. Safe to run any number of times.
+    """
+    from .transfer_accounts import ProviderUnavailable, give_up, issue_for_pupil
+
+    try:
+        return issue_for_pupil(student_id)
+    except ProviderUnavailable as exc:
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False) or self.request.retries >= self.max_retries:
+            return give_up(exc.customer_id)
+        raise self.retry(exc=exc, countdown=TRANSFER_ACCOUNT_FIRST_WAIT * 2 ** self.request.retries)
+
+
+@shared_task(name="fal.issue_missing_transfer_accounts", acks_late=True)
+def issue_missing_transfer_accounts():
+    """Issue an account to every pupil on the roll who has none, a bounded batch a day.
+
+    Run daily by beat. See
+    :func:`schools.core.fal.transfer_accounts.sweep_missing_accounts` for what
+    it skips and why it cannot hammer a provider that is down or has not
+    approved a school.
+    """
+    from .transfer_accounts import sweep_missing_accounts
+
+    return sweep_missing_accounts()
 
 
 @shared_task(name="fal.send_guardian_invoice", acks_late=True)

@@ -221,6 +221,8 @@ def compose_email_html(
     header = _header_text_html(brand, mark_only=mark_only, as_template=as_template)
     content = _blocks_to_html(body or "", skip_url=cta_url)
     button = _button_html(cta_label, cta_url) if cta_url else ""
+    if button and keep_placeholders:
+        button = _unless_empty(button, raw_cta_url)
     brand_text = _text(brand)
     headline_text = _text(headline)
 
@@ -572,6 +574,22 @@ def _details_html(pairs: list[tuple[str, str]], skip_url: str = "") -> str:
         + "".join(rows)
         + "</table>"
     )
+
+
+_VARIABLE_RE = re.compile(r"^\s*{{\s*([A-Za-z_][\w.]*)\s*}}\s*$")
+
+
+def _unless_empty(button: str, destination: str) -> str:
+    """*button* shown only when its destination variable renders to something.
+
+    A template document's button points at a variable (``{{ payment_link }}``),
+    and a send whose variable is empty would otherwise carry a button that goes
+    nowhere. A destination that is not one plain variable is left as it is.
+    """
+    match = _VARIABLE_RE.match(destination or "")
+    if match is None:
+        return button
+    return f"{{% if {match.group(1)} %}}{button}{{% endif %}}"
 
 
 def _button_html(label: str, url: str) -> str:

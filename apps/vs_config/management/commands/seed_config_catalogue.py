@@ -362,6 +362,17 @@ SCHOOL_SCOPED_DEFINITIONS = [
         "BOOLEAN", True, {},
     ),
     (
+        "fees.family_card_payments_enabled", "Card Payments for Families",
+        "Whether parents and students can pay fees by card from the parent "
+        "app, the student app and the payment link in invoice emails. Off, "
+        "families pay by bank transfer to the student's own account number, "
+        "which the school's bank matches to the student automatically. Switch "
+        "it on for a school with many parents abroad. The school's own staff "
+        "can still take card payments at the desk and on payment terminals "
+        "whatever this says.",
+        "BOOLEAN", False, {},
+    ),
+    (
         "fees.min_part_payment", "Smallest Part Payment",
         "The smallest part payment, in Naira, a student may make towards an "
         "invoice in the student portal. Paying the whole balance is always "

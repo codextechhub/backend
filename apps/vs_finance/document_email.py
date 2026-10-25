@@ -44,6 +44,7 @@ from .constants import (
 from .exceptions import FinanceError
 from .models import FinanceDocumentDelivery
 from .pay_links import invoice_pay_url
+from .payer_options import email_payment_context
 
 logger = logging.getLogger(__name__)
 
@@ -327,8 +328,10 @@ def _invoice_context(invoice, delivery) -> dict:
         # The public pay page for this invoice: not a checkout URL, and not the
         # post-payment return URL, which lands the customer on a "thanks for
         # paying" screen they have not paid on. The page mints the checkout
-        # when they click, so the amount is whatever is still owed then.
-        "payment_link": invoice_pay_url(invoice),
+        # when they click, so the amount is whatever is still owed then. For a
+        # customer the books' owner asks to pay by transfer, the link is empty
+        # and the instruction names the account instead.
+        **email_payment_context(invoice, invoice_pay_url(invoice)),
         "note": delivery.note,
     }
 

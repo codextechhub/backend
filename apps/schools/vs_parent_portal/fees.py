@@ -12,12 +12,16 @@ screen lists the children it could read beside the ones it could not, the family
 total is withheld while any child is unreadable, and the pay-all steps say they
 are incomplete.
 
-**A parent always pays for their own children online.** No school switch removes
-the Pay action from a parent, because paying is what a parent is for; the one
-rule a school sets is its smallest part payment
-(:func:`schools.core.fal.student_payments.read_student_payment_rules`), and the
-whole balance of an invoice may always be paid. The payments engine charges one
-child's account per checkout, so "pay all" is a list of steps, one per open
+**A parent always may pay for their own children.** The switch that stops a
+pupil paying for themselves never stops a parent, because paying is what a
+parent is for. How a parent pays is the school's choice
+(:func:`schools.core.fal.student_payments.read_student_payment_rules`): families
+pay by bank transfer to the child's own account number unless the school has
+switched card payments on, and with card off a checkout is refused with
+``CARD_PAYMENTS_OFF`` and ``card_payments`` is false on the fees payload so the
+app hides card. The other rule a school sets is its smallest part payment, and
+the whole balance of an invoice may always be paid. The payments engine charges
+one child's account per checkout, so "pay all" is a list of steps, one per open
 invoice, which the app runs one checkout at a time.
 
 Every invoice, receipt and account is found by asking the parent's own children,
@@ -33,6 +37,7 @@ from schools.core.fal.exceptions import CrossTenantError, PaymentGatewayError
 from schools.core.fal.student_payments import read_student_payment_rules
 from schools.vs_student_portal import fees as pupil_fees
 from schools.vs_student_portal.exceptions import (
+    CardPaymentsOff,
     FinanceUnavailable,
     InvoiceNotPayable,
     PaymentProviderUnavailable,
@@ -168,10 +173,12 @@ def pay_all(children, entries: list) -> dict:
 def family_fees(guardian, children) -> dict:
     """Every child's fees, the family total, the school's smallest part payment and pay-all."""
     entries = [read_child(child) for child in children]
+    rules = read_student_payment_rules(guardian.tenant)
     return {
         "children": entries,
         "combined": combined(entries),
-        "min_part_payment": read_student_payment_rules(guardian.tenant).min_part_payment,
+        "card_payments": rules.family_card_payments,
+        "min_part_payment": rules.min_part_payment,
         "pay_all": pay_all(children, entries),
     }
 
@@ -326,13 +333,16 @@ def start_payment(guardian, children, *, user, invoice_ref, amount) -> dict:
     The invoice is found among the parent's children first, so one that is not
     theirs is a 404 before anything is asked of the gateway. The amount is
     judged against that invoice's balance and the school's smallest part
-    payment (:func:`schools.vs_student_portal.fees.validated_amount`). The
-    checkout is started by the payments bridge with the signed-in account as
+    payment (:func:`schools.vs_student_portal.fees.validated_amount`). A school
+    whose families pay by bank transfer refuses it with ``CARD_PAYMENTS_OFF``
+    once the invoice is known to be theirs. The checkout is started by the payments bridge with the signed-in account as
     its actor, so the parent who pressed Pay is told when it is confirmed, and
     it returns them to the parent app's paid page.
     """
     child, invoice = find_invoice(children, invoice_ref)
     rules = read_student_payment_rules(guardian.tenant)
+    if not rules.family_card_payments:
+        raise CardPaymentsOff()
     amount = pupil_fees.validated_amount(
         amount, balance=invoice.balance, minimum=rules.min_part_payment,
     )
@@ -368,7 +378,7 @@ def transfer_account(child) -> dict:
     that rule is for a pupil, and a parent may always pay.
     """
     return pupil_fees.account_answer(
-        registry.get_student_payment().transfer_account(_ref(child)),
+        registry.get_student_payment().transfer_account(_ref(child)), child.tenant,
     )
 
 
@@ -376,6 +386,7 @@ def open_transfer_account(child, *, actor) -> dict:
     """Issue the child's account, or return the one they already have."""
     return pupil_fees.account_answer(
         registry.get_student_payment().open_transfer_account(_ref(child), actor=actor),
+        child.tenant,
     )
 
 

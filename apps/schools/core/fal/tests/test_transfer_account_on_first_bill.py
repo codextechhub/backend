@@ -210,7 +210,7 @@ class NoAccountIsIssuedTests(_FirstBillFixture):
         user = give_access(self.tunde, "COR/001")
         body = TenantAPIClient(user).post(reverse("student-portal-transfer-account")).data["data"]
         self.assertEqual(body["state"], "UNAVAILABLE")
-        self.assertIn("bank transfers", body["message"])
+        self.assertIn("being set up", body["message"])
 
     def test_a_provider_that_issues_no_dedicated_accounts_issues_none(self):
         self.issued.side_effect = NotImplementedError
@@ -224,7 +224,7 @@ class NoAccountIsIssuedTests(_FirstBillFixture):
             self.bill(self.tunde)
         self.assertFalse(_pupils_accounts(self.tunde).exists())
 
-    def test_a_school_that_turns_pupil_payments_off_issues_none(self):
+    def test_a_school_that_turns_pupil_payments_off_still_issues_one_for_the_parents(self):
         from django.core.management import call_command
         from vs_config.models import ConfigurationDefinition
         from vs_config.services.resolution import set_value
@@ -233,8 +233,7 @@ class NoAccountIsIssuedTests(_FirstBillFixture):
         definition = ConfigurationDefinition.objects.get(key="fees.student_payment_enabled")
         set_value(definition=definition, value=False, actor=self.bursar, tenant=self.corona.tenant)
         self.bill(self.tunde)
-        self.assertFalse(_pupils_accounts(self.tunde).exists())
-        self.issued.assert_not_called()
+        self.assertEqual(_pupils_accounts(self.tunde).count(), 1)
 
     def test_missing_family_details_issue_none_and_say_why_once(self):
         self.fake.virtual_account_requires = ("name", "email", "phone")
@@ -454,7 +453,7 @@ class ConcurrentFirstBillsTests(TransactionTestCase):
 
         def run(name):
             try:
-                outcomes[name] = transfer_accounts.issue_after_first_bill(self.customer.pk)
+                outcomes[name] = transfer_accounts.issue_for_customer(self.customer.pk)
             finally:
                 connections.close_all()
 
@@ -491,7 +490,7 @@ class ConcurrentFirstBillsTests(TransactionTestCase):
 
         def run(name, customer):
             try:
-                outcomes[name] = transfer_accounts.issue_after_first_bill(customer.pk)
+                outcomes[name] = transfer_accounts.issue_for_customer(customer.pk)
             finally:
                 connections.close_all()
 

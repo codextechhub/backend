@@ -115,6 +115,17 @@ SYSTEM_SURFACES: dict[str, str] = {
         "the document came from and whom to write to, and the school.branches "
         "switches that govern the branch screens do not apply to it."
     ),
+    "vs_finance.payer_options.payer_payment_options": (
+        "The transfer account a customer is asked to pay into, on the invoice "
+        "and in the invoice email. A school whose families pay by bank "
+        "transfer prints the pupil's own account number where the "
+        "pay-online block would be, on a document addressed to the family "
+        "who has to pay into it, as the issuer's own bank account is printed. "
+        "The email and the PDF the family is sent are built for nobody, so the "
+        "document is the same whoever pressed Send; the staff screen that "
+        "renders an invoice for its own reader withholds the number from a "
+        "reader the payments.virtual_account switches hide it from."
+    ),
     "vs_finance.documents._customer_block": (
         "The bill-to block of an invoice, receipt or statement. It prints the "
         "customer's own name, billing address, email and phone on a document "

@@ -28,6 +28,17 @@ from vs_payments.providers.fake import FakeProvider
 from vs_user.models import User
 
 
+def set_school_config(tenant, actor, key, value):
+    """Set one ``vs_config`` value for *tenant*, seeding the catalogue first."""
+    from django.core.management import call_command
+    from vs_config.models import ConfigurationDefinition
+    from vs_config.services.resolution import set_value
+
+    call_command("seed_config_catalogue", verbosity=0)
+    definition = ConfigurationDefinition.objects.get(key=key)
+    set_value(definition=definition, value=value, actor=actor, tenant=tenant)
+
+
 def give_access(pupil, number):
     pupil.student_number = number
     pupil.email = f"pupil{pupil.pk}@example.ng"
@@ -57,6 +68,10 @@ class _FeesFixture(FALFixture):
         cls.tunde_invoice = Invoice.objects.get(customer__source_id=str(cls.tunde.pk))
         cls.bola_invoice = Invoice.objects.get(customer__source_id=str(cls.bola.pk))
         cls.tunde_user = give_access(cls.tunde, "COR/001")
+        # Card is off unless a school switches it on; these tests pay by card.
+        set_school_config(
+            cls.corona.tenant, cls.bursar, "fees.family_card_payments_enabled", True,
+        )
 
     def setUp(self):
         super().setUp()

@@ -192,6 +192,15 @@ class ParentBooksFixture(BooksHelpers, ParentFixture):
         cls.tobi_tuition, cls.tobi_levy = by_pupil[str(cls.tobi.pk)]
         (cls.folu_tuition,) = by_pupil[str(cls.folu.pk)]
         (cls.zainab_tuition,) = by_pupil[str(cls.zainab.pk)]
+        # Card is off unless a school switches it on; these tests pay by card.
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+
+        call_command("seed_config_catalogue", verbosity=0)
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key="fees.family_card_payments_enabled"),
+            value=True, actor=cls.admin, tenant=cls.tenant,
+        )
 
     def setUp(self):
         super().setUp()

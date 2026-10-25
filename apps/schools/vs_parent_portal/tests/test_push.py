@@ -94,16 +94,17 @@ class ParentPushTests(ParentBooksFixture):
         self.assertEqual(payload["url"], "/")
         self.assertNotIn("child", payload)
 
-    def test_a_confirmed_payment_opens_fees_with_the_child(self):
+    def test_a_confirmed_payment_opens_its_receipt_with_the_child(self):
         reference = self.pay_invoice(self.chiamaka_tuition, 200_000).data["data"]["reference"]
         intent = CollectionIntent.objects.get(reference=reference)
         self.fake.forced_status[reference] = "SUCCEEDED"
         with mock.patch(WEBPUSH) as webpush, self.captureOnCommitCallbacks(execute=True):
             payment_services.confirm_collection(intent)
+        intent.refresh_from_db()
 
         payload = json.loads(webpush.call_args.kwargs["data"])
         self.assertEqual(payload["tag"], "billing.payment_received")
-        self.assertEqual(payload["url"], f"/parent/fees?child={self.chiamaka.pk}")
+        self.assertEqual(payload["url"], f"/parent/fees/receipts/{intent.payment_id}")
         self.assertEqual(payload["child"], self.chiamaka.pk)
         self.assertNotIn("2,000", json.dumps(payload))
 

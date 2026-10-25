@@ -50,6 +50,7 @@ from .constants import DocumentStatus
 from .exceptions import FinanceError
 from .models import Invoice
 from .money import format_naira
+from .payer_options import payer_payment_options
 
 #: Salt for the invoice pay token. Changing it invalidates every link in circulation.
 TOKEN_SALT = "vs_finance.invoice_pay"
@@ -83,6 +84,17 @@ class InvoiceNotPayableError(FinanceError):
 
     error_code = "INVOICE_NOT_PAYABLE"
     default_message = "This invoice is not open for payment."
+    http_status = 409
+
+
+class CardPaymentsOffError(FinanceError):
+    """The invoice is open, but its owner takes no card payment from this customer."""
+
+    error_code = "CARD_PAYMENTS_OFF"
+    default_message = (
+        "Card payment is not available for this invoice. Pay by bank transfer "
+        "to the account number on the invoice."
+    )
     http_status = 409
 
 
@@ -295,6 +307,10 @@ def summary(raw_token: str, *, request=None) -> dict:
 
     issuer = _issuer_block(invoice.entity, branch=invoice.branch)
     reason = _unpayable_reason(invoice)
+    options = payer_payment_options(invoice.customer)
+    card_allowed = options is None or options.card_allowed
+    if not reason and not card_allowed:
+        reason = options.card_off_message or CardPaymentsOffError.default_message
     # An ABSOLUTE url, not a path. The school app and the API are on different
     # hosts (a school sits at <slug>.xvs.codexng.com, the API at api.codexng.com),
     # so a bare "/finance/public/..." would resolve against the app's own origin
@@ -324,6 +340,9 @@ def summary(raw_token: str, *, request=None) -> dict:
         "amount_due": format_naira(balance),
         "amount_due_kobo": balance,
         "payable": not reason,
+        # False where the invoice's owner asks the customer to pay by transfer:
+        # the page then shows the balance and no Pay button.
+        "card_payments": card_allowed,
         "message": reason,
     }
 
@@ -360,6 +379,11 @@ def start_checkout(raw_token: str) -> dict:
 
     The amount is read here, at click time, which is the whole point of the token: it
     is the balance now, not the balance when the email was written.
+
+    A customer whose invoice's owner asks for payment by bank transfer
+    (:mod:`vs_finance.payer_options`) is refused with ``CARD_PAYMENTS_OFF``
+    before anything is asked of the gateway, however old the link in their
+    inbox is.
     """
     from vs_payments.services import initiate_collection
 
@@ -367,6 +391,9 @@ def start_checkout(raw_token: str) -> dict:
     reason = _unpayable_reason(invoice)
     if reason:
         raise InvoiceNotPayableError(reason)
+    options = payer_payment_options(invoice.customer)
+    if options is not None and not options.card_allowed:
+        raise CardPaymentsOffError(options.card_off_message or None)
 
     amount = invoice.balance_due
     intent = _reusable_intent(invoice, amount)

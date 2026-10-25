@@ -387,8 +387,10 @@ class FeesView(PortalView):
     What the pupil owes on open bills and debit notes (``owing``, never
     reduced by credit), the ``credit`` held, ``balance`` as owing less credit,
     what was billed and paid, and each invoice with its
-    number, title, dates, lines and status, all in kobo; ``can_pay`` and
-    ``min_part_payment`` are the school's rules for paying here. 503
+    number, title, dates, lines and status, all in kobo; ``can_pay``,
+    ``card_payments`` and ``min_part_payment`` are the school's rules for paying
+    here (``card_payments`` false means families pay by bank transfer and the
+    app hides card). 503
     ``FINANCE_UNAVAILABLE`` when the books cannot be read, never a zero.
 
     docstring-name: My fees
@@ -433,7 +435,8 @@ class TransferAccountView(PortalView):
     The pupil's permanent account for paying fees by bank transfer. GET
     answers ``state`` ``ISSUED`` (``bank_name``, ``account_number``,
     ``account_name``, ``as_of``), ``NONE`` (POST to issue one) or
-    ``UNAVAILABLE`` with a sentence to show. POST issues the account, or
+    ``UNAVAILABLE`` with a sentence to show ("Your payment account is being set
+    up..." where the school takes no card). POST issues the account, or
     returns the one the pupil has; it is rate limited. 403
     ``STUDENT_PAYMENT_OFF`` where the school does not let pupils pay; 503
     ``PROVIDER_UNAVAILABLE`` when the provider is down.
@@ -485,8 +488,9 @@ class PayInvoiceView(PortalView):
     Starts a payment for one of the pupil's own invoices and answers with the
     gateway checkout to send them to. ``amount`` is kobo: the whole balance, or
     a part of at least the school's smallest part payment. Refusals:
-    403 ``STUDENT_PAYMENT_OFF``, 404 for an invoice not on the pupil's account,
-    400 ``AMOUNT_BELOW_MINIMUM`` / ``AMOUNT_ABOVE_BALANCE`` /
+    403 ``STUDENT_PAYMENT_OFF``, 409 ``CARD_PAYMENTS_OFF`` where the school's
+    families pay by bank transfer, 404 for an invoice not on the pupil's
+    account, 400 ``AMOUNT_BELOW_MINIMUM`` / ``AMOUNT_ABOVE_BALANCE`` /
     ``PAYMENT_AMOUNT_INVALID``, 409 ``INVOICE_NOT_PAYABLE``, 503
     ``PROVIDER_UNAVAILABLE``. Card and bank details are entered on the
     gateway's own page, never here. Its status is read on the public

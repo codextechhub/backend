@@ -848,6 +848,8 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     ])
     if intent.origin == CollectionOrigin.PORTAL and intent.created_by_id:
         _tell_the_payer(intent)
+    elif intent.channel == CollectionChannel.VIRTUAL_ACCOUNT and intent.payment_id:
+        transaction.on_commit(partial(_announce_deposit, intent.pk))
 
     audit_metadata = {"payment_id": intent.payment_id}
     audit_metadata.update(_dating_metadata(intent.metadata))
@@ -864,6 +866,24 @@ def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_u
     )
 
     return intent  # Return the confirmed collection intent.
+
+
+def _announce_deposit(intent_pk) -> None:
+    """Tell listeners a transfer into a dedicated account was booked, once the booking committed."""
+    from .signals import virtual_account_deposit_booked
+
+    intent = CollectionIntent.objects.select_related(
+        "payment__customer", "entity__tenant", "customer", "branch",
+    ).get(pk=intent_pk)
+    for receiver, outcome in virtual_account_deposit_booked.send_robust(
+        sender=CollectionIntent, intent=intent,
+    ):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "virtual_account_deposit_booked listener %s failed for collection %s",
+                getattr(receiver, "__qualname__", receiver), intent.reference,
+                exc_info=(type(outcome), outcome, outcome.__traceback__),
+            )
 
 
 def _tell_the_payer(intent):

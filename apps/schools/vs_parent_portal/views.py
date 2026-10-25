@@ -276,7 +276,8 @@ class FeesView(PortalView):
     and paid across the children, ``outstanding`` as the sum of their ``owing``
     and ``credit`` as the sum of their credit (one child's credit never offsets
     another's debt), and is itself ``available: false`` while any child cannot
-    be read. ``min_part_payment`` is
+    be read. ``card_payments`` is false where the school's families pay by bank
+    transfer, and the app then hides card. ``min_part_payment`` is
     the school's smallest part payment; the whole balance of an invoice may
     always be paid. ``pay_all`` lists one step per open invoice, by child and
     then oldest due date first: the payments engine charges one child's account
@@ -367,7 +368,8 @@ class PayInvoiceView(PortalView):
     with the gateway checkout to send them to. ``amount`` is kobo: the whole
     balance, or a part of at least the school's smallest part payment. A parent
     may always pay for their own children. Refusals: 404 for an invoice that is
-    not a child's of this parent, 400 ``AMOUNT_BELOW_MINIMUM`` /
+    not a child's of this parent, 409 ``CARD_PAYMENTS_OFF`` where the school's
+    families pay by bank transfer, 400 ``AMOUNT_BELOW_MINIMUM`` /
     ``AMOUNT_ABOVE_BALANCE`` / ``PAYMENT_AMOUNT_INVALID``, 409
     ``INVOICE_NOT_PAYABLE``, 503 ``PROVIDER_UNAVAILABLE``. Card and bank details
     are entered on the gateway's own page, never here. Its status is read on the
@@ -395,8 +397,9 @@ class TransferAccountView(ChildView):
     The child's permanent account for paying fees by bank transfer; each pupil
     has one, and there is none for a parent. GET answers ``state`` ``ISSUED``
     (``bank_name``, ``account_number``, ``account_name``, ``as_of``), ``NONE``
-    (POST to issue one) or ``UNAVAILABLE`` with a sentence to show. POST issues
-    the account, or returns the one the child has; it is rate limited. Offered
+    (POST to issue one) or ``UNAVAILABLE`` with a sentence to show ("Your
+    payment account is being set up..." where the school takes no card). POST
+    issues the account, or returns the one the child has; it is rate limited. Offered
     whether or not the school lets pupils pay for themselves. 503
     ``PROVIDER_UNAVAILABLE`` when the provider is down.
 

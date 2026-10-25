@@ -1,31 +1,44 @@
-"""A pupil's permanent bank-transfer account, issued when they are first billed.
+"""A pupil's permanent bank-transfer account, issued so every pupil on the roll has one.
 
 A family pays school fees by transfer into one account number that belongs to
-the pupil and is meant to stay theirs. It is issued when the pupil's first bill posts,
-whoever raised it (a fee run or a manual invoice), so the number is there by
-the time the family opens the bill. The Pay screen's "Get my account number"
-(:meth:`~schools.core.fal.adapters.django_finance.DjangoStudentPaymentAdapter.open_transfer_account`)
-stays for any pupil this misses.
+the pupil and is meant to stay theirs, so every pupil on the roll is meant to
+have one before the family needs it. Three routes issue it, all through the
+same adapter method as the Pay screen's "Get my account number"
+(:meth:`~schools.core.fal.adapters.django_finance.DjangoStudentPaymentAdapter.open_transfer_account`),
+which stays for any pupil they miss:
 
-How it runs:
+1. **The first bill.** ``vs_finance`` sends :data:`~vs_finance.signals.invoice_posted`
+   once a posting commits. :func:`on_invoice_posted` ignores a customer that
+   is not a pupil's, or that already has an active account, and otherwise
+   queues :func:`schools.core.fal.tasks.issue_transfer_account`. The bill is
+   never held up or failed by any of it.
+2. **Joining the roll.** A pupil who becomes enrolled (admitted, confirmed
+   from applicant, or readmitted) is queued by the status machine, and
+   :func:`issue_for_pupil` opens their finance account if they have none and
+   issues the number, so the account exists before the first bill.
+3. **The daily sweep.** :func:`sweep_missing_accounts` finds every pupil on the
+   roll without an active account and issues one, a bounded number per run.
+   It is the net under the other two: a provider that was down, a school whose
+   payments were switched on later, a family whose email was filled in since.
+   It does not hammer: a school or branch the provider will not serve is
+   asked once per run, and a school whose provider keeps failing is left
+   alone for the rest of it.
 
-1. ``vs_finance`` sends :data:`~vs_finance.signals.invoice_posted` once a
-   posting commits. :func:`on_invoice_posted` ignores a customer that is not a
-   pupil's, or that already has an active account, and otherwise queues
-   :func:`schools.core.fal.tasks.issue_transfer_account`. The bill is never
-   held up or failed by any of it.
-2. The task runs :func:`issue_after_first_bill`, which issues through the same
-   adapter method as the Pay screen. That method locks the pupil's AR account
-   first, so a second bill, a repeated task and the pupil's own button racing
-   it all end with one account.
+All routes lock the pupil's finance account first, so a second bill, a
+repeated task, the sweep and the pupil's own button racing it all end with one
+account.
 
-Where it does nothing, it says nothing to the pupil, whose screen goes on
-answering as before (``NONE``, or ``UNAVAILABLE`` with its sentence once they
-ask):
+**Whether the pupil may pay has no say.** ``fees.student_payment_enabled``
+decides what a pupil may do and see in the student portal; it does not stop
+an account being issued, because a parent pays into it.
 
-* the school does not let pupils pay their own fees;
+Where an account cannot be issued, nothing is said to the family, whose screen
+goes on answering as before (``NONE``, or ``UNAVAILABLE`` with its sentence
+once they ask):
+
 * the provider is not configured, issues no dedicated accounts, or the
   pupil's branch is not set up to take payments directly;
+* the school has no books yet to open the pupil's finance account in;
 * the family's details the provider needs are missing. This one is recorded
   as a payment event naming what is missing (never a value), once per
   customer while it stays the same, and logged with ids only, so the school
@@ -65,7 +78,7 @@ a family a fraudster's copy of it can redirect.
 A provider that fails is retried with backoff a bounded number of times
 (:mod:`schools.core.fal.tasks`); each failed attempt stores nothing, so the
 pupil sees ``NONE`` rather than a half-made account, and the final failure is
-recorded like a missing detail.
+recorded like a missing detail. The sweep tries it again the next day.
 """
 from __future__ import annotations
 
@@ -73,18 +86,37 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: What :func:`issue_after_first_bill` did, for the task's result and the tests.
+#: What :func:`issue_for_customer` and :func:`issue_for_pupil` did, for the task's result and the tests.
 ISSUED = "ISSUED"
 ALREADY_ISSUED = "ALREADY_ISSUED"
 NOT_A_PUPIL = "NOT_A_PUPIL"
-PAYMENTS_OFF = "PAYMENTS_OFF"
+NOT_ON_ROLL = "NOT_ON_ROLL"
+NO_BOOKS = "NO_BOOKS"
 NOT_OFFERED = "NOT_OFFERED"
 MISSING_DETAILS = "MISSING_DETAILS"
 PROVIDER_FAILED = "PROVIDER_FAILED"
 
+#: Provider asks the sweep makes in one run, so a school with thousands of
+#: pupils and no accounts is worked through over several days rather than
+#: in one burst. Pupils the sweep passes over without asking the provider
+#: (missing details, no books) do not count.
+SWEEP_BATCH = 300
+
+#: Provider failures after which the sweep leaves a school alone for the rest
+#: of the run: the provider is down for it, and asking again helps nobody.
+SWEEP_FAILURES_BEFORE_SKIPPING_SCHOOL = 3
+
 
 class ProviderUnavailable(Exception):
-    """The provider did not answer; the task tries again later."""
+    """The provider did not answer; the task tries again later.
+
+    ``customer_id`` names the finance account the attempt was for, so the final
+    failure can be recorded against it.
+    """
+
+    def __init__(self, reason="", customer_id=None):
+        super().__init__(reason)
+        self.customer_id = customer_id
 
 
 def _pupil_customer(customer_id):
@@ -296,7 +328,7 @@ def _lock_email(email) -> None:
         )
 
 
-def issue_after_first_bill(customer_id) -> str:
+def issue_for_customer(customer_id) -> str:
     """Issue the pupil's account behind ``customer_id`` where the school can, once.
 
     Returns one of the outcomes above. Raises :class:`ProviderUnavailable`
@@ -312,13 +344,10 @@ def issue_after_first_bill(customer_id) -> str:
 
     from .adapters.django_finance import DjangoStudentPaymentAdapter
     from .contracts import Unavailable
-    from .student_payments import read_student_payment_rules
 
     customer = _pupil_customer(customer_id)
     if customer is None:
         return NOT_A_PUPIL
-    if not read_student_payment_rules(customer.entity.tenant).enabled:
-        return PAYMENTS_OFF
     payments = DjangoStudentPaymentAdapter()
     current = payments.transfer_account(customer.source_id)
     if current.is_available and current.value is not None:
@@ -344,7 +373,118 @@ def issue_after_first_bill(customer_id) -> str:
         return ISSUED
     if result.reason == Unavailable.NOT_CONFIGURED:
         return NOT_OFFERED
-    raise ProviderUnavailable(str(result.reason))
+    raise ProviderUnavailable(str(result.reason), customer_id=customer.pk)
+
+
+def _books_customer(student):
+    """The pupil's finance account, opened in their school's books if they have none.
+
+    ``None`` when the school has no books to open it in yet (onboarding not
+    finished), or has two sets of books and no way to name the primary one.
+    """
+    from vs_finance.models import Customer
+
+    from .adapters.django_finance import DjangoStudentCustomerAdapter, _primary_entity
+    from .contracts import SOURCE_TYPE_STUDENT
+    from .exceptions import CrossTenantError, ProvisioningError
+
+    existing = Customer.objects.filter(
+        source_type=SOURCE_TYPE_STUDENT, source_id=str(student.pk),
+        entity__tenant_id=student.tenant_id,
+    ).order_by("pk").first()
+    if existing is not None:
+        return existing
+    school = getattr(student.tenant, "school_profile", None)
+    if school is None:
+        return None
+    try:
+        entity = _primary_entity(school)
+        handle = DjangoStudentCustomerAdapter().ensure_customer(
+            student.pk, entity_ref=entity.pk,
+        ).unwrap()
+    except (ProvisioningError, CrossTenantError, ValueError):
+        logger.warning("No finance account could be opened for student %s.", student.pk)
+        return None
+    return Customer.objects.get(pk=handle.customer_ref)
+
+
+def issue_for_pupil(student_id) -> str:
+    """Make sure a pupil on the roll has a transfer account, opening their finance account first.
+
+    The route taken when a pupil joins the roll and by the daily sweep, before
+    any bill exists to have opened the finance account. A pupil who has left
+    the roll, or is not on this school's roll, is left alone. Raises
+    :class:`ProviderUnavailable` like :func:`issue_for_customer`.
+    """
+    from schools.vs_students.constants import ON_ROLL
+    from schools.vs_students.models import Student
+
+    student = Student.all_objects.select_related("tenant__school_profile").filter(pk=student_id).first()
+    if student is None or student.status not in ON_ROLL:
+        return NOT_ON_ROLL
+    customer = _books_customer(student)
+    if customer is None:
+        return NO_BOOKS
+    return issue_for_customer(customer.pk)
+
+
+def sweep_missing_accounts(*, limit=SWEEP_BATCH) -> dict:
+    """Issue an account to every pupil on the roll who has none, up to ``limit`` provider asks.
+
+    Returns a count of each outcome, plus ``skipped`` for pupils passed over
+    without being asked: a school or branch the provider already declined in
+    this run, and a school whose provider has failed
+    :data:`SWEEP_FAILURES_BEFORE_SKIPPING_SCHOOL` times. A provider failure is
+    recorded like the retrying task's final failure, once per pupil. Pupils
+    are taken in roll order, and one that is issued drops out of the next
+    run, so a school with more pupils than the batch is worked through over
+    several days.
+    """
+    from collections import Counter
+
+    from django.db.models import CharField, Exists, OuterRef
+    from django.db.models.functions import Cast
+
+    from schools.vs_students.constants import ON_ROLL
+    from schools.vs_students.models import Student
+    from vs_payments.constants import VirtualAccountStatus
+    from vs_payments.models import VirtualAccount
+
+    from .contracts import SOURCE_TYPE_STUDENT
+
+    held = VirtualAccount.objects.filter(
+        customer__source_type=SOURCE_TYPE_STUDENT,
+        customer__source_id=Cast(OuterRef("pk"), CharField()),
+        status=VirtualAccountStatus.ACTIVE,
+    )
+    pupils = (
+        Student.all_objects.filter(status__in=ON_ROLL)
+        .annotate(has_account=Exists(held)).filter(has_account=False)
+        .order_by("pk").values_list("pk", "tenant_id", "branch_id")
+    )
+    asked_for = {ISSUED, NOT_OFFERED, PROVIDER_FAILED}
+    outcomes = Counter()
+    declined, failures, asks = set(), Counter(), 0
+    for pk, tenant_id, branch_id in pupils.iterator(chunk_size=500):
+        if asks >= limit:
+            break
+        if (tenant_id, branch_id) in declined or failures[tenant_id] >= SWEEP_FAILURES_BEFORE_SKIPPING_SCHOOL:
+            outcomes["skipped"] += 1
+            continue
+        try:
+            outcome = issue_for_pupil(pk)
+        except ProviderUnavailable as exc:
+            failures[tenant_id] += 1
+            outcome = give_up(exc.customer_id)
+        except Exception:
+            logger.exception("The transfer account sweep failed for student %s.", pk)
+            outcome = "ERROR"
+        outcomes[outcome] += 1
+        if outcome in asked_for:
+            asks += 1
+        if outcome == NOT_OFFERED:
+            declined.add((tenant_id, branch_id))
+    return dict(outcomes)
 
 
 def give_up(customer_id) -> str:

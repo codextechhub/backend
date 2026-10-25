@@ -104,6 +104,7 @@ def _fees(student) -> dict:
         ),
         "open_invoice_count": len(open_invoices),
         "can_pay": summary["can_pay"],
+        "card_payments": summary["card_payments"],
     }
 
 

@@ -3,6 +3,8 @@
 Migration 0023 rewrites the stored copy of the invoice, statement, receipt and
 note emails where nobody edited it, and composes their HTML again. The copy it
 writes is the seed's, so a fresh install and an upgraded one read the same.
+Migration 0027 then swaps the invoice email's "Pay online" line for the payment
+instruction line, which is the one place the seed and 0023 differ.
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from vs_notifications.constants import ChannelChoices
 from vs_notifications.services.seed import _build_default_templates
 
 migration = import_module("vs_notifications.migrations.0023_receipt_and_note_emails_greet_their_reader")
+payment_lines = import_module("vs_notifications.migrations.0027_invoice_email_payment_instructions")
 
 
 class ReaderGreetingCopyTests(SimpleTestCase):
@@ -21,7 +24,13 @@ class ReaderGreetingCopyTests(SimpleTestCase):
         defaults = _build_default_templates()
         for key, definition in migration.TEMPLATES.items():
             with self.subTest(event_key=key):
-                self.assertEqual(definition["body"], defaults[(key, ChannelChoices.EMAIL)]["body"])
+                body = definition["body"].replace(payment_lines.OLD_LINE, payment_lines.NEW_LINE)
+                self.assertEqual(body, defaults[(key, ChannelChoices.EMAIL)]["body"])
+
+    def test_the_invoice_email_carries_the_payment_instruction_line(self):
+        body = _build_default_templates()[("billing.invoice_issued", ChannelChoices.EMAIL)]["body"]
+        self.assertIn(payment_lines.NEW_LINE, body)
+        self.assertNotIn(payment_lines.OLD_LINE, body)
 
     def test_every_reworded_email_greets_its_reader(self):
         for key in migration.REWORDED:

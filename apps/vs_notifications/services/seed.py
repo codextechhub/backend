@@ -1266,7 +1266,7 @@ def _build_default_templates() -> dict:
                 "Amount: ₦{{ invoice_amount }}\n"
                 "Due date: {{ due_date }}\n\n"
                 "{{ note }}\n\n"
-                "Pay online: {{ payment_link }}\n\n"
+                "{{ payment_instructions }}\n\n"
                 "{{ issuer_name }} via {{ email_brand }}"
             ),
             "cta_label": "Pay online",

@@ -271,6 +271,24 @@ def _pay_to(issuer, styles):
     return body
 
 
+def _payer_transfer_block(inv, styles):
+    """Where a customer asked to pay by transfer pays, or the sentence that stands in for it."""
+    transfer = inv.get("payer_transfer")
+    if transfer:
+        line = " · ".join(part for part in (
+            transfer.get("account_name"), transfer.get("bank_name"), transfer.get("account_number"),
+        ) if part)
+        body = f"<b>{_text(line)}</b><br/>Transfers to this account are matched to this invoice automatically."
+    elif inv.get("payer_note"):
+        body = _text(inv["payer_note"])
+    else:
+        return None
+    return KeepTogether([
+        Paragraph("PAY BY BANK TRANSFER", styles["Label"]),
+        Paragraph(body, styles["Small"]),
+    ])
+
+
 def _note_block(note, styles):
     if not note:
         return None
@@ -537,7 +555,10 @@ def _plain_invoice_pdf(invoice, context, *, note: str = "") -> bytes:
     totals.append(("Balance due", inv["balance_due"]))
     story.append(_totals(totals, styles))
 
-    for block in (_note_block(note or inv.get("narration"), styles), _pay_to(issuer, styles)):
+    for block in (
+        _note_block(note or inv.get("narration"), styles), _pay_to(issuer, styles),
+        _payer_transfer_block(inv, styles),
+    ):
         if block is not None:
             story.extend([Spacer(1, 6 * mm), block])
 

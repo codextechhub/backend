@@ -24,6 +24,7 @@ from vs_config.display import format_date
 from .constants import TaxTreatment
 from .money import account_balance_words, format_naira, naira_in_words
 from .pay_links import invoice_pay_url
+from .payer_options import payer_payment_options
 
 
 # Render a document template to HTML.
@@ -307,7 +308,13 @@ def _qr_image(url: str) -> str:
 
 # Build printable invoice template context.
 def invoice_document_context(invoice) -> dict:
-    """Build the render context for the branded invoice document."""
+    """Build the render context for the branded invoice document.
+
+    A customer the books' owner asks to pay by bank transfer
+    (:mod:`vs_finance.payer_options`) gets no pay-online link or QR code: the
+    block carries their transfer account (``payer_transfer``) or, while they have
+    none, the owner's sentence (``payer_note``).
+    """
     entity = invoice.entity  # Invoice entity drives issuer and bank details.
     lines = list(invoice.lines.select_related("tax_code", "cost_center").order_by("line_no", "id"))
 
@@ -332,7 +339,18 @@ def invoice_document_context(invoice) -> dict:
     adjustments = int(invoice.total) - int(invoice.amount_paid) - int(invoice.balance_due)
     # The public pay page, which shows a settled invoice as paid rather than
     # asking for money, so the printed code stays right after the invoice is paid.
-    pay_url = invoice_pay_url(invoice)
+    options = payer_payment_options(invoice.customer)
+    card_allowed = options is None or options.card_allowed
+    pay_url = invoice_pay_url(invoice) if card_allowed else ""
+    payer_transfer, payer_note = None, ""
+    if not card_allowed:
+        account = options.transfer_account
+        payer_transfer = (
+            {"bank_name": account.bank_name, "account_number": account.account_number,
+             "account_name": account.account_name}
+            if account is not None else None
+        )
+        payer_note = "" if account is not None else options.no_account_message
 
     return {  # Return full invoice document context.
         "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
@@ -364,17 +382,41 @@ def invoice_document_context(invoice) -> dict:
             "pay_url": pay_url,
             "qr_image": _qr_image(pay_url),
             "qr_label": "Scan to pay" if invoice.balance_due > 0 else "Scan to view",
+            "payer_transfer": payer_transfer,  # Where the customer pays when card is not offered.
+            "payer_note": payer_note,  # What stands in place of that account while there is none.
         },
     }
 
 
 # Render an invoice document to HTML.
 def render_invoice_document_html(invoice, *, request=None) -> str:
+    """The invoice as HTML for its reader.
+
+    A reader whose role may not read a virtual account's number or name
+    (``payments.virtual_account``) is shown the document without the customer's
+    transfer account, or without its name. The PDF and email, which are sent to
+    the customer and built for nobody, carry the account whoever sends them.
+    """
+    context = invoice_document_context(invoice)  # Build invoice context.
+    _withhold_payer_transfer(context["invoice"], request)
     return render_document_html(  # Delegate shared HTML rendering.
         "vs_finance/invoice_document.html",  # Invoice template path.
-        invoice_document_context(invoice),  # Build invoice context.
+        context,
         request=request,  # Pass request for context processors/static absolute paths.
     )
+
+
+def _withhold_payer_transfer(invoice_block: dict, request) -> None:
+    """Drop from *invoice_block* what *request*'s caller may not read of the customer's transfer account."""
+    from vs_rbac.field_enforcement import can_read
+
+    transfer = invoice_block.get("payer_transfer")
+    if transfer is None:
+        return
+    if not can_read(request, "payments.virtual_account.account_number"):
+        invoice_block["payer_transfer"] = None
+    elif not can_read(request, "payments.virtual_account.account_name"):
+        transfer["account_name"] = ""
 
 
 # --------------------------------------------------------------------------- #

@@ -225,6 +225,17 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=1, minute=0),
     },
 
+    # --- schools FAL (pupils' transfer accounts) ----------------------------
+    # Daily: every pupil on the roll is meant to have an account number to pay
+    # into. The sweep issues one to any who has none (a provider that was down,
+    # a school that switched payments on later, a family detail filled in
+    # since), a bounded batch per run. Idempotent: a pupil with an account is
+    # never asked for another.
+    "fal-issue-missing-transfer-accounts": {
+        "task": "fal.issue_missing_transfer_accounts",
+        "schedule": crontab(hour=1, minute=30),
+    },
+
     # --- vs_health (platform health) -------------------------------------
     # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
     # and safe to miss in eager environments.

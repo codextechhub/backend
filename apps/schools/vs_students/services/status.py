@@ -140,7 +140,8 @@ def transition(
     pupil chose to send it.
 
     Joining the roll invites the pupil's guardians to the parent app where the
-    school says so (``parent_app_auto``).
+    school says so (``parent_app_auto``), and queues the account number the
+    family pays the pupil's fees into.
 
     The audit event carries the reason in ``metadata["reason"]`` and never in
     its summary. The reason is a Field Access field (``status_reason``), and
@@ -194,6 +195,8 @@ def transition(
             reason=f"They moved to {StudentStatus(to_status).label.lower()}.",
         )
     _sync_billing(student, from_status, to_status, actor=None if system else actor)
+    if to_status in ON_ROLL and from_status not in ON_ROLL:
+        _queue_transfer_account(student)
 
     StudentStatusLog.objects.create(
         tenant=student.tenant, student=student,
@@ -302,6 +305,25 @@ def _sync_billing(student, from_status, to_status, *, actor):
             "Finance account of student %s was not %s: %s", student.pk,
             "reactivated" if returning else "deactivated", result.reason,
         )
+
+
+def _queue_transfer_account(student):
+    """Queue the number a family pays this pupil's fees into, once the move commits.
+
+    Every pupil on the roll is meant to have one before the family needs it
+    (:mod:`schools.core.fal.transfer_accounts`). The provider is asked from a
+    task, never from here, and a broker that is down never undoes the move: the
+    daily sweep issues the number instead.
+    """
+    from schools.core.fal.tasks import issue_pupil_transfer_account
+
+    def queue():
+        try:
+            issue_pupil_transfer_account.delay(student.pk)
+        except Exception:
+            logger.exception("The transfer account of student %s could not be queued.", student.pk)
+
+    transaction.on_commit(queue)
 
 
 def _release_seat(student, to_status):
