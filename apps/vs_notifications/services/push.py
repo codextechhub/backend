@@ -35,7 +35,9 @@ session names it) or the root. A module that serves another app registers a
 destination (:func:`register_destination`) that may name, for a notification
 it recognises, the path to open and the child it is about; the parent portal
 does, so a parent's push opens the notice, the child's results or Fees in the
-parent app. A destination that fails is logged and skipped; the push still goes.
+parent app. The notification's in-app entry follows the same answer
+(:func:`destination_for`). A destination that fails is logged and skipped; the
+push still goes.
 
 **A cap on devices.** An account keeps at most four phones and at most four
 browsers, counted separately (:data:`MAX_DEVICES_PER_ACCOUNT`). Registering
@@ -206,7 +208,13 @@ def register_destination(resolver) -> None:
         _DESTINATIONS.append(resolver)
 
 
-def _destination(notification) -> PushDestination | None:
+def destination_for(notification) -> PushDestination | None:
+    """Where *notification* opens in the app that serves its recipient, or None to pass.
+
+    The first registered destination that recognises it answers. The push and the
+    in-app entry (:func:`.routing.notification_action_url`) both ask here, so the
+    two never point at different places.
+    """
     for resolver in _DESTINATIONS:
         try:
             found = resolver(notification)
@@ -271,7 +279,7 @@ def deliver(notification) -> bool:
     phones = list(NativePushDevice.all_objects.filter(user=user)) if phones_configured() else []
     if not subscriptions and not phones:
         return False
-    destination = _destination(notification)
+    destination = destination_for(notification)
     child = destination.child if destination is not None else None
 
     def url_for(device_key):

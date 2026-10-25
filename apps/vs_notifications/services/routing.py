@@ -233,10 +233,8 @@ LIST_DESTINATIONS = (
     ListDestination(route="/export/files", prefixes=("export.",)),
     ListDestination(route="/team-management", prefixes=("user.", "team.")),
     ListDestination(route="/me/security", prefixes=("security.",)),
-    # Billing events are addressed to a customer's email rather than to a user,
-    # so dispatch writes no in-app row for one and this rule is inert until one
-    # of them is sent to staff. It names the family that exists all the same:
-    # a rule written against a key no event uses is a rule nobody can test.
+    # Billing notices to staff; a family's payment and invoice notices are
+    # claimed first by the destinations their apps register.
     ListDestination(route="/finance", prefixes=("billing.", "payments.")),
     ListDestination(route="/procurement/sourcing/quotations", prefixes=("procurement.quotation_submitted",)),
     ListDestination(route="/procurement", prefixes=("procurement.",)),
@@ -262,12 +260,23 @@ _REVERSE_RULES = tuple(
 
 
 def notification_action_url(notification):
-    """Resolve a notification to an allowlisted frontend destination."""
+    """Resolve a notification to an allowlisted frontend destination.
+
+    A record page named in :data:`RECORD_DESTINATIONS` comes first. Next is the
+    destination a module registered for the app that serves the recipient
+    (:func:`.push.destination_for`), the same answer the push gives, so a
+    guardian's payment notice opens the receipt in the parent app and not the
+    finance index. A notification no module claims falls back to its module index.
+    """
+    from .push import destination_for
+
     event_key = notification.event_type.key
     metadata = notification.metadata or {}
     for destination in RECORD_DESTINATIONS:
         if destination.keys.matches(event_key) and (url := destination.url(metadata)):
             return url
+    if (registered := destination_for(notification)) is not None:
+        return registered.url
     for destination in LIST_DESTINATIONS:
         if event_key.startswith(destination.prefixes):
             return destination.route
