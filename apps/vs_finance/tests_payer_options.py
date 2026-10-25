@@ -33,6 +33,7 @@ from .pay_links import (
 )
 from .payer_options import (
     TRANSFER_MATCHED_LINE,
+    issuer_bank_withheld,
     PayerPaymentOptions,
     PayerTransferAccount,
     card_payments_allowed,
@@ -157,6 +158,59 @@ class PayerOptionsTests(_PayLinkFixture, TestCase):
         self.assertIn("paid in full", data["message"])
 
     # -- the invoice ---------------------------------------------------------- #
+
+    def issuer_bank(self):
+        """Give the books a collection account, so documents have a pay-to block to print."""
+        from .models import Account, BankAccount
+
+        gl = Account.objects.create(
+            entity=self.entity, code="1190", name="Operations cash", account_type="ASSET",
+            is_postable=True,
+        )
+        return BankAccount.objects.create(
+            entity=self.entity, name="Corona Operations", bank_name="GTBank",
+            account_number="0123456789", gl_account=gl, is_active=True,
+            is_primary_collection=True,
+        )
+
+    def test_the_issuers_bank_is_hidden_once_the_customer_has_an_account(self):
+        self.issuer_bank()
+        with answering(TRANSFER_ONLY):
+            context = invoice_document_context(self.invoice)
+            html = render_invoice_document_html(self.invoice)
+            self.assertTrue(issuer_bank_withheld(self.customer))
+        self.assertEqual(context["issuer"]["bank"]["account_number"], "")
+        self.assertNotIn("0123456789", html)
+        self.assertNotIn("Payment by bank transfer", html)
+        self.assertIn(ACCOUNT.account_number, html)
+
+    def test_the_issuers_bank_stays_while_the_customer_has_no_account_yet(self):
+        self.issuer_bank()
+        with answering(NO_ACCOUNT_YET):
+            context = invoice_document_context(self.invoice)
+            html = render_invoice_document_html(self.invoice)
+            self.assertFalse(issuer_bank_withheld(self.customer))
+        self.assertEqual(context["issuer"]["bank"]["account_number"], "0123456789")
+        self.assertIn("0123456789", html)
+
+    def test_the_issuers_bank_stays_where_card_is_allowed_or_nobody_has_an_opinion(self):
+        self.issuer_bank()
+        for options in (None, PayerPaymentOptions(card_allowed=True, transfer_account=ACCOUNT)):
+            with answering(options):
+                context = invoice_document_context(self.invoice)
+                self.assertFalse(issuer_bank_withheld(self.customer))
+            self.assertEqual(context["issuer"]["bank"]["account_number"], "0123456789")
+
+    def test_the_pdf_leaves_out_the_issuers_bank_with_the_document(self):
+        from .pdf import _pay_to, _styles
+
+        self.issuer_bank()
+        with answering(TRANSFER_ONLY):
+            issuer = invoice_document_context(self.invoice)["issuer"]
+        self.assertIsNone(_pay_to(issuer, _styles()))
+        with answering(None):
+            issuer = invoice_document_context(self.invoice)["issuer"]
+        self.assertEqual(issuer["bank"]["account_number"], "0123456789")
 
     def test_the_invoice_carries_the_account_in_place_of_the_pay_block(self):
         with answering(TRANSFER_ONLY):

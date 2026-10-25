@@ -24,7 +24,7 @@ from vs_config.display import format_date
 from .constants import TaxTreatment
 from .money import account_balance_words, format_naira, naira_in_words
 from .pay_links import invoice_pay_url
-from .payer_options import payer_payment_options
+from .payer_options import payer_payment_options, shows_payer_account
 
 
 # Render a document template to HTML.
@@ -313,7 +313,9 @@ def invoice_document_context(invoice) -> dict:
     A customer the books' owner asks to pay by bank transfer
     (:mod:`vs_finance.payer_options`) gets no pay-online link or QR code: the
     block carries their transfer account (``payer_transfer``) or, while they have
-    none, the owner's sentence (``payer_note``).
+    none, the owner's sentence (``payer_note``). Once they have the account, the
+    issuer's own bank block is blank (:func:`vs_finance.payer_options.issuer_bank_withheld`),
+    so the document, the PDF and the PDF an email carries never offer two accounts.
     """
     entity = invoice.entity  # Invoice entity drives issuer and bank details.
     lines = list(invoice.lines.select_related("tax_code", "cost_center").order_by("line_no", "id"))
@@ -352,8 +354,12 @@ def invoice_document_context(invoice) -> dict:
         )
         payer_note = "" if account is not None else options.no_account_message
 
+    issuer = _issuer_block(entity, branch=invoice.branch)  # Letterhead and pay-to block.
+    if shows_payer_account(options):
+        issuer["bank"] = {"bank_name": "", "account_name": "", "account_number": ""}  # Customer pays into their own account.
+
     return {  # Return full invoice document context.
-        "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
+        "issuer": issuer,
         "customer": _customer_block(invoice.customer),  # Bill-to block.
         "invoice": {  # Invoice-specific template values.
             "document_number": invoice.document_number,  # Invoice number.

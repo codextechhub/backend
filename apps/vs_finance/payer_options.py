@@ -20,7 +20,13 @@ When the answer is ``card_allowed=False``:
   (:class:`vs_finance.pay_links.CardPaymentsOffError`);
 * the invoice replaces its pay-online block and QR code with the customer's
   transfer account, or with the provider's sentence when none exists yet;
-* the invoice email replaces its pay-online line and button the same way.
+* the invoice email replaces its pay-online line and button the same way;
+* once the customer has a transfer account, the invoice (document, PDF and the
+  PDF an email carries) and the customer's own screen leave out the issuer's
+  own bank block, so the customer pays only into the account that is matched
+  to the invoice automatically (:func:`issuer_bank_withheld`). A customer with
+  no account yet keeps the issuer's bank block, since it is the only account
+  they can pay into.
 
 The account number is a switched field of the payments engine
 (``payments.virtual_account.account_number``). Documents addressed to the payer
@@ -65,6 +71,11 @@ class PayerPaymentOptions:
     no_account_message: str = ""
 
 
+def shows_payer_account(options: PayerPaymentOptions | None) -> bool:
+    """Whether *options* sends the customer to a transfer account they already have."""
+    return options is not None and not options.card_allowed and options.transfer_account is not None
+
+
 _PROVIDERS: list = []
 
 
@@ -98,6 +109,16 @@ def card_payments_allowed(customer) -> bool:
     """Whether *customer* may be sent to a hosted card checkout."""
     options = payer_payment_options(customer)
     return options is None or options.card_allowed
+
+
+def issuer_bank_withheld(customer) -> bool:
+    """Whether a document for *customer* leaves out the issuer's own bank block.
+
+    True exactly when the customer is shown a transfer account of their own
+    (:func:`shows_payer_account`). Every document and screen that would print
+    the issuer's collection account asks this, so they agree.
+    """
+    return shows_payer_account(payer_payment_options(customer))
 
 
 def transfer_instruction(options: PayerPaymentOptions) -> str:

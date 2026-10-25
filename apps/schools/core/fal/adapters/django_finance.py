@@ -2206,8 +2206,11 @@ def _invoice_document(invoice) -> InvoiceDocument:
     The letterhead, bill-to block, tax treatments and bank come from the same
     builders the printed and emailed copies use (:mod:`vs_finance.documents`),
     so the family's screen cannot show a different school, account or figure.
+    The school's own bank is left out once the pupil has an account number of
+    their own to pay into, as on the printed copy.
     """
     from vs_finance.documents import _customer_block, _issuer_block, _vat_label
+    from vs_finance.payer_options import issuer_bank_withheld
 
     issuer = _issuer_block(invoice.entity, branch=invoice.branch)
     customer = _customer_block(invoice.customer)
@@ -2248,7 +2251,7 @@ def _invoice_document(invoice) -> InvoiceDocument:
         adjustments=invoice.total - invoice.amount_paid - invoice.balance_due,
         balance_due=invoice.balance_due,
         bank=(DocumentBankAccount(bank["bank_name"], bank["account_name"], bank["account_number"])
-              if bank["account_number"] else None),
+              if bank["account_number"] and not issuer_bank_withheld(invoice.customer) else None),
     )
 
 
