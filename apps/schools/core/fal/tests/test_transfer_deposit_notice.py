@@ -14,6 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
 
+from core.test_utils import TenantAPIClient
 from schools.core.fal.deposit_notices import EVENT_PAYMENT_RECEIVED
 from schools.core.fal.tests.test_transfer_account_on_first_bill import _FirstBillFixture
 from schools.vs_parent_portal.push import destination as parent_destination
@@ -275,3 +276,32 @@ class WhereATapOpensTests(_DepositFixture):
 
     def test_a_payment_with_no_id_passes(self):
         self.assertIsNone(student_destination(self.notification(self.tunde_user, None)))
+
+
+class InAppNoticeLinkTests(_DepositFixture):
+    """The bell entry opens the same receipt the push does, in the app of whoever is told."""
+
+    def setUp(self):
+        super().setUp()
+        self.payment_id = self.transfer(self.issue_account(self.tunde)).payment_id
+
+    def feed_link(self, user):
+        rows = TenantAPIClient(user).get("/v1/notify/").json()["data"]
+        (row,) = [r for r in rows if r["event_type_key"] == EVENT_PAYMENT_RECEIVED]
+        return row["action_url"]
+
+    def test_a_guardian_s_notice_opens_the_receipt_in_the_parent_app(self):
+        for guardian in (self.ngozi, self.emeka):
+            self.assertEqual(self.feed_link(guardian), f"/parent/fees/receipts/{self.payment_id}")
+
+    def test_a_pupil_s_notice_opens_the_receipt_in_the_student_app(self):
+        self.assertEqual(self.feed_link(self.tunde_user), f"/student/fees/receipts/{self.payment_id}")
+
+    def test_a_member_of_staff_keeps_the_finance_link(self):
+        from vs_notifications.services.routing import notification_action_url
+
+        staff_notice = SimpleNamespace(
+            recipient=self.bursar, metadata={"payment_id": self.payment_id},
+            event_type=SimpleNamespace(key=EVENT_PAYMENT_RECEIVED),
+        )
+        self.assertEqual(notification_action_url(staff_notice), "/finance")

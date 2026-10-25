@@ -14,6 +14,8 @@ from unittest import mock
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 
+from core.test_utils import TenantAPIClient
+
 from vs_notifications.constants import ChannelChoices
 from vs_notifications.models import Notification
 from vs_payments import services as payment_services
@@ -61,3 +63,23 @@ class ReceiptsReachGuardiansTests(ParentBooksFixture):
         rows = self.paid(self.chiamaka_tuition, self.nwosu_user)
 
         self.assertEqual(self.emailed(rows), sorted([HUSBAND_EMAIL.lower(), "adaeze.nwosu@example.ng"]))
+
+
+class PayerNoticeLinkTests(ParentBooksFixture):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        call_command("seed_notification_event_types", verbosity=0)
+        call_command("seed_notification_templates", verbosity=0)
+
+    def test_the_payer_s_bell_entry_opens_the_receipt_in_the_parent_app(self):
+        reference = self.pay_invoice(self.chiamaka_tuition, 100_000).data["data"]["reference"]
+        intent = CollectionIntent.objects.get(reference=reference)
+        self.fake.forced_status[reference] = "SUCCEEDED"
+        with self.captureOnCommitCallbacks(execute=True):
+            payment_services.confirm_collection(intent)
+        intent.refresh_from_db()
+
+        rows = TenantAPIClient(self.nwosu_user).get("/v1/notify/").json()["data"]
+        (row,) = [r for r in rows if r["event_type_key"] == "billing.payment_received"]
+        self.assertEqual(row["action_url"], f"/parent/fees/receipts/{intent.payment_id}")
