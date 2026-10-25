@@ -55,6 +55,13 @@ per tenant and cannot be enumerated in advance. The regex matches one label
 only, and django-cors-headers echoes the matched origin rather than ``*``,
 which is what keeps this legal alongside ``CORS_ALLOW_CREDENTIALS``.
 
+The parents' and pupils' store apps are Capacitor shells that run their pages
+from inside the phone, at ``capacitor://localhost`` (iPhone) and
+``https://localhost`` (Android). To the API those are a different site, so they
+call from the origins in ``NATIVE_APP_ORIGINS``, which are allowed to call it
+and to sign in. A request from one of them receives its refresh credential in
+the response body instead of a cookie (``vs_user.browser_session.is_native_app``).
+
 Monitoring copies
 -----------------
 Every monitoring list below is an internal mailbox copied so somebody can see
@@ -484,8 +491,20 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Origins the store apps (Capacitor shells for parents and pupils) call from.
+# They keep their refresh credential in the phone's keychain, not in a cookie.
+NATIVE_APP_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        "NATIVE_APP_ORIGINS", default="capacitor://localhost,https://localhost"
+    ).split(",")
+    if origin.strip()
+]
+CORS_ALLOWED_ORIGINS += [o for o in NATIVE_APP_ORIGINS if o not in CORS_ALLOWED_ORIGINS]
+
 # Browser authentication is limited to the same first-party origins that may
-# call the API with credentials. Local settings replace these production hosts.
+# call the API with credentials, the native app origins among them.
+# Local settings replace these production hosts.
 AUTH_BROWSER_ALLOWED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES = list(CORS_ALLOWED_ORIGIN_REGEXES)
 

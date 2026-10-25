@@ -47,6 +47,7 @@ from ..browser_session import (
     set_device_cookie,
     enforce_browser_origin,
     enforce_csrf,
+    is_native_app,
     refresh_cookie_value,
     set_refresh_cookie,
 )
@@ -71,7 +72,12 @@ class LoginView(APIView):
     """
     POST /auth/login/
     Authenticates a user, returns a short-lived access token, and stores the
-    rotating refresh credential in an HttpOnly cookie.
+    rotating refresh credential in an HttpOnly cookie. A store app (a request
+    from one of ``NATIVE_APP_ORIGINS``) receives the credential as ``refresh``
+    in the response body instead, with no cookie set, because its pages cannot
+    hold a cookie for the API; it must ask for ``session: "device"`` and is
+    answered 400 ``DEVICE_SESSION_REQUIRED`` otherwise. No other origin ever
+    receives ``refresh`` in the body.
     Handles lockout checks, session creation and audit logging - all via
     LoginService.
 
@@ -93,8 +99,9 @@ class LoginView(APIView):
     ``session: "device"`` asks for a device session instead
     (services.device_sessions): the credential goes into a cookie of its own,
     named for the ``account`` key the response carries, and lives as long as
-    the account's product allows. A browser sign-in by an account offered a
-    device session answers ``device_app`` with the path of its app.
+    the account's product allows (for a store app, in the body, as above). A
+    browser sign-in by an account offered a device session answers
+    ``device_app`` with the path of its app.
 
     Permission: AllowAny (public endpoint).
 
@@ -107,10 +114,17 @@ class LoginView(APIView):
 
     def post(self, request):
         enforce_browser_origin(request)
+        native = is_native_app(request)
 
         ser = LoginRequestSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid request.", error=ser.errors)
+        if native and ser.validated_data.get('session') != 'device':
+            return error_response(
+                message="This app must sign in with a device session.",
+                error={'code': 'DEVICE_SESSION_REQUIRED'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             result = LoginService.login(
@@ -138,6 +152,9 @@ class LoginView(APIView):
             return error_response(message=message, error=payload, status=http_status)
 
         refresh_token = result.pop('refresh')
+        if native:
+            result['refresh'] = refresh_token
+            return success_response(message="Login successful.", data=result)
         response = success_response(message="Login successful.", data=result)
         # The readable CSRF token is shared with first-party app hosts. The
         # rotating refresh credential remains host-only and outside JavaScript.

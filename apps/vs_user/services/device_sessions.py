@@ -13,13 +13,16 @@ session lives between uses and where the account's own app is served, and an
 account no provider answers for is never given a device session. Staff and
 platform accounts therefore keep the browser session they always had.
 
-**One cookie per account, never a token in the page.** Each device session has
-a random ``account`` key, and its refresh credential sits in an HttpOnly cookie
-named ``AUTH_DEVICE_COOKIE_PREFIX + key``. The app keeps only the key (and a
-name to show) to choose between the accounts on the device; a script running in
-the page can read neither credential. Refreshing names the key, and the
-credential in that cookie must carry the same key, belong to that key's live
-session and be the one that session last issued.
+**Where the credential lives.** Each device session has a random ``account``
+key. In a browser the refresh credential sits in an HttpOnly cookie named
+``AUTH_DEVICE_COOKIE_PREFIX + key``, one per account: the page keeps only the
+key (and a name to show) to choose between the accounts on the device, and a
+script running in it can read no credential. A store app runs from inside the
+phone at an origin of its own (``NATIVE_APP_ORIGINS``), to which the API's
+cookies never reach, so it receives the credential in the response body, keeps
+it in the phone's keychain and sends it back in the body. Either way, refreshing
+names the key, and the credential presented must carry the same key, belong to
+that key's live session and be the one that session last issued.
 
 **Sliding life.** Every refresh rotates the credential and starts the
 policy's lifetime again, so an account used every week never signs out, and one

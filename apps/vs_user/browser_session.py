@@ -26,6 +26,25 @@ def enforce_browser_origin(request) -> None:
     raise PermissionDenied("Browser authentication is not available from this origin.")
 
 
+def is_native_app(request) -> bool:
+    """Whether *request* comes from one of the store apps' own origins.
+
+    The parents' and pupils' store apps run their pages from inside the phone
+    (``capacitor://localhost``, ``https://localhost``), which is a different
+    site from the API, so a cookie credential never reaches them. A request
+    whose ``Origin`` is exactly one of ``NATIVE_APP_ORIGINS`` is given its
+    refresh credential in the response body and sends it back in the body.
+
+    A real browser cannot forge ``Origin``: a website, or a script injected
+    into one, always carries its own origin, so it can neither receive a body
+    credential nor use one. A non-browser client that sets the header by hand
+    already holds the password it had to sign in with, and gains nothing a
+    plain API client did not have.
+    """
+    origin = request.headers.get("Origin")
+    return bool(origin) and origin in settings.NATIVE_APP_ORIGINS
+
+
 def enforce_csrf(request) -> None:
     """Apply Django's CSRF validation to a DRF cookie-authenticated request."""
     check = CSRFCheck(lambda req: None)

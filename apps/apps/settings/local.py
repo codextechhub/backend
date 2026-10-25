@@ -110,7 +110,7 @@ CSRF_TRUSTED_ORIGINS = [
     # The student app's dev server.
     'http://*.localhost:5175',
 ]
-AUTH_BROWSER_ALLOWED_ORIGINS = [FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL]
+AUTH_BROWSER_ALLOWED_ORIGINS = [FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL, *NATIVE_APP_ORIGINS]
 # Any localhost port, not just 5174. The port is not a security boundary here -
 # anything that can bind a port on this machine can bind that one - and pinning
 # it meant a second dev server, which the launch config offers for exactly this
