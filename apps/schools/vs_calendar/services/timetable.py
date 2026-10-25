@@ -29,6 +29,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from schools.vs_academics.exceptions import BranchScopeConflict
+from schools.vs_staff.services.teaching import assert_teacher_reaches_class
 
 from ..constants import CFG_TEACHER_DUTY_MATCH, CFG_TEACHING_DAYS, DutyMatch
 from ..exceptions import (
@@ -166,6 +167,10 @@ def validate_slot(tenant, session, *, school_class, day_of_week, period,
     assert_day_taught(day_of_week, rules.teaching_days)
     assert_period_usable(period, day_of_week=day_of_week)
     assert_is_teacher(tenant, teacher)
+    assert_teacher_reaches_class(
+        tenant, teacher, school_class,
+        as_what=f"put on {school_class.name}'s {subject.name} lessons",
+    )
     assert_teacher_has_duty(
         tenant, session, school_class=school_class, subject=subject,
         teacher=teacher, mode=rules.teacher_duty_match,
@@ -268,6 +273,10 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
     ``TEACHER_HAS_NO_DUTY`` warning per such lesson under WARN, and under
     REFUSE the copy is refused (the preview still answers, with the warnings,
     so the school can see why).
+
+    A copied teacher whose roles do not cover the target class's branch is
+    refused outright, preview included, as a lesson saved by hand would be:
+    they could never mark that class's lessons.
     """
     if rules is None:
         rules = read_calendar_rules(tenant, SLOT_RULE_KEYS)
@@ -300,6 +309,14 @@ def duplicate_grid(tenant, session, *, source_class, target_class, actor,
         )
         for row in usable
     ]
+    seen = set()
+    for draft in drafts:
+        if draft.teacher_id and draft.teacher_id not in seen:
+            seen.add(draft.teacher_id)
+            assert_teacher_reaches_class(
+                tenant, draft.teacher, target_class,
+                as_what=f"put on {target_class.name}'s {draft.subject.name} lessons",
+            )
     no_duty = duty_warnings(
         tenant, session, drafts, mode=rules.teacher_duty_match,
     )

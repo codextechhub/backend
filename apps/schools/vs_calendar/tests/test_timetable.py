@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import datetime as dt
 
+from vs_rbac.models import TenantRoleTemplate
+from vs_rbac.tests.helpers import make_assignment
+
 from ..models import ClassTimetable, Period, PeriodType, PublishState, TimetableSlot
 from .base import _Base
 
@@ -153,10 +156,20 @@ class TeacherIdentityTests(_Base):
         })
         self.assertIn(response.status_code, (400, 422), response.data)
 
-    def test_a_teacher_pinned_to_lekki_can_be_scheduled_into_an_ikeja_room(self):
-        """The criterion proving the picker is not narrowed by branch."""
+    def test_a_teacher_at_both_branches_can_be_scheduled_at_either(self):
+        """The picker is not narrowed by branch: one person teaches at Lekki and Ikeja.
+
+        They hold the Teacher role at both. A teacher at Lekki alone is refused
+        an Ikeja lesson (``test_teacher_branch_reach``), because they could
+        never mark it.
+        """
         eze = self.make_teacher(
             "eze@brightfield.test", "Chukwuemeka", "Eze", branch=self.lekki,
+        )
+        make_assignment(
+            self.school, eze,
+            TenantRoleTemplate.objects.get(tenant=self.tenant, key="teacher"),
+            branch=self.ikeja,
         )
         response = self.post(self.admin, "calendar-slot-list", {
             "school_class": self.sss2.pk, "day_of_week": 4,

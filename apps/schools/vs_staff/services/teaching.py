@@ -18,7 +18,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..constants import TeachingPart
-from ..exceptions import LeadAlreadySet, SessionArchived, StaffHasLeft
+from ..exceptions import LeadAlreadySet, SessionArchived, StaffHasLeft, TeacherNotAtBranch
 from . import audit
 
 
@@ -36,6 +36,45 @@ def assert_session_open(session):
             f"changed. Its existing assignments are still readable.",
             session=session.name,
         )
+
+
+def assert_teacher_reaches_class(tenant, user, school_class, *, as_what):
+    """Refuse a teacher whose roles do not cover *school_class*'s branch.
+
+    A teacher sees the classes at the branches their roles cover, and being put
+    on a class does not widen that. A Main Branch teacher made class teacher of
+    an Annex class would hold it on paper and never find it: no register, no
+    score sheet, no class page. So the appointment is refused and the message
+    names the branch to give them a role at. A teacher who works at both holds
+    the Teacher role at both.
+
+    *as_what* finishes the sentence "so they cannot be ...", for example
+    ``"class teacher of JSS2 B"``. Nothing is checked at a school with one
+    branch, or for a class shared across a school with several: neither has a
+    branch for the teacher to be missing from.
+    """
+    from vs_rbac.scoping import WHOLE_TENANT, only_branch_id_or_several, visible_branch_ids
+    from vs_tenants.models import Branch
+
+    if user is None or school_class.branch_id is None:
+        return
+    if only_branch_id_or_several(tenant) is not None:
+        return
+    visible = visible_branch_ids(user, tenant)
+    if visible is WHOLE_TENANT or school_class.branch_id in visible:
+        return
+
+    name = " ".join(p for p in (user.first_name, user.last_name) if p).strip() or "This teacher"
+    branch = Branch.all_objects.get(pk=school_class.branch_id).name
+    held = list(
+        Branch.all_objects.filter(pk__in=visible).order_by("name").values_list("name", flat=True),
+    )
+    works = f"works at {' and '.join(held)}" if held else "has no branch at this school yet"
+    raise TeacherNotAtBranch(
+        f"{name} {works}, so they cannot be {as_what}, which is at {branch}. "
+        f"Give {name} the Teacher role at {branch} as well, then try again.",
+        teacher=name, branch=branch,
+    )
 
 
 def current_lead(tenant, session, school_class, subject):
@@ -73,6 +112,10 @@ def assign(*, tenant, staff, school_class, subject, session, part, actor):
             f"{subject.name} in {school_class.name}. Reinstate them first if "
             f"they are coming back.",
         )
+    assert_teacher_reaches_class(
+        tenant, staff.user, school_class,
+        as_what=f"given {subject.name} in {school_class.name}",
+    )
     if part == TeachingPart.LEAD:
         held = current_lead(tenant, session, school_class, subject)
         if held is not None and held.staff_id != staff.pk:
@@ -161,6 +204,11 @@ def set_class_teacher(school_class, staff, *, actor, tenant):
             f"{_name(staff)} no longer works here, so they cannot be class "
             f"teacher of {school_class.name}. Reinstate them first if they are "
             f"coming back.",
+        )
+    if staff is not None:
+        assert_teacher_reaches_class(
+            tenant, staff.user, school_class,
+            as_what=f"class teacher of {school_class.name}",
         )
 
     now = timezone.now()

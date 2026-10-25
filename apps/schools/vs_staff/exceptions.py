@@ -199,6 +199,19 @@ class BranchOutsideReach(StaffError):
     http_status = 403
 
 
+class TeacherNotAtBranch(StaffError):
+    """A teacher put on a class at a branch none of their roles cover.
+
+    They would hold the class on paper and never find it, so the message names
+    the branch to give them a role at. ``extra`` carries the teacher and the
+    branch by name.
+    """
+
+    error_code = "TEACHER_NOT_AT_BRANCH"
+    default_message = "This teacher does not work at that class's branch."
+    http_status = 422
+
+
 class OrganogramInUse(StaffError):
     """Deleting a unit or a post that something on the chart still hangs off.
 
