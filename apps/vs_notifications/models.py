@@ -17,6 +17,7 @@ import uuid
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from .constants import ChannelChoices, NotificationStatus
 from vs_rbac.managers import TenantAwareManager
@@ -683,6 +684,8 @@ class PushSubscription(models.Model):
     device_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
     user_agent = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+    #: When the browser last subscribed; the least recent is dropped past the cap.
+    last_seen_at = models.DateTimeField(default=timezone.now)
     last_sent_at = models.DateTimeField(null=True, blank=True)
 
     objects = TenantAwareManager()
@@ -700,3 +703,55 @@ class PushSubscription(models.Model):
 
     def __str__(self):
         return f"Push subscription {self.pk} for user {self.user_id}"
+
+
+class NativePushDevice(models.Model):
+    """One phone a person allowed push notifications on, for one account.
+
+    A store app registers the token Firebase Cloud Messaging gave the install.
+    There is one row per account per phone, not one per phone: two children
+    signed in on one parent's phone register the same token under two accounts,
+    each tied to that account's device session (``device_key``,
+    :mod:`vs_user.services.device_sessions`). A push for one child reaches only
+    that child's row, so it carries that child's name and opens as them, and
+    signing one child out deletes that child's row while the other keeps
+    receiving. ``app_id`` is the package or bundle id the client sent; the
+    engine treats it as opaque.
+    """
+
+    class Platform(models.TextChoices):
+        ANDROID = "android", "Android"
+        IOS = "ios", "iPhone"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE, related_name="native_push_devices",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="native_push_devices",
+    )
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+    app_id = models.CharField(max_length=100)
+    token = models.TextField()
+    #: A digest of ``token``: tokens are long, too long to index.
+    token_hash = models.CharField(max_length=64)
+    device_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    app_version = models.CharField(max_length=32, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "token_hash"], name="uq_native_push_device_user_token",
+            ),
+        ]
+        indexes = [models.Index(fields=["user"])]
+
+    def __str__(self):
+        return f"Native push device {self.pk} for user {self.user_id}"

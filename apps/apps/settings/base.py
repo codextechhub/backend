@@ -661,6 +661,12 @@ WEB_PUSH_VAPID_PUBLIC_KEY = config("WEB_PUSH_VAPID_PUBLIC_KEY", default="")
 WEB_PUSH_VAPID_PRIVATE_KEY = config("WEB_PUSH_VAPID_PRIVATE_KEY", default="")
 WEB_PUSH_CONTACT = config("WEB_PUSH_CONTACT", default="mailto:support@codexng.com")
 
+# Phone push (the parent and student store apps) goes through Firebase Cloud
+# Messaging, which relays to Apple as well as Android. The path of a Firebase
+# service-account JSON key; the project id is read from the key itself. Empty
+# turns phone push off: no phone can register and nothing is sent to one.
+FCM_SERVICE_ACCOUNT_FILE = config("FCM_SERVICE_ACCOUNT_FILE", default="")
+
 # Product-specific notification branding resolves through the schools FAL, so
 # the domain-neutral notification engine never imports a school application.
 NOTIFICATION_EMAIL_BRAND_PROVIDER = (

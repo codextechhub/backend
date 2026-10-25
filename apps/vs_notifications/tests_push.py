@@ -6,7 +6,8 @@ his device with his first name in front, and nothing is pushed to Peter, who
 has no device. A push service that has forgotten a device has its
 subscription deleted. Signing Tunde out of the phone stops his pushes there
 and leaves Bola's. What a payment push says can show on a locked screen, so
-it carries no amount.
+it carries no amount. An account keeps at most four browsers: a fifth
+subscription drops the one seen least recently.
 """
 from __future__ import annotations
 
@@ -86,6 +87,36 @@ class PushTests(_NotifFixture):
             {"endpoint": "https://push.example.com/abc"}, format="json",
         )
         self.assertFalse(PushSubscription.all_objects.filter(user=self.tunde).exists())
+
+    def browsers(self, user):
+        return set(PushSubscription.all_objects.filter(user=user).values_list("endpoint", flat=True))
+
+    def test_a_browser_past_the_cap_drops_the_least_recently_seen_and_keeps_the_rest(self):
+        cap = push.MAX_DEVICES_PER_ACCOUNT
+        for n in range(cap + 1):
+            self.assertEqual(self.subscribe(endpoint=f"https://push.example.com/{n}").status_code, 201)
+        self.assertEqual(self.browsers(self.tunde), {f"https://push.example.com/{n}" for n in range(1, cap + 1)})
+
+    def test_subscribing_an_older_browser_again_refreshes_it(self):
+        cap = push.MAX_DEVICES_PER_ACCOUNT
+        for n in range(cap):
+            self.subscribe(endpoint=f"https://push.example.com/{n}")
+        self.subscribe(endpoint="https://push.example.com/0")
+        self.subscribe(endpoint="https://push.example.com/new")
+        kept = self.browsers(self.tunde)
+        self.assertIn("https://push.example.com/0", kept)
+        self.assertIn("https://push.example.com/new", kept)
+        self.assertNotIn("https://push.example.com/1", kept)
+        self.assertEqual(len(kept), cap)
+
+    def test_another_accounts_browsers_are_never_dropped(self):
+        cap = push.MAX_DEVICES_PER_ACCOUNT
+        for n in range(cap):
+            self.subscribe(user=self.admin_a, endpoint=f"https://push.example.com/{n}")
+        for n in range(cap + 1):
+            self.subscribe(endpoint=f"https://push.example.com/{n}")
+        self.assertEqual(len(self.browsers(self.admin_a)), cap)
+        self.assertEqual(len(self.browsers(self.tunde)), cap)
 
     def test_an_account_that_is_not_the_callers_session_is_not_recorded(self):
         self.subscribe(user=self.admin_a, account=self.tunde_session.device_key)
