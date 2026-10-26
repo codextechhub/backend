@@ -82,7 +82,7 @@ class DeviceRefreshView(_DeviceView):
     its stored credential) from its list and asks for a sign-in.
 
     The credential the session rotated away from last is still answered for a
-    short while (``DEVICE_SESSION_REFRESH_GRACE_SECONDS``) with the credential
+    short while (``SESSION_REFRESH_GRACE_SECONDS``) with the credential
     the session is on, so a device whose last answer was lost recovers by
     asking again with what it holds. An older credential, or that one after
     the window, ends the session and answers 401 ``TOKEN_REVOKED``. No

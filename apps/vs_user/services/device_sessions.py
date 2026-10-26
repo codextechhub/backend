@@ -45,7 +45,7 @@ killed mid-request leaves the device holding a credential the session has
 already moved past. Refusing it would sign the person out for good days before
 their lifetime is up, so the session remembers the credential it rotated away
 from last (``previous_refresh_jti``) and when (``refreshed_at``). That
-credential, presented within ``DEVICE_SESSION_REFRESH_GRACE_SECONDS`` of the
+credential, presented within ``SESSION_REFRESH_GRACE_SECONDS`` of the
 rotation, is answered with the credential the session is on now, the same one
 every time, so the device recovers whatever it lost and two windows that
 raced with one credential both end holding the same working one. The grace
@@ -83,6 +83,7 @@ from rest_framework_simplejwt.utils import datetime_from_epoch
 
 from ..models import LoginSession, User
 from ..tokens import CodeXRefreshToken
+from . import session_credentials
 from .audit import blacklist_token_by_jti, get_client_ip, get_device_label
 
 logger = logging.getLogger(__name__)
@@ -180,12 +181,6 @@ def browser_sign_in_policy(user) -> Optional[DeviceSessionPolicy]:
     if policy is None or not policy.sends_browser_sign_in_to_app:
         return None
     return policy
-
-
-def refresh_grace() -> timedelta:
-    """How long a rotated-away credential is still answered; zero turns it off."""
-    seconds = getattr(settings, "DEVICE_SESSION_REFRESH_GRACE_SECONDS", 120)
-    return timedelta(seconds=max(0, int(seconds)))
 
 
 def cookie_name(account: str) -> str:
@@ -307,15 +302,9 @@ def refresh(account: str, raw: str):
         presented = str(claims["jti"])
         user = session.user
         now = timezone.now()
-        is_current = presented == session.refresh_jti
-        is_previous = (
-            not is_current
-            and bool(session.previous_refresh_jti)
-            and presented == session.previous_refresh_jti
-            and session.refreshed_at is not None
-            and now - session.refreshed_at <= refresh_grace()
-        )
-        if not (is_current or is_previous):
+        standing = session_credentials.standing(session, presented, now)
+        is_previous = standing == session_credentials.PREVIOUS
+        if standing == session_credentials.STALE:
             reused_by = user
             _end(session, reason="CREDENTIAL_REUSED")
         else:
@@ -344,13 +333,9 @@ def _rotate(session, user, account: str, policy, now, *, previous: str):
     """
     blacklist_token_by_jti(session.refresh_jti)
     new = _credential(user, account, policy)
-    session.refresh_jti = str(new["jti"])
-    session.previous_refresh_jti = previous
-    session.refreshed_at = now
-    session.last_seen_at = now
-    session.save(update_fields=[
-        "refresh_jti", "previous_refresh_jti", "refreshed_at", "last_seen_at",
-    ])
+    session_credentials.record_rotation(
+        session, new_jti=str(new["jti"]), previous_jti=previous, now=now,
+    )
     return new
 
 
@@ -361,17 +346,8 @@ def _replay(session, now):
     credential the lost answer carried, and the session's state is untouched
     apart from the time it was last seen.
     """
-    stored = (
-        OutstandingToken.objects.filter(jti=session.refresh_jti)
-        .values_list("token", flat=True).first()
-    )
-    if not stored:
-        return None
-    try:
-        current = RefreshToken(stored)
-    except TokenError:
-        return None
-    if str(current["jti"]) != session.refresh_jti:
+    current = session_credentials.stored_current(session)
+    if current is None:
         return None
     session.last_seen_at = now
     session.save(update_fields=["last_seen_at"])

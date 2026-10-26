@@ -25,7 +25,7 @@ from rest_framework.test import APIClient
 from apps.settings import base as base_settings
 
 from .models import LoginSession
-from .services import device_sessions
+from .services import device_sessions, session_credentials
 from .services.device_sessions import DeviceSessionPolicy, register_device_session_policy
 from .signals import device_session_ended
 from .test_browser_session import BROWSER_ORIGIN_REGEXES, BROWSER_ORIGINS, HARDENED_COOKIE
@@ -240,7 +240,7 @@ class NativeAppSessionTests(TestCase):
         account, first = self.native_sign_in(self.tunde)
         current = self.call(REFRESH, account, first).json()["data"]["refresh"]
 
-        with self.after(device_sessions.refresh_grace().total_seconds() + 1):
+        with self.after(session_credentials.refresh_grace().total_seconds() + 1):
             response = self.call(REFRESH, account, first)
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")

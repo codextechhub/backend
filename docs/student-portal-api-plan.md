@@ -638,7 +638,7 @@ students app registers one for any account linked to a pupil, with
 - `POST /v1/user/auth/device/refresh/` `{account}`: rotates that account's
   credential and starts its days again; 401 `TOKEN_EXPIRED` / `TOKEN_REVOKED`
   / `TOKEN_INVALID` clears its cookie. The credential rotated away from last is
-  still answered for `DEVICE_SESSION_REFRESH_GRACE_SECONDS` (120) with the
+  still answered for `SESSION_REFRESH_GRACE_SECONDS` (120) with the
   credential the session is on, so a lost answer or two windows refreshing at
   once both end holding the same working credential. An older credential, or
   that one after the window, ends the session (`CREDENTIAL_REUSED`) and answers

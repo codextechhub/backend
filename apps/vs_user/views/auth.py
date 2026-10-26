@@ -17,15 +17,11 @@ from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError, InvalidToken
-from rest_framework_simplejwt.settings import api_settings as jwt_settings
-from rest_framework_simplejwt.utils import datetime_from_epoch
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+from rest_framework_simplejwt.exceptions import TokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_tenants.models import Tenant
 from core.response import success_response, error_response
@@ -35,8 +31,9 @@ from ..models import (
     User, LoginSession,
 )
 from ..serializers import (
-    ActivationSerializer, ActivationPreviewSerializer, LoginRequestSerializer, TokenRefreshSerializer,
+    ActivationSerializer, ActivationPreviewSerializer, LoginRequestSerializer,
 )
+from ..services import browser_sessions
 from ..services.auth       import LoginService
 from ..services.device_sessions import cookie_max_age as device_cookie_max_age
 from ..services.invitation import InvitationService
@@ -294,7 +291,19 @@ class LogoutView(APIView):
 class TokenRefreshView(APIView):
     """
     POST /auth/token/refresh/
-    Issues a new access token using a valid refresh token.
+    Issues a new access token using the refresh cookie and rotates the cookie.
+    Body: {} (the credential is the HttpOnly cookie; a body field is ignored).
+    Response: ``access`` and, when the credential belongs to a session,
+    ``session_id``; the rotated credential is set as the cookie, never returned.
+
+    The credential the session rotated away from last is still answered for a
+    short while (``SESSION_REFRESH_GRACE_SECONDS``) with the credential the
+    session is on, so a browser whose last answer was lost recovers by asking
+    again with the cookie it holds. An older credential, or that one after the
+    window, ends the session and answers 401 ``TOKEN_REVOKED``. Every other
+    refusal is a 401 with ``TOKEN_EXPIRED``, ``TOKEN_REVOKED`` or
+    ``TOKEN_INVALID``, and clears the cookie. See
+    ``services.browser_sessions`` for the rules.
 
     Permission: AllowAny (public endpoint - token validity is the gate).
     RBAC: identity.access_token.refresh
@@ -309,99 +318,28 @@ class TokenRefreshView(APIView):
     def post(self, request):
         enforce_csrf(request)
 
-        refresh_token = refresh_cookie_value(request)
-        ser = TokenRefreshSerializer(data={'refresh': refresh_token})
-
-        def invalid_response(*, message, error):
+        try:
+            result = browser_sessions.refresh(refresh_cookie_value(request))
+        except browser_sessions.BrowserSessionRefused as exc:
+            if exc.reused_by is not None:
+                log_auth_event(
+                    actor=exc.reused_by, subject=exc.reused_by, tenant=exc.reused_by.tenant,
+                    event=AuthEvent.TOKEN_REVOKED, request=request,
+                    metadata={"reason": "CREDENTIAL_REUSED", "session_id": exc.session_id},
+                )
             response = error_response(
-                message=message,
-                error=error,
+                message=exc.message,
+                error={'error_code': exc.code},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
             clear_refresh_cookie(response)
             return response
 
-        # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
-        # InvalidToken when the refresh token is bad - they are not DRF
-        # ValidationErrors. Catch them here so the response is a clean 401
-        # instead of bubbling up to a 500.
-        try:
-            ser.is_valid(raise_exception=True)
-        except ExpiredTokenError:
-            return invalid_response(
-                message="Your session has expired. Please log in again.",
-                error={'error_code': 'TOKEN_EXPIRED'},
-            )
-        except (TokenError, InvalidToken) as e:
-            msg = str(e).lower()
-            if 'blacklisted' in msg or 'revoked' in msg:
-                return invalid_response(
-                    message="This session has been revoked. Please log in again.",
-                    error={'error_code': 'TOKEN_REVOKED'},
-                )
-            if 'expired' in msg:
-                return invalid_response(
-                    message="Your session has expired. Please log in again.",
-                    error={'error_code': 'TOKEN_EXPIRED'},
-                )
-            return invalid_response(
-                message="Invalid token. Please log in again.",
-                error={'error_code': 'TOKEN_INVALID'},
-            )
-        except ValidationError:
-            # Missing/empty 'refresh' field - treat as invalid.
-            return invalid_response(
-                message="Invalid token. Please log in again.",
-                error={'error_code': 'TOKEN_INVALID'},
-            )
-
-        new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
-        response_data = {'access': ser.validated_data['access']}
-
-        session_id = None
-        if new_refresh_str:
-            # Rotation happened: register the new token in OutstandingToken so that
-            # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
-            try:
-                new_refresh = RefreshToken(new_refresh_str)
-                jti = new_refresh[jwt_settings.JTI_CLAIM]
-                exp = new_refresh['exp']
-                user_id = new_refresh[jwt_settings.USER_ID_CLAIM]
-                token_user = User.objects.get(pk=user_id)
-                OutstandingToken.objects.get_or_create(
-                    jti=jti,
-                    defaults={
-                        'user': token_user,
-                        'token': new_refresh_str,
-                        'created_at': new_refresh.current_time,
-                        'expires_at': datetime_from_epoch(exp),
-                    },
-                )
-                # Keep LoginSession in sync with the new JTI - only the session
-                # that owned the OLD token; other devices keep their own JTIs.
-                old_jti = ''
-                try:
-                    old_jti = RefreshToken(refresh_token, verify=False).get('jti', '')
-                except TokenError:
-                    pass
-                session = LoginSession.objects.filter(
-                    user=token_user, refresh_jti=str(old_jti), is_active=True,
-                ).first()
-                if session is not None:
-                    session.refresh_jti = str(jti)
-                    session.last_seen_at = timezone.now()
-                    session.save(update_fields=['refresh_jti', 'last_seen_at'])
-                    session_id = session.pk
-            except (TokenError, User.DoesNotExist):
-                # Bookkeeping failed but the new tokens are valid - the client
-                # can still use them. Don't fail the whole request.
-                pass
-        if session_id is not None:
-            response_data['session_id'] = session_id
-
+        response_data = {'access': result.access}
+        if result.session is not None:
+            response_data['session_id'] = result.session.pk
         response = success_response(message="Token refreshed successfully.", data=response_data)
-        if new_refresh_str:
-            set_refresh_cookie(response, new_refresh_str)
+        set_refresh_cookie(response, result.refresh)
         return response
 
 

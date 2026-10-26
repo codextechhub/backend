@@ -20,7 +20,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from vs_audit.models import AuditEvent
 
 from .models import LoginSession
-from .services import device_sessions
+from .services import device_sessions, session_credentials
 from .services.audit import blacklist_all_user_tokens
 from .services.device_sessions import DeviceSessionPolicy, register_device_session_policy
 from .signals import device_session_ended
@@ -226,7 +226,7 @@ class DeviceSessionTests(TestCase):
         held = self.lose_the_answer(account)
         current = LoginSession.all_objects.get(device_key=account).refresh_jti
 
-        with self.after(device_sessions.refresh_grace().total_seconds() + 1):
+        with self.after(session_credentials.refresh_grace().total_seconds() + 1):
             response = self.call("refresh", {"account": account})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
@@ -266,7 +266,7 @@ class DeviceSessionTests(TestCase):
         self.addCleanup(device_session_ended.disconnect, dispatch_uid="test.reuse_ended")
         self.lose_the_answer(account)
 
-        with self.after(device_sessions.refresh_grace().total_seconds() + 1):
+        with self.after(session_credentials.refresh_grace().total_seconds() + 1):
             self.call("refresh", {"account": account})
 
         self.assertEqual(ended_devices, [account])
@@ -310,7 +310,7 @@ class DeviceSessionTests(TestCase):
     def test_a_window_of_zero_seconds_accepts_no_old_credential(self):
         account = self.sign_in(self.ada).json()["data"]["account"]
         self.lose_the_answer(account)
-        with override_settings(DEVICE_SESSION_REFRESH_GRACE_SECONDS=0):
+        with override_settings(SESSION_REFRESH_GRACE_SECONDS=0):
             response = self.call("refresh", {"account": account})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")

@@ -109,10 +109,16 @@ success path (lockout clear, token, session, `last_login_at`) is atomic
 (`services/auth.py:21-40,95-118`).
 
 Refresh rotation is on (`ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION`,
-`apps/settings/base.py:61-67`). After a rotation the view registers the new JTI in
-`OutstandingToken` so a later force-logout can reach it, and moves the owning
-`LoginSession` onto the new JTI, leaving other devices' sessions alone
-(`views/auth.py:266-308`).
+`apps/settings/base.py`). `services/browser_sessions.refresh` performs it: the
+credential presented is revoked, the next is registered in `OutstandingToken` so
+a later force-logout can reach it, and the owning `LoginSession` moves onto the
+new JTI, leaving other devices' sessions alone. The session also remembers the
+JTI it rotated away from and when, so a refresh whose answer never reached the
+browser is recovered: that previous credential, presented within
+`SESSION_REFRESH_GRACE_SECONDS` (120), is answered with the credential the
+session is on. Anything older, or the previous one after the window, ends the
+session as `CREDENTIAL_REUSED` and answers `401 TOKEN_REVOKED`. A credential with
+no `LoginSession` row is rotated as before, without the grace.
 
 ## 5. Derivations
 
