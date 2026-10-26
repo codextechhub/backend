@@ -298,6 +298,27 @@ def wards_queryset(guardian, user, tenant):
     ).distinct()
 
 
+def is_portal_guardian_of(user, student, tenant) -> bool:
+    """Whether *user* is a guardian of *student* in the way the parent portal shows.
+
+    The signed-in, active account is the ``user`` of a guardian at *tenant*
+    linked to this pupil through ``StudentGuardian``, and the pupil is on the
+    roll (``PORTAL_STATUSES``). It is the same rule the parent portal lists a
+    parent's children by, so a file the portal links is a file this admits.
+    Nothing here consults roles or branches: a guardian's reach is the link.
+    """
+    from ..constants import PORTAL_STATUSES
+    from ..models import Student
+
+    if not getattr(user, "is_active", False) or getattr(user, "pk", None) is None:
+        return False
+    return Student.objects.filter(
+        pk=student.pk, tenant=tenant, status__in=PORTAL_STATUSES,
+        guardian_links__guardian__tenant=tenant,
+        guardian_links__guardian__user=user,
+    ).exists()
+
+
 def primary_for(student):
     link_row = (
         StudentGuardian.objects.filter(student=student, is_primary=True)
