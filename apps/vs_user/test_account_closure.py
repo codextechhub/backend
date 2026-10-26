@@ -719,11 +719,17 @@ class PublicPageTests(ClosureFixture):
         self.assertEqual(self.request_link(tenant="meridian").status_code, 400)
 
     def test_the_request_is_throttled(self):
+        """The rate is set here, so the test holds whatever rates a settings file zeroes."""
+        from rest_framework.throttling import ScopedRateThrottle
+
         cache.clear()
-        codes = [
-            self.request_link(email="nobody@nowhere.test", tenant="meridian").status_code
-            for _ in range(5)
-        ]
+        with mock.patch.object(
+            ScopedRateThrottle, "THROTTLE_RATES", {"account_closure_request": "3/minute"},
+        ):
+            codes = [
+                self.request_link(email="nobody@nowhere.test", tenant="meridian").status_code
+                for _ in range(5)
+            ]
         self.assertEqual(codes[:3], [200, 200, 200])
         self.assertIn(429, codes[3:])
 
@@ -789,9 +795,16 @@ class PublicPageTests(ClosureFixture):
         self.assertTrue(AccountClosureLink.objects.get(user=self.parent).used_at is None)
 
     def test_the_confirmation_is_throttled(self):
+        """The rate is set here, so the test holds whatever rates a settings file zeroes."""
+        from rest_framework.throttling import ScopedRateThrottle
+
         cache.clear()
-        codes = [self.confirm("ac_nope").status_code for _ in range(12)]
-        self.assertIn(429, codes)
+        with mock.patch.object(
+            ScopedRateThrottle, "THROTTLE_RATES", {"account_closure_confirm": "10/minute"},
+        ):
+            codes = [self.confirm("ac_nope").status_code for _ in range(12)]
+        self.assertEqual(codes[:10], [400] * 10)
+        self.assertIn(429, codes[10:])
 
 
 @override_settings(SCHOOL_APP_BASE_URL="https://xvs.example.test")

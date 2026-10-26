@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from . import app_versions
@@ -27,6 +28,8 @@ class AppVersionView(APIView):
     tenant_param_required = False
     # Answered from settings and cacheable, so this bounds scraping only.
     throttle_scope = "app_versions"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def get(self, request):
         app = (request.query_params.get("app") or "").strip()
