@@ -949,6 +949,12 @@ class LoginSession(TimeStampedModel):
     # JTI of the refresh token - links this session to the SimpleJWT blacklist.
     refresh_jti = models.CharField(max_length=64, blank=True, default='', db_index=True)
 
+    # A device session (services.device_sessions) remembers the credential it
+    # rotated away from last, and when, so a refresh whose answer was lost can
+    # be answered again. Server-owned state, never serialised.
+    previous_refresh_jti = models.CharField(max_length=64, blank=True, default='')
+    refreshed_at = models.DateTimeField(null=True, blank=True)
+
     is_active  = models.BooleanField(default=True)
     ended_at   = models.DateTimeField(null=True, blank=True)
     end_reason = models.CharField(

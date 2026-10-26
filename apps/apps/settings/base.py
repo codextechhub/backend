@@ -358,6 +358,14 @@ AUTH_REFRESH_COOKIE_SAMESITE = "Strict"
 AUTH_DEVICE_COOKIE_PREFIX = "device_session_"
 AUTH_DEVICE_COOKIE_PATH = "/v1/user/auth/"
 
+# How long after a device session rotates its credential the credential it
+# rotated away from is still answered, with the new one. It covers a refresh
+# whose answer never reached the device (see device_sessions.refresh); past it
+# the old credential is a replay and ends the session. 0 turns the grace off.
+DEVICE_SESSION_REFRESH_GRACE_SECONDS = config(
+    "DEVICE_SESSION_REFRESH_GRACE_SECONDS", default=120, cast=int,
+)
+
 # Application definition
 
 INSTALLED_APPS = [

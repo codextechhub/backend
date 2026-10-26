@@ -31,12 +31,34 @@ phone at an origin of its own (``NATIVE_APP_ORIGINS``), to which the API's
 cookies never reach, so it receives the credential in the response body, keeps
 it in the phone's keychain and sends it back in the body. Either way, refreshing
 names the key, and the credential presented must carry the same key, belong to
-that key's live session and be the one that session last issued.
+that key's live session and be the one that session last issued (or, for a
+short while, the one before it: see below).
 
 **Sliding life.** Every refresh rotates the credential and starts the
 policy's lifetime again, so an account used every week never signs out, and one
 left alone for longer than the lifetime does. The lifetime is re-read on each
 refresh, so a change to it applies from the next one.
+
+**An answer that never arrives.** Rotation spends the credential before the
+device has it, so a connection that drops, a tab that navigates away or an app
+killed mid-request leaves the device holding a credential the session has
+already moved past. Refusing it would sign the person out for good days before
+their lifetime is up, so the session remembers the credential it rotated away
+from last (``previous_refresh_jti``) and when (``refreshed_at``). That
+credential, presented within ``DEVICE_SESSION_REFRESH_GRACE_SECONDS`` of the
+rotation, is answered with the credential the session is on now, the same one
+every time, so the device recovers whatever it lost and two windows that
+raced with one credential both end holding the same working one. The grace
+covers the single previous credential only, for that window only, and only for
+a session and account that would be refreshed anyway.
+
+Anything else older than the current credential is a replay: a credential
+presented after the window, or one that is two rotations old, is either a
+device that kept an old copy or somebody who copied it. The session ends
+(``CREDENTIAL_REUSED``), its current credential is revoked, and the answer is
+``TOKEN_REVOKED``, so the device asks for a sign-in instead of retrying and a
+stolen old credential stops working for everybody, the thief and the owner
+alike.
 
 **Ending one.** Signing out ends that account on that device only. Ending every
 session of an account (a suspension, a deactivation, an administrator's force
@@ -100,16 +122,16 @@ class DeviceSessionRefused(Exception):
     """A device session that cannot be issued or continued.
 
     ``code`` is the stable error code; ``message`` the sentence to show.
-    ``ends_session`` is False only for ``TOKEN_STALE``: the session is alive
-    and its cookie already holds a newer credential, so the refusal must not
-    clear it.
+    ``reused_by`` is the account whose session this refusal ended because an
+    old credential was presented again, so the caller can audit it; None for
+    every other refusal.
     """
 
-    def __init__(self, code: str, message: str, *, ends_session: bool = True):
+    def __init__(self, code: str, message: str, *, reused_by=None):
         super().__init__(message)
         self.code = code
         self.message = message
-        self.ends_session = ends_session
+        self.reused_by = reused_by
 
 
 def _invalid():
@@ -119,14 +141,6 @@ def _invalid():
 def _revoked():
     return DeviceSessionRefused(
         "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
-    )
-
-
-def _stale():
-    return DeviceSessionRefused(
-        "TOKEN_STALE",
-        "This sign-in was just renewed in another window. Try again.",
-        ends_session=False,
     )
 
 
@@ -166,6 +180,12 @@ def browser_sign_in_policy(user) -> Optional[DeviceSessionPolicy]:
     if policy is None or not policy.sends_browser_sign_in_to_app:
         return None
     return policy
+
+
+def refresh_grace() -> timedelta:
+    """How long a rotated-away credential is still answered; zero turns it off."""
+    seconds = getattr(settings, "DEVICE_SESSION_REFRESH_GRACE_SECONDS", 120)
+    return timedelta(seconds=max(0, int(seconds)))
 
 
 def cookie_name(account: str) -> str:
@@ -258,30 +278,104 @@ def _blacklisted(jti: str) -> bool:
 def refresh(account: str, raw: str):
     """Rotate *account*'s credential; returns ``(session, refresh, access)``.
 
-    The session row is locked, so two refreshes racing with one credential
-    rotate it once. The one that loses presented the credential the session
-    has just rotated away from, and is answered ``TOKEN_STALE``: the session
-    lives on, the cookie already holds the new credential, and the caller
-    simply asks again. A credential the session still holds but that has been
-    blacklisted (every session of the account ended, by a force logout or a
-    suspension), or an account no longer allowed in or no longer offered a
-    device session, ends the session for good before the refusal is raised.
+    The session row is locked, so refreshes racing on one session run one
+    after another and each sees what the one before it left. What the
+    presented credential is decides the answer:
+
+    * **The current one** is rotated: it is revoked, a new credential is
+      issued, and it becomes the session's previous credential.
+    * **The previous one, within the grace window** is answered with the
+      current credential and a fresh access token, and nothing rotates: the
+      device lost the answer to the last rotation, or another window made the
+      refresh first, and either way it now holds what the session is on. If
+      the stored current credential cannot be read, the session rotates
+      instead, and the credential presented stays good for the window.
+    * **Anything older, or the previous one after the window,** is a replay.
+      The session ends as ``CREDENTIAL_REUSED`` and ``TOKEN_REVOKED`` is
+      raised, carrying the account in ``reused_by`` for the audit trail.
+
+    A credential the session still holds but that has been blacklisted (every
+    session of the account ended, by a force logout or a suspension), or an
+    account no longer allowed in or no longer offered a device session, ends
+    the session for good before the refusal is raised. The refusals are raised
+    after the transaction commits, so ending a session is never rolled back
+    with them.
     """
+    reused_by = None
     with transaction.atomic():
         claims, session = _read(account, raw)
-        if session.refresh_jti != str(claims["jti"]):
-            raise _stale()
+        presented = str(claims["jti"])
         user = session.user
-        policy = device_session_policy(user)
-        if user.may_sign_in and policy is not None and not _blacklisted(claims["jti"]):
-            RefreshToken(raw).blacklist()
-            new = _credential(user, account, policy)
-            session.refresh_jti = str(new["jti"])
-            session.last_seen_at = timezone.now()
-            session.save(update_fields=["refresh_jti", "last_seen_at"])
-            return session, str(new), str(new.access_token)
-        _end(session, reason="NOT_ALLOWED")
+        now = timezone.now()
+        is_current = presented == session.refresh_jti
+        is_previous = (
+            not is_current
+            and bool(session.previous_refresh_jti)
+            and presented == session.previous_refresh_jti
+            and session.refreshed_at is not None
+            and now - session.refreshed_at <= refresh_grace()
+        )
+        if not (is_current or is_previous):
+            reused_by = user
+            _end(session, reason="CREDENTIAL_REUSED")
+        else:
+            policy = device_session_policy(user)
+            if user.may_sign_in and policy is not None and not _blacklisted(session.refresh_jti):
+                if is_previous:
+                    replayed = _replay(session, now)
+                    if replayed is not None:
+                        return session, str(replayed), str(replayed.access_token)
+                new = _rotate(session, user, account, policy, now, previous=presented)
+                return session, str(new), str(new.access_token)
+            _end(session, reason="NOT_ALLOWED")
+    if reused_by is not None:
+        raise DeviceSessionRefused(
+            "TOKEN_REVOKED", "This session has been revoked. Please sign in again.",
+            reused_by=reused_by,
+        )
     raise _revoked()
+
+
+def _rotate(session, user, account: str, policy, now, *, previous: str):
+    """Revoke the session's current credential, issue the next, and record both.
+
+    *previous* is the credential the device is known to hold, which the grace
+    window then answers.
+    """
+    blacklist_token_by_jti(session.refresh_jti)
+    new = _credential(user, account, policy)
+    session.refresh_jti = str(new["jti"])
+    session.previous_refresh_jti = previous
+    session.refreshed_at = now
+    session.last_seen_at = now
+    session.save(update_fields=[
+        "refresh_jti", "previous_refresh_jti", "refreshed_at", "last_seen_at",
+    ])
+    return new
+
+
+def _replay(session, now):
+    """The session's current credential as issued, or None when it cannot be read.
+
+    Used to answer the previous credential again: the device gets back the
+    credential the lost answer carried, and the session's state is untouched
+    apart from the time it was last seen.
+    """
+    stored = (
+        OutstandingToken.objects.filter(jti=session.refresh_jti)
+        .values_list("token", flat=True).first()
+    )
+    if not stored:
+        return None
+    try:
+        current = RefreshToken(stored)
+    except TokenError:
+        return None
+    if str(current["jti"]) != session.refresh_jti:
+        return None
+    session.last_seen_at = now
+    session.save(update_fields=["last_seen_at"])
+    return current
 
 
 def _end(session, *, reason: str) -> None:

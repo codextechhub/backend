@@ -8,6 +8,7 @@ CSRF enforced, as the app does.
 from __future__ import annotations
 
 import datetime as dt
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase, override_settings
@@ -15,6 +16,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from vs_audit.models import AuditEvent
 
 from .models import LoginSession
 from .services import device_sessions
@@ -154,23 +157,186 @@ class DeviceSessionTests(TestCase):
         self.assertEqual(self.cookie(bayo), bayo_before)
         self.assertEqual(self.call("refresh", {"account": bayo}).status_code, 200)
 
-    def test_the_window_that_loses_a_refresh_race_is_told_to_ask_again(self):
-        account = self.sign_in(self.ada).json()["data"]["account"]
-        old = self.cookie(account)
-        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
-        new = self.cookie(account)
+    # ── a refresh whose answer never reached the device ───────────────────
 
-        # The second window still sent the credential the first just rotated.
-        self.client.cookies[f"{PREFIX}{account}"] = old
-        response = self.call("refresh", {"account": account})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_STALE")
-        self.assertNotIn(f"{PREFIX}{account}", response.cookies)
+    def lose_the_answer(self, account):
+        """Refresh as the server sees it, then put back the credential the device still holds."""
+        held = self.cookie(account)
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+        self.client.cookies[f"{PREFIX}{account}"] = held
+        return held
+
+    @staticmethod
+    def after(seconds):
+        """The clock *seconds* from now, for the code that decides whether a window is open."""
+        return mock.patch.object(
+            device_sessions.timezone, "now",
+            return_value=timezone.now() + dt.timedelta(seconds=seconds),
+        )
+
+    def test_a_lost_answer_is_recovered_by_presenting_the_old_credential_again(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        session = LoginSession.all_objects.get(device_key=account)
+        first = session.refresh_jti
+        self.lose_the_answer(account)
+        rotated = LoginSession.all_objects.get(device_key=account).refresh_jti
+        self.assertNotEqual(rotated, first)
+
+        with self.after(30):
+            retry = self.call("refresh", {"account": account})
+        self.assertEqual(retry.status_code, 200, retry.content)
+        self.assertTrue(retry.json()["data"]["access"])
+        delivered = RefreshToken(retry.cookies[f"{PREFIX}{account}"].value)
+        self.assertEqual(str(delivered["jti"]), rotated)
+
+        # The device now holds the credential the session is on, and it carries on.
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
         self.assertTrue(LoginSession.all_objects.get(device_key=account).is_active)
 
-        # Asking again, with the cookie the browser now holds, succeeds.
-        self.client.cookies[f"{PREFIX}{account}"] = new
+    def test_the_grace_retry_gives_back_the_same_credential_however_often_it_is_asked(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        held = self.lose_the_answer(account)
+
+        delivered = set()
+        for _ in range(3):
+            self.client.cookies[f"{PREFIX}{account}"] = held
+            with self.after(10):
+                response = self.call("refresh", {"account": account})
+            self.assertEqual(response.status_code, 200, response.content)
+            delivered.add(response.cookies[f"{PREFIX}{account}"].value)
+        self.assertEqual(len(delivered), 1)
+
+    def test_two_windows_refreshing_with_one_credential_end_with_the_same_working_credential(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        held = self.cookie(account)
+        first = self.call("refresh", {"account": account})
+        first_delivered = first.cookies[f"{PREFIX}{account}"].value
+        self.client.cookies[f"{PREFIX}{account}"] = held
+        second = self.call("refresh", {"account": account})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(first_delivered, second.cookies[f"{PREFIX}{account}"].value)
+        # Whichever answer the browser keeps, it works.
+        self.client.cookies[f"{PREFIX}{account}"] = first_delivered
         self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+
+    def test_the_old_credential_after_the_window_ends_the_session(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        held = self.lose_the_answer(account)
+        current = LoginSession.all_objects.get(device_key=account).refresh_jti
+
+        with self.after(device_sessions.refresh_grace().total_seconds() + 1):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+        self.assertEqual(response.cookies[f"{PREFIX}{account}"]["max-age"], 0)
+
+        session = LoginSession.all_objects.get(device_key=account)
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "CREDENTIAL_REUSED")
+        self.assertTrue(device_sessions._blacklisted(current))
+        self.assertTrue(device_sessions._blacklisted(RefreshToken(held, verify=False)["jti"]))
+
+        # The credential the session had moved to is dead with it.
+        self.client.cookies[f"{PREFIX}{account}"] = held
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 401)
+
+    def test_a_credential_two_rotations_old_is_refused_even_inside_the_window(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        oldest = self.cookie(account)
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+        self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+
+        self.client.cookies[f"{PREFIX}{account}"] = oldest
+        response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+        session = LoginSession.all_objects.get(device_key=account)
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "CREDENTIAL_REUSED")
+
+    def test_ending_a_session_for_a_reused_credential_is_audited_and_releases_the_device(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        ended_devices = []
+        device_session_ended.connect(
+            lambda sender, device_key, **kwargs: ended_devices.append(device_key),
+            weak=False, dispatch_uid="test.reuse_ended",
+        )
+        self.addCleanup(device_session_ended.disconnect, dispatch_uid="test.reuse_ended")
+        self.lose_the_answer(account)
+
+        with self.after(device_sessions.refresh_grace().total_seconds() + 1):
+            self.call("refresh", {"account": account})
+
+        self.assertEqual(ended_devices, [account])
+        event = AuditEvent.objects.filter(
+            metadata__auth_event="TOKEN_REVOKED", metadata__reason="CREDENTIAL_REUSED",
+        ).first()
+        self.assertIsNotNone(event)
+
+    def test_a_forced_logout_is_not_undone_by_the_window(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        self.lose_the_answer(account)
+        blacklist_all_user_tokens(self.ada, reason="FORCE_LOGOUT")
+
+        with self.after(5):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+
+    def test_an_account_no_longer_offered_the_app_is_refused_inside_the_window(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        self.lose_the_answer(account)
+        self.offered.discard(self.ada.pk)
+
+        with self.after(5):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        session = LoginSession.all_objects.get(device_key=account)
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "NOT_ALLOWED")
+
+    def test_an_account_that_may_no_longer_sign_in_is_refused_inside_the_window(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        self.lose_the_answer(account)
+        type(self.ada).objects.filter(pk=self.ada.pk).update(status="SUSPENDED")
+
+        with self.after(5):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(LoginSession.all_objects.get(device_key=account).is_active)
+
+    def test_a_window_of_zero_seconds_accepts_no_old_credential(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        self.lose_the_answer(account)
+        with override_settings(DEVICE_SESSION_REFRESH_GRACE_SECONDS=0):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+
+    def test_a_current_credential_that_cannot_be_replayed_is_rotated_instead(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        held = self.lose_the_answer(account)
+        session = LoginSession.all_objects.get(device_key=account)
+        OutstandingToken.objects.filter(jti=session.refresh_jti).update(token="")
+
+        with self.after(5):
+            response = self.call("refresh", {"account": account})
+        self.assertEqual(response.status_code, 200, response.content)
+        reissued = RefreshToken(response.cookies[f"{PREFIX}{account}"].value)
+        self.assertNotEqual(str(reissued["jti"]), session.refresh_jti)
+        self.assertTrue(device_sessions._blacklisted(session.refresh_jti))
+        # The device holds the credential it presented, which stays good for the window.
+        self.client.cookies[f"{PREFIX}{account}"] = held
+        with self.after(10):
+            self.assertEqual(self.call("refresh", {"account": account}).status_code, 200)
+
+    def test_signing_out_with_the_credential_the_device_still_holds_ends_the_session(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        self.lose_the_answer(account)
+        self.assertEqual(self.call("sign-out", {"account": account}).status_code, 200)
+        self.assertFalse(LoginSession.all_objects.get(device_key=account).is_active)
 
     def test_one_accounts_credential_cannot_refresh_another(self):
         ada = self.sign_in(self.ada).json()["data"]["account"]
