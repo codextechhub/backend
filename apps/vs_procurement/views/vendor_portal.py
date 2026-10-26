@@ -9,6 +9,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.response import success_response
 from core.models import StoredFile
@@ -30,6 +31,8 @@ class _PublicRfqView(APIView):
     permission_classes = [AllowAny]
     tenant_param_required = False
     throttle_scope = "rfq_portal"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def verified(self, request, token):
         return vendor_portal.invitation_from_session(token, _session(request))
@@ -71,6 +74,8 @@ class PublicRfqLogoView(_PublicRfqView):
 
 class PublicRfqRequestCodeView(_PublicRfqView):
     throttle_scope = "rfq_verification"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request, token):
         vendor_portal.request_verification_code(token, request.data.get("email", ""))
@@ -79,6 +84,8 @@ class PublicRfqRequestCodeView(_PublicRfqView):
 
 class PublicRfqVerifyCodeView(_PublicRfqView):
     throttle_scope = "rfq_verification"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request, token):
         session_token, payload = vendor_portal.verify_code(

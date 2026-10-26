@@ -145,6 +145,9 @@ class PublicInvoiceLogoView(_PublicInvoicePayView):
 
     throttle_scope = "invoice_pay"
 
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
+
     def get(self, request, token):
         invoice = pay_links.invoice_from_token(token)
         name = pay_links.logo_storage_name(invoice)

@@ -390,6 +390,8 @@ class ActivationView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = 'activation'
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request, token):
         ser = ActivationSerializer(data=request.data)

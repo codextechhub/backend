@@ -8,6 +8,7 @@ because a school that has not gone live has no pupils using the portal.
 from __future__ import annotations
 
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.response import success_response
 
@@ -550,6 +551,8 @@ class PublicAppView(APIView):
     permission_classes = [AllowAny]
     tenant_param_required = False
     throttle_scope = "school_brand"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def school(self, slug):
         from rest_framework.exceptions import NotFound
