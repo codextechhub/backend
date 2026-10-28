@@ -16,9 +16,7 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 - Ignore Office lock files (`~$*.docx`). Never commit rendered PDFs, page images
   or any other render artifact.
 
-LATEST BASES ON 2026-10-26: MRD v2.115, M01 v1.35.1, M02 v1.10, M03 v1.25, M04 v1.43, M05 v1.13.1, M06 v1.12, M07 v1.28, M08 v1.20, M09 v2.19, M10 v1.12, M11 v2.18, M12 v2.22, M13 v2.14, M14 v3.8, M15 v1.1, M16 v1.1, M17 v1.15, M18 v1.20, M19 v1.24, M20 v1.13, M21 v1.10, M22 v1.23, M23 v1.21, M24 v1.9, M25 v1.6, M26 v1.12, M27 v1.2, M28 v1.5, M30 v1.6.1, M31 v1.11, M32 v1.2. Recheck on the day.
-
-A parent can load their child's photograph in the parent app (backend d5e2c5fa, 2026-10-26): REVISE M28 (patch), M11 (patch) where it describes who may read a pupil's photograph or documents; MRD: no change. MUST SAY: a pupil's stored files are readable by three independent kinds of caller: the pupil (their photograph only), a guardian of the pupil as the parent portal defines it (`is_portal_guardian_of`: the signed-in active account is the user of a guardian linked to the pupil in the same school, and the pupil is in the portal statuses; photograph only), and staff holding the student view key within their branch scope (every file). Birth certificates, medical letters and every other document stay staff-only; a teacher who is also a parent reads their own child's photograph at another branch while their staff scope still decides every other pupil. Field Access: none (the photograph was already in the parent payload; the staff photo switch is unchanged). Tests `schools.vs_students.tests.test_guardian_reads_child_photo`, `schools.vs_parent_portal.tests.test_child_photo`.
+LATEST BASES ON 2026-10-28: MRD v2.115, M01 v1.35.1, M02 v1.10, M03 v1.25, M04 v1.43, M05 v1.13.1, M06 v1.12, M07 v1.28, M08 v1.20, M09 v2.19, M10 v1.12, M11 v2.18.1, M12 v2.22, M13 v2.14, M14 v3.8, M15 v1.1, M16 v1.1, M17 v1.15, M18 v1.20, M19 v1.24, M20 v1.13, M21 v1.10, M22 v1.23, M23 v1.21, M24 v1.9, M25 v1.6, M26 v1.12, M27 v1.2, M28 v1.5.1, M30 v1.6.1, M31 v1.11, M32 v1.2. Recheck on the day.
 
 ## Undone
 
