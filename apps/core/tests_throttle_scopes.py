@@ -59,6 +59,21 @@ def _scopes(view):
     return {scope for scope in found if scope}
 
 
+def _builds_own_throttles(view):
+    """Whether *view*, or a project class it inherits from, chooses its throttles.
+
+    DRF's own ``APIView`` sets ``throttle_classes`` from the default list, so
+    classes from ``rest_framework`` do not count; a project base class that
+    names them does, as does overriding ``get_throttles``.
+    """
+    for klass in view.__mro__:
+        if klass.__module__.startswith("rest_framework"):
+            continue
+        if "throttle_classes" in vars(klass) or "get_throttles" in vars(klass):
+            return True
+    return False
+
+
 class ThrottleScopeTests(SimpleTestCase):
     def test_every_scope_a_view_names_has_a_rate_in_the_running_settings(self):
         rates = settings.REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES") or {}
@@ -75,6 +90,35 @@ class ThrottleScopeTests(SimpleTestCase):
             "These views name a throttle scope that no rate is declared for, so "
             "every request to them raises rather than being served: "
             + repr(missing),
+        )
+
+    def test_every_view_that_names_a_scope_builds_its_own_throttle(self):
+        """A scope is only counted by a throttle the view itself builds.
+
+        ``throttle_scope`` alone is read by whatever ``DEFAULT_THROTTLE_CLASSES``
+        holds, and a settings module may empty that list. The view then keeps
+        its scope and loses its limit, silently:
+
+            The CI and test settings empty the default list, so the public
+            account-deletion page answered every request with no limit there,
+            while staging limited it. Its throttle tests failed in CI and
+            passed on a developer's machine, and the route's protection hung on
+            one line in a settings file.
+
+        So a view naming a scope must also name its throttle classes, or build
+        them in ``get_throttles``, in its own code rather than inherit DRF's.
+        """
+        missing = sorted(
+            f"{view.__module__}.{view.__name__}"
+            for view in _view_classes()
+            if getattr(view, "throttle_scope", None) and not _builds_own_throttles(view)
+        )
+
+        self.assertEqual(
+            missing, [],
+            "These views name a throttle scope but leave the throttle to "
+            "DEFAULT_THROTTLE_CLASSES, so a settings module that empties it "
+            "removes their limit: " + repr(missing),
         )
 
     def test_security_sensitive_public_routes_are_among_the_scopes_this_covers(self):

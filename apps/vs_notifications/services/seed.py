@@ -1375,7 +1375,7 @@ def _build_default_templates() -> dict:
                 "Receipt number: {{ receipt_number }}\n"
                 "Amount paid: ₦{{ amount_paid }}\n"
                 "Payment date: {{ payment_date }}\n"
-                "Applied to invoice: {{ invoice_number }}\n\n"
+                "{{ settlement_summary }}\n\n"
                 "{{ note }}\n\n"
                 "{{ issuer_name }} via {{ email_brand }}"
             ),

@@ -637,9 +637,12 @@ students app registers one for any account linked to a pupil, with
   browser sign-in answers `device_app: {path}` (null for staff).
 - `POST /v1/user/auth/device/refresh/` `{account}`: rotates that account's
   credential and starts its days again; 401 `TOKEN_EXPIRED` / `TOKEN_REVOKED`
-  / `TOKEN_INVALID` clears its cookie. Two windows refreshing at once rotate
-  the credential once; the loser gets 409 `TOKEN_STALE`, its cookie is left
-  alone, and asking again succeeds.
+  / `TOKEN_INVALID` clears its cookie. The credential rotated away from last is
+  still answered for `SESSION_REFRESH_GRACE_SECONDS` (120) with the
+  credential the session is on, so a lost answer or two windows refreshing at
+  once both end holding the same working credential. An older credential, or
+  that one after the window, ends the session (`CREDENTIAL_REUSED`) and answers
+  401 `TOKEN_REVOKED`. 409 `TOKEN_STALE` is no longer answered.
 - `POST /v1/user/auth/device/sign-out/` `{account}`: ends that account on that
   device only; always 200.
 - `POST /v1/user/auth/device/hand-over/`: turns a browser session (after a

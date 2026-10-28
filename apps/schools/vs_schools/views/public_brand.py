@@ -14,6 +14,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.models import StoredFile
 from vs_tenants.models import Tenant
@@ -32,6 +33,8 @@ class PublicSchoolNameView(APIView):
     permission_classes = [AllowAny]
     tenant_param_required = False
     throttle_scope = "school_brand"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def get(self, request, slug):
         name = School.objects.filter(
@@ -59,6 +62,8 @@ class PublicSchoolLogoView(APIView):
     # on one office address, and because the response is cacheable so an honest
     # browser asks once an hour.
     throttle_scope = "school_brand"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def get(self, request, slug):
         # The same lookup sign-in performs, so a school that cannot sign in

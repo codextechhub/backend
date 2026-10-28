@@ -47,20 +47,15 @@ def _credential(request, account: str, *, native: bool) -> str:
 
 
 def _refused(exc, account: str, *, http_status=status.HTTP_401_UNAUTHORIZED, native: bool = False):
-    """The refusal, clearing the account's cookie unless the session lives on.
+    """The refusal, clearing the account's cookie.
 
     A store app holds no cookie, so nothing is cleared for it.
-
-    ``TOKEN_STALE`` answers 409 and leaves the cookie alone: another window
-    has just rotated it, and clearing it here would sign the account out of
-    the device after all.
     """
-    if not exc.ends_session:
-        http_status = status.HTTP_409_CONFLICT
     response = error_response(
-        message=exc.message, error={"error_code": exc.code}, status=http_status,
+        message=exc.message, error={"error_code": exc.code},
+        status=http_status,
     )
-    if account and exc.ends_session and not native:
+    if account and not native:
         clear_device_cookie(response, account)
     return response
 
@@ -84,9 +79,15 @@ class DeviceRefreshView(_DeviceView):
     receives the rotated one as ``refresh`` in the response; no cookie is read
     or set. 401 with ``TOKEN_EXPIRED``, ``TOKEN_REVOKED`` or ``TOKEN_INVALID``
     clears the cookie; the app then drops the account (and, for a store app,
-    its stored credential) from its list and asks for a sign-in. 409
-    ``TOKEN_STALE`` means another window refreshed the same account a moment
-    earlier: nothing is cleared, and asking again succeeds.
+    its stored credential) from its list and asks for a sign-in.
+
+    The credential the session rotated away from last is still answered for a
+    short while (``SESSION_REFRESH_GRACE_SECONDS``) with the credential
+    the session is on, so a device whose last answer was lost recovers by
+    asking again with what it holds. An older credential, or that one after
+    the window, ends the session and answers 401 ``TOKEN_REVOKED``. No
+    refresh answers 409: ``TOKEN_STALE`` is retired, and an app that still
+    retries on it simply never sees it.
 
     docstring-name: Refresh a device session
     """
@@ -102,6 +103,12 @@ class DeviceRefreshView(_DeviceView):
                 account, _credential(request, account, native=native),
             )
         except device_sessions.DeviceSessionRefused as exc:
+            if exc.reused_by is not None:
+                log_auth_event(
+                    actor=exc.reused_by, subject=exc.reused_by, tenant=exc.reused_by.tenant,
+                    event=AuthEvent.TOKEN_REVOKED, request=request,
+                    metadata={"reason": "CREDENTIAL_REUSED", "device_key": account},
+                )
             return _refused(exc, account, native=native)
         data = {"access": access, "account": account, "session_id": session.pk}
         if native:

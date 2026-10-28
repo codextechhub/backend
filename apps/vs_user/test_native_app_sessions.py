@@ -15,15 +15,17 @@ check, because only the exact native origins are treated this way.
 from __future__ import annotations
 
 import datetime as dt
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.settings import base as base_settings
 
 from .models import LoginSession
-from .services import device_sessions
+from .services import device_sessions, session_credentials
 from .services.device_sessions import DeviceSessionPolicy, register_device_session_policy
 from .signals import device_session_ended
 from .test_browser_session import BROWSER_ORIGIN_REGEXES, BROWSER_ORIGINS, HARDENED_COOKIE
@@ -87,6 +89,14 @@ class NativeAppSessionTests(TestCase):
         if refresh is not None:
             body["refresh"] = refresh
         return self.client.post(route, body, format="json", HTTP_ORIGIN=origin)
+
+    @staticmethod
+    def after(seconds):
+        """The clock *seconds* from now, for the code that decides whether a window is open."""
+        return mock.patch.object(
+            device_sessions.timezone, "now",
+            return_value=timezone.now() + dt.timedelta(seconds=seconds),
+        )
 
     def assert_no_cookies(self, response):
         self.assertEqual(list(response.cookies), [])
@@ -205,12 +215,50 @@ class NativeAppSessionTests(TestCase):
         self.assertNotEqual(second, first)
         self.assert_no_cookies(response)
 
-        # The credential just spent is stale; the new one works.
-        stale = self.call(REFRESH, account, first)
-        self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json()["error"]["error_code"], "TOKEN_STALE")
-        self.assert_no_cookies(stale)
+        # The credential just spent is still answered inside the window, with
+        # the one the session is on; the new one works as well.
+        again = self.call(REFRESH, account, first)
+        self.assertEqual(again.status_code, 200, again.content)
+        self.assertEqual(again.json()["data"]["refresh"], second)
+        self.assert_no_cookies(again)
         self.assertEqual(self.call(REFRESH, account, second).status_code, 200)
+
+    def test_a_native_refresh_whose_answer_was_lost_is_recovered_inside_the_window(self):
+        account, first = self.native_sign_in(self.tunde)
+        delivered = self.call(REFRESH, account, first).json()["data"]["refresh"]
+
+        # The phone never saw that answer and asks again with what it holds.
+        with self.after(60):
+            retry = self.call(REFRESH, account, first)
+        self.assertEqual(retry.status_code, 200, retry.content)
+        self.assertEqual(retry.json()["data"]["refresh"], delivered)
+        self.assert_no_cookies(retry)
+        with self.after(61):
+            self.assertEqual(self.call(REFRESH, account, delivered).status_code, 200)
+
+    def test_a_native_credential_presented_after_the_window_ends_the_session(self):
+        account, first = self.native_sign_in(self.tunde)
+        current = self.call(REFRESH, account, first).json()["data"]["refresh"]
+
+        with self.after(session_credentials.refresh_grace().total_seconds() + 1):
+            response = self.call(REFRESH, account, first)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+        self.assert_no_cookies(response)
+        session = LoginSession.all_objects.get(device_key=account)
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "CREDENTIAL_REUSED")
+        self.assertEqual(self.call(REFRESH, account, current).status_code, 401)
+
+    def test_a_native_credential_two_rotations_old_ends_the_session(self):
+        account, first = self.native_sign_in(self.tunde)
+        second = self.call(REFRESH, account, first).json()["data"]["refresh"]
+        self.assertEqual(self.call(REFRESH, account, second).status_code, 200)
+
+        response = self.call(REFRESH, account, first)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_REVOKED")
+        self.assertFalse(LoginSession.all_objects.get(device_key=account).is_active)
 
     def test_a_native_refresh_ignores_a_cookie(self):
         account, credential = self.native_sign_in(self.tunde)

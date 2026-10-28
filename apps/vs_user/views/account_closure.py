@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from rest_framework import status
 from rest_framework.permissions import AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
@@ -133,6 +134,8 @@ class AccountClosureLinkRequestView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_scope = "account_closure_request"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
     tenant_param_required = False
 
     def post(self, request):
@@ -165,6 +168,8 @@ class AccountClosureLinkConfirmView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_scope = "account_closure_confirm"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
     tenant_param_required = False
 
     def post(self, request):

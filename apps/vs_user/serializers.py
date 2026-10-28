@@ -11,9 +11,6 @@ from django.utils import timezone
 
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
-from rest_framework_simplejwt.serializers import (
-    TokenRefreshSerializer as JWTTokenRefreshSerializer,
-)
 
 from core.media import signed_url
 from core.validators import phone_validator
@@ -761,19 +758,6 @@ class LoginRequestSerializer(serializers.Serializer):
         attrs['card_id'] = card_id
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
-
-
-class TokenRefreshSerializer(JWTTokenRefreshSerializer):
-    """
-    Thin wrapper around SimpleJWT's TokenRefreshSerializer.
-
-    SimpleJWT's serializer is the one that actually validates the refresh
-    token, generates a new access token, and rotates the refresh token when
-    ROTATE_REFRESH_TOKENS=True. The previous custom no-op CharField version
-    caused TokenRefreshView to raise KeyError('access') and return HTTP 500
-    on every refresh request.
-    """
-    pass
 
 
 class TokenRevokeSerializer(serializers.Serializer):

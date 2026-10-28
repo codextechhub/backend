@@ -11,6 +11,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 
 from core.mixins import XVSModelViewSetMixin
 from core.response import success_response
@@ -462,6 +463,8 @@ class GuideAnalyticsEventView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive]
     throttle_scope = "guide_analytics"
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
     # A school still being set up reads the guides more than anyone, and an
     # event carries no tenant or user, so there is nothing here to withhold.
     pending_tenant_surface = True

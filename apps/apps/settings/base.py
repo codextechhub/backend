@@ -358,6 +358,17 @@ AUTH_REFRESH_COOKIE_SAMESITE = "Strict"
 AUTH_DEVICE_COOKIE_PREFIX = "device_session_"
 AUTH_DEVICE_COOKIE_PATH = "/v1/user/auth/"
 
+# How long after a session rotates its refresh credential the credential it
+# rotated away from is still answered, with the one the session is on now. It
+# covers a refresh whose answer never reached the browser or device (see
+# vs_user.services.session_credentials); past it the old credential is a replay
+# and ends the session. Browser and device sessions share it. 0 turns it off.
+SESSION_REFRESH_GRACE_SECONDS = config(
+    "SESSION_REFRESH_GRACE_SECONDS",
+    default=config("DEVICE_SESSION_REFRESH_GRACE_SECONDS", default=120, cast=int),
+    cast=int,
+)
+
 # Application definition
 
 INSTALLED_APPS = [

@@ -14,6 +14,7 @@ from __future__ import annotations
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
+from rest_framework.throttling import ScopedRateThrottle
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from core.response import success_response, error_response
 from ..models import User
@@ -115,6 +116,8 @@ class PasswordResetRequestView(APIView):
     """
     permission_classes = [AllowAny]
     throttle_scope = 'password_reset'
+    # Named here so the limit holds whatever the default throttle classes are.
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         ser = PasswordResetRequestSerializer(data=request.data)
