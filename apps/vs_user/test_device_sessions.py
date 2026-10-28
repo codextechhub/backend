@@ -373,6 +373,21 @@ class DeviceSessionTests(TestCase):
             LoginSession.all_objects.get(device_key=account).is_active,
         )
 
+    def test_an_account_that_is_no_key_is_refused_not_crashed(self):
+        # Text with spaces and a colon cannot even name a cookie; it used to answer 500.
+        for account in ["REFUSED: Request was throttled.", "", "a" * 200]:
+            response = self.call("refresh", {"account": account})
+            self.assertEqual(response.status_code, 401, account)
+            self.assertEqual(response.json()["error"]["error_code"], "TOKEN_INVALID")
+            self.assertFalse(
+                [name for name in response.cookies if name.startswith(PREFIX)], account,
+            )
+
+    def test_a_well_formed_account_no_session_has_is_refused(self):
+        response = self.call("refresh", {"account": "0" * 32})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["error_code"], "TOKEN_INVALID")
+
     # ── signing out ───────────────────────────────────────────────────────
 
     def test_signing_out_ends_one_account_and_leaves_the_other(self):
@@ -393,6 +408,12 @@ class DeviceSessionTests(TestCase):
         account = self.sign_in(self.ada).json()["data"]["account"]
         del self.client.cookies[f"{PREFIX}{account}"]
         self.assertEqual(self.call("sign-out", {"account": account}).status_code, 200)
+        self.assertTrue(LoginSession.all_objects.get(device_key=account).is_active)
+
+    def test_signing_out_an_account_that_is_no_key_ends_nothing_and_does_not_crash(self):
+        account = self.sign_in(self.ada).json()["data"]["account"]
+        response = self.call("sign-out", {"account": "not a key; at all"})
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(LoginSession.all_objects.get(device_key=account).is_active)
 
     # ── handing a browser sign-in over ────────────────────────────────────

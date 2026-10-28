@@ -80,8 +80,10 @@ def clear_refresh_cookie(response) -> None:
 
 
 def device_cookie_value(request, account: str) -> str:
-    from .services.device_sessions import cookie_name
+    from .services.device_sessions import cookie_name, valid_key
 
+    if not valid_key(account):
+        return ""
     return request.COOKIES.get(cookie_name(account), "")
 
 
@@ -105,8 +107,15 @@ def set_device_cookie(response, account: str, refresh_token: str, *, max_age: in
 
 
 def clear_device_cookie(response, account: str) -> None:
-    from .services.device_sessions import cookie_name
+    """Clear one device session's cookie.
 
+    An account that is not a key this server issues names no cookie it ever
+    set, and may make an illegal cookie name, so there is nothing to clear.
+    """
+    from .services.device_sessions import cookie_name, valid_key
+
+    if not valid_key(account):
+        return
     response.delete_cookie(
         key=cookie_name(account),
         path=settings.AUTH_DEVICE_COOKIE_PATH,

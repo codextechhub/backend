@@ -193,7 +193,13 @@ def cookie_max_age(raw: str) -> int:
     return max(0, int(exp - timezone.now().timestamp()))
 
 
-def _valid_key(account) -> bool:
+def valid_key(account) -> bool:
+    """Whether *account* has the shape of a key this server issues.
+
+    Keys come from ``secrets.token_hex``, so anything else names no session
+    and no cookie, and a cookie name built from it may not even be legal: the
+    cookie helpers in ``browser_session`` ask this before touching one.
+    """
     text = str(account or "")
     return 16 <= len(text) <= 64 and text.isalnum()
 
@@ -241,7 +247,7 @@ def _read(account: str, raw: str):
     from rest_framework_simplejwt.exceptions import TokenBackendError
     from rest_framework_simplejwt.state import token_backend
 
-    if not _valid_key(account) or not raw:
+    if not valid_key(account) or not raw:
         raise _invalid()
     try:
         claims = token_backend.decode(raw, verify=True)
