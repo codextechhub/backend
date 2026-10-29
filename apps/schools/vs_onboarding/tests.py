@@ -1669,6 +1669,60 @@ class GoLiveReviewTests(OnboardingFixture):
             GoLiveStatus.FAILED,
         )
 
+    def test_approval_opens_the_branches_waiting_with_the_school(self):
+        """Ikeja and Lekki open with Bright Star; a branch already shut does not.
+
+        Only the school's own Pending branches move. One the school took out of
+        service before go-live stays where it is, and another school's Pending
+        branch is not touched.
+        """
+        from .services.go_live import BRANCH_OPENED_AT_GO_LIVE
+
+        ikeja = make_branch(self.school, name="Ikeja Branch", status=BranchStatus.PENDING)
+        lekki = make_branch(
+            self.school, name="Lekki Branch", is_main=False, status=BranchStatus.PENDING,
+        )
+        shut = make_branch(
+            self.school, name="Ajah Branch", is_main=False, status=BranchStatus.INACTIVE,
+        )
+        rival = make_branch(self.rival, name="Beta Main", status=BranchStatus.PENDING)
+
+        response = self.approve()
+
+        self.assertEqual(response.status_code, 200, response.data)
+        for branch in (ikeja, lekki):
+            branch.refresh_from_db()
+            self.assertEqual(branch.status, BranchStatus.ACTIVE)
+            self.assertIsNotNone(branch.activated_at)
+            event = branch.lifecycle_events.latest("occurred_at")
+            self.assertEqual(event.to_state, BranchStatus.ACTIVE)
+            self.assertEqual(event.reason, BRANCH_OPENED_AT_GO_LIVE)
+            self.assertEqual(event.actor_id, str(self.reviewer.pk))
+        shut.refresh_from_db()
+        rival.refresh_from_db()
+        self.assertEqual(shut.status, BranchStatus.INACTIVE)
+        self.assertEqual(rival.status, BranchStatus.PENDING)
+
+    def test_a_branch_that_cannot_open_fails_the_whole_activation(self):
+        """A live school beside a branch that never opened is the half-live state."""
+        lekki = make_branch(self.school, name="Lekki Branch", status=BranchStatus.PENDING)
+
+        with patch.object(
+            Branch, "transition", side_effect=RuntimeError("the branch would not open"),
+        ):
+            response = self.approve()
+
+        self.assertErrorCode(response, 500, "GOLIVE_ACTIVATION_FAILED")
+        lekki.refresh_from_db()
+        self.assertEqual(lekki.status, BranchStatus.PENDING)
+        self.assertEqual(
+            School.objects.get(pk=self.school.pk).status, SchoolStatus.PENDING,
+        )
+        self.assertEqual(
+            GoLiveRequest.all_objects.get(pk=self.request_row.pk).status,
+            GoLiveStatus.FAILED,
+        )
+
     def test_activating_an_already_live_school_is_a_no_op(self):
         self.approve()
         original = OnboardingProgress.all_objects.get(tenant=self.tenant).go_live_at

@@ -219,6 +219,37 @@ def _write_school_live(school, now):
     return school
 
 
+#: The history line on each branch that opens with its school.
+BRANCH_OPENED_AT_GO_LIVE = "Opened when the school went live."
+
+
+def _open_pending_branches(tenant, actor):
+    """Open every branch still waiting to, as part of the school going live.
+
+    A school's branches are set up with it during onboarding and wait as
+    Pending because the school itself cannot trade yet. Left Pending past
+    go-live, a live school shows every branch as not open, and somebody at
+    CodeX has to find and activate each one by hand. A branch added after go-live
+    is unaffected: it starts Pending and is activated on its own.
+
+    Each move goes through ``Branch.transition``, so it leaves the same
+    lifecycle row a manual activation does, and inside the activation
+    transaction, so a branch that cannot open fails the whole activation
+    rather than leaving a live school beside a branch that never opened.
+    """
+    from vs_tenants.models import Branch, BranchStatus
+
+    pending = Branch.all_objects.filter(
+        tenant=tenant, status=BranchStatus.PENDING,
+    ).order_by("pk")
+    for branch in pending:
+        branch.transition(
+            to_state=BranchStatus.ACTIVE,
+            actor_id=getattr(actor, "pk", ""),
+            reason=BRANCH_OPENED_AT_GO_LIVE,
+        )
+
+
 # ── FR-008  Approve, and FR-009 immediately after it ───────────────────────
 
 def approve_go_live(tenant, pk, *, actor=None) -> GoLiveRequest:
@@ -264,6 +295,7 @@ def approve_go_live(tenant, pk, *, actor=None) -> GoLiveRequest:
                 # not re-activated and ``go_live_at`` is not rewritten, because
                 # the moment a school went live is a fact about the past.
                 _write_school_live(school, now)
+                _open_pending_branches(tenant, actor)
                 progress.readiness_state = ReadinessState.LIVE
                 progress.go_live_at = now
                 progress.last_validation_at = now
