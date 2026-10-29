@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from .base import *
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 
 DEBUG = False
 
@@ -69,6 +70,26 @@ MIDDLEWARE.insert(
 # Render fronts the service with Cloudflare, which overwrites these two with the
 # connecting address. See core.client_ip.
 CLIENT_IP_HEADERS = ("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP")
+
+# Rate-limit counts, and the few values the code caches, live in the Redis the
+# Celery broker uses, so every gunicorn worker reads one count and a restart
+# does not reset it. No fallback: in each process's memory a limit is
+# multiplied by the workers and wiped by every deploy, and the service would
+# look healthy. Redis being down is handled by core.cache, which serves on
+# without it. The short timeouts keep a dead Redis from holding up a request.
+REDIS_URL = config("REDIS_URL", default="").strip()
+if not REDIS_URL:
+    raise ImproperlyConfigured(
+        "REDIS_URL must be set on a deployed service: rate limits are counted there.",
+    )
+CACHES = {
+    "default": {
+        "BACKEND": "core.cache.ResilientRedisCache",
+        "LOCATION": REDIS_URL,
+        "KEY_PREFIX": "xvs-cache",
+        "OPTIONS": {"socket_connect_timeout": 1, "socket_timeout": 1},
+    },
+}
 
 STORAGES = {
     **STORAGES,

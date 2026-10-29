@@ -41,6 +41,7 @@ NAMES = (
     "CSRF_COOKIE_NAME",
     "CLIENT_IP_HEADERS",
     "MIDDLEWARE",
+    "CACHES",
 )
 
 try:
@@ -67,6 +68,7 @@ _BASE_ENV = {
     "PAYSTACK_KEY_MODE": "test",
     "PAYSTACK_SECRET_KEY": "",
     "PAYSTACK_PUBLIC_KEY": "",
+    "REDIS_URL": "redis://redis.staging.example.com:6379/0",
 }
 
 #: The addresses under test, cleared from the inherited environment so the run
@@ -79,6 +81,7 @@ _ADDRESS_VARS = (
     "HEALTH_SSL_DOMAIN",
     "CSRF_TRUSTED_ORIGINS",
     "CSRF_COOKIE_NAME",
+    "REDIS_URL",
 )
 
 #: A full, self-consistent staging configuration.
@@ -169,6 +172,22 @@ class DeployedAddressTests(SimpleTestCase):
         self.assertIn(
             "https://*.apps.staging.example.com", resolved["CSRF_TRUSTED_ORIGINS"],
         )
+
+    def test_rate_limits_count_in_the_shared_redis(self):
+        """One count for every worker, kept across a restart; see core.cache."""
+        outcome = self._resolve(**_STAGING_ADDRESSES)
+
+        self.assertNotIn("error", outcome, outcome)
+        cache = outcome["settings"]["CACHES"]["default"]
+        self.assertEqual(cache["BACKEND"], "core.cache.ResilientRedisCache")
+        self.assertEqual(cache["LOCATION"], _BASE_ENV["REDIS_URL"])
+
+    def test_a_deployment_without_redis_refuses_to_start(self):
+        """Rather than counting each limit once per worker, from zero after every deploy."""
+        outcome = self._resolve(**_STAGING_ADDRESSES, REDIS_URL="")
+
+        self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
+        self.assertIn("REDIS_URL", outcome["message"])
 
     def test_an_address_left_blank_is_refused_rather_than_used(self):
         """A half-finished variable is a configuration nobody completed.

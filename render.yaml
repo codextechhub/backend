@@ -39,6 +39,8 @@ services:
         value: "3.11.9"
       - key: CELERY_EAGER
         value: "false"  # requires the worker + Key Value instance below
+      # Also where rate limits are counted: apps/settings/staging.py refuses
+      # to start without it, eager Celery or not.
       - key: REDIS_URL
         fromService:
           type: keyvalue
