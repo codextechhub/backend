@@ -11,6 +11,8 @@ import os
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 
+from core.dev_guards import refuse_production
+
 
 class Command(BaseCommand):
     help = (
@@ -26,6 +28,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        refuse_production()
         if not options["yes"]:
             raise CommandError("Refusing to run without --yes (destroys all data).")
         if os.environ.get("RESET_DB", "").lower() != "true":

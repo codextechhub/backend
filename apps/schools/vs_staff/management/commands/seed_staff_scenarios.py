@@ -58,6 +58,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from core.dev_guards import refuse_production
 from schools.vs_staff.services import employment
 from vs_config.clock import tenant_today
 
@@ -132,6 +133,7 @@ class Command(BaseCommand):
         parser.add_argument("--only", help="One school slug from the cast.")
 
     def handle(self, *args, **options):
+        refuse_production()
         only = options.get("only")
         if only and only not in CAST:
             raise CommandError(

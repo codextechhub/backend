@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from core.dev_guards import refuse_deployed_server
 from vs_tenants.models import Tenant
 from vs_user.models import User
 
@@ -65,6 +66,11 @@ class Command(BaseCommand):
             default=DEFAULT_PASSWORD,
             help=f"Password to set for each user (default: {DEFAULT_PASSWORD})",
         )
+
+    def execute(self, *args, **options):
+        # Before handle(), whose transaction would open the database first.
+        refuse_deployed_server()
+        return super().execute(*args, **options)
 
     @transaction.atomic
     def handle(self, *args, **options):

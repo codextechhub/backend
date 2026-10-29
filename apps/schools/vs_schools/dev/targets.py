@@ -12,7 +12,8 @@ real has no ``admin@<slug>.example.com``.
 Two guards hold for every run:
 
 * A seeder invents people and gives them known passwords, so it refuses to
-  run where Paystack takes live keys, which is production.
+  run where Paystack takes live keys, which is production
+  (``core.dev_guards``).
 * ``quiet()`` keeps the run's side effects on the server: background tasks run
   in this process and email goes to Django's in-memory outbox. On a server
   whose worker sends email for real, an invitation to an invented address
@@ -28,6 +29,8 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.core.management.base import CommandError
 from django.test.utils import override_settings
+
+from core.dev_guards import refuse_production
 
 
 @dataclass(frozen=True)
@@ -52,15 +55,6 @@ def add_target_arguments(parser) -> None:
         "--admin-email", default="",
         help="The --school administrator's sign-in email.",
     )
-
-
-def refuse_production() -> None:
-    """Stop the run on a server that takes live Paystack keys."""
-    if str(getattr(settings, "PAYSTACK_KEY_MODE", "") or "").lower() == "live":
-        raise CommandError(
-            "This server takes live Paystack keys, so it is production. Scenario "
-            "seeders invent people with known passwords and never run here.",
-        )
 
 
 def resolve_targets(options, cast) -> list[Target]:

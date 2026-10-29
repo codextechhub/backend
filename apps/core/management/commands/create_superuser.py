@@ -4,11 +4,13 @@
     python manage.py create_superuser --email a@b.com --password "P@ss" \
         --first-name Custom --last-name Admin
 
-Only ever mints CX staff on the platform (codex) tenant.
+Only ever mints CX staff on the platform (codex) tenant. On staging or
+production it refuses the default password, which is written here.
 """
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from core.dev_guards import on_deployed_server
 from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
 from vs_user.auth_events import AuthEvent
@@ -170,6 +172,14 @@ class Command(BaseCommand):
             first_name = options['first_name'].strip()
             last_name  = options['last_name'].strip()
             phone      = options['phone'].strip()
+
+        # The default is in this repository, so on a server it would be a
+        # platform superuser anyone who has read the code can sign in as.
+        if on_deployed_server() and password == self.DEFAULT_PASSWORD:
+            raise CommandError(
+                "This is a deployed server, and the default password is written in "
+                "the code. Give the superuser its own with --password or --interactive.",
+            )
 
         # Both branches, not just the non-interactive one: the prompt used to
         # hand its answer through unfolded, so an operator typing 'Admin@...'

@@ -40,7 +40,7 @@ None. These are commands and helpers.
 
 | Command | What it does | Guards |
 |---|---|---|
-| `rebuild_database` | `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` | `--yes` **and** `RESET_DB=true` in the environment; PostgreSQL only |
+| `rebuild_database` | `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` | never on production (`core.dev_guards`); `--yes` **and** `RESET_DB=true` in the environment; PostgreSQL only |
 | `reset_db` | drops every table, applies committed migrations, then runs five seed commands | approved dev/test settings, `DEBUG` or approved test settings, allowlisted database name, and exact typed-name confirmation; removed from Render artifacts |
 | `delete_user` | hard-deletes users and every row they touched | a typed `YES`, or `--force` |
 | `clear_permissions` | wipes the whole RBAC registry, preserving `PrebuiltRoleTemplate` | a typed `yes`, or `--yes`; `--dry-run` available |
@@ -230,7 +230,8 @@ Full evidence in **`error/core/core_code_issues.md`**.
   inside a banner that says to delete it after the first deploy. Uncommenting one
   line wipes the database on every deploy (`core_code_issues.md` §18).
 - **`seed_dev_data` sets one known password for every school user** and prints
-  it. Fine for a development database; nothing stops it running elsewhere.
+  it. Fine for a development database, and it refuses to run on staging or
+  production (`core.dev_guards`).
 - **None of the destructive commands is audited.**
 - **`build_from_email` hits the settings service per email.**
 - **Justified by design:** `rebuild_database`'s two independent guards.

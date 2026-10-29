@@ -21,6 +21,8 @@ from __future__ import annotations
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from core.dev_guards import refuse_production
+
 from ...dev.fixtures import DEFAULT_PASSWORD, build_school
 
 DEFAULT_SLUG = "bright-star"
@@ -47,6 +49,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        refuse_production()
         slug = str(options["slug"]).strip().lower()
         name = str(options["name"]).strip()
         password = options["password"]

@@ -58,6 +58,8 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
+from core.dev_guards import refuse_deployed_server
+
 SCHOOL_USER_PASSWORD = "School@2025"
 
 SCHOOLS = [
@@ -84,6 +86,11 @@ SCHOOLS = [
 
 class Command(BaseCommand):
     help = "Seed a connected dev dataset across all modules except finance/procurement/payments."
+
+    def execute(self, *args, **options):
+        # Before handle(), whose transaction would open the database first.
+        refuse_deployed_server()
+        return super().execute(*args, **options)
 
     @transaction.atomic
     def handle(self, *args, **options):

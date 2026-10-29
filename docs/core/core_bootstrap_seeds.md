@@ -212,7 +212,9 @@ Full evidence in **`error/core/core_code_issues.md`**.
 
 - **`create_superuser` has a committed default password**, and the env-var
   version that would fix it is commented out two lines below
-  (`core_code_issues.md` §12).
+  (`core_code_issues.md` §12). On staging and production the command refuses
+  that password and asks for `--password` or `--interactive`
+  (`core.dev_guards`).
 - **`seed_all_permissions` crashes on a Windows console** and takes `core`'s own
   test suite red with it (`core_code_issues.md` §11).
 - **`create_superuser` is commented out of `build.sh`**, so a fresh deployment
@@ -226,7 +228,9 @@ Full evidence in **`error/core/core_code_issues.md`**.
   `[i/19]`
   (`core_code_issues.md` §15).
 - **`seed_vision_staff` sets a fixed password** for a roster of real staff
-  addresses (`seed_vision_staff.py:53`), with no environment override.
+  addresses (`seed_vision_staff.py:53`), with no environment override. It
+  refuses to run on staging or production (`core.dev_guards`), so the fixed
+  password reaches only a developer's database and CI.
 - **Seeds write no audit trail**, so a permission registry change has no
   provenance.
 - **`_check_platform_roles` swallows every exception** (`:187-188`), so a

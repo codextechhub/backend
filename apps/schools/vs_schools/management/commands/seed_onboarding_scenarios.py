@@ -36,6 +36,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from core.dev_guards import refuse_production
+
 from ...dev.fixtures import DEFAULT_PASSWORD, build_school
 
 #: slug -> (display name, admin first/last, runs branches)
@@ -82,6 +84,7 @@ class Command(BaseCommand):
         parser.add_argument("--password", default=DEFAULT_PASSWORD)
 
     def handle(self, *args, **options):
+        refuse_production()
         only = options.get("only")
         password = options["password"]
 
