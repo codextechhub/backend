@@ -233,15 +233,13 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
 
     @transaction.atomic
     def post(self, request):
-        from .directory import ONBOARDING_ROLE_KEYS
-
         payload = BulkRoleSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
 
         role = roles.resolve_role(
             self.tenant, data["role"],
-            onboarding_keys=ONBOARDING_ROLE_KEYS if self.onboarding else None,
+            onboarding=self.onboarding,
         )
         branch = posting.resolve_posting(self.tenant, data.get("branch"))
 

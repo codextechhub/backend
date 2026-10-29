@@ -288,6 +288,42 @@ class SchoolStaffEndpointTests(TestCase):
         }
         self.assertEqual(values, {"school_admin", "branch_admin"})
 
+    def test_a_real_branchs_admin_role_is_offered_and_can_be_given(self):
+        """A branch's own copy carries the branch pk on its key.
+
+        The library copies Branch Admin once per branch as
+        ``branch_admin-<branch pk>``, so a real school never holds the bare
+        ``branch_admin`` key. Lekki Branch's administrator role must still be
+        on offer, and grantable, before go-live.
+        """
+        lekki = make_branch(
+            self.school, name="Lekki Branch", is_main=False, status=BranchStatus.PENDING,
+        )
+        copy_key = f"branch_admin-{lekki.pk}"
+        make_role(self.school, name="Branch Admin (Lekki Branch)", key=copy_key)
+
+        values = {
+            row["value"] for row in self._get(self.admin).data["role_options"]
+        }
+        self.assertIn(copy_key, values)
+
+        response = self._post(self.admin, self._invite(role=copy_key))
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_a_key_that_only_starts_like_an_admin_role_is_not_offered(self):
+        """Only ``<key>-<digits>`` is a branch copy; anything else is another role."""
+        make_role(self.school, name="Branch Admin Assistant", key="branch_admin-assistant")
+        make_role(self.school, name="School Administrator Deputy", key="school_administrator")
+
+        values = {
+            row["value"] for row in self._get(self.admin).data["role_options"]
+        }
+        self.assertNotIn("branch_admin-assistant", values)
+        self.assertNotIn("school_administrator", values)
+
+        response = self._post(self.admin, self._invite(role="branch_admin-assistant"))
+        self.assertEqual(response.status_code, 400, response.data)
+
     def test_a_pending_school_is_refused_a_non_admin_role_on_the_post(self):
         """The narrowed dropdown is a courtesy; this is the rule.
 

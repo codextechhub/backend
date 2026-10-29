@@ -17,7 +17,10 @@ FRD M12 v2.1, FR-005 and FR-019.
 """
 from __future__ import annotations
 
+import re
+
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
 from ..constants import PERM_ROLES_ASSIGN  # noqa: F401  (the view's key, named here)
@@ -32,6 +35,22 @@ from ..constants import PERM_ROLES_ASSIGN  # noqa: F401  (the view's key, named 
 #: school's to rename and the key is not. The Add form and the staff import
 #: both hold to it.
 ONBOARDING_ROLE_KEYS = ("school_admin", "branch_admin")
+
+
+
+def onboarding_roles(queryset):
+    """Narrow a role queryset to the roles a school may give out before go-live.
+
+    The library copies a branch-scoped role once per branch, carrying the
+    branch's pk on the key (``branch_admin-37``), so a school's real Branch
+    Admin roles never carry the bare ``branch_admin`` key. Each onboarding key
+    therefore matches its plain spelling and every per-branch copy of it.
+    """
+    match = Q()
+    for key in ONBOARDING_ROLE_KEYS:
+        match |= Q(key=key) | Q(key__regex=rf"^{re.escape(key)}-\d+$")
+    return queryset.filter(match)
+
 
 #: The refusal for any other role while a school is onboarding.
 ONBOARDING_ROLE_REFUSAL = (
@@ -139,10 +158,10 @@ def grant_to_many(*, tenant, role, branch, people, actor):
     return granted, already, pending
 
 
-def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
+def resolve_role(tenant, key_or_id, *, onboarding=False):
     """One of this school's own active roles, resolved inside this school.
 
-    ``onboarding_keys`` narrows the catalogue while the school is still PENDING,
+    ``onboarding`` narrows the catalogue while the school is still PENDING,
     and the narrowing is enforced here rather than only offered by a dropdown: a
     crafted request must not be able to grant Payout Approver during onboarding,
     when there is nobody to review what was granted.
@@ -150,8 +169,8 @@ def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
     from vs_rbac.models import TenantRoleTemplate
 
     queryset = TenantRoleTemplate.objects.filter(tenant=tenant, status="ACTIVE")
-    if onboarding_keys is not None:
-        queryset = queryset.filter(key__in=onboarding_keys)
+    if onboarding:
+        queryset = onboarding_roles(queryset)
 
     role = None
     if isinstance(key_or_id, int) or str(key_or_id).isdigit():
@@ -160,7 +179,7 @@ def resolve_role(tenant, key_or_id, *, onboarding_keys=None):
         role = queryset.filter(key=key_or_id).first()
     if role is None:
         message = (
-            ONBOARDING_ROLE_REFUSAL if onboarding_keys is not None
+            ONBOARDING_ROLE_REFUSAL if onboarding
             else "That is not a role this school can give out."
         )
         raise ValidationError({"role": message})

@@ -58,8 +58,6 @@ def readable_search_fields(request) -> tuple[str, ...]:
     """
     return readable_lookups(request, "school.teachers", SEARCH_FIELDS)
 
-#: The only roles a school may hand out before it goes live; see ``services.roles``.
-ONBOARDING_ROLE_KEYS = roles.ONBOARDING_ROLE_KEYS
 
 
 class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
@@ -263,7 +261,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
 
         queryset = TenantRoleTemplate.objects.filter(tenant=self.tenant, status="ACTIVE")
         if self.onboarding:
-            queryset = queryset.filter(key__in=ONBOARDING_ROLE_KEYS)
+            queryset = roles.onboarding_roles(queryset)
         return queryset.order_by("name")
 
     @transaction.atomic
@@ -388,7 +386,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
                     "role": "Choose School Admin or Branch Admin for them.",
                 })
             role = roles.resolve_role(
-                self.tenant, data["role"], onboarding_keys=ONBOARDING_ROLE_KEYS,
+                self.tenant, data["role"], onboarding=True,
             )
             return role, posting.resolve_reach(self.tenant, data.get("role_branch"))
 
