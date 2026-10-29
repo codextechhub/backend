@@ -99,6 +99,16 @@ def _tenant_display_name(user) -> str:
 # SECTION 1 - INVITATION EMAIL
 # =============================================================================
 
+def _days_left(expires_at) -> int:
+    """Whole days until ``expires_at``, rounded up and never below one.
+
+    Rounded up because the email is sent seconds after the window opens: a
+    seven-day link read as six days and twenty-three hours is still a
+    seven-day link to the person reading it.
+    """
+    return max(1, ceil((expires_at - timezone.now()).total_seconds() / 86400))
+
+
 @shared_task(bind=True, name="vs_user.send_invitation_email_task")
 def send_invitation_email_task(self, invitation_id: int, token: str):
     """
@@ -108,7 +118,9 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
       - The user's first name / full name
       - The invitation link containing the raw one-time token
       - The workspace name and the person who sent the invitation
-      - The 7-day expiry notice
+      - How many days the link has left, read from the invitation row, so
+        the email states the school's configured lifetime and stays true
+        after a resend opens a fresh window
 
     A resend rotates the token, so an earlier URL stops working immediately.
 
@@ -152,7 +164,7 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
             'tenant_name':     tenant_name,
             'inviter_name':    user.invited_by_name or '',
             'invitation_url':  invitation_url,
-            'expiry_days':     7,
+            'expiry_days':     _days_left(invitation.expires_at),
             # Compatibility for staff-authored templates based on the earlier
             # standard copy. New standard templates use domain-neutral keys.
             'school_name':     tenant_name,

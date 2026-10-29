@@ -1593,6 +1593,36 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertIn("Workspace: CodeX", notif.body)
         self.assertIn("Link expires: 7 days after this email", notif.body)
 
+    def test_the_email_states_the_invitations_own_lifetime(self):
+        """A school that sets invitations to 14 days must not be told 7.
+
+        The lifetime is the school's setting, written onto the invitation when
+        it is made or resent, so the email reads it from there.
+        """
+        from datetime import timedelta
+        from unittest import mock
+
+        from django.utils import timezone
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_user.models import UserInvitation
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="fortnight@codex.test")
+        invitation, token = self._invitation_for(user)
+        UserInvitation.objects.filter(pk=invitation.pk).update(
+            expires_at=timezone.now() + timedelta(days=14),
+        )
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            send_invitation_email_task.apply(
+                kwargs={"invitation_id": invitation.pk, "token": token}
+            )
+
+        notif = Notification.objects.get(recipient=user, channel=ChannelChoices.EMAIL)
+        self.assertIn("Link expires: 14 days after this email", notif.body)
+
     def test_successful_delivery_updates_invitation_via_receiver(self):
         from django.core import mail
 
