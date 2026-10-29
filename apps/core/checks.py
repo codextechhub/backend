@@ -112,3 +112,33 @@ def check_native_app_versions(app_configs=None, **kwargs):
         )
         for problem in problems
     ]
+
+
+EDGE_SECRET_CHECK_ID = "core.W003"
+
+
+@register()
+def check_client_ip_edge_secret(app_configs=None, **kwargs):
+    """Warn when the edge's address headers are trusted without its secret.
+
+    A deployment behind Cloudflare trusts ``CF-Connecting-IP``, which a caller
+    reaching the service's own address directly can set to anything, and so
+    dodge every per-address limit. Reads settings only.
+    """
+    if not getattr(settings, "CLIENT_IP_HEADERS", ()):
+        return []
+    if getattr(settings, "CLIENT_IP_EDGE_SECRET", ""):
+        return []
+    return [
+        CheckWarning(
+            "Cloudflare's address headers are trusted from any caller.",
+            hint=(
+                "A request sent to the Render address directly can name any "
+                "address in CF-Connecting-IP. Add a Cloudflare Transform Rule "
+                "that sets the request header X-XVS-Edge to a long random value "
+                "on this zone, then set CLIENT_IP_EDGE_SECRET to the same value "
+                "on the web service. See core.client_ip."
+            ),
+            id=EDGE_SECRET_CHECK_ID,
+        )
+    ]

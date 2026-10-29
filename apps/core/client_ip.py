@@ -24,6 +24,17 @@ module for a deployment behind such an edge sets it:
   to the address that connected to it, overwriting any value the caller sent,
   so the first of those holding a valid address becomes ``REMOTE_ADDR``.
 
+Cloudflare only overwrites those headers on requests that pass through it. The
+Render address of the service can also be reached directly, and a caller going
+that way can write any address it likes into them. So when
+``settings.CLIENT_IP_EDGE_SECRET`` is set, the headers are trusted only on a
+request carrying that secret in ``X-XVS-Edge``, which a Cloudflare Transform
+Rule adds to every request it passes on. A request without it keeps Render's
+internal address, which every such caller shares, so inventing addresses gains
+nothing. The secret is removed from the request once checked, so no log or
+error report carries it. With no secret set the headers are trusted as before,
+and ``core.W003`` says so on every command.
+
 A header value that does not parse as an IP address is ignored, never copied,
 and the next header is tried. If none holds one, ``REMOTE_ADDR`` stays as the
 server received it: a wrong but unforgeable address is better than a forgeable
@@ -32,9 +43,13 @@ one.
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 
 from django.conf import settings
+
+#: Where the edge's secret arrives: the ``X-XVS-Edge`` request header.
+EDGE_SECRET_HEADER = "HTTP_X_XVS_EDGE"
 
 
 def _valid_ip(value) -> str | None:
@@ -59,6 +74,11 @@ class ClientIPMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        sent = request.META.pop(EDGE_SECRET_HEADER, "")
+        secret = getattr(settings, "CLIENT_IP_EDGE_SECRET", "") or ""
+        if secret and not hmac.compare_digest(str(sent), secret):
+            # Not from our edge: the headers are whatever the caller wrote.
+            return self.get_response(request)
         for key in getattr(settings, "CLIENT_IP_HEADERS", ()) or ():
             address = _valid_ip(request.META.get(key))
             if address:

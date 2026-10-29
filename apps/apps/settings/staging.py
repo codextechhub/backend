@@ -70,6 +70,10 @@ MIDDLEWARE.insert(
 # Render fronts the service with Cloudflare, which overwrites these two with the
 # connecting address. See core.client_ip.
 CLIENT_IP_HEADERS = ("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP")
+# Added by a Cloudflare Transform Rule as X-XVS-Edge, so a request sent to the
+# Render address directly cannot choose its own address. core.W003 warns while
+# it is unset.
+CLIENT_IP_EDGE_SECRET = config("CLIENT_IP_EDGE_SECRET", default="").strip()
 
 # Rate-limit counts, and the few values the code caches, live in the Redis the
 # Celery broker uses, so every gunicorn worker reads one count and a restart
