@@ -199,6 +199,7 @@ PERM_PROGRESS_REACTIVATE = "onboarding.progress.reactivate"
 
 EVENT_STEP_COMPLETED = "onboarding.step_completed"
 EVENT_GO_LIVE_READY = "onboarding.go_live_ready"
+EVENT_GO_LIVE_REQUESTED = "onboarding.go_live_requested"
 EVENT_GO_LIVE_REVIEWED = "onboarding.go_live_reviewed"
 EVENT_ACTIVATED = "onboarding.activated"
 EVENT_STALE_REPORT = "onboarding.stale_report"

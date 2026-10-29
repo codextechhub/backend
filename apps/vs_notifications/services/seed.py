@@ -1589,6 +1589,33 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── onboarding.go_live_requested ────────────────────────────────────
+        # The platform's notice, not the school's: the school asked, so it
+        # already knows. Without it a request waits unseen until somebody
+        # happens to refresh the review queue.
+        ("onboarding.go_live_requested", C.IN_APP): {
+            "subject": "{{ school_name }} has asked to go live",
+            "body": (
+                "{{ requested_by_name }} would like it live on "
+                "{{ preferred_go_live_display }}. Review it under Go-Live Requests."
+            ),
+        },
+        ("onboarding.go_live_requested", C.EMAIL): {
+            "subject": "Go-live request: {{ school_name }}",
+            "body": (
+                "{{ school_name }} has finished its required onboarding steps and "
+                "asked to be taken live.\n\n"
+                "REQUEST DETAILS\n"
+                "School: {{ school_name }} ({{ school_slug }})\n"
+                "Requested by: {{ requested_by_name }}\n"
+                "Requested at: {{ requested_at_display }}\n"
+                "Preferred go-live date: {{ preferred_go_live_display }}\n"
+                "{% if note %}Note from the school: {{ note }}\n{% endif %}"
+                "\nOpen School Management, then Go-Live Requests, in the console "
+                "to approve the request or decline it with a reason."
+            ),
+        },
+
         # ── onboarding.go_live_reviewed ─────────────────────────────────────
         # One event covers both decisions: the school needs the reason far more
         # than it needs two separate keys, and a rejected request renders the

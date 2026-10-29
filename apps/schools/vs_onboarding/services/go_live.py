@@ -24,6 +24,7 @@ from vs_audit.models import AuditActionType, AuditSeverity, AuditStatus
 
 from ..constants import (
     EVENT_ACTIVATED,
+    EVENT_GO_LIVE_REQUESTED,
     EVENT_GO_LIVE_REVIEWED,
     GoLiveStatus,
     ReadinessState,
@@ -116,17 +117,27 @@ def submit_go_live(
         # to prevent. Both answer the same 409.
         raise GoLiveAlreadyPending()
 
+    context = effects.school_context(tenant)
+    context.update({
+        "requested_by_name": effects.actor_name(actor),
+        "requested_at_display": effects.display_datetime(request.created_at, tenant),
+        "preferred_go_live_display": effects.display_date(preferred_go_live_at, tenant),
+        "note": request.note,
+    })
     effects.record(
         tenant=tenant,
         action_type=AuditActionType.GO_LIVE_REQUESTED,
         entity_type="GoLiveRequest",
         entity_id=request.pk,
         actor=actor,
-        entity_label=effects.school_name(tenant),
+        entity_label=context["school_name"],
         diff_data={
             "status": {"from": "", "to": GoLiveStatus.PENDING.value},
             "preferred_go_live_at": str(preferred_go_live_at),
         },
+        event_key=EVENT_GO_LIVE_REQUESTED,
+        context=context,
+        recipients=effects.operator_recipients(),
     )
     return request
 

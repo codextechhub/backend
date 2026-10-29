@@ -22,7 +22,7 @@ import logging
 from django.db import transaction
 
 from vs_audit.models import AuditModuleKey, AuditSeverity, AuditStatus
-from vs_config.display import format_datetime
+from vs_config.display import format_date, format_datetime
 
 from ..constants import PERM_GO_LIVE_APPROVE, PERM_PROGRESS_VIEW
 
@@ -91,6 +91,15 @@ def display_datetime(value, tenant) -> str:
     the platform's settings until it goes live.
     """
     return format_datetime(value, tenant)
+
+
+def display_date(value, tenant) -> str:
+    """Render the day a lifecycle value falls on, on *tenant*'s clock.
+
+    For values a person chose as a day, such as a preferred go-live date,
+    which would read as a made-up midnight if printed with a time.
+    """
+    return format_date(value, tenant)
 
 
 def notification_recipients(tenant):

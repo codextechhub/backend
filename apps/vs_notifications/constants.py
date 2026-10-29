@@ -886,6 +886,18 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
     {
+        "key": "onboarding.go_live_requested",
+        "label": "Go-live requested",
+        "description": (
+            "Fires when a school asks to be taken live, carrying who asked, the "
+            "date they would like and their note. Goes to the platform staff who "
+            "review go-live requests, never to the school."
+        ),
+        "source_module": "vs_onboarding",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
         "key": "onboarding.go_live_reviewed",
         "label": "Go-live request reviewed",
         "description": (

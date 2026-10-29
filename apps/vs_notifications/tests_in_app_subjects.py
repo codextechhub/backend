@@ -74,6 +74,7 @@ _ALREADY_TITLED = {
     "billing.guardian_invoice_issued",
     "user.deletion_requested",
     "user.account_deleted",
+    "onboarding.go_live_requested",
 }
 
 

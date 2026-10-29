@@ -2010,6 +2010,38 @@ class NotificationTests(OnboardingFixture):
         self.assertIn(f"Activated at: {display_time}", activated.first().body)
         self.assertNotIn("{{", activated.first().body)
 
+    def test_a_go_live_request_tells_the_platform_reviewers(self):
+        """A request nobody is told about waits until somebody refreshes the queue.
+
+        Sent to the holders of the approve key on the platform tenant, and to
+        nobody at the school, which already knows because it asked.
+        """
+        self.make_ready()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client_for(self.admin).post(
+                self.scoped("onboarding-go-live-request"),
+                {
+                    "preferred_go_live_at": (
+                        timezone.now() + timezone.timedelta(days=3)
+                    ).isoformat(),
+                    "acknowledged": True,
+                    "note": "Confirmed by the proprietor.",
+                },
+                format="json",
+            )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        rows = self._notifications("onboarding.go_live_requested")
+        recipients = set(rows.values_list("recipient_id", flat=True))
+        self.assertIn(self.reviewer.pk, recipients)
+        self.assertNotIn(self.admin.pk, recipients)
+
+        email = rows.filter(channel="EMAIL").first() or rows.first()
+        self.assertIn("Alpha School", email.subject + email.body)
+        self.assertIn("Confirmed by the proprietor.", email.body)
+        self.assertNotIn("{{", email.subject + email.body)
+
     def test_a_notification_failure_never_undoes_committed_state(self):
         from vs_notifications.exceptions import UnknownEventTypeError
 
