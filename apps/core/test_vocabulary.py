@@ -28,12 +28,13 @@ commits, not third-party or collected assets, so whatever is added there is
 the project's own writing. A checkout with no ``docs/`` directory, such as a
 deployed image, is read without it.
 
-Three lines are allowed. One is in the development seed: it renames branches
+Four lines are allowed. One is in the development seed: it renames branches
 that older runs of the seed stored under the old name, and it has to spell that
 name to match those rows. Another is a test asserting that a screen's labels
 never use the word, which has to spell it to look for it. The third is in a
 requirements-document patch script that finds the old change-log sentence
-naming the word and rewrites it, so it too has to spell it.
+naming the word and rewrites it, so it too has to spell it. The fourth is
+the pattern a later patch script uses to replace the word in the documents.
 ``ALLOWED_LINES`` records each by its path from the repository root and its
 exact content. Each entry excuses a single line, so a copy of it
 still fails, and a second test fails once the line is gone, so the exception
@@ -75,6 +76,11 @@ ALLOWED_LINES = frozenset({
         "docs/frd/tools/patch_22_october_contracts_docs.py",
         'old = "Document-only patch. Retired the word campus, which had drifted in as a '
         'synonym for the site primitive this module defines."',
+    ),
+    # A document patch that replaces the word, whose one pattern has to spell it.
+    (
+        "docs/frd/tools/patch_23_26_october_contracts_docs.py",
+        'RETIRED_SYNONYM = re.compile(r"\\bcampus(es)?\\b", re.I)',
     ),
 })
 

@@ -344,17 +344,21 @@ def insert_gap_paragraph(doc, heading: str, text: str) -> bool:
     return False
 
 
+#: The retired synonym for a branch, singular or plural, spelt once.
+RETIRED_SYNONYM = re.compile(r"\bcampus(es)?\b", re.I)
+
+
 def remove_branch_synonym(doc) -> None:
     def clean(text: str) -> str:
-        return re.sub(r"\bcampuses\b", "branches", re.sub(r"\bcampus\b", "branch", text, flags=re.I), flags=re.I)
+        return RETIRED_SYNONYM.sub(lambda m: "branches" if m.group(1) else "branch", text)
     for paragraph in doc.paragraphs:
-        if re.search(r"\bcampus(?:es)?\b", paragraph.text, re.I):
+        if RETIRED_SYNONYM.search(paragraph.text):
             replace_runs(paragraph, paragraph.text, clean(paragraph.text))
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    if re.search(r"\bcampus(?:es)?\b", paragraph.text, re.I):
+                    if RETIRED_SYNONYM.search(paragraph.text):
                         replace_runs(paragraph, paragraph.text, clean(paragraph.text))
 
 
