@@ -61,6 +61,8 @@ class PasswordChangeView(APIView):
     docstring-name: Change password
     """
     permission_classes = [IsAuthenticatedAndActive]
+    throttle_scope = "password_change"
+    throttle_classes = [ScopedRateThrottle]
     # Self-service: changes only request.user's own password with no
     # tenant-scoped input, so ?tenant= is not required.
     tenant_param_required = False
@@ -150,6 +152,8 @@ class PasswordResetPreviewView(APIView):
     """
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_scope = "password_reset_link"
+    throttle_classes = [ScopedRateThrottle]
 
     def get(self, request, token):
         reset_request = PasswordService.valid_reset_for_token(token)
@@ -175,6 +179,8 @@ class PasswordResetConfirmView(APIView):
     """
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_scope = "password_reset_link"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request, token):
         ser = PasswordResetConfirmSerializer(data=request.data)

@@ -311,6 +311,8 @@ class TokenRefreshView(APIView):
     docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
+    throttle_scope = "token_refresh"
+    throttle_classes = [ScopedRateThrottle]
     # Operates purely on the refresh cookie, so ?tenant= is not required.
     tenant_param_required = False
     pending_tenant_surface = True  # A pending school must be able to stay signed in (FR-012).
@@ -359,6 +361,9 @@ class ActivationPreviewView(APIView):
     """
     authentication_classes = []
     permission_classes = [AllowAny]
+    # The same budget as accepting the invitation: one link, opened then used.
+    throttle_scope = 'activation'
+    throttle_classes = [ScopedRateThrottle]
 
     def get(self, request, token):
         try:

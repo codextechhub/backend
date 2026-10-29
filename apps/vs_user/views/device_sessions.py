@@ -13,6 +13,7 @@ from __future__ import annotations
 from django.middleware.csrf import get_token
 from rest_framework import status
 from rest_framework.permissions import AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from core.response import error_response, success_response
@@ -92,6 +93,9 @@ class DeviceRefreshView(_DeviceView):
     docstring-name: Refresh a device session
     """
 
+    throttle_scope = "device_refresh"
+    throttle_classes = [ScopedRateThrottle]
+
     def post(self, request):
         enforce_browser_origin(request)
         native = is_native_app(request)
@@ -163,6 +167,9 @@ class DeviceHandOverView(_DeviceView):
 
     docstring-name: Hand a sign-in over to the device app
     """
+
+    throttle_scope = "device_hand_over"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         enforce_browser_origin(request)

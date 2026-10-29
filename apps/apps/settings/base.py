@@ -294,6 +294,19 @@ REST_FRAMEWORK = {
         "account_closure_request": "3/minute",
         "account_closure_confirm": "10/minute",
         "activation":     "10/minute",
+        # Renewing a sign-in, by IP. A school's whole staff room or pupils' wifi
+        # shares one address and each signed-in tab or phone renews every 15
+        # minutes, so these bound abuse, not people. Every app keeps a person
+        # signed in on a 429 here and tries again later.
+        "token_refresh":  "120/minute",
+        "device_refresh": "120/minute",
+        # Once per sign-in that moves to the student or parent app.
+        "device_hand_over": "30/minute",
+        # Per person: each attempt checks the current password, so this stops a
+        # borrowed signed-in session being used to guess it.
+        "password_change": "5/minute",
+        # The emailed reset link, opened and then confirmed, by IP.
+        "password_reset_link": "20/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
         # Public pay-an-invoice page, keyed by IP. A whole school's parents can
