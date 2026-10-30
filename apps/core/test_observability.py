@@ -39,6 +39,36 @@ class ScrubEventTests(SimpleTestCase):
         self.assertEqual(request["url"], "https://corona.xvs.example.com/v1/fees/")
         self.assertEqual(scrubbed["message"], "boom")
 
+    def test_the_words_of_the_failure_lose_the_person_in_them(self):
+        event = {
+            "message": "Could not reach 08031234567",
+            "exception": {"values": [
+                {"type": "IntegrityError", "value": (
+                    "duplicate key value violates unique constraint\n"
+                    "DETAIL:  Key (email)=(ada.okeye@gmail.com) already exists."
+                )},
+                {"type": "SMTPRecipientsRefused", "value": "{'ngozi@family.test': (550, 'no')}"},
+            ]},
+            "logentry": {
+                "message": "Delivering invoice to %s",
+                "params": ["parent@example.com"],
+                "formatted": "Delivering invoice to parent@example.com",
+            },
+            "extra": {"phone": "08031234567", "account_number": "0123456789", "rows": 3},
+            "request": {"url": "https://corona.xvs.example.com/v1/lookup/ada@example.com/"},
+        }
+
+        scrubbed = scrub_event(event, {})
+        text = str(scrubbed)
+
+        for leaked in ("ada.okeye@gmail.com", "ngozi@family.test", "parent@example.com",
+                       "ada@example.com", "08031234567", "0123456789"):
+            self.assertNotIn(leaked, text)
+        self.assertIn("Key (email)=([redacted])", scrubbed["exception"]["values"][0]["value"])
+        self.assertEqual(scrubbed["logentry"]["message"], "Delivering invoice to %s")
+        self.assertEqual(scrubbed["extra"]["rows"], 3)
+        self.assertEqual(scrubbed["exception"]["values"][1]["type"], "SMTPRecipientsRefused")
+
     def test_an_event_with_no_request_passes_through(self):
         self.assertEqual(scrub_event({"message": "task failed"}, {}), {"message": "task failed"})
 
