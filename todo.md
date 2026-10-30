@@ -92,7 +92,7 @@ MUST SAY:
 - MRD Needs Attention: the audit trail still names erased people (it refuses
   changes by trigger).
 
-### D135. A public liveness route for Render's health check and the uptime monitor (PENDING, 2026-10-30)
+### D135. A public liveness route for Render's health check and the uptime monitor (77ec3f5c, 2026-10-30)
 MODULES: M30 system health and monitoring, MRD (deployment readiness).
 MUST SAY:
 - GET or HEAD /v1/health/live/ needs no sign-in and answers 200
