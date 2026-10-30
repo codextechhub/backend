@@ -14,7 +14,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import close_old_connections
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from vs_config.clock import tenant_today
@@ -6869,6 +6869,9 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         ])
         return po
 
+    # The procurement list is empty unless a deployment names one; set here so
+    # the test shows a configured list reaching the order's email.
+    @override_settings(PROCUREMENT_VENDOR_EMAIL_BCC=["backend-test@codexng.com"])
     def test_schedule_uses_opted_in_contacts_and_cancels_on_rejection(self):
         from vs_procurement import po_email
 
@@ -6893,6 +6896,7 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.CANCELLED)
         self.assertIn("rejected", delivery.failure_reason)
 
+    @override_settings(PROCUREMENT_VENDOR_EMAIL_BCC=["backend-test@codexng.com"])
     @patch("vs_procurement.po_email.send_notification", return_value=["notification-id"])
     def test_manual_send_builds_pdf_and_queues_only_approved_order(self, notify):
         from vs_procurement import po_email

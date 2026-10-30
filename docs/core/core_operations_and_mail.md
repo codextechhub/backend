@@ -123,7 +123,10 @@ send_email(subject=…, plain_message=…, html_message=None,
 - `from_email` defaults to `build_from_email()`.
 - `bcc` defaults to `settings.EMAIL_BCC`, which is built from the `EMAIL_BCC`
   environment variable (falling back to `EMAIL_CC`) and is **empty by default**
-  (`apps/settings/base.py:279-284`). Pass `[]` to send no copy at all.
+  (`_addresses` in `apps/settings/base.py`). Pass `[]` to send no copy at all.
+- A message carrying a one-time link (invitation, password reset, account
+  closure, a supplier's quote link) is **never copied**, whatever the lists
+  hold: `deliver_email_notification` drops the copy when it puts the token in.
 - `html_message` is optional: with it the message is multipart, without it
   plain-text only.
 

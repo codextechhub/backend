@@ -1735,14 +1735,12 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertNotIn("/accounts/activate/", body)
 
     @override_settings(EMAIL_BCC=["backend-test@codexng.com"])
-    def test_the_monitoring_mailbox_is_blind_copied_on_an_invitation(self):
-        """The invitation carries no bcc of its own, so the platform list applies.
+    def test_an_invitation_is_never_copied_to_the_monitoring_mailbox(self):
+        """Its activation link is the invitee's alone, even where a monitoring list is set.
 
-        The copy is deliberately usable: it carries the same activation link the
-        invitee gets, which is what lets the flow be tested end to end without
-        access to their inbox. Read access to that mailbox is therefore
-        equivalent to holding every pending invitation, and the copy must be
-        blind so the invitee never sees the address.
+        A copy carried the same working link, so anyone reading the monitoring
+        mailbox could activate the account. A message with a one-time link is
+        now never copied (vs_notifications.tasks.deliver_email_notification).
         """
         from django.core import mail
 
@@ -1759,9 +1757,8 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertEqual(sent.to, ["bcc-invited@codex.test"])
-        self.assertEqual(sent.bcc, ["backend-test@codexng.com"])
-        self.assertEqual(sent.cc, [], "the invitee must not see the monitor")
-        # The copy is the same message, so the link in it works.
+        self.assertEqual(sent.bcc, [])
+        self.assertEqual(sent.cc, [])
         self.assertIn(token, sent.body)
 
     def test_from_name_lands_in_outgoing_from_header(self):

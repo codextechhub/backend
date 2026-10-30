@@ -122,6 +122,11 @@ def deliver_email_notification(
         )
         return
 
+    # A message whose token is put in here carries a one-time link (an
+    # invitation, a reset, a closure, a supplier's quote link): never copied,
+    # whatever the monitoring lists hold. See the settings module's docstring.
+    if any(marker for marker in (replacements or {})):
+        bcc = []
     for marker, value in (replacements or {}).items():
         if not marker:
             continue

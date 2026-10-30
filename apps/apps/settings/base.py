@@ -70,20 +70,19 @@ internal addresses in front of customers and vendors, tells each recipient
 their mail is monitored, and hands anyone hitting reply-all a route into an
 internal inbox.
 
-Each list reads its old ``*_CC`` variable as a fallback, so a deployment that
-has not renamed its variables keeps the addresses it had, and each falls back
-to :data:`MONITORING_MAILBOX` so a deployment setting neither variable still
-gets the copy. That default is written once and shared: three separately-typed
-defaults drift, and a list that drifts to ``""`` is empty on exactly the
-deployment nobody configured, which is where a missing copy is hardest to
-notice.
+Every list is **empty unless the environment names an address**. Each reads
+its old ``*_CC`` variable as a fallback, so a deployment that set one keeps
+the addresses it had; a deployment that sets neither copies nothing. The
+copies hold what schools' families and staff are sent (payslips, report cards,
+invoices), and the privacy policy says Code X keeps no such copy, so a copy is
+something a deployment asks for, never something it gets by forgetting.
 
-The copy of an invitation carries the recipient's live activation link, so
-anybody who can read the monitoring mailbox can activate that account. That is
-deliberate, and it is what lets the invitation and activation flow be tested
-end to end without access to the invitee's own inbox. Treat read access to that
-mailbox as equivalent to holding every pending invitation on the platform, and
-set ``EMAIL_BCC`` empty on any deployment where that is not wanted.
+**A message carrying a one-time link is never copied**, whatever the lists
+hold: an invitation, a password reset, an account closure link, a supplier's
+quote link. Its token is put in only as it is sent
+(``vs_notifications.tasks.deliver_email_notification``), and a copy would let
+whoever reads the monitoring mailbox use it. Test those flows with a test
+inbox of your own.
 
 Base URLs, and why none of them derives from another
 ----------------------------------------------------
@@ -637,14 +636,13 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX <chidera.ohanenye@codexng.com>",
 )
-# Monitoring copies are BCC, never CC, and a copy of an invitation carries a
-# working activation link. See the module docstring before changing either.
-MONITORING_MAILBOX = "backend-test@codexng.com"
+# Monitoring copies are BCC, never CC, empty unless the environment names an
+# address, and never of a message with a one-time link. See the module docstring.
 
 
 def _addresses(name: str, legacy_name: str) -> list[str]:
-    """The monitoring list *name* holds, falling back to its old CC variable."""
-    raw = config(name, default=config(legacy_name, default=MONITORING_MAILBOX))
+    """The monitoring list *name* holds, falling back to its old CC variable; none by default."""
+    raw = config(name, default=config(legacy_name, default=""))
     return [addr.strip() for addr in raw.split(",") if addr.strip()]
 
 

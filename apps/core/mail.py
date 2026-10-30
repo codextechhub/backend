@@ -40,9 +40,9 @@ def send_email(
     """
     Central email sender for the platform.
 
-    Automatically blind-copies any addresses listed in settings.EMAIL_BCC so
-    every outgoing email reaches the same monitoring mailbox. Clear EMAIL_BCC in
-    the environment to disable.
+    Blind-copies the addresses in settings.EMAIL_BCC, which is empty unless the
+    environment names a monitoring mailbox. A message carrying a one-time link
+    is never copied (vs_notifications.tasks.deliver_email_notification).
 
     BCC rather than CC on purpose: these addresses are ours, not the recipient's.
     A visible copy showed internal addresses to customers and vendors, told each

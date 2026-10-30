@@ -719,6 +719,25 @@ class DeliveryTaskTests(_NotifFixture):
 
         self.assertEqual(mail.outbox[0].bcc, [])
 
+    @override_settings(EMAIL_BCC=["monitor@codexng.com"])
+    def test_a_message_carrying_a_one_time_link_is_never_copied(self):
+        """An invitation, a reset or a closure link put in as it is sent is nobody else's to read.
+
+        Whoever reads the monitoring mailbox could otherwise activate the
+        account, set its password or close it. Even an explicit copy list in
+        the metadata loses to it.
+        """
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        notif.body = "Set your password: https://school.test/activate/__TOKEN__/"
+        notif.metadata = {"bcc": ["procurement@codexng.com"]}
+        notif.save(update_fields=["body", "metadata"])
+
+        deliver_email_notification(str(notif.id), replacements={"__TOKEN__": "iv_secret"})
+
+        self.assertIn("iv_secret", mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].bcc, [])
+
     def test_metadata_attachment_is_loaded_from_storage(self):
         from .tasks import deliver_email_notification
         storage_name = default_storage.save(
