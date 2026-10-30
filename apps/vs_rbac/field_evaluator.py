@@ -28,6 +28,8 @@ Fixed rules applied before the formula:
   readable or writable there;
 * a key that is not a registered, active field is always readable and
   writable, so Field Access stays opt-in field by field.
+* an always-readable field remains readable through role and personal Read
+  denials, while its Write decision still follows the usual rules.
 
 Branch is accepted for symmetry with the permission evaluator. Enforcement
 passes :data:`vs_rbac.evaluator.ANY_BRANCH`: every role a person holds counts
@@ -164,7 +166,7 @@ def _evaluate(user, tenant, branch, *, with_overrides: bool) -> dict:
     field and access), and :func:`_role_switches`.
     """
     fields = FieldDefinition.objects.filter(is_active=True)
-    columns = ["key", "sensitive", "writable", "scope"]
+    columns = ["key", "sensitive", "writable", "scope", "read_always"]
     if with_overrides:
         in_force = UserFieldAccessOverride.objects.filter(
             tenant=tenant, user=user, field_id=OuterRef("key"),
@@ -186,8 +188,8 @@ def _evaluate(user, tenant, branch, *, with_overrides: bool) -> dict:
 
     states = {}
     for row in field_rows:
-        key, sensitive, writable, scope = row[:4]
-        read_mode, write_mode = row[4:6] if with_overrides else (None, None)
+        key, sensitive, writable, scope, read_always = row[:5]
+        read_mode, write_mode = row[5:7] if with_overrides else (None, None)
         if not platform and scope != PermissionScope.TENANT:
             states[key] = (False, False)
             continue
@@ -197,12 +199,12 @@ def _evaluate(user, tenant, branch, *, with_overrides: bool) -> dict:
         role_read = any_read or (default_applies and not sensitive)
         role_write = any_write or (default_applies and not sensitive and writable)
 
-        read = (role_read or read_mode == allow or write_mode == allow) and read_mode != deny
+        read = read_always or ((role_read or read_mode == allow or write_mode == allow) and read_mode != deny)
         write = (
             (role_write or write_mode == allow)
             and writable
             and write_mode != deny
-            and read_mode != deny
+            and (read_always or read_mode != deny)
         )
         states[key] = (read, write and read)
     return states

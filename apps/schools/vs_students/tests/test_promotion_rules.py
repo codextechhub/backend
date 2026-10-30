@@ -277,22 +277,13 @@ class PromotionRulesShapeTests(_PromotionRulesFixture):
         ])
         self.assertEqual(read_promotion_rules(self.tenant).stored(), DEFAULTS)
 
-    def test_every_rule_is_sent_every_time(self):
+    def test_a_partial_save_keeps_the_other_rules(self):
         response = self.put(
             self.settings_admin, "student-promotion-rules", {"arms": "SPREAD"},
         )
-        self.assertEqual(response.status_code, 400, response.data)
-        detail = response.data["error"]["detail"]
-        self.assertEqual(
-            detail["suspended"],
-            ["Say what happens to suspended pupils at promotion."],
-        )
-        self.assertEqual(
-            detail["capacity_mode"],
-            ["Say what the promotion does when a class is full."],
-        )
-        self.assertNotIn("arms", detail)
-        self.assertEqual(read_promotion_rules(self.tenant).arms, "SAME_ARM")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(read_promotion_rules(self.tenant).arms, "SPREAD")
+        self.assertEqual(read_promotion_rules(self.tenant).suspended, "HOLD")
 
 
 class PromotionPassMarkTests(_PromotionRulesFixture):

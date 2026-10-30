@@ -14,9 +14,10 @@ from __future__ import annotations
 from django.urls import reverse
 
 from vs_config.models import ConfigurationAuditEvent, ConfigurationDefinition
-from vs_rbac.models import PermissionScope
+from vs_rbac.models import PermissionScope, RoleFieldAccess
 from vs_rbac.tests.helpers import (
     make_assignment,
+    make_field_definition,
     make_permission,
     make_role,
     make_role_permission,
@@ -91,6 +92,7 @@ class _RulesFixture(_Base):
         cls.bursar_role = make_role(cls.school, name="Bursar", key="bursar")
 
         settings_role = make_role(cls.school, name="Settings Admin", key="settings_admin")
+        cls.settings_role = settings_role
         make_role_permission(
             settings_role,
             make_permission("school.settings.update", scope=PermissionScope.TENANT),
@@ -122,6 +124,26 @@ class _RulesFixture(_Base):
 # ── security ────────────────────────────────────────────────────────────────
 
 class CalendarRulesSecurityTests(_RulesFixture):
+
+    def test_read_only_week_start_and_hidden_invigilators_survive_partial_put(self):
+        week = make_field_definition("school.settings.week_starts_on", "Week starts on", read_always=True)
+        invigilators = make_field_definition("school.settings.invigilator_roles", "Invigilators")
+        RoleFieldAccess.objects.create(
+            role=self.settings_role, field=week, can_read=False, can_write=False,
+        )
+        RoleFieldAccess.objects.create(
+            role=self.settings_role, field=invigilators, can_read=False, can_write=False,
+        )
+        body = self.get(self.bisi, "calendar-rules").data["data"]
+        self.assertEqual(body["week_starts_on"], DEFAULTS["week_starts_on"])
+        self.assertNotIn("invigilator_roles", body)
+        self.assertIn("week_starts_on", body["_read_only_fields"])
+        refused = self.put_rules(self.bisi, {"invigilator_roles": ["bursar"]})
+        self.assertEqual(refused.status_code, 403, refused.data)
+        saved = self.put_rules(self.bisi, {"teaching_days": [1, 2, 3, 4, 5, 6]})
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(read_calendar_rules(self.tenant).week_starts_on, DEFAULTS["week_starts_on"])
+
 
     def test_any_member_of_the_school_reads_them_with_no_key(self):
         """Mr Eze's own week is drawn on the school's days, so he needs no key."""
@@ -319,30 +341,10 @@ class CalendarRulesRefusalTests(_RulesFixture):
         self.assertEqual(values_of(calendar_rules_body(self.tenant)), DEFAULTS)
         return response.data["error"]["detail"]
 
-    def test_every_setting_is_sent_every_time(self):
+    def test_an_empty_save_keeps_the_current_settings(self):
         response = self.put_rules(self.bisi, {})
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertEqual(response.data["error"]["detail"], {
-            "teaching_days": ["Choose the days the school teaches."],
-            "week_starts_on": [
-                "Say whether the school's week starts on Monday or Sunday.",
-            ],
-            "closes_school_by_type": [
-                "Say, for each kind of calendar entry, whether it closes the school.",
-            ],
-            "room_required_to_publish": [
-                "Say whether a lesson needs a room before its timetable can be "
-                "published.",
-            ],
-            "teacher_duty_match": [
-                "Say what happens to a teacher with no teaching duty for the lesson.",
-            ],
-            "invigilator_roles": ["List the roles whose holders may invigilate."],
-            "default_period_minutes": [
-                "Send the default length of a period in minutes, or null for no "
-                "default.",
-            ],
-        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["teaching_days"], [1, 2, 3, 4, 5])
 
     def test_a_school_teaches_at_least_one_real_weekday_each_listed_once(self):
         self.assertEqual(

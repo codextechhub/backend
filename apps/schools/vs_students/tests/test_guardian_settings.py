@@ -328,13 +328,12 @@ class GuardianRulesShapeTests(_GuardianRulesFixture):
                 )
         self.set_rules(extra_relationships=["x" * 30])
 
-    def test_every_rule_is_sent_every_time(self):
+    def test_a_partial_save_keeps_the_matching_rule(self):
         body = self.rules_body()
         body.pop("matching")
-        detail = self.error_detail(
-            self.put(self.settings_admin, "student-guardian-rules", body),
-        )
-        self.assertEqual(detail["matching"], ["Say how guardians are matched."])
+        response = self.put(self.settings_admin, "student-guardian-rules", body)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["matching"], "EMAIL_THEN_PHONE")
 
 
 # ── the minimum number of guardians ─────────────────────────────────────────

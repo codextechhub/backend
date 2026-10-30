@@ -444,6 +444,8 @@ class FieldDefinition(TimeStampedModel):
     closed for sensitive fields, open for the rest. ``writable`` is false for
     values no API path can set (computed, provider-issued or derived), and such
     a field never offers a write switch.
+    ``read_always`` is for a shared vocabulary or display value whose Read
+    cannot be closed without breaking other screens; its Write can be closed.
 
     ``scope`` carries the same meaning and the same guard as
     :attr:`Permission.scope`, and has no default for the same reason: an
@@ -469,6 +471,7 @@ class FieldDefinition(TimeStampedModel):
     description = models.TextField(blank=True)
     sensitive = models.BooleanField(default=False)
     writable = models.BooleanField(default=True)
+    read_always = models.BooleanField(default=False)
     open_on_create = models.BooleanField(
         default=False,
         help_text="Set freely while the record is created; the write switch governs later changes only.",
@@ -506,7 +509,7 @@ class FieldDefinition(TimeStampedModel):
     def default_access(self) -> dict:
         """Read and write for a role that has no switch set on this field."""
         return {
-            "read": not self.sensitive,
+            "read": self.read_always or not self.sensitive,
             "write": (not self.sensitive) and self.writable,
         }
 

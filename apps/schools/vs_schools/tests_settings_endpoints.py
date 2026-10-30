@@ -19,9 +19,10 @@ from vs_config.models import ConfigurationAuditEvent, ConfigurationDefinition
 from vs_config.runtime_settings import resolve_security_settings
 from vs_config.services.resolution import resolve_value, set_value
 from vs_finance.models import EmployeeSalary, LedgerEntity
-from vs_rbac.models import PermissionScope
+from vs_rbac.models import PermissionScope, RoleFieldAccess, TenantRoleTemplate
 from vs_rbac.tests.helpers import (
     make_assignment,
+    make_field_definition,
     make_branch,
     make_permission,
     make_role,
@@ -112,6 +113,20 @@ class SchoolSecuritySettingsAccessTests(_SchoolSettingsFixture):
         self.assertFalse(
             resolve_security_settings(tenant=self.bright.tenant)["overrides"]["failed_login_threshold"]
         )
+
+    def test_hidden_security_value_and_provenance_are_absent(self):
+        field = make_field_definition(
+            "school.settings.failed_login_threshold", "Failed logins",
+        )
+        role = TenantRoleTemplate.objects.get(tenant=self.bright.tenant, key="school_admin")
+        RoleFieldAccess.objects.create(
+            role=role, field=field, can_read=False, can_write=False,
+        )
+        data = self.client_for(self.bright_admin).get(SECURITY_URL).data["data"]
+        for section in ("settings", "configured", "sources", "source_scopes", "overrides", "compliance"):
+            self.assertNotIn("failed_login_threshold", data[section])
+        refused = self.patch(self.bright_admin, SECURITY_URL, {"failed_login_threshold": 3})
+        self.assertEqual(refused.status_code, 403, refused.data)
 
     def test_a_branch_admin_may_read_but_not_write(self):
         read = self.client_for(self.ikeja_admin).get(SECURITY_URL)
@@ -326,6 +341,19 @@ class SchoolPayrollScopeTests(_SchoolSettingsFixture):
 
     def effective(self, school):
         return resolve_value(self.definition, tenant=school.tenant)[0]
+
+    def test_payroll_scope_write_switch_blocks_a_whole_school_writer(self):
+        field = make_field_definition("school.settings.payroll_scope", "Payroll scope")
+        role = TenantRoleTemplate.objects.get(tenant=self.bright.tenant, key="school_admin")
+        RoleFieldAccess.objects.create(
+            role=role, field=field, can_read=True, can_write=False,
+        )
+        response = self.client_for(self.bright_admin).get(PAYROLL_URL)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["_read_only_fields"], ["scope"])
+        refused = self.patch(self.bright_admin, PAYROLL_URL, {"scope": "PER_BRANCH"})
+        self.assertEqual(refused.status_code, 403, refused.data)
+        self.assertEqual(self.effective(self.bright), "CENTRAL")
 
     # -- security first -------------------------------------------------------- #
 

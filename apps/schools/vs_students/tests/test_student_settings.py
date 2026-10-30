@@ -292,12 +292,12 @@ class EnrolmentRulesShapeTests(_SettingsFixture):
             "Choose WARN, HARD or OFF for what a full class does.",
         )
 
-    def test_every_rule_is_sent_every_time(self):
+    def test_a_partial_save_keeps_capacity_mode(self):
         body = self.rules_body()
         body.pop("capacity_mode")
         response = self.put(self.settings_admin, "student-enrolment-rules", body)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("capacity_mode", response.data["error"]["detail"])
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["capacity_mode"], "WARN")
 
 
 # ── what each rule changes ──────────────────────────────────────────────────

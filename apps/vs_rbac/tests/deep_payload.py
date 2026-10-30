@@ -120,6 +120,10 @@ def closed_request(tenant, resource: str):
     records are about, so no owner rule opens anything.
     """
     keys = install_declared_fields(resource)
+    from vs_rbac.models import FieldDefinition
+    hideable = list(FieldDefinition.objects.filter(
+        key__in=keys, read_always=False,
+    ).values_list("key", flat=True))
     number = next(_caller_counter)
     role = make_role(tenant, name=f"Sees nothing {number}", key=f"deep_payload_{number}")
     set_field_access(role, *keys, read=False, write=False)
@@ -131,7 +135,7 @@ def closed_request(tenant, resource: str):
     request = APIRequestFactory().get("/")
     request.user = User.objects.get(pk=user.pk)
     request.tenant = tenant
-    return request, keys
+    return request, hideable
 
 
 class DeepPayloadChecks:

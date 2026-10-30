@@ -51,6 +51,7 @@ from vs_config.display import (
 from vs_config.exceptions import ConfigurationError
 from vs_config.models import ConfigurationDefinition, ConfigurationValue
 from vs_config.services.resolution import clear_value, resolve_value, set_value
+from vs_rbac.field_enforcement import can_read
 from vs_rbac.scoping import (
     assert_caller_may_configure,
     only_branch_id,
@@ -58,6 +59,23 @@ from vs_rbac.scoping import (
 )
 
 from .settings import SchoolSettingsView
+from ..settings_field_access import assert_settings_write, settings_body
+
+_SCHOOL_FIELDS = {
+    "timezone": "timezone", "source": "timezone_source",
+    "date_format": "date_format", "clock": "clock",
+}
+_BRANCH_FIELDS = {"timezone": "branch_timezone"}
+
+
+def _display_body(request, payload, *, branch=False):
+    """Keep zone provenance and branch values behind their respective switches."""
+    shown = settings_body(request, payload, _BRANCH_FIELDS if branch else _SCHOOL_FIELDS)
+    if "timezone" not in shown:
+        shown.pop("source", None)
+    if not branch and not can_read(request, "school.settings.branch_timezone"):
+        shown.pop("branches", None)
+    return shown
 
 
 #: The zones a school is offered, west to east. A PATCH accepts any IANA zone;
@@ -339,7 +357,9 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
             self._school_payload(request, definitions, tenant) if branch is None
             else self._branch_payload(definitions, tenant, branch)
         )
-        return success_response("Display settings retrieved.", payload)
+        return success_response("Display settings retrieved.", _display_body(
+            request, payload, branch=branch is not None,
+        ))
 
     def patch(self, request):
         tenant = self.school_tenant(request)
@@ -351,6 +371,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
         serializer = DisplaySettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        assert_settings_write(request, data, _SCHOOL_FIELDS)
         reason = data.get("reason") or "Updated from the school's display settings"
         self._write(
             definitions, tenant,
@@ -359,7 +380,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
         )
         return success_response(
             "Display settings saved.",
-            self._school_payload(request, definitions, tenant),
+            _display_body(request, self._school_payload(request, definitions, tenant)),
         )
 
     def _patch_branch(self, request, tenant, branch):
@@ -375,6 +396,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
         serializer = BranchZoneUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        assert_settings_write(request, data, _BRANCH_FIELDS)
         reason = data.get("reason") or f"Updated from {branch.name}'s display settings"
         self._write(
             definitions, tenant, {"timezone": data["timezone"]},
@@ -382,7 +404,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
         )
         return success_response(
             f"{branch.name} keeps its own time zone.",
-            self._branch_payload(definitions, tenant, branch),
+            _display_body(request, self._branch_payload(definitions, tenant, branch), branch=True),
         )
 
     def delete(self, request):
@@ -394,6 +416,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
             request.user, tenant, branch, message=SCHOOL_REFUSAL,
         )
         definitions = self._definitions()
+        assert_settings_write(request, {"timezone": None}, _BRANCH_FIELDS)
         reason = (
             str(request.data.get("reason") or "") if hasattr(request.data, "get") else ""
         ) or f"{branch.name} follows the school's time zone"
@@ -404,7 +427,7 @@ class SchoolDisplaySettingsView(SchoolSettingsView):
         forget_tenant_zone(tenant)
         return success_response(
             f"{branch.name} follows the school's time zone again.",
-            self._branch_payload(definitions, tenant, branch),
+            _display_body(request, self._branch_payload(definitions, tenant, branch), branch=True),
         )
 
     @staticmethod

@@ -4,10 +4,17 @@ from __future__ import annotations
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 
 from ..constants import PERM_SETTINGS_UPDATE
 from ..serializers import CalendarRulesSerializer
 from .base import CalendarViewMixin
+
+_FIELDS = {name: name for name in (
+    "teaching_days", "week_starts_on", "closes_school_by_type",
+    "room_required_to_publish", "teacher_duty_match", "invigilator_roles",
+    "default_period_minutes",
+)}
 
 
 class CalendarRulesView(CalendarViewMixin, APIView):
@@ -50,7 +57,9 @@ class CalendarRulesView(CalendarViewMixin, APIView):
     def get(self, request):
         from ..services.calendar_rules import calendar_rules_body
 
-        return success_response(data=calendar_rules_body(self.tenant))
+        return success_response(data=settings_body(
+            request, calendar_rules_body(self.tenant), _FIELDS,
+        ))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
@@ -64,8 +73,10 @@ class CalendarRulesView(CalendarViewMixin, APIView):
                 "calendar and timetable settings."
             ),
         )
+        current = calendar_rules_body(self.tenant)
+        assert_settings_write(request, request.data, _FIELDS, current=current)
         writer = CalendarRulesSerializer(
-            data=request.data, context={"tenant": self.tenant},
+            data={**current, **request.data}, context={"tenant": self.tenant},
         )
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
@@ -74,5 +85,5 @@ class CalendarRulesView(CalendarViewMixin, APIView):
         )
         return success_response(
             "Calendar and timetable settings saved.",
-            data=calendar_rules_body(self.tenant, rules),
+            data=settings_body(request, calendar_rules_body(self.tenant, rules), _FIELDS),
         )

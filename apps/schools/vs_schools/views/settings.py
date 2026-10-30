@@ -72,6 +72,39 @@ from ..serializers import (
     StaffProfileVisibilityUpdateSerializer,
     TwoStepSettingUpdateSerializer,
 )
+from ..settings_field_access import assert_settings_write, settings_body
+
+_SECURITY_FIELDS = (
+    "failed_login_threshold", "account_lock_minutes", "self_reset_expiry_hours",
+    "admin_reset_expiry_hours", "invitation_expiry_days",
+    "proxy_idle_timeout_minutes",
+)
+_SECURITY_MAP = {name: name for name in _SECURITY_FIELDS}
+_PAYROLL_MAP = {"scope": "payroll_scope", "source": "payroll_scope_source"}
+
+
+def _security_body(request, payload):
+    """Keep each security value and all of its provenance behind the same Read switch."""
+    shown = dict(payload)
+    values = settings_body(request, shown["settings"], _SECURITY_MAP)
+    read_only = values.pop("_read_only_fields", [])
+    shown["settings"] = values
+    for section in ("configured", "sources", "source_scopes", "overrides", "compliance"):
+        shown[section] = {
+            name: value for name, value in shown.get(section, {}).items()
+            if name in values
+        }
+    if read_only:
+        shown["_read_only_fields"] = read_only
+    return shown
+
+
+def _payroll_body(request, payload):
+    """The source only explains a payroll scope the caller can read."""
+    shown = settings_body(request, payload, _PAYROLL_MAP)
+    if "scope" not in shown:
+        shown.pop("source", None)
+    return shown
 
 
 #: The two ways a school can run payroll, worded for the school admin choosing.
@@ -151,7 +184,7 @@ class SchoolSecuritySettingsView(SchoolSettingsView):
         tenant, branch = self._scope(request)
         return success_response(
             "Security settings retrieved.",
-            resolve_security_settings(tenant=tenant, branch=branch),
+            _security_body(request, resolve_security_settings(tenant=tenant, branch=branch)),
         )
 
     def patch(self, request):
@@ -165,19 +198,20 @@ class SchoolSecuritySettingsView(SchoolSettingsView):
         )
         serializer = SecuritySettingsUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        assert_settings_write(request, serializer.validated_data, _SECURITY_MAP)
         reason = (
             serializer.validated_data.get("reason")
             or "Updated from the school's security settings"
         )
         return success_response(
             "Security settings saved.",
-            save_security_settings(
+            _security_body(request, save_security_settings(
                 validated_data=serializer.validated_data,
                 actor=request.user,
                 reason=reason,
                 tenant=tenant,
                 branch=branch,
-            ),
+            )),
         )
 
 
@@ -234,7 +268,7 @@ class SchoolPayrollScopeView(SchoolSettingsView):
         tenant = self.school_tenant(request)
         return success_response(
             "Payroll scope retrieved.",
-            self._payload(self._definition(), tenant),
+            _payroll_body(request, self._payload(self._definition(), tenant)),
         )
 
     def patch(self, request):
@@ -246,6 +280,7 @@ class SchoolPayrollScopeView(SchoolSettingsView):
         definition = self._definition()
         serializer = PayrollScopeUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        assert_settings_write(request, serializer.validated_data, _PAYROLL_MAP)
         reason = (
             serializer.validated_data.get("reason")
             or "Updated from the school's payroll settings"
@@ -266,7 +301,7 @@ class SchoolPayrollScopeView(SchoolSettingsView):
             )
         return success_response(
             "Payroll scope saved.",
-            self._payload(definition, tenant),
+            _payroll_body(request, self._payload(definition, tenant)),
         )
 
 

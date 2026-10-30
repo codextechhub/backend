@@ -2285,15 +2285,19 @@ class SchoolProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
         return [
             {"field": field, "label": PROFILE_FIELD_LABELS.get(field, field)}
             for field in obj.missing_profile_fields()
-            if field not in {"address", "registration_id"}
-            or can_read(request, f"school.profile.{field}")
+            if can_read(request, f"school.profile.{field}")
         ]
 
     def get_options(self, obj) -> Dict[str, List[Dict[str, str]]]:
+        request = self.context.get("request")
         return {
-            "ownership_type": _choice_options(OwnershipType),
-            "term_structure": _choice_options(TermStructure),
-            "currency": _choice_options(Currency),
+            field: _choice_options(choices)
+            for field, choices in (
+                ("ownership_type", OwnershipType),
+                ("term_structure", TermStructure),
+                ("currency", Currency),
+            )
+            if can_read(request, f"school.profile.{field}")
         }
 
     def get_editable_fields(self, obj) -> List[str]:
@@ -2320,7 +2324,10 @@ class SchoolProfileSerializer(FieldAccessMixin, serializers.ModelSerializer):
         access = self._field_access()
         if access is None:
             return fields
-        controlled = {"address", "registration_id"}
+        controlled = {
+            "ownership_type", "term_structure", "currency", "address",
+            "website", "motto", "registration_id",
+        }
         return [
             field for field in fields
             if field not in controlled

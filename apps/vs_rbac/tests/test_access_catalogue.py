@@ -287,6 +287,7 @@ class AccessCatalogueTests(TestCase):
             "description": "",
             "sensitive": True,
             "writable": True,
+            "read_always": False,
             "default": {"read": False, "write": False},
         })
         self.assertEqual(fields["payment_terms"]["default"], {"read": True, "write": True})
@@ -483,7 +484,7 @@ class RealFieldOnlyResourceTests(TestCase):
                 "first_name", "middle_name", "last_name", "photo",
                 "date_of_birth", "gender", "phone", "email",
                 "staff_number", "job_title", "employment_type", "hire_date",
-                "employment_status", "exit_date",
+                "employment_status", "exit_date", "leave_group",
             },
         )
         self.assertTrue(teachers["permissions"])

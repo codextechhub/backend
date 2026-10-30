@@ -88,6 +88,9 @@ class _FieldAccessApi(TestCase):
         cls.slug = cls.tenant.slug
 
         cls.name = make_field_definition("faapi.vendor.name", "Name", group="Vendor")
+        cls.display = make_field_definition(
+            "faapi.vendor.display", "Display", group="Vendor", read_always=True,
+        )
         cls.phone = make_field_definition(
             "faapi.vendor.phone", "Phone", group="Contact", sensitive=True,
         )
@@ -508,6 +511,14 @@ class FieldAccessAuditTests(_FieldAccessApi):
 # PATCH rules
 # =============================================================================
 class RoleFieldAccessPatchTests(_FieldAccessApi):
+    def test_always_readable_field_has_only_a_write_decision(self):
+        response = self._patch([{"field": self.display.key, "read": False, "write": False}])
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
+        entry = self._entries(response)[self.display.key]
+        self.assertTrue(entry["read_always"])
+        self.assertEqual((entry["read"], entry["write"]), (True, False))
+        self.assertEqual(self._stored(self.display), (True, False))
+
     def test_write_on_stores_read_on(self):
         response = self._patch([{"field": self.phone.key, "write": True}])
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.content)
@@ -615,7 +626,7 @@ class RoleFieldAccessReadTests(_FieldAccessApi):
         })
         self.assertEqual(
             [entry["key"] for entry in data["fields"]],
-            [self.bank.key, self.phone.key, self.name.key, self.total.key],
+            [self.bank.key, self.phone.key, self.display.key, self.name.key, self.total.key],
         )
         self.assertEqual(data["fields"][0], {
             "key": self.bank.key,
@@ -627,6 +638,7 @@ class RoleFieldAccessReadTests(_FieldAccessApi):
             "group": "Banking",
             "sensitive": True,
             "writable": True,
+            "read_always": False,
             "read": False,
             "write": False,
             "source": "default",
@@ -648,10 +660,10 @@ class RoleFieldAccessReadTests(_FieldAccessApi):
 
         self.assertEqual(keys(state="hidden"), [self.bank.key, self.phone.key])
         self.assertEqual(keys(state="read_only"), [self.total.key])
-        self.assertEqual(keys(state="full"), [self.name.key])
+        self.assertEqual(keys(state="full"), [self.display.key, self.name.key])
         self.assertEqual(keys(search="phone"), [self.phone.key])
         self.assertEqual(keys(search="bank account"), [self.bank.key])
-        self.assertEqual(len(keys(module="faapi", resource="vendor")), 4)
+        self.assertEqual(len(keys(module="faapi", resource="vendor")), 5)
         self.assertEqual(keys(module="no_such_module"), [])
         self.assertEqual(self._get(state="secret").status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -688,6 +700,13 @@ class RoleFieldAccessReadTests(_FieldAccessApi):
 # One-person exceptions
 # =============================================================================
 class UserFieldAccessOverrideApiTests(_FieldAccessApi):
+    def test_always_readable_field_refuses_a_personal_read_denial(self):
+        response = self._create_exception(
+            field=self.display.key, access="READ", mode="DENY",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(UserFieldAccessOverride.objects.exists())
+
     def _list(self, **params):
         return _client(self.admin).get(
             self._exceptions_url(), {"tenant": self.slug, **params},

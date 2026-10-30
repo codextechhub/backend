@@ -47,7 +47,7 @@ SYNCED_ACTION = AuditActionType.FIELD_REGISTRY_SYNCED
 #: The stored columns compared against a declaration.
 _COMPARED = (
     "resource_id", "name", "api_names", "label", "group", "description",
-    "sensitive", "writable", "open_on_create", "scope", "sort_order", "is_active",
+    "sensitive", "writable", "read_always", "open_on_create", "scope", "sort_order", "is_active",
 )
 
 
@@ -231,6 +231,7 @@ class Command(BaseCommand):
                     "description": spec.description,
                     "sensitive": spec.sensitive,
                     "writable": spec.writable,
+                    "read_always": spec.read_always,
                     "open_on_create": spec.open_on_create,
                     "scope": spec.scope,
                     "sort_order": spec.sort_order,

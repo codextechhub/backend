@@ -16,10 +16,33 @@ from rest_framework import serializers
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 
 from ..constants import PERM_SETTINGS_UPDATE, PERM_VIEW
 from ..serializers import StaffNumberPolicySerializer, StaffRulesSerializer
 from .base import StaffViewMixin
+
+_STAFF_RULE_FIELDS = {
+    "starting_role": "starting_role", "required_documents": "staff_required_documents",
+    "self_editable_fields": "self_editable_fields",
+    "hire_requires_approval": "hire_requires_approval",
+}
+_LEAVE_RULE_FIELDS = {
+    "allowances": "leave_allowances", "groups": "leave_groups",
+    "overrides": "leave_overrides", "working_days": "leave_working_days",
+    "exclude_closures": "leave_exclude_closures",
+}
+_NUMBER_FIELDS = {
+    name: f"staff_number_{name}"
+    for name in ("required", "pattern", "hint", "auto_issue", "source", "suggestion")
+}
+
+
+def _staff_rules_body(request, rules, tenant):
+    """The staff settings, with leave values filtered under their own switches."""
+    body = rules.as_dict(tenant)
+    body["leave"] = settings_body(request, body["leave"], _LEAVE_RULE_FIELDS)
+    return settings_body(request, body, _STAFF_RULE_FIELDS)
 
 
 class _SettingsView(StaffViewMixin, APIView):
@@ -51,26 +74,39 @@ class StaffRulesView(_SettingsView):
     def get(self, request):
         from ..services.rules import read_staff_rules
 
-        return success_response(data=read_staff_rules(self.tenant).as_dict(self.tenant))
+        return success_response(data=_staff_rules_body(
+            request, read_staff_rules(self.tenant), self.tenant,
+        ))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
 
-        from ..services.rules import write_staff_rules
+        from ..services.rules import read_staff_rules, write_staff_rules
 
         assert_caller_may_configure(
             request.user, self.tenant,
             message="Only a school-wide administrator can change the school's staff rules.",
         )
+        current = read_staff_rules(self.tenant).as_dict(self.tenant)
+        assert_settings_write(request, request.data, _STAFF_RULE_FIELDS, current=current)
+        submitted_leave = request.data.get("leave", {})
+        if isinstance(submitted_leave, dict):
+            assert_settings_write(
+                request, submitted_leave, _LEAVE_RULE_FIELDS, current=current["leave"],
+            )
+        body = {**current, **request.data}
+        body["leave"] = {**current["leave"], **submitted_leave} if isinstance(submitted_leave, dict) else submitted_leave
         writer = StaffRulesSerializer(
-            data=request.data, context={"tenant": self.tenant, "request": request},
+            data=body, context={"tenant": self.tenant, "request": request},
         )
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         rules = write_staff_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Staff rules saved.", data=rules.as_dict(self.tenant))
+        return success_response("Staff rules saved.", data=_staff_rules_body(
+            request, rules, self.tenant,
+        ))
 
 
 class StaffLeaveGroupView(StaffViewMixin, APIView):
@@ -84,11 +120,13 @@ class StaffLeaveGroupView(StaffViewMixin, APIView):
 
     def put(self, request, pk):
         from ..services.rules import leave_rules
+        from vs_rbac.field_enforcement import assert_writable, visible
 
         class Assignment(serializers.Serializer):
             group_id = serializers.UUIDField(allow_null=True, required=True)
 
         staff = self.get_staff_for_write(pk)
+        assert_writable(request, "school.teachers", request.data)
         writer = Assignment(data=request.data)
         writer.is_valid(raise_exception=True)
         group_id = writer.validated_data["group_id"]
@@ -102,7 +140,9 @@ class StaffLeaveGroupView(StaffViewMixin, APIView):
         if staff.leave_group != wanted:
             staff.leave_group = wanted
             staff.save(update_fields=["leave_group", "updated_at"])
-        return success_response("Leave group saved.", data={"leave_group": group})
+        return success_response("Leave group saved.", data=visible(
+            request, "school.teachers", {"leave_group": group},
+        ))
 
 
 class StaffNumberPolicyView(_SettingsView):
@@ -157,7 +197,7 @@ class StaffNumberPolicyView(_SettingsView):
             body["suggestion"] = suggest_number(
                 self.tenant, policy=policy, branch=branch,
             )
-        return body
+        return settings_body(self.request, body, _NUMBER_FIELDS)
 
     def _assert_may_write(self, branch):
         from vs_rbac.scoping import assert_caller_may_configure
@@ -177,11 +217,13 @@ class StaffNumberPolicyView(_SettingsView):
         return success_response(data=self._body(read_policy(self.tenant, branch), branch))
 
     def put(self, request):
-        from ..services.number_policy import write_policy
+        from ..services.number_policy import read_policy, write_policy
 
         branch = self._branch()
         self._assert_may_write(branch)
-        writer = StaffNumberPolicySerializer(data=request.data)
+        current = read_policy(self.tenant, branch).as_dict()
+        assert_settings_write(request, request.data, _NUMBER_FIELDS, current=current)
+        writer = StaffNumberPolicySerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
         policy = write_policy(
@@ -201,6 +243,10 @@ class StaffNumberPolicyView(_SettingsView):
                           "school's rule is changed, never removed.",
             })
         self._assert_may_write(branch)
+        assert_settings_write(
+            request, {name: None for name in ("required", "pattern", "hint", "auto_issue")},
+            _NUMBER_FIELDS,
+        )
         policy = reset_branch_policy(self.tenant, branch, request.user)
         return success_response(
             f"{branch.name} follows the school's staff number rule again.",

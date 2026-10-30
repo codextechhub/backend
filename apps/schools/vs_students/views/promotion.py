@@ -5,6 +5,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 from vs_rbac.field_enforcement import can_read
 
 from ..constants import (
@@ -38,6 +39,14 @@ def _session(tenant, pk, *, label):
 
 #: What a per-student exception calls a pupil whose first name the reader may not read.
 UNNAMED_PUPIL = "This pupil"
+
+_PROMOTION_RULE_FIELDS = {
+    "suspended": "promotion_suspended", "not_placed": "promotion_not_placed",
+    "arms": "promotion_arms", "capacity_mode": "promotion_capacity_mode",
+    "pass_mark": "promotion_pass_mark",
+    "effective_capacity_mode": "promotion_capacity_mode",
+    "enrolment_capacity_mode": "enrolment_capacity_mode",
+}
 
 
 def _named_exception(request, entry, student):
@@ -80,13 +89,15 @@ def _plan_payload(plan, request):
         },
         # The school's promotion rules as stored. capacity_mode below is the
         # effective one, which is what the run applies.
-        "rules": plan.rules.stored(),
+        "rules": settings_body(request, plan.rules.stored(), _PROMOTION_RULE_FIELDS),
         "level_map": plan.level_map,
         # Target classes the run would fill past capacity. Under WARN the run
         # refuses them until allow_over_capacity is sent; under HARD it refuses
         # them outright; under OFF the list is always empty.
         "over_capacity": plan.over_capacity,
-        "capacity_mode": plan.capacity_mode,
+        **({"capacity_mode": plan.capacity_mode} if can_read(
+            request, "school.settings.promotion_capacity_mode",
+        ) else {}),
         # Class-wide causes collapse to one entry however many students they
         # cover; per-student causes get one each. A list that repeated a
         # class-wide cause per student would bury the rows that need a decision
@@ -154,12 +165,14 @@ class PromotionRulesView(StudentsViewMixin, APIView):
     def get(self, request):
         from ..services.promotion_rules import read_promotion_rules
 
-        return success_response(data=read_promotion_rules(self.tenant).as_dict())
+        return success_response(data=settings_body(
+            request, read_promotion_rules(self.tenant).as_dict(), _PROMOTION_RULE_FIELDS,
+        ))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
 
-        from ..services.promotion_rules import write_promotion_rules
+        from ..services.promotion_rules import read_promotion_rules, write_promotion_rules
 
         assert_caller_may_configure(
             request.user, self.tenant,
@@ -168,13 +181,17 @@ class PromotionRulesView(StudentsViewMixin, APIView):
                 "promotion rules."
             ),
         )
-        writer = PromotionRulesSerializer(data=request.data)
+        current = read_promotion_rules(self.tenant).as_dict()
+        assert_settings_write(request, request.data, _PROMOTION_RULE_FIELDS, current=current)
+        writer = PromotionRulesSerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         rules = write_promotion_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Promotion rules saved.", data=rules.as_dict())
+        return success_response("Promotion rules saved.", data=settings_body(
+            request, rules.as_dict(), _PROMOTION_RULE_FIELDS,
+        ))
 
 
 class _PromotionBase(StudentsViewMixin, APIView):

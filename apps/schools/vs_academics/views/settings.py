@@ -4,10 +4,13 @@ from __future__ import annotations
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 
 from ..constants import PERM_SETTINGS_UPDATE
 from ..serializers import AcademicRulesSerializer
 from .base import AcademicsViewMixin
+
+_FIELDS = {name: name for name in ("term_word", "term_names", "default_arms")}
 
 
 class AcademicRulesView(AcademicsViewMixin, APIView):
@@ -44,12 +47,14 @@ class AcademicRulesView(AcademicsViewMixin, APIView):
     def get(self, request):
         from ..services.academic_rules import read_academic_rules
 
-        return success_response(data=read_academic_rules(self.tenant).as_dict())
+        return success_response(data=settings_body(
+            request, read_academic_rules(self.tenant).as_dict(), _FIELDS,
+        ))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
 
-        from ..services.academic_rules import write_academic_rules
+        from ..services.academic_rules import read_academic_rules, write_academic_rules
 
         assert_caller_may_configure(
             request.user, self.tenant,
@@ -58,12 +63,15 @@ class AcademicRulesView(AcademicsViewMixin, APIView):
                 "academic structure settings."
             ),
         )
-        writer = AcademicRulesSerializer(data=request.data)
+        current = read_academic_rules(self.tenant).as_dict()
+        assert_settings_write(request, request.data, _FIELDS, current=current)
+        writer = AcademicRulesSerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         rules = write_academic_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
         return success_response(
-            "Academic structure settings saved.", data=rules.as_dict(),
+            "Academic structure settings saved.",
+            data=settings_body(request, rules.as_dict(), _FIELDS),
         )

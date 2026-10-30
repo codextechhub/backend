@@ -717,6 +717,7 @@ def _field_entry(field) -> dict:
         "description": field.description,
         "sensitive": field.sensitive,
         "writable": field.writable,
+        "read_always": field.read_always,
         "default": field.default_access,
     }
 
@@ -2050,6 +2051,7 @@ def _role_field_entry(field, row) -> dict:
         read, write, source = default["read"], default["write"], "default"
     else:
         read, write, source = row.can_read, row.can_write and field.writable, "role"
+    read = read or field.read_always
     return {
         "key": field.key,
         "name": field.name,
@@ -2060,6 +2062,7 @@ def _role_field_entry(field, row) -> dict:
         "group": field.group,
         "sensitive": field.sensitive,
         "writable": field.writable,
+        "read_always": field.read_always,
         "read": read,
         "write": write,
         "source": source,
@@ -2266,6 +2269,8 @@ class RoleFieldAccessView(TenantScopedRBACMixin, APIView):
 
                 read = change.get("read", before["read"])
                 write = change.get("write", before["write"])
+                if field.read_always:
+                    read = True
                 if change.get("write") is True:
                     read = True
                 if not read or not field.writable:

@@ -979,7 +979,7 @@ class ReasonCodeSerializer(FieldAccessMixin, serializers.Serializer):
     reason this term is a count of marks and follows the register's counts.
     """
 
-    field_resource = FIELD_RESOURCE
+    field_resource = "school.settings"
 
     id = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
@@ -987,6 +987,12 @@ class ReasonCodeSerializer(FieldAccessMixin, serializers.Serializer):
     requires_note = serializers.BooleanField(read_only=True)
     retired = serializers.BooleanField(read_only=True)
     used_this_term = serializers.IntegerField(read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not can_read(self.context.get("request"), f"{FIELD_RESOURCE}.counts"):
+            data.pop("used_this_term", None)
+        return data
 
 
 class ReasonCodeWriteSerializer(serializers.Serializer):

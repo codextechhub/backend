@@ -316,6 +316,36 @@ class SchoolProfileFieldAccessTests(_SchoolProfileFixture):
         self.assertEqual(self.school.address, "22 New Road")
         self.assertEqual(self.school.registration_id, "REG-BRIGHT-22")
 
+    def test_profile_choices_and_public_text_have_separate_field_switches(self):
+        from vs_rbac.field_registry import get_declaration
+
+        declared = {
+            field.name for field in get_declaration("school", "profile").fields
+        }
+        self.assertTrue(
+            {"ownership_type", "website", "motto"}.issubset(declared),
+        )
+
+    def test_hidden_profile_choices_and_text_leave_the_response(self):
+        School.objects.filter(pk=self.school.pk).update(
+            website="https://bright-star.example.com", motto="Learning together",
+        )
+        response = self._get(self.hidden_reader)
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        for field in ("ownership_type", "website", "motto"):
+            self.assertNotIn(field, data)
+            self.assertNotIn(field, data["editable_fields"])
+        self.assertNotIn("bright-star.example.com", str(data))
+        self.assertNotIn("Learning together", str(data))
+
+    def test_read_only_profile_text_refuses_a_change(self):
+        response = self._patch(
+            self.read_only_reader, {"website": "https://new.example.com"},
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "field_write_denied")
+
 
 class LiveSchoolProfileEndpointTests(TestCase):
     """The same endpoint once the school has gone live.

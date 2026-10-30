@@ -14,9 +14,10 @@ key at all. Sunrise is another school.
 from __future__ import annotations
 
 from vs_config.models import ConfigurationAuditEvent
-from vs_rbac.models import PermissionScope
+from vs_rbac.models import PermissionScope, RoleFieldAccess
 from vs_rbac.tests.helpers import (
     make_assignment,
+    make_field_definition,
     make_permission,
     make_role,
     make_role_permission,
@@ -59,6 +60,7 @@ class _RulesFixture(_Base):
             )
 
         settings_role = make_role(cls.school, name="Settings Admin", key="settings_admin")
+        cls.settings_role = settings_role
         make_role_permission(
             settings_role,
             make_permission("school.settings.update", scope=PermissionScope.TENANT),
@@ -102,6 +104,25 @@ class _RulesFixture(_Base):
 # ── security ────────────────────────────────────────────────────────────────
 
 class AcademicRulesSecurityTests(_RulesFixture):
+
+    def test_hidden_rule_and_read_only_rule_keep_their_values_on_partial_put(self):
+        names = make_field_definition("school.settings.term_names", "Term names")
+        arms = make_field_definition("school.settings.default_arms", "Arms")
+        RoleFieldAccess.objects.create(
+            role=self.settings_role, field=names, can_read=False, can_write=False,
+        )
+        RoleFieldAccess.objects.create(
+            role=self.settings_role, field=arms, can_read=True, can_write=False,
+        )
+        body = self.get(self.bisi, "academics-rules").data["data"]
+        self.assertNotIn("term_names", body)
+        self.assertEqual(body["_read_only_fields"], ["default_arms"])
+        refused = self.put(self.bisi, {"term_names": ["Secret"]})
+        self.assertEqual(refused.status_code, 403, refused.data)
+        saved = self.put(self.bisi, {"term_word": "SEMESTER"})
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(read_academic_rules(self.tenant).term_names, tuple(THREE_TERMS["term_names"]))
+
 
     def test_any_member_of_the_school_reads_them_with_no_key(self):
         """Tolu's register prints the school's word, so he needs no key to read it."""
@@ -237,24 +258,13 @@ class AcademicRulesRefusalTests(_RulesFixture):
         self.assertEqual(read_academic_rules(self.tenant).as_dict(), THREE_TERMS)
         return response.data["error"]["detail"]
 
-    def test_every_setting_is_sent_every_time(self):
+    def test_a_partial_save_keeps_the_other_settings(self):
         response = self.put(self.bisi, {"term_word": "SEMESTER"})
-        self.assertEqual(response.status_code, 400, response.data)
-        detail = response.data["error"]["detail"]
-        self.assertEqual(
-            detail["term_names"], ["List the names of the school's semesters."],
-        )
-        self.assertEqual(
-            detail["default_arms"],
-            ["List the arms a level's classes are generated with."],
-        )
-        response = self.put(self.bisi, {
-            "term_names": SAVED["term_names"], "default_arms": ["A"],
-        })
-        self.assertEqual(
-            response.data["error"]["detail"]["term_word"],
-            ["Say whether the school says Term or Semester."],
-        )
+        self.assertEqual(response.status_code, 200, response.data)
+        rules = read_academic_rules(self.tenant)
+        self.assertEqual(rules.term_word, "SEMESTER")
+        self.assertEqual(rules.term_names, tuple(THREE_TERMS["term_names"]))
+        self.assertEqual(rules.default_arms, tuple(THREE_TERMS["default_arms"]))
 
     def test_the_word_is_term_or_semester_only(self):
         detail = self.refused(term_word="QUARTER")

@@ -272,12 +272,12 @@ class StaffRulesValidationTests(_SettingsFixture):
             self.refused("leave", leave={"working_days": [0, 8]}),
         )
 
-    def test_every_rule_must_be_sent(self):
+    def test_a_partial_save_keeps_hire_approval(self):
         body = self.rules_body()
         body.pop("hire_requires_approval")
         response = self.put(self.admin, "staff-rules", body)
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn("hire_requires_approval", response.data["error"]["detail"])
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data["data"]["hire_requires_approval"])
 
 
 class StaffRulesReachTests(_SettingsFixture):

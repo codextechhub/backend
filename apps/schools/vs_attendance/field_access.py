@@ -52,12 +52,9 @@ are counts as well. The list of days on which a register was not taken is the
 register's status.
 
 **The settings and the school's list of reasons are configuration, not a
-register.** The four settings, and the name and flags of an excused reason, are
-the school's own choices, shared by every branch. They are read with
-``attendance.register.view`` and changed with ``attendance.settings.update``
-by a caller whose reach is the whole school, as the calendar's rooms, bell
-schedule and rules and the academic structure are. They carry no record of any
-child, so they have no switch of their own.
+register.** They are registered under ``school.settings`` and enforced by the
+settings views. Reading the endpoints needs the attendance register key;
+changing them needs ``attendance.settings.update`` and whole-school reach.
 
 **Lessons are a resource of their own,** ``attendance.lesson``. A lesson register
 is a different record from the morning register: a child can be present in the
@@ -122,7 +119,6 @@ SURFACES = (
     "schools.vs_attendance.serializers.ReportRangeSerializer",
     "schools.vs_attendance.serializers.ReportClassRowSerializer",
     "schools.vs_attendance.serializers.ClassChronicSerializer",
-    "schools.vs_attendance.serializers.ReasonCodeSerializer",
 )
 
 #: The surfaces that emit a lesson register's fields. Those the hubs, the

@@ -85,7 +85,6 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
         _SURFACE + "ReportRangeSerializer",
         _SURFACE + "ReportClassRowSerializer",
         _SURFACE + "ClassChronicSerializer",
-        _SURFACE + "ReasonCodeSerializer",
     })
     allowlist = {
         **{
@@ -200,10 +199,6 @@ class AttendanceDeepPayloadTests(DeepPayloadChecks, LessonFixture):
             Sample(_SURFACE + "ReportSerializer", body, tenant=tenant),
             Sample(_SURFACE + "ReportRangeSerializer", body["range"], tenant=tenant),
             Sample(_SURFACE + "ReportClassRowSerializer", body["by_class"], many=True, tenant=tenant),
-            Sample(
-                _SURFACE + "ReasonCodeSerializer", reason_code_rows(tenant), many=True,
-                tenant=tenant,
-            ),
         ]
 
     def class_chronic_samples(self, tenant, admin, school_class):
@@ -447,3 +442,21 @@ class AttendanceStaffDeepPayloadTests(DeepPayloadChecks, StaffFixture):
                 Sample(_SURFACE + "StaffMarkWriteSerializer", mark, tenant=tenant),
             ]
         return samples
+
+
+class ReasonSettingsDeepPayloadTests(DeepPayloadChecks, LessonFixture):
+    """A closed reason-setting field leaves a nested reason-code payload."""
+
+    resources = frozenset({"school.settings"})
+    covers = frozenset({_SURFACE + "ReasonCodeSerializer"})
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        ensure_default_reason_codes(cls.tenant)
+
+    def samples(self):
+        return [Sample(
+            _SURFACE + "ReasonCodeSerializer", reason_code_rows(self.tenant),
+            many=True,
+        )]

@@ -46,6 +46,10 @@ class FieldSpec:
     (:func:`vs_rbac.library_growth.attach_field_read_default`), after which
     each tenant decides for itself. A field that is not sensitive is open to
     every role already, so it names none.
+
+    ``read_always`` keeps a shared vocabulary or display value readable even
+    when a role row or personal exception attempts to close Read. Write remains
+    a separate choice. An always-readable field cannot be sensitive.
     """
 
     name: str
@@ -59,6 +63,7 @@ class FieldSpec:
     api_names: tuple[str, ...] = ()
     open_on_create: bool = False
     read_by: tuple[str, ...] = ()
+    read_always: bool = False
 
     @property
     def resolved_api_names(self) -> tuple[str, ...]:
@@ -133,6 +138,10 @@ def validate_declaration(declaration: FieldDeclaration) -> None:
             raise ValueError(
                 f"Field registry: '{key}' names default readers but is not "
                 f"sensitive, so every role reads it already."
+            )
+        if spec.read_always and spec.sensitive:
+            raise ValueError(
+                f"Field registry: '{key}' is always readable but sensitive."
             )
         for role_key in spec.read_by:
             if not _NAME_RE.match(role_key or ""):

@@ -7,6 +7,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 from vs_history.as_at import parse_as_at
 
 from vs_rbac.field_enforcement import assert_writable, can_read
@@ -38,6 +39,20 @@ from .base import StudentsViewMixin
 
 #: The registered field the passport photograph answers to.
 PHOTO_KEY = "school.students.photo"
+
+_ADMISSION_NUMBER_FIELDS = {
+    name: f"admission_number_{name}"
+    for name in ("required", "pattern", "hint", "auto_issue", "source", "suggestion")
+}
+_ENROLMENT_FIELDS = {
+    "min_age_years": "min_age_years", "max_age_years": "max_age_years",
+    "required_documents": "enrolment_required_documents",
+    "required_fields": "required_fields", "capacity_mode": "enrolment_capacity_mode",
+    "default_capacity": "default_capacity",
+}
+_ADMISSION_FIELDS = {
+    "stages": "stages", "required_documents_to_confirm": "required_documents_to_confirm",
+}
 
 
 def assert_photo_writable(request, document_type):
@@ -493,7 +508,7 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
             body["suggestion"] = suggest_number(
                 self.tenant, policy=policy, branch=branch,
             )
-        return body
+        return settings_body(self.request, body, _ADMISSION_NUMBER_FIELDS)
 
     def get(self, request):
         from ..services.policy import read_policy
@@ -517,7 +532,11 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
                 "its own."
             ),
         )
-        writer = AdmissionPolicySerializer(data=request.data)
+        from ..services.policy import read_policy
+
+        current = read_policy(self.tenant, branch).as_dict()
+        assert_settings_write(request, request.data, _ADMISSION_NUMBER_FIELDS, current=current)
+        writer = AdmissionPolicySerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
         policy = write_policy(
@@ -540,6 +559,10 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
                 "branch": "Name the branch whose own rule to remove. The "
                           "school's rule is changed, never removed.",
             })
+        assert_settings_write(
+            request, {name: None for name in ("required", "pattern", "hint", "auto_issue")},
+            _ADMISSION_NUMBER_FIELDS,
+        )
         policy = reset_branch_policy(self.tenant, branch, request.user)
         return success_response(
             f"{branch.name} follows the school's admission number rule again.",
@@ -577,7 +600,9 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
     def get(self, request):
         from ..services.rules import read_rules
 
-        return success_response(data=read_rules(self.tenant).as_dict(request))
+        return success_response(data=settings_body(
+            request, read_rules(self.tenant).as_dict(request), _ENROLMENT_FIELDS,
+        ))
 
     def put(self, request):
         from vs_rbac.scoping import assert_caller_may_configure
@@ -588,7 +613,9 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
             request.user, self.tenant,
             message="Only a school-wide administrator can change the school's enrolment rules.",
         )
-        writer = EnrolmentRulesSerializer(data=request.data)
+        current = read_rules(self.tenant).as_dict(request)
+        assert_settings_write(request, request.data, _ENROLMENT_FIELDS, current=current)
+        writer = EnrolmentRulesSerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         # Requirements for fields the caller cannot read stay as stored.
@@ -598,7 +625,9 @@ class EnrolmentRulesView(StudentsViewMixin, APIView):
         rules = write_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Enrolment rules saved.", data=rules.as_dict(request))
+        return success_response("Enrolment rules saved.", data=settings_body(
+            request, rules.as_dict(request), _ENROLMENT_FIELDS,
+        ))
 
 
 class AdmissionRulesView(StudentsViewMixin, APIView):
@@ -645,7 +674,7 @@ class AdmissionRulesView(StudentsViewMixin, APIView):
         return read_admission_rules(self.tenant, students=visible).as_dict()
 
     def get(self, request):
-        return success_response(data=self._body())
+        return success_response(data=settings_body(request, self._body(), _ADMISSION_FIELDS))
 
     def put(self, request):
         from ..serializers import AdmissionRulesSerializer
@@ -657,7 +686,9 @@ class AdmissionRulesView(StudentsViewMixin, APIView):
             request.user, self.tenant,
             message="Only a school-wide administrator can change the school's admission rules.",
         )
-        writer = AdmissionRulesSerializer(data=request.data)
+        current = self._body()
+        assert_settings_write(request, request.data, _ADMISSION_FIELDS, current=current)
+        writer = AdmissionRulesSerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
         write_admission_rules(
@@ -665,4 +696,6 @@ class AdmissionRulesView(StudentsViewMixin, APIView):
             required_documents_to_confirm=data["required_documents_to_confirm"],
             reason=data.get("reason", ""),
         )
-        return success_response("Admission rules saved.", data=self._body())
+        return success_response("Admission rules saved.", data=settings_body(
+            request, self._body(), _ADMISSION_FIELDS,
+        ))

@@ -144,6 +144,7 @@ EXPECTED_RESOURCES = {
     ("school", "messages"),
     ("school", "notices"),
     ("school", "profile"),
+    ("school", "settings"),
     ("school", "students"),
     ("school", "teachers"),
 }
@@ -167,6 +168,7 @@ ENDPOINT_GUARDED_RESOURCES = {
     ("payments", "terminal_destination"): "payments.terminal.update",
     ("school", "guardians"): "school.students.view",
     ("school", "profile"): "school.profile.view",
+    ("school", "settings"): "school.settings.view",
     ("school", "teachers"): "school.teachers.view",
 }
 
@@ -340,14 +342,18 @@ WRITE_PATH_ALLOWLIST = {
         ("schools.vs_schools.serializers.SchoolCreateSerializer", name):
             "The platform creates a school under platform.schools.create; tenant-scoped "
             "profile switches begin governing the school app after it exists."
-        for name in ("address", "registration_id")
+        for name in ("address", "registration_id", "currency", "term_structure",
+                     "website", "motto", "ownership_type")
     },
     **{
         ("schools.vs_schools.serializers.SchoolUpdateSerializer", name):
             "The CodeX platform correction path is governed by platform.schools.update, "
             "not by the tenant's school.profile switches."
-        for name in ("address", "registration_id")
+        for name in ("address", "registration_id", "currency", "term_structure",
+                     "website", "motto", "ownership_type")
     },
+    ("schools.vs_staff.serializers.LeaveOverrideSettingSerializer", "group_id"):
+        "A group in a school-wide leave override, guarded by school.settings.leave_overrides, not a person's leave-group assignment.",
     **{
         ("schools.vs_students.serializers.EnrolmentWriteSerializer", name):
             "The pupil's own name on the enrol form, a school.students field; the "
@@ -399,6 +405,19 @@ NESTING_ONLY_SURFACES = {
 
 # Named guards on hand-built response surfaces.
 HAND_BUILT_SURFACES = {
+    "schools.vs_academics.views.settings.AcademicRulesView": "settings_body(",
+    "schools.vs_calendar.views.settings.CalendarRulesView": "settings_body(",
+    "schools.vs_students.views.records.EnrolmentRulesView": "settings_body(",
+    "schools.vs_students.views.records.AdmissionRulesView": "settings_body(",
+    "schools.vs_students.views.records.AdmissionPolicyView": "settings_body(",
+    "schools.vs_students.views.guardians.GuardianRulesView": "settings_body(",
+    "schools.vs_students.views.promotion.PromotionRulesView": "settings_body(",
+    "schools.vs_staff.views.settings.StaffRulesView": "_staff_rules_body(",
+    "schools.vs_staff.views.settings.StaffNumberPolicyView": "settings_body(",
+    "schools.vs_schools.views.display.SchoolDisplaySettingsView": "_display_body(",
+    "schools.vs_schools.views.settings.SchoolSecuritySettingsView": "_security_body(",
+    "schools.vs_schools.views.settings.SchoolPayrollScopeView": "_payroll_body(",
+    "schools.vs_attendance.views.settings.SettingsView": "settings_body(",
     "vs_procurement.views.assessments._assessment_json": "visible(",
     "vs_procurement.views.settings.ProcurementSettingsView": "visible(",
     "vs_procurement.views.reports.ProcurementDashboardView": "_trim_dashboard(",
@@ -409,6 +428,7 @@ HAND_BUILT_SURFACES = {
 
 # Switches whose response is built outside their resource's serializers.
 VIRTUAL_FIELD_KEYS = {
+    "school.teachers.leave_group",
     "finance.report.ap_reconciliation",
     "procurement.catalog_item.price_history",
     "procurement.contract.activity",
@@ -452,6 +472,13 @@ VIRTUAL_FIELD_KEYS = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "school.settings.starting_role": "The default role gives new staff permissions, so it starts closed.",
+    "school.settings.failed_login_threshold": "The login guess limit starts closed.",
+    "school.settings.account_lock_minutes": "The account lock duration starts closed.",
+    "school.settings.self_reset_expiry_hours": "The reset link lifetime starts closed.",
+    "school.settings.admin_reset_expiry_hours": "The administrator reset link lifetime starts closed.",
+    "school.settings.invitation_expiry_days": "The invitation lifetime starts closed.",
+    "school.settings.proxy_idle_timeout_minutes": "The proxy idle limit starts closed.",
     "procurement.rfq.budget_estimate": (
         "An RFQ ceiling starts closed so a buyer cannot reveal it to a bidder."
     ),
@@ -627,6 +654,8 @@ class RegistryMatchesTheSerializersTests(SimpleTestCase):
             for spec in declaration.fields:
                 key = declaration.key_for(spec)
                 with self.subTest(key=key):
+                    if declaration.module == "school" and declaration.resource == "settings":
+                        continue
                     if all(path in HAND_BUILT_SURFACES for path in declaration.surfaces):
                         continue
                     if key in VIRTUAL_FIELD_KEYS:
@@ -819,6 +848,8 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
     def test_every_serializer_that_can_write_a_registered_field_is_known(self):
         seen = set()
         for declaration in all_declarations():
+            if declaration.module == "school" and declaration.resource == "settings":
+                continue
             writable = {
                 api_name
                 for spec in declaration.fields if spec.writable
@@ -861,6 +892,7 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
 DEEP_PAYLOAD_MODULES = ("tests_field_access_deep_payload", "tests.test_field_access_deep_payload")
 
 FOCUSED_PAYLOAD_MODULES = {
+    "school.settings": "schools.vs_schools.tests_settings_endpoints",
     "procurement.catalog_item": "vs_procurement.tests_master_field_access",
     "procurement.category": "vs_procurement.tests_category_field_access",
     "procurement.contract": "vs_procurement.tests_master_field_access",
@@ -959,20 +991,25 @@ READ_PATH_ALLOWLIST = {
         ("schools.vs_schools.serializers.SchoolDetailSerializer", name):
             "The CodeX platform school detail, governed by platform.schools.view rather "
             "than the tenant's school.profile switches."
-        for name in ("address", "registration_id")
+        for name in ("address", "registration_id", "currency", "term_structure",
+                     "website", "motto", "ownership_type")
     },
     **{
         ("schools.vs_schools.serializers.SchoolCreateSerializer", name):
             "The response to CodeX creating a school, behind the platform create key; "
             "the tenant has no role or Field Access settings yet."
-        for name in ("address", "registration_id")
+        for name in ("address", "registration_id", "currency", "term_structure",
+                     "website", "motto", "ownership_type")
     },
     **{
         ("schools.vs_schools.serializers.SchoolUpdateSerializer", name):
             "The response to CodeX correcting a school, behind the platform update key "
             "that remains outside the tenant's profile switches."
-        for name in ("address", "registration_id")
+        for name in ("address", "registration_id", "currency", "term_structure",
+                     "website", "motto", "ownership_type")
     },
+    ("schools.vs_schools.serializers.SchoolListSerializer", "ownership_type"):
+        "The CodeX platform school list is governed by platform.schools.view.",
     ("vs_user.serializers.UserInlineSerializer", "first_name"):
         "A person named beside something else (a line manager, an actor on a log); "
         "the name switch covers the CX staff profile, not every mention of a person.",
@@ -1022,6 +1059,8 @@ class EveryReadPathIsKnownTests(SimpleTestCase):
     def test_every_serializer_that_emits_a_registered_field_is_known(self):
         seen = set()
         for declaration in all_declarations():
+            if declaration.module == "school" and declaration.resource == "settings":
+                continue
             names = _api_names(declaration)
             surfaces = [_surface(path) for path in declaration.surfaces]
             models = {
@@ -1082,6 +1121,15 @@ class RegistrationValidationTests(SimpleTestCase):
             )
         self.assertIsNone(get_declaration("testfields", "openreaders"))
 
+    def test_an_always_readable_field_cannot_be_sensitive(self):
+        with self.assertRaises(ValueError):
+            register_fields(
+                "testfields", "conflicted", surfaces=(),
+                fields=(FieldSpec("serial", "Serial", scope=PermissionScope.TENANT,
+                                  sensitive=True, read_always=True),),
+            )
+        self.assertIsNone(get_declaration("testfields", "conflicted"))
+
 
 class DefaultAccessTests(SimpleTestCase):
     def test_a_sensitive_field_starts_closed(self):
@@ -1095,6 +1143,10 @@ class DefaultAccessTests(SimpleTestCase):
     def test_a_field_nobody_can_write_never_starts_writable(self):
         field = FieldDefinition(sensitive=False, writable=False)
         self.assertEqual(field.default_access, {"read": True, "write": False})
+
+    def test_an_always_readable_field_still_starts_with_a_separate_write_decision(self):
+        field = FieldDefinition(sensitive=False, writable=True, read_always=True)
+        self.assertEqual(field.default_access, {"read": True, "write": True})
 
 
 class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
@@ -1232,6 +1284,12 @@ class SyncFieldRegistryTests(TestCase):
 
     def _audits(self):
         return RBACAuditLog.objects.filter(action_type="FIELD_REGISTRY_SYNCED")
+
+    def test_it_persists_always_readable_without_changing_writability(self):
+        self._sync([_declaration(_spec(read_always=True))])
+        row = FieldDefinition.objects.get(key="testfields.gadget.serial_number")
+        self.assertTrue(row.read_always)
+        self.assertTrue(row.writable)
 
     def test_it_creates_rows_keyed_by_module_resource_and_name(self):
         self._sync([_declaration(

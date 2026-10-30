@@ -882,6 +882,10 @@ class StaffLeaveSerializer(FieldAccessMixin, serializers.Serializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        from vs_rbac.field_enforcement import can_read
+
+        if not can_read(self.context.get("request"), "school.teachers.leave_group"):
+            data.pop("leave_group", None)
         if (
             self._field_access() is not None and not self._is_owner(instance)
             and not self._reads_type()

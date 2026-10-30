@@ -194,6 +194,15 @@ class UserFieldAccessOverrideSerializer(serializers.ModelSerializer):
         field = attrs.get("field")
         if (
             field is not None
+            and field.read_always
+            and attrs.get("mode") == UserFieldAccessOverride.Mode.DENY
+            and attrs.get("access") == UserFieldAccessOverride.Access.READ
+        ):
+            raise serializers.ValidationError({
+                "access": f"Field '{field.key}' is always readable.",
+            })
+        if (
+            field is not None
             and not field.writable
             and attrs.get("mode") == UserFieldAccessOverride.Mode.ALLOW
             and attrs.get("access") == UserFieldAccessOverride.Access.WRITE

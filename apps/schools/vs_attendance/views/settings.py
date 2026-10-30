@@ -17,6 +17,7 @@ from __future__ import annotations
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 from vs_rbac.scoping import assert_caller_may_configure
 
 from ..constants import PERM_REGISTER_VIEW, PERM_SETTINGS_UPDATE
@@ -32,6 +33,24 @@ _ONLY_WHOLE_SCHOOL = (
     "Only a school-wide administrator can change the school's attendance "
     "settings, because they apply to every branch."
 )
+_SETTINGS_FIELDS = {name: name for name in (
+    "guardian_notices", "chronic_threshold", "lesson_marking_levels", "edit_window_days",
+)}
+_REASON_FIELDS = {
+    "name": "reason_code_name", "counts_as_authorised": "counts_as_authorised",
+    "requires_note": "requires_note", "retired": "retired",
+}
+
+
+def _settings_body(request, tenant, rules=None):
+    """Filter settings and the per-level echo of lesson marking."""
+    body = settings_body(request, configuration.settings_body(tenant, rules), _SETTINGS_FIELDS)
+    if "lesson_marking_levels" not in body:
+        body["levels"] = [
+            {key: value for key, value in row.items() if key != "lesson_marking"}
+            for row in body["levels"]
+        ]
+    return body
 
 
 class _ConfigurationView(AttendanceViewMixin, APIView):
@@ -70,17 +89,21 @@ class SettingsView(_ConfigurationView):
     """
 
     def get(self, request):
-        return success_response(data=configuration.settings_body(self.tenant))
+        return success_response(data=_settings_body(request, self.tenant))
 
     def patch(self, request):
         self.assert_may_configure()
         writer = SettingsWriteSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
+        assert_settings_write(
+            request, writer.validated_data, _SETTINGS_FIELDS,
+            current=configuration.settings_body(self.tenant),
+        )
         rules = configuration.write_settings(
             self.tenant, request.user, dict(writer.validated_data),
         )
         return success_response(
-            "Attendance settings saved.", configuration.settings_body(self.tenant, rules),
+            "Attendance settings saved.", _settings_body(request, self.tenant, rules),
         )
 
 
@@ -104,6 +127,7 @@ class ReasonCodeListCreateView(_ConfigurationView):
         self.assert_may_configure()
         writer = ReasonCodeWriteSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
+        assert_settings_write(request, writer.validated_data, _REASON_FIELDS)
         code = reasons.create_reason_code(self.tenant, request.user, **writer.validated_data)
         return success_response("Reason added.", self.render_reason(code), status=201)
 
@@ -122,6 +146,10 @@ class ReasonCodeDetailView(_ConfigurationView):
         code = reasons.get_reason_code(self.tenant, reason_id)
         writer = ReasonCodeWriteSerializer(data=request.data, partial=True)
         writer.is_valid(raise_exception=True)
+        assert_settings_write(
+            request, writer.validated_data, _REASON_FIELDS,
+            current=reasons.reason_code_row(self.tenant, code),
+        )
         code = reasons.update_reason_code(
             self.tenant, request.user, code, dict(writer.validated_data),
         )
@@ -136,6 +164,7 @@ class ReasonCodeRetireView(_ConfigurationView):
 
     def post(self, request, reason_id):
         self.assert_may_configure()
+        assert_settings_write(request, {"retired": True}, _REASON_FIELDS)
         code = reasons.retire_reason_code(
             self.tenant, request.user, reasons.get_reason_code(self.tenant, reason_id),
         )
@@ -150,6 +179,7 @@ class ReasonCodeRestoreView(_ConfigurationView):
 
     def post(self, request, reason_id):
         self.assert_may_configure()
+        assert_settings_write(request, {"retired": False}, _REASON_FIELDS)
         code = reasons.restore_reason_code(
             self.tenant, request.user, reasons.get_reason_code(self.tenant, reason_id),
         )

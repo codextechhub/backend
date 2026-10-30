@@ -964,13 +964,13 @@ Each settings screen has one endpoint pair, and control today is one key,
 below. No settings serializer carries `FieldAccessMixin`, `visible()`,
 `can_read()` or `assert_writable()`.
 
-Recommended registration: one permission resource, `school.settings`, one group
-per screen, each rules body rendered through a new read-only mixin serializer.
-Where two screens share a key name, the switch carries a group prefix. Fields
-whose value is a school choice default open; the security fields and the
-starting role ship sensitive. Whether to switch per field or per screen is open
-(Q-D1), and whether vocabulary and display values get a Read switch is open
-(Q-D2).
+The school settings use one `school.settings` resource with separate Read and
+Write decisions for each stored setting. Settings views filter their own
+response bodies and judge only submitted values on writes. Where two screens
+share a key name, the switch carries a group prefix. School choices start open;
+security fields and the starting role start sensitive. Vocabulary and display
+values remain readable for every role, while Write stays per setting (Q-D1,
+Q-D2).
 
 | Route | Read | Write | Frontend |
 | --- | --- | --- | --- |
@@ -994,79 +994,81 @@ do not bind CodeX staff to a school's switches (Q-D6, answered in 8.1).
 
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| academics `term_word` | what the school calls a term (Term or Semester) | Stored | PUT rules; config values | `school.settings.term_word` | What the school calls a term | RW | open; Read locked open (Q-D2) | recorded |
-| academics `term_names` | names given to a new year's terms | Stored | PUT rules; config values | `school.settings.term_names` | Names given to a new year's terms | RW | open | recorded |
-| academics `default_arms` | arms new classes are generated with | Stored | PUT rules; config values | `school.settings.default_arms` | Arms new classes are generated with | RW | open | recorded |
+| academics `term_word` | what the school calls a term (Term or Semester) | Stored | PUT rules; config values | `school.settings.term_word` | What the school calls a term | RW | open; Read locked open (Q-D2) | registered |
+| academics `term_names` | names given to a new year's terms | Stored | PUT rules; config values | `school.settings.term_names` | Names given to a new year's terms | RW | open | registered |
+| academics `default_arms` | arms new classes are generated with | Stored | PUT rules; config values | `school.settings.default_arms` | Arms new classes are generated with | RW | open | registered |
 | academics `term_word_options`; every rules body `reason` | choices; audit reason text | Transport | none; PUT | - | - | - | - | no switch: transport |
-| calendar `teaching_days` | teaching days of the week | Stored | PUT; config values | `school.settings.teaching_days` | Teaching days | RW | open; Read locked open (Q-D2) | recorded |
-| calendar `week_starts_on` | first day of the week | Stored | PUT | `school.settings.week_starts_on` | Week starts on | RW | open; Read locked open (Q-D2) | recorded |
-| calendar `closes_school_by_type` | which event types close the school | Stored | PUT | `school.settings.closes_school_by_type` | Event types that close the school | RW | open | recorded |
-| calendar `room_required_to_publish` | a timetable needs rooms before it is published | Stored | PUT | `school.settings.room_required_to_publish` | Room required to publish | RW | open | recorded |
-| calendar `teacher_duty_match` | how duties match teachers | Stored | PUT | `school.settings.teacher_duty_match` | Teacher duty matching | RW | open | recorded |
-| calendar `invigilator_roles` | role keys that may invigilate | Stored | PUT | `school.settings.invigilator_roles` | Roles that may invigilate | RW | open | recorded |
-| calendar `default_period_minutes` | default lesson length | Stored | PUT | `school.settings.default_period_minutes` | Default period length | RW | open | recorded |
+| calendar `teaching_days` | teaching days of the week | Stored | PUT; config values | `school.settings.teaching_days` | Teaching days | RW | open; Read locked open (Q-D2) | registered |
+| calendar `week_starts_on` | first day of the week | Stored | PUT | `school.settings.week_starts_on` | Week starts on | RW | open; Read locked open (Q-D2) | registered |
+| calendar `closes_school_by_type` | which event types close the school | Stored | PUT | `school.settings.closes_school_by_type` | Event types that close the school | RW | open | registered |
+| calendar `room_required_to_publish` | a timetable needs rooms before it is published | Stored | PUT | `school.settings.room_required_to_publish` | Room required to publish | RW | open | registered |
+| calendar `teacher_duty_match` | how duties match teachers | Stored | PUT | `school.settings.teacher_duty_match` | Teacher duty matching | RW | open | registered |
+| calendar `invigilator_roles` | role keys that may invigilate | Stored | PUT | `school.settings.invigilator_roles` | Roles that may invigilate | RW | open | registered |
+| calendar `default_period_minutes` | default lesson length | Stored | PUT | `school.settings.default_period_minutes` | Default period length | RW | open | registered |
 | calendar `event_types`, `teacher_duty_match_options`, `invigilator_role_options` | choices | Transport | none | - | - | - | - | no switch: transport |
-| enrolment `min_age_years` | youngest admissible age | Stored | PUT; config values | `school.settings.min_age_years` | Minimum age | RW | open | recorded |
-| enrolment `max_age_years` | oldest admissible age | Stored | PUT; config values | `school.settings.max_age_years` | Maximum age | RW | open | recorded |
-| enrolment `required_documents` | documents required to enrol | Stored | PUT | `school.settings.enrolment_required_documents` | Documents required to enrol | RW | open | recorded |
-| enrolment `required_fields` | student fields made mandatory | Stored | PUT | `school.settings.required_fields` | Fields required to enrol | RW | open; a role without Write on a named student field is not bound by the rule (Q-D7, answered in 8.1) | recorded |
-| enrolment `capacity_mode` | how class capacity is enforced | Stored | PUT | `school.settings.enrolment_capacity_mode` | Class capacity mode | RW | open | recorded |
-| enrolment `default_capacity` | default class capacity | Stored | PUT | `school.settings.default_capacity` | Default class capacity | RW | open | recorded |
+| enrolment `min_age_years` | youngest admissible age | Stored | PUT; config values | `school.settings.min_age_years` | Minimum age | RW | open | registered |
+| enrolment `max_age_years` | oldest admissible age | Stored | PUT; config values | `school.settings.max_age_years` | Maximum age | RW | open | registered |
+| enrolment `required_documents` | documents required to enrol | Stored | PUT | `school.settings.enrolment_required_documents` | Documents required to enrol | RW | open | registered |
+| enrolment `required_fields` | student fields made mandatory | Stored | PUT | `school.settings.required_fields` | Fields required to enrol | RW | open; a role without Write on a named student field is not bound by the rule (Q-D7, answered in 8.1) | registered |
+| enrolment `capacity_mode` | how class capacity is enforced | Stored | PUT | `school.settings.enrolment_capacity_mode` | Class capacity mode | RW | open | registered |
+| enrolment `default_capacity` | default class capacity | Stored | PUT | `school.settings.default_capacity` | Default class capacity | RW | open | registered |
 | enrolment `document_types`, `optional_fields` | choices; `optional_fields` echoes student field labels | Transport | none | - | - | - | filter `optional_fields` to the student fields the caller can read (leak D-L3) | no switch: transport |
-| guardians `min_per_student` | guardians required per student | Stored | PUT | `school.settings.min_per_student` | Guardians required per student | RW | open | recorded |
-| guardians `email_required` | guardian email mandatory | Stored | PUT | `school.settings.email_required` | Guardian email required | RW | open; same subject as `school.guardians.email`; the rule yields to a caller who cannot write it (Q-D7, answered in 8.1) | recorded |
-| guardians `matching` | how guardians match existing people | Stored | PUT | `school.settings.matching` | Guardian matching | RW | open | recorded |
-| guardians `extra_relationships`, `relationships` (built-in plus extra) | relationship kinds | Stored; computed alias | PUT | `school.settings.extra_relationships` | Relationships | RW | open | recorded |
+| guardians `min_per_student` | guardians required per student | Stored | PUT | `school.settings.min_per_student` | Guardians required per student | RW | open | registered |
+| guardians `email_required` | guardian email mandatory | Stored | PUT | `school.settings.email_required` | Guardian email required | RW | open; same subject as `school.guardians.email`; the rule yields to a caller who cannot write it (Q-D7, answered in 8.1) | registered |
+| guardians `matching` | how guardians match existing people | Stored | PUT | `school.settings.matching` | Guardian matching | RW | open | registered |
+| guardians `extra_relationships`, `relationships` (built-in plus extra) | relationship kinds | Stored; computed alias | PUT | `school.settings.extra_relationships` | Relationships | RW | open | registered |
+| guardians `parent_app_auto_access` | guardian app access on enrolment | Stored | PUT guardian-rules | `school.settings.parent_app_auto_access` | Automatic parent app access | RW | open | registered |
 | guardians `matching_options` | choices | Transport | none | - | - | - | - | no switch: transport |
-| admissions `stages[]` (`name`, `is_offer`, `offer_valid_days`, `position`) | ordered admission stages, replaced as a whole | Stored | PUT admission-rules | `school.settings.stages` | Admission stages | RW | open | recorded |
+| admissions `stages[]` (`name`, `is_offer`, `offer_valid_days`, `position`) | ordered admission stages, replaced as a whole | Stored | PUT admission-rules | `school.settings.stages` | Admission stages | RW | open | registered |
 | admissions `stages[].applicants`, `stages[].id` | applicant count (follows student scope); stage id | Computed | none | - | - | - | - | no switch: transport |
-| admissions `required_documents_to_confirm` | documents to confirm an admission | Stored | PUT | `school.settings.required_documents_to_confirm` | Documents to confirm | RW | open | recorded |
-| promotion `suspended` | handling of suspended students | Stored | PUT promotion-rules | `school.settings.promotion_suspended` | Promotion of suspended students | RW | open | recorded |
-| promotion `not_placed` | handling of students not placed | Stored | PUT | `school.settings.promotion_not_placed` | Promotion of students not placed | RW | open | recorded |
-| promotion `arms` | arms used in promotion | Stored | PUT | `school.settings.promotion_arms` | Promotion arms | RW | open | recorded |
-| promotion `capacity_mode` | capacity handling in promotion | Stored | PUT | `school.settings.promotion_capacity_mode` | Promotion capacity mode | RW | open | recorded |
-| admission number rule `required`, `pattern`, `hint`, `auto_issue` | school or per-branch admission number rule | Stored | PUT, DELETE (`?branch=`) | `school.settings.admission_number_required`, `school.settings.admission_number_pattern`, `school.settings.admission_number_hint`, `school.settings.admission_number_auto_issue` | Admission number rule | RW | open | recorded |
-| admission number rule `source` | where the rule comes from (branch, school, default) | Computed | none | `school.settings.admission_number_source` | Rule source | RO | open | recorded |
-| admission number rule `suggestion` | next admission number; reveals the highest issued number and so the school's size | Computed | none | `school.settings.admission_number_suggestion` | Next admission number | RO | open (Q-D4) | recorded |
-| staff rules `starting_role` | role new staff start with | Stored | PUT; grant-ceiling check on save | `school.settings.starting_role` | Starting role for new staff | RW | sensitive: it decides what new staff can do; Write limited to school administrators | recorded |
-| staff rules `required_documents` | documents required of staff | Stored | PUT | `school.settings.staff_required_documents` | Documents required of staff | RW | open | recorded |
-| staff rules `self_editable_fields` | staff profile fields staff may edit themselves; option list already drawn from `school.teachers` | Stored | PUT | `school.settings.self_editable_fields` | Fields staff may edit themselves | RW | open | recorded |
-| staff rules `hire_requires_approval` | hire needs approval | Stored | PUT | `school.settings.hire_requires_approval` | Hire requires approval | RW | open | recorded |
+| admissions `required_documents_to_confirm` | documents to confirm an admission | Stored | PUT | `school.settings.required_documents_to_confirm` | Documents to confirm | RW | open | registered |
+| promotion `suspended` | handling of suspended students | Stored | PUT promotion-rules | `school.settings.promotion_suspended` | Promotion of suspended students | RW | open | registered |
+| promotion `not_placed` | handling of students not placed | Stored | PUT | `school.settings.promotion_not_placed` | Promotion of students not placed | RW | open | registered |
+| promotion `arms` | arms used in promotion | Stored | PUT | `school.settings.promotion_arms` | Promotion arms | RW | open | registered |
+| promotion `capacity_mode` | capacity handling in promotion | Stored | PUT | `school.settings.promotion_capacity_mode` | Promotion capacity mode | RW | open | registered |
+| promotion `pass_mark` | pass mark used in promotion | Stored | PUT | `school.settings.promotion_pass_mark` | Promotion pass mark | RW | open | registered |
+| admission number rule `required`, `pattern`, `hint`, `auto_issue` | school or per-branch admission number rule | Stored | PUT, DELETE (`?branch=`) | `school.settings.admission_number_required`, `school.settings.admission_number_pattern`, `school.settings.admission_number_hint`, `school.settings.admission_number_auto_issue` | Admission number rule | RW | open | registered |
+| admission number rule `source` | where the rule comes from (branch, school, default) | Computed | none | `school.settings.admission_number_source` | Rule source | RO | open | registered |
+| admission number rule `suggestion` | next admission number; reveals the highest issued number and so the school's size | Computed | none | `school.settings.admission_number_suggestion` | Next admission number | RO | open (Q-D4) | registered |
+| staff rules `starting_role` | role new staff start with | Stored | PUT; grant-ceiling check on save | `school.settings.starting_role` | Starting role for new staff | RW | sensitive: it decides what new staff can do; Write limited to school administrators | registered |
+| staff rules `required_documents` | documents required of staff | Stored | PUT | `school.settings.staff_required_documents` | Documents required of staff | RW | open | registered |
+| staff rules `self_editable_fields` | staff profile fields staff may edit themselves; option list already drawn from `school.teachers` | Stored | PUT | `school.settings.self_editable_fields` | Fields staff may edit themselves | RW | open | registered |
+| staff rules `hire_requires_approval` | hire needs approval | Stored | PUT | `school.settings.hire_requires_approval` | Hire requires approval | RW | open | registered |
 | staff rules `starting_role_options`, `document_types`, `self_editable_options`, `self_editable_locked` | choices (role names only) | Transport | none | - | - | - | - | no switch: transport |
-| leave `allowances` | days per leave type | Stored | PUT staff rules | `school.settings.leave_allowances` | Leave allowances | RW | open | recorded |
-| leave `groups` | named leave groups | Stored | PUT staff rules | `school.settings.leave_groups` | Leave groups | RW | open | recorded |
-| leave `overrides` | days by branch, group and type | Stored | PUT staff rules | `school.settings.leave_overrides` | Leave overrides | RW | open | recorded |
-| leave `working_days`, `exclude_closures` | how leave days are counted | Stored | PUT staff rules | `school.settings.leave_working_days`, `school.settings.leave_exclude_closures` | Leave day counting | RW | open | recorded |
+| leave `allowances` | days per leave type | Stored | PUT staff rules | `school.settings.leave_allowances` | Leave allowances | RW | open | registered |
+| leave `groups` | named leave groups | Stored | PUT staff rules | `school.settings.leave_groups` | Leave groups | RW | open | registered |
+| leave `overrides` | days by branch, group and type | Stored | PUT staff rules | `school.settings.leave_overrides` | Leave overrides | RW | open | registered |
+| leave `working_days`, `exclude_closures` | how leave days are counted | Stored | PUT staff rules | `school.settings.leave_working_days`, `school.settings.leave_exclude_closures` | Leave day counting | RW | open | registered |
 | leave `branch_options`, `leave_types` | choices; branch id and name | Transport | none | - | - | - | - | no switch: transport |
-| per-person `leave_group` (`StaffLeaveGroupView`, also shown on the staff record) | leave group assigned to a person | Stored | PUT `staff/<pk>/leave-group/` | `school.teachers.leave_group` | Leave group | RW | open; registered under `school.teachers`, not `school.settings` | recorded |
-| staff number rule `required`, `pattern`, `hint`, `auto_issue` | school or per-branch staff number rule | Stored | PUT, DELETE (`?branch=`) | `school.settings.staff_number_required`, `school.settings.staff_number_pattern`, `school.settings.staff_number_hint`, `school.settings.staff_number_auto_issue` | Staff number rule | RW | open | recorded |
-| staff number rule `source` | where the rule comes from | Computed | none | `school.settings.staff_number_source` | Rule source | RO | open | recorded |
-| staff number rule `suggestion` | next staff number; restates the registered `school.teachers.staff_number` and shows headcount | Computed | none | `school.settings.staff_number_suggestion` | Next staff number | RO | open (Q-D4); the stricter of this and `staff_number` wins | recorded |
-| display `timezone` | school time zone | Stored | PATCH display; config values | `school.settings.timezone` | School time zone | RW | open; Read locked open (Q-D2) | recorded |
-| display `source` | where the zone comes from | Computed | none | `school.settings.timezone_source` | Time zone source | RO | open | recorded |
-| display `date_format` | date format | Stored | PATCH display | `school.settings.date_format` | Date format | RW | open; Read locked open (Q-D2) | recorded |
-| display `clock` | 12 or 24 hour clock | Stored | PATCH display | `school.settings.clock` | Clock | RW | open; Read locked open (Q-D2) | recorded |
-| display `branches[].timezone` | a branch's own zone | Stored | PATCH `?branch=`, DELETE | `school.settings.branch_timezone` | Branch time zone | RW | open | recorded |
+| per-person `leave_group` (`StaffLeaveGroupView`, also shown on the staff record) | leave group assigned to a person | Stored | PUT `staff/<pk>/leave-group/` | `school.teachers.leave_group` | Leave group | RW | open; registered under `school.teachers`, not `school.settings` | registered |
+| staff number rule `required`, `pattern`, `hint`, `auto_issue` | school or per-branch staff number rule | Stored | PUT, DELETE (`?branch=`) | `school.settings.staff_number_required`, `school.settings.staff_number_pattern`, `school.settings.staff_number_hint`, `school.settings.staff_number_auto_issue` | Staff number rule | RW | open | registered |
+| staff number rule `source` | where the rule comes from | Computed | none | `school.settings.staff_number_source` | Rule source | RO | open | registered |
+| staff number rule `suggestion` | next staff number; restates the registered `school.teachers.staff_number` and shows headcount | Computed | none | `school.settings.staff_number_suggestion` | Next staff number | RO | open (Q-D4); the stricter of this and `staff_number` wins | registered |
+| display `timezone` | school time zone | Stored | PATCH display; config values | `school.settings.timezone` | School time zone | RW | open; Read locked open (Q-D2) | registered |
+| display `source` | where the zone comes from | Computed | none | `school.settings.timezone_source` | Time zone source | RO | open | registered |
+| display `date_format` | date format | Stored | PATCH display | `school.settings.date_format` | Date format | RW | open; Read locked open (Q-D2) | registered |
+| display `clock` | 12 or 24 hour clock | Stored | PATCH display | `school.settings.clock` | Clock | RW | open; Read locked open (Q-D2) | registered |
+| display `branches[].timezone` | a branch's own zone | Stored | PATCH `?branch=`, DELETE | `school.settings.branch_timezone` | Branch time zone | RW | open | registered |
 | display `branches[].id`, `branches[].name`, `branches[].source`, `options`, `date_format_options`, `clock_options` | branch identity, provenance, choices | Transport | none | - | - | - | - | no switch: owner decision |
-| security `failed_login_threshold` | failed logins before lock | Stored | PATCH school security (`?branch=`), console, config values | `school.settings.failed_login_threshold` | Failed logins before lock | RW | sensitive: reveals how many guesses an attacker gets; `read_by` school administrator | recorded |
-| security `account_lock_minutes` | lock duration | Stored | same | `school.settings.account_lock_minutes` | Account lock minutes | RW | sensitive, as above | recorded |
-| security `self_reset_expiry_hours` | self-service reset link life | Stored | same | `school.settings.self_reset_expiry_hours` | Self-reset link expiry | RW | sensitive: reveals how long a reset link lives | recorded |
-| security `admin_reset_expiry_hours` | administrator reset link life | Stored | same | `school.settings.admin_reset_expiry_hours` | Administrator reset link expiry | RW | sensitive, as above | recorded |
-| security `invitation_expiry_days` | invitation link life | Stored | same | `school.settings.invitation_expiry_days` | Invitation expiry | RW | sensitive, as above | recorded |
-| security `proxy_idle_timeout_minutes` | idle timeout for proxy sessions | Stored | same | `school.settings.proxy_idle_timeout_minutes` | Proxy idle timeout | RW | sensitive, as above | recorded |
-| security `sources`, `source_scopes`, `overrides`, `compliance`, `scope` | provenance of each of the six values | Computed | none | `school.settings.security_provenance` | Security setting sources | RO | follows the six switches; a nested block is filtered with the field it describes | recorded |
-| payroll scope `scope` | central payroll or one per branch | Stored | PATCH payroll-scope; config values | `school.settings.payroll_scope` | Payroll scope | RW | open; Write is the consequential switch (Q-D3) | recorded |
-| payroll scope `source` | provenance | Computed | none | `school.settings.payroll_scope_source` | Payroll scope source | RO | follows `payroll_scope` | recorded |
+| security `failed_login_threshold` | failed logins before lock | Stored | PATCH school security (`?branch=`), console, config values | `school.settings.failed_login_threshold` | Failed logins before lock | RW | sensitive: reveals how many guesses an attacker gets; `read_by` school administrator | registered |
+| security `account_lock_minutes` | lock duration | Stored | same | `school.settings.account_lock_minutes` | Account lock minutes | RW | sensitive, as above | registered |
+| security `self_reset_expiry_hours` | self-service reset link life | Stored | same | `school.settings.self_reset_expiry_hours` | Self-reset link expiry | RW | sensitive: reveals how long a reset link lives | registered |
+| security `admin_reset_expiry_hours` | administrator reset link life | Stored | same | `school.settings.admin_reset_expiry_hours` | Administrator reset link expiry | RW | sensitive, as above | registered |
+| security `invitation_expiry_days` | invitation link life | Stored | same | `school.settings.invitation_expiry_days` | Invitation expiry | RW | sensitive, as above | registered |
+| security `proxy_idle_timeout_minutes` | idle timeout for proxy sessions | Stored | same | `school.settings.proxy_idle_timeout_minutes` | Proxy idle timeout | RW | sensitive, as above | registered |
+| security `sources`, `source_scopes`, `overrides`, `compliance`, `scope` | provenance of each of the six values | Computed | none | `school.settings.security_provenance` | Security setting sources | RO | follows the six switches; a nested block is filtered with the field it describes | registered |
+| payroll scope `scope` | central payroll or one per branch | Stored | PATCH payroll-scope; config values | `school.settings.payroll_scope` | Payroll scope | RW | open; Write is the consequential switch (Q-D3) | registered |
+| payroll scope `source` | provenance | Computed | none | `school.settings.payroll_scope_source` | Payroll scope source | RO | follows `payroll_scope` | registered |
 | payroll scope `options` | choices | Transport | none | - | - | - | - | no switch: transport |
-| attendance `guardian_notices` | guardian absence notices | Stored | PATCH attendance settings | `school.settings.guardian_notices` | Guardian absence notices | RW | open | recorded |
-| attendance `chronic_threshold` | chronic absence threshold | Stored | PATCH | `school.settings.chronic_threshold` | Chronic absence threshold | RW | open | recorded |
-| attendance `lesson_marking_levels` | levels that mark lesson registers | Stored | PATCH | `school.settings.lesson_marking_levels` | Lesson marking levels | RW | open | recorded |
-| attendance `edit_window_days` | days a register stays editable | Stored | PATCH | `school.settings.edit_window_days` | Register edit window | RW | open | recorded |
-| reason code `name` | label of a reason code | Stored | POST, PATCH reason-codes | `school.settings.reason_code_name` | Reason code name | RW | open | recorded |
-| reason code `counts_as_authorised` | counts as authorised | Stored | POST, PATCH | `school.settings.counts_as_authorised` | Counts as authorised | RW | open | recorded |
-| reason code `requires_note` | a note is required | Stored | POST, PATCH | `school.settings.requires_note` | Requires a note | RW | open | recorded |
-| reason code `retired` | retired flag | Stored | POST, PATCH | `school.settings.retired` | Retired | RW | open | recorded |
-| reason code `used_this_term` | count of marks (follows register counts) | Computed | none | `school.settings.used_this_term` | Used this term | RO | open | recorded |
+| attendance `guardian_notices` | guardian absence notices | Stored | PATCH attendance settings | `school.settings.guardian_notices` | Guardian absence notices | RW | open | registered |
+| attendance `chronic_threshold` | chronic absence threshold | Stored | PATCH | `school.settings.chronic_threshold` | Chronic absence threshold | RW | open | registered |
+| attendance `lesson_marking_levels` | levels that mark lesson registers | Stored | PATCH | `school.settings.lesson_marking_levels` | Lesson marking levels | RW | open | registered |
+| attendance `edit_window_days` | days a register stays editable | Stored | PATCH | `school.settings.edit_window_days` | Register edit window | RW | open | registered |
+| reason code `name` | label of a reason code | Stored | POST, PATCH reason-codes | `school.settings.reason_code_name` | Reason code name | RW | open | registered |
+| reason code `counts_as_authorised` | counts as authorised | Stored | POST, PATCH | `school.settings.counts_as_authorised` | Counts as authorised | RW | open | registered |
+| reason code `requires_note` | a note is required | Stored | POST, PATCH | `school.settings.requires_note` | Requires a note | RW | open | registered |
+| reason code `retired` | retired flag | Stored | POST, PATCH | `school.settings.retired` | Retired | RW | open | registered |
+| reason code `used_this_term` | count of marks (follows register counts) | Computed | none | `school.settings.used_this_term` | Used this term | RO | open | registered |
 | staff profile visibility `policy`, `default_policy`, `groups`, `audiences` | the staff profile access policy, written under `school.field_access.update`; it is itself an access control and must not be hideable by the switches it intersects | Stored | PUT staff-profiles | - | - | - | - | no switch: owner decision |
 
 ### 6.2 Finance-owned settings (`finance.settings`)
@@ -1558,35 +1560,24 @@ switch.
 
 ### 8.5 Area D: settings
 
-**Q-D1. Per-field switches on settings, or one key per screen?** Bright Star
-School's registrar holds `school.settings.update` to change the admission-number
-pattern. Per field: she keeps editing admission numbers while staff leave
-allowances, the starting role and payroll scope stay closed to her role. Per
-screen: she edits all of Staff or none of it, and a school that wants her on
-admission numbers but off leave must split the key anyway. Leave as it is: the
-same registrar can set the starting role for new staff to Principal.
-Recommendation: per field, with consequential fields on their own Write switch.
+**Q-D1. Decided: one Read and Write decision per setting.** Bright Star
+School's registrar can change the admission-number pattern while her role has
+no Write access to staff leave allowances, starting role or payroll scope.
 
-**Q-D2. Do vocabulary and display values get a Read switch?** Greenfield's teacher
-sees "Semester" and dates as 12/10/2026 on every screen because the login tenant
-block and the open GET carry them. No Read switch (Write only through the key):
-hiding "Semester" from a role would make that role's calendar and registers print
-the wrong word. A Read switch: the tenant block and open GETs also drop the value
-for that role, which blanks term names on their register. The registry cannot
-express "Write only", so the rows register these as RW with Read locked open.
-Recommendation: no Read switch.
+**Q-D2. Decided: vocabulary and display values stay readable.** Greenfield's
+teacher sees "Semester" and the school's date format on every screen. These
+values have an always-readable Read state and a separate Write decision, so a
+role cannot make the calendar print the wrong word by closing Read.
 
-**Q-D3. Is payroll scope a pay field?** Lekki Branch's bursar can already read
-`finance.salary` figures. Switching Bright Star School from one payroll to one per
-branch changes whose pay runs where. Register it with Write closed to branch roles
-(the guard already needs a whole-school caller); or no switch (one key already
-controls it); or move it under the payroll resource. No recommendation.
+**Q-D3. Decided: payroll scope has its own Write switch.** Lekki Branch's
+bursar may read pay figures yet cannot switch Bright Star School from one
+payroll to one per branch without `school.settings.payroll_scope` Write and the
+existing whole-school reach.
 
-**Q-D4. Is the "next number" suggestion identifying?** The admission number rule
-tells any registrar at Greenfield that the next number is GF/2026/0842, so the
-school has about 842 pupils this year; the staff number rule does the same for
-headcount. Read-only and open: the enrolment form needs it. Sensitive: the form
-falls back to showing only the pattern hint. Recommendation: open.
+**Q-D4. Decided: next-number suggestions start readable.** Greenfield's next
+admission number GF/2026/0842 and the next staff number remain read-only and
+open by default. The staff suggestion also follows the stricter staff-number
+Read decision.
 
 **Q-D5. Do the finance-owned settings join the school-settings change or the
 finance change?** Bright Star's bursar edits the concession second-person
@@ -1721,8 +1712,8 @@ B-L16 and B-L17 follow the identifier rule in section 2.
 | D-L3 | Enrolment `optional_fields` lists student field labels regardless of the caller's student switches (labels only). | fixed: `schools.vs_students.tests.test_field_access_settings_leaks.OptionalFieldsTests` |
 | D-L4 | `required_fields` and guardian `email_required` can make a field mandatory that the caller cannot write or read (Q-D7, answered in 8.1). | fixed: the rule yields to a caller who cannot supply the field (`binding_required_fields`, `binding_email_required`); `schools.vs_students.tests.test_field_access_settings_leaks.RequirementsYieldTests`. The same yield on the spreadsheet imports is D-L11. |
 | D-L6 | The staff number rule `suggestion` restates the registered `school.teachers.staff_number`. | fixed: `schools.vs_staff.tests.test_field_access_settings_leaks.StaffNumberSuggestionTests` |
-| D-L8 | `school.profile` registers only address and registration number; `currency`, `term_structure`, `website`, `motto` and `ownership_type` on `SchoolProfileSerializer` are unregistered. | recorded |
-| D-L9 | The history rows of the other finance settings sections will carry old and new values unfiltered once those settings are registered. | recorded |
+| D-L8 | `school.profile` registers only address and registration number; `currency`, `term_structure`, `website`, `motto` and `ownership_type` on `SchoolProfileSerializer` are unregistered. | fixed: the five profile fields have switches and the profile form enforces Read and Write; `schools.vs_schools.tests_profile_endpoint.SchoolProfileFieldAccessTests` |
+| D-L9 | The history rows of the other finance settings sections carry old and new values that must follow the setting's Read switch. | fixed: `FinanceAuditLogSerializer` filters all finance settings actions, and `SettingsHistorySerializer` builds change labels after filtering; `vs_finance.tests_settings_field_access.SettingsSectionsFieldAccessTests.test_the_history_leaves_a_hidden_change_out` |
 | D-L11 | Found while fixing D-L4: the student roll and household list spreadsheet imports applied no Field Access, so a caller without Write on a registered `school.students` or `school.guardians` field could load values into it, and the school's required fields and guardian email rule bound callers who cannot supply them. Both imports now refuse a row (the roll) or the whole file (the household list) naming the fields, in the standard `FieldWriteDenied` wording, honouring `open_on_create` and dropping blank cells; the preview reports the same refusals per row and column; the requirements yield (`binding_required_fields`, `GuardianRules.binding`). The roll's one `address` column is judged under both `school.students.address` and `school.guardians.address`, because it also becomes a new guardian's address. | fixed: `schools.vs_students.tests.test_import_field_access` (`RollWriteSwitchTests`, `RollRuleYieldTests`, `HouseholdWriteSwitchTests`, `HouseholdRuleYieldTests`) |
 | D-L12 | Found while fixing D-L3: `optional_fields` hides student fields the caller cannot read, so the enrolment rules PUT from a settings admin who cannot read blood group dropped a school's requirement for it (the screen never offered it back), and the guardian rules PUT let an admin who cannot read guardians' email change `email_required`. A save now keeps every stored requirement for a field the caller cannot read and ignores one they add (`EnrolmentRules.required_fields_after`, `GuardianRules.email_required_after`). The generic `/v1/config/values/` write of the same keys is D-L1 (platform scope). | fixed: `schools.vs_students.tests.test_import_field_access.EnrolmentRulesSaveTests`, `GuardianRulesSaveTests` |
 
@@ -1833,10 +1824,10 @@ one area, so the total is two lower than the sum of the areas.
 | A. Budgets and financial statements | 0 | 25 | 3 | 3 | 3 |
 | B. Receivables, ledger and banking documents | 0 | 119 | 3 | 17 | 12 |
 | C. Procurement | 0 | 230 | 4 | 13 | 10 |
-| D. School settings and finance settings | 107 | 0 | 0 | 8 | 2 |
+| D. School settings and finance settings | 36 | 72 | 0 | 8 | 2 |
 | E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 150 | 385 | 14 | 50 | 32 |
+| Total | 78 | 457 | 14 | 50 | 32 |
 
 Where the new switches sit:
 
@@ -1854,7 +1845,7 @@ Where the new switches sit:
   `procurement.contract` 8, `procurement.vendor_assessment` 5,
   `procurement.settings` 16, `procurement.dashboard` 33 and
   `finance.report.ap_reconciliation` 1.
-* Area D: `school.settings` 70, `school.teachers.leave_group` 1,
+* Area D: `school.settings` 71, `school.teachers.leave_group` 1,
   `finance.settings` 36.
 * Area E: `finance.payment` 12, `finance.pettycash` 11,
   `finance.pettycashvoucher` 10, `platform.profile` 10, `platform.entitlements` 2.
@@ -1868,8 +1859,7 @@ Sensitive by owner decision: `finance.budget.amount` (Q-A4),
 (Q-B4). Sensitive by
 recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and
-`school.settings.starting_role`. Everything else ships open, several pending the
-questions in section 8.
+`school.settings.starting_role`. Everything else ships open, subject to the decisions in section 8.
 
 ### 10.2 Leaks
 
@@ -1878,10 +1868,10 @@ questions in section 8.
 | A. Budgets and financial statements | 20 | 8 | 0 | 1 | 11 | 0 |
 | B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
 | C. Procurement | 19 | 18 | 0 | 0 | 1 | 0 |
-| D. School settings | 9 | 6 | 0 | 2 | 1 | 0 |
+| D. School settings | 9 | 8 | 0 | 0 | 1 | 0 |
 | E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 25 | 0 | 10 | 3 | 2 |
 | X. Found outside the five areas | 17 | 10 | 0 | 6 | 0 | 1 |
-| Total | 122 | 81 | 0 | 20 | 18 | 3 |
+| Total | 122 | 83 | 0 | 18 | 18 | 3 |
 
 Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34
@@ -1892,7 +1882,7 @@ owner decision. Three reviewed paths in area D were clear and are not rows
 
 ### 10.3 Open product questions
 
-8 questions: area A 0, area B 0,
-area C 0, area D 5 (Q-D1 to Q-D5),
-area E 3 (Q-E4, Q-E5, Q-E12). Fourteen more (Q-A1 to Q-A7, Q-D6,
+3 questions: area A 0, area B 0,
+area C 0, area D 0,
+area E 3 (Q-E4, Q-E5, Q-E12). Q-D1 to Q-D5 are decided in 8.5. Fourteen more (Q-A1 to Q-A7, Q-D6,
 Q-D7, Q-E9, Q-E10, Q-E11, Q-E13, Q-C4) are answered in 8.1; Q-B4, Q-B5, Q-B8 and Q-B10 are answered in 8.3.

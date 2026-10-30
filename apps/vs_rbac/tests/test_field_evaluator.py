@@ -79,6 +79,9 @@ class _Fields(TestCase):
         cls.ikeja = make_branch(cls.school, name="Ikeja Branch")
         cls.tenant = cls.school.tenant
         cls.name = make_field_definition("fetest.vendor.name", "Name")
+        cls.display = make_field_definition(
+            "fetest.vendor.display", "Display", read_always=True,
+        )
         cls.bank = make_field_definition(
             "fetest.vendor.bank_account_number", "Bank account number", sensitive=True,
         )
@@ -111,6 +114,12 @@ class _Fields(TestCase):
 
 
 class DefaultsTests(_Fields):
+    def test_always_readable_field_keeps_read_through_role_and_personal_denial(self):
+        role = self._hold(self._role())
+        _row(role, self.display, False, False)
+        self._exception(self.display, READ, DENY)
+        self.assertEqual(_pair(self._access(), self.display), (True, False))
+
     def test_a_person_with_no_roles_gets_the_defaults(self):
         access = self._access()
         self.assertEqual(_pair(access, self.name), (True, True))

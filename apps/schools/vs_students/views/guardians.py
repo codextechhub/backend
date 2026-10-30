@@ -8,6 +8,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
 
 from core.response import success_response
+from schools.vs_schools.settings_field_access import assert_settings_write, settings_body
 from vs_rbac.field_enforcement import assert_writable
 from vs_rbac.field_enforcement import visible as visible_fields
 
@@ -33,6 +34,13 @@ from .base import StudentsViewMixin
 
 #: The Field Access resource a ward's own fields belong to.
 STUDENT_FIELDS = "school.students"
+
+_GUARDIAN_RULE_FIELDS = {
+    name: name for name in (
+        "min_per_student", "email_required", "matching", "extra_relationships",
+        "relationships", "parent_app_auto_access",
+    )
+}
 
 
 def _wards_by_guardian(request, tenant, guardian_ids):
@@ -593,7 +601,7 @@ class GuardianRulesView(StudentsViewMixin, APIView):
         from ..services.guardian_rules import read_guardian_rules
 
         return success_response(
-            data=read_guardian_rules(self.tenant).as_dict(request),
+            data=settings_body(request, read_guardian_rules(self.tenant).as_dict(request), _GUARDIAN_RULE_FIELDS),
         )
 
     def put(self, request):
@@ -608,7 +616,9 @@ class GuardianRulesView(StudentsViewMixin, APIView):
             request.user, self.tenant,
             message="Only a school-wide administrator can change the school's guardian rules.",
         )
-        writer = GuardianRulesSerializer(data=request.data)
+        current = read_guardian_rules(self.tenant).as_dict(request)
+        assert_settings_write(request, request.data, _GUARDIAN_RULE_FIELDS, current=current)
+        writer = GuardianRulesSerializer(data={**current, **request.data})
         writer.is_valid(raise_exception=True)
         data = dict(writer.validated_data)
         # An email requirement the caller cannot read stays as stored.
@@ -618,4 +628,6 @@ class GuardianRulesView(StudentsViewMixin, APIView):
         rules = write_guardian_rules(
             self.tenant, request.user, reason=data.pop("reason", ""), **data,
         )
-        return success_response("Guardian rules saved.", data=rules.as_dict(request))
+        return success_response("Guardian rules saved.", data=settings_body(
+            request, rules.as_dict(request), _GUARDIAN_RULE_FIELDS,
+        ))
