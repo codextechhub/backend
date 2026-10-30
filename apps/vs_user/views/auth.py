@@ -135,35 +135,52 @@ class LoginView(APIView):
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}
-            blocked_codes = {
-                'ACCOUNT_LOCKED', 'ACCOUNT_SUSPENDED',
-                'ACCOUNT_DEACTIVATED', 'ACCOUNT_NOT_ACTIVATED',
-                'DEVICE_SESSION_NOT_OFFERED',
-            }
-            http_status = (
-                status.HTTP_403_FORBIDDEN
-                if isinstance(payload, dict) and payload.get('code') in blocked_codes
-                else status.HTTP_401_UNAUTHORIZED
-            )
-            message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
-            return error_response(message=message, error=payload, status=http_status)
+            return sign_in_refused(e)
 
-        refresh_token = result.pop('refresh')
-        if native:
-            result['refresh'] = refresh_token
-            return success_response(message="Login successful.", data=result)
-        response = success_response(message="Login successful.", data=result)
-        # The readable CSRF token is shared with first-party app hosts. The
-        # rotating refresh credential remains host-only and outside JavaScript.
-        get_token(request)
-        if 'account' in result:
-            set_device_cookie(
-                response, result['account'], refresh_token,
-                max_age=device_cookie_max_age(refresh_token),
-            )
-        else:
-            set_refresh_cookie(response, refresh_token)
-        return response
+        return signed_in_response(request, result, native=native)
+
+
+#: Refusals answered 403 rather than 401: the password was right, and the
+#: client is told what stands in the way. The two-step codes carry the
+#: challenge the second step needs (services.two_step).
+FORBIDDEN_SIGN_IN_CODES = {
+    'ACCOUNT_LOCKED', 'ACCOUNT_SUSPENDED',
+    'ACCOUNT_DEACTIVATED', 'ACCOUNT_NOT_ACTIVATED',
+    'DEVICE_SESSION_NOT_OFFERED',
+    'TWO_STEP_REQUIRED', 'TWO_STEP_SET_UP_REQUIRED',
+}
+
+
+def sign_in_refused(exc: ValueError):
+    """The answer to a sign-in the service refused."""
+    payload = exc.args[0] if exc.args else {}
+    http_status = (
+        status.HTTP_403_FORBIDDEN
+        if isinstance(payload, dict) and payload.get('code') in FORBIDDEN_SIGN_IN_CODES
+        else status.HTTP_401_UNAUTHORIZED
+    )
+    message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
+    return error_response(message=message, error=payload, status=http_status)
+
+
+def signed_in_response(request, result: dict, *, native: bool):
+    """A finished sign-in: the payload, and the credential where this client keeps it."""
+    refresh_token = result.pop('refresh')
+    if native:
+        result['refresh'] = refresh_token
+        return success_response(message="Login successful.", data=result)
+    response = success_response(message="Login successful.", data=result)
+    # The readable CSRF token is shared with first-party app hosts. The
+    # rotating refresh credential remains host-only and outside JavaScript.
+    get_token(request)
+    if 'account' in result:
+        set_device_cookie(
+            response, result['account'], refresh_token,
+            max_age=device_cookie_max_age(refresh_token),
+        )
+    else:
+        set_refresh_cookie(response, refresh_token)
+    return response
 
 
 class SpecialLoginPreviewView(APIView):

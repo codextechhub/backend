@@ -2535,6 +2535,13 @@ class PayrollScopeUpdateSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class TwoStepSettingUpdateSerializer(serializers.Serializer):
+    """The body of ``PATCH /v1/i/me/settings/two-step/``."""
+
+    required = serializers.BooleanField()
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+
 class StaffProfileVisibilityUpdateSerializer(serializers.Serializer):
     """The body of ``PUT /v1/i/me/settings/staff-profiles/``.
 

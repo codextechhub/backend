@@ -72,3 +72,26 @@ def account_closure_token_digest(token: str) -> str | None:
     if not token.startswith(ACCOUNT_CLOSURE_PREFIX):
         return None
     return _digest(token, _ACCOUNT_CLOSURE_SALT)
+
+
+TWO_STEP_CHALLENGE_PREFIX = "ts_"
+_TWO_STEP_CHALLENGE_SALT = "vs_user.two_step_challenge"
+_TWO_STEP_RECOVERY_SALT = "vs_user.two_step_recovery"
+
+
+def issue_two_step_challenge_token() -> tuple[str, str]:
+    """Return a new sign-in challenge and the digest safe to persist."""
+    return _issue(TWO_STEP_CHALLENGE_PREFIX, _TWO_STEP_CHALLENGE_SALT)
+
+
+def two_step_challenge_digest(token: str) -> str | None:
+    """Return the challenge-family digest, or ``None`` for another family."""
+    if not token.startswith(TWO_STEP_CHALLENGE_PREFIX):
+        return None
+    return _digest(token, _TWO_STEP_CHALLENGE_SALT)
+
+
+def two_step_recovery_digest(code: str) -> str:
+    """The digest of a backup code, ignoring case, spaces and dashes as typed."""
+    normalised = "".join(ch for ch in code.lower() if ch.isalnum())
+    return _digest(normalised, _TWO_STEP_RECOVERY_SALT)

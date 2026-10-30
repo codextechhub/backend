@@ -144,6 +144,14 @@ DEFINITIONS = [
 # school scope through a typo in a column nobody reads.
 SCHOOL_SCOPED_DEFINITIONS = [
     (
+        "identity.two_step.required", "Two-Step Sign-In For Administrators And Finance",
+        "Whether administrators and anyone who can move money must type a code "
+        "from an authenticator app after their password. On unless the tenant "
+        "turns it off. CodeX staff are always asked. See "
+        "vs_user.services.two_step.",
+        "BOOLEAN", True, {},
+    ),
+    (
         "students.admission_number.required", "Admission Number Required",
         "Whether every student at this school must be given an admission "
         "number when they are enrolled.",

@@ -53,6 +53,12 @@ values in use are `LOGOUT`, `FORCE_LOGOUT`, `EXPIRED`, `SUSPENDED` and
 | `POST /auth/token/refresh/` | `AllowAny`, no `?tenant=` | `refresh` | `{access, refresh?}`; `401` with `TOKEN_EXPIRED` / `TOKEN_REVOKED` / `TOKEN_INVALID` (`views/auth.py:208-308`) |
 | `GET /auth/me/` | `IsAuthenticatedAndActive`, no `?tenant=` | - | `{user, tenant, school, permissions}` (`views/me.py:32-62`) |
 | `GET /auth/me/stats/` | `IsAuthenticatedAndActive`, no `?tenant=` | - | `{failed_attempts_7d}` (`views/me.py:65-85`) |
+| `POST /auth/two-step/verify/` | `AllowAny`, throttle `two_step` 10/min | `challenge`, and `code` or `recovery_code` | as `login`; `400 TWO_STEP_CODE_INVALID` / `TWO_STEP_CHALLENGE_INVALID` (`views/two_step.py`) |
+| `POST /auth/two-step/set-up/` | `AllowAny`, throttle `two_step` | `challenge` | `{secret, otpauth_uri, issuer, account}` |
+| `POST /auth/two-step/set-up/confirm/` | `AllowAny`, throttle `two_step` | `challenge`, `code` | as `login`, plus `recovery_codes` (ten, shown once) |
+| `GET /auth/me/two-step/` | `IsAuthenticatedAndActive`, no `?tenant=` | - | `{set_up, required, recovery_codes_left}` |
+| `POST /auth/me/two-step/recovery-codes/` | `IsAuthenticatedAndActive`, throttle `two_step` | `code` | `{recovery_codes}` (replaces every one) |
+| `POST /{user_id}/two-step/reset/` | `platform.team.update`, never the caller's own | - | `{had_authenticator}`; the school's own door is `POST /i/me/staff/{id}/account/reset-two-step/` |
 
 `tenant_param_required = False` on logout, refresh, `me` and `me/stats` is what
 lets a client call them with only a Bearer header; every other authenticated
@@ -75,8 +81,12 @@ POST /auth/login/
   3. check_password  ── fail ─▶ register_failure ─(count ≥ threshold)─▶ user.status = LOCKED
   4. lockout check (only AFTER a correct password)  ── locked ─▶ 403 ACCOUNT_LOCKED
   5. status gate: PENDING / LOCKED / SUSPENDED / DEACTIVATED ─▶ 403
-  6. [atomic] clear lockout · issue tokens · create LoginSession · stamp last_login_at
-  7. record AuthAttempt(SUCCESS) + LOGIN_SUCCESS audit event
+  6. two-step: someone who must give a code (services/two_step.py) is answered
+     403 TWO_STEP_REQUIRED or TWO_STEP_SET_UP_REQUIRED with a `challenge`,
+     and nothing is issued; /auth/two-step/* trades the challenge and a code
+     for the rest, re-asking the lockout, status and device checks first
+  7. [atomic] clear lockout · issue tokens · create LoginSession · stamp last_login_at
+  8. record AuthAttempt(SUCCESS) + LOGIN_SUCCESS audit event (`two_step` in its metadata when a code was given)
 
 Session:  active ──logout (this JTI)──────▶ ended  LOGOUT
                  ├─force logout / suspend ─▶ ended  FORCE_LOGOUT / SUSPENDED
@@ -187,6 +197,13 @@ on this account instead returns `403 ACCOUNT_LOCKED`, flips `user.status` to
 
 ## 8. Gotchas / known limitations
 
+- **Two-step sign-in covers the student and parent apps' device sign-in too.**
+  A member of staff who is also a parent is offered a parent-app session that
+  carries their staff permissions, so the gate cannot skip it. Until those
+  apps can take a code, such a person cannot sign in to them.
+- **The authenticator secret is stored as the app holds it**, as Django's own
+  one-time-password packages do. Backup codes and challenges are digests.
+
 - **A tenant without a school profile cannot log in at all, and the message says
   "Invalid credentials".** Step 2 rejects any non-PLATFORM tenant whose
   `school_profile` is missing before the password is even checked, recording
@@ -247,7 +264,10 @@ change, admin force-logout) use `all_objects` explicitly and say why in a commen
 
 | File | Responsibility |
 |---|---|
-| `services/auth.py` | `LoginService`: credential check, lockout, status gate, session + token issue |
+| `services/auth.py` | `LoginService`: credential check, lockout, status gate, the two-step gate, session + token issue |
+| `services/two_step.py` | Two-step sign-in: who is asked, challenges, setting up, codes, backup codes, reset |
+| `totp.py` | The authenticator codes (RFC 6238) and the `otpauth://` address a QR code carries |
+| `views/two_step.py` | The second step of a sign-in, a person's own backup codes, and the reset |
 | `views/auth.py` | Login, barcode preview, logout, token refresh |
 | `views/me.py` | `/auth/me/`, `/auth/me/stats/`, and the shared `_get_date_param` helper |
 | `tokens.py` | `CodeXRefreshToken` claims and the SimpleJWT obtain serializer/view |
@@ -257,6 +277,15 @@ change, admin force-logout) use `all_objects` explicitly and say why in a commen
 | `vs_config/runtime_settings.py` | Live lockout/expiry security values and their allowed ranges |
 
 ## 11. Test coverage & gaps
+
+`test_two_step.py` covers two-step sign-in: the RFC 6238 codes, who is asked
+(finance that only reads is not; a school that turns it off asks nobody; CodeX
+staff always), the password alone issuing nothing, setting up, a used code
+refused, five wrong codes ending the challenge and counting towards the
+lockout, a backup code working once, an expired challenge, a suspension
+between the two steps, and the reset never reaching the caller's own account.
+Tests about sessions sign people in with `@without_two_step`
+(`two_step_testing.py`).
 
 `LoginLockoutOracleTests` (`tests.py:672`) proves the ordering of the password and
 lockout checks in both directions and that a successful login returns tokens.

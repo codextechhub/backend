@@ -29,6 +29,7 @@ from .services.user import UserStatusService
 from .tests import make_cx_user, make_school, make_school_admin
 from .tokens import CodeXRefreshToken
 from .views.auth import TokenRefreshView
+from .two_step_testing import without_two_step
 
 PASSWORD = "Str0ng!pass123"
 REFRESH = "/v1/user/auth/token/refresh/"
@@ -448,6 +449,7 @@ class StaffAtASchool(BrowserRefreshGraceBehaviour, TestCase):
         make_school_admin(school, email=cls.email, password=PASSWORD)
 
 
+@without_two_step
 class ConsoleAccount(BrowserRefreshGraceBehaviour, TestCase):
     """Tunde, on the platform console."""
 
@@ -469,6 +471,7 @@ class SchoolWithoutASession(NoSessionRowBehaviour, TestCase):
         make_school_admin(school, email=cls.email, password=PASSWORD)
 
 
+@without_two_step
 class ConsoleWithoutASession(NoSessionRowBehaviour, TestCase):
     email = "tunde@codex.test"
 
@@ -478,6 +481,7 @@ class ConsoleWithoutASession(NoSessionRowBehaviour, TestCase):
         cls.tenant_slug = user.tenant.slug
 
 
+@without_two_step
 class ImpersonationAndRefreshTests(BrowserRefreshCase, TestCase):
     """A refresh never starts, ends or reads a proxy session; a revoked credential ends the actor's.
 

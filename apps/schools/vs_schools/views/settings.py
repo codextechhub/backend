@@ -1,4 +1,4 @@
-"""A school's own settings screens: security, payroll, and staff profile visibility.
+"""A school's own settings screens: security, two-step sign-in, payroll, and staff profile visibility.
 
 All three settings live in the configuration engine (``vs_config``), and the
 first two already have a console screen there, but none of that is reachable by
@@ -64,11 +64,13 @@ from vs_finance.payroll import (
 )
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import assert_caller_may_configure
+from vs_user.services.two_step import SETTING_KEY as TWO_STEP_SETTING_KEY
 
 from ..models import School
 from ..serializers import (
     PayrollScopeUpdateSerializer,
     StaffProfileVisibilityUpdateSerializer,
+    TwoStepSettingUpdateSerializer,
 )
 
 
@@ -264,6 +266,77 @@ class SchoolPayrollScopeView(SchoolSettingsView):
             )
         return success_response(
             "Payroll scope saved.",
+            self._payload(definition, tenant),
+        )
+
+
+class SchoolTwoStepView(SchoolSettingsView):
+    """GET/PATCH /v1/i/me/settings/two-step/ - whether administrators and finance need a code.
+
+    ``{"required": true|false, "source": "school"|"platform"|"default"}``. On
+    by default: until the school says otherwise, everyone at it who can
+    administer it or move its money types a code from an authenticator app
+    after their password (see :mod:`vs_user.services.two_step` for exactly
+    who). A school-level setting only, so a PATCH ``{"required": false,
+    "reason"?}`` needs a caller whose reach is the whole school.
+
+    docstring-name: My school two-step sign-in
+    """
+
+    def _definition(self):
+        definition = ConfigurationDefinition.objects.filter(
+            key=TWO_STEP_SETTING_KEY, is_active=True,
+        ).first()
+        if definition is None:
+            raise NotFound("Two-step sign-in is not available.")
+        return definition
+
+    def _payload(self, definition, tenant):
+        value, row = resolve_value(definition, tenant=tenant)
+        if row is None:
+            source = "default"
+        elif row.scope_key == "platform":
+            source = "platform"
+        else:
+            source = "school"
+        return {"required": value is not False, "source": source}
+
+    def get(self, request):
+        tenant = self.school_tenant(request)
+        return success_response(
+            "Two-step sign-in retrieved.",
+            self._payload(self._definition(), tenant),
+        )
+
+    def patch(self, request):
+        tenant = self.school_tenant(request)
+        assert_caller_may_configure(
+            request.user, tenant,
+            message="Only a school-wide administrator can change who needs two-step sign-in.",
+        )
+        definition = self._definition()
+        serializer = TwoStepSettingUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = (
+            serializer.validated_data.get("reason")
+            or "Updated from the school's sign-in settings"
+        )
+        try:
+            set_value(
+                definition=definition,
+                value=serializer.validated_data["required"],
+                actor=request.user,
+                tenant=tenant,
+                reason=reason,
+            )
+        except ConfigurationError as exc:
+            return error_response(
+                exc.message,
+                error={"code": exc.error_code, "detail": {"required": [exc.message]}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return success_response(
+            "Two-step sign-in saved.",
             self._payload(definition, tenant),
         )
 

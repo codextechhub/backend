@@ -30,6 +30,7 @@ from .services.device_sessions import DeviceSessionPolicy, register_device_sessi
 from .signals import device_session_ended
 from .test_browser_session import BROWSER_ORIGIN_REGEXES, BROWSER_ORIGINS, HARDENED_COOKIE
 from .tests import make_cx_user
+from .two_step_testing import without_two_step
 
 PASSWORD = "Str0ng!pass123"
 PREFIX = "device_session_"
@@ -44,6 +45,7 @@ REFRESH = "/v1/user/auth/device/refresh/"
 SIGN_OUT = "/v1/user/auth/device/sign-out/"
 
 
+@without_two_step
 @override_settings(
     AUTH_BROWSER_ALLOWED_ORIGINS=BROWSER_ORIGINS + [NATIVE, ANDROID],
     AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES=BROWSER_ORIGIN_REGEXES,

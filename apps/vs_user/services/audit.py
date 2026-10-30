@@ -37,6 +37,7 @@ _AUTH_EVENT_TO_ACTION: dict[str, str] = {
 _FAILED_EVENTS = {
     AuthEvent.LOGIN_FAILURE,
     AuthEvent.ACCOUNT_LOCKED,
+    AuthEvent.TWO_STEP_FAILED,
 }
 
 

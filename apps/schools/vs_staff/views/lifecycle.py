@@ -317,6 +317,22 @@ class StaffAccountUnlockView(_AccountActionView):
     message = "The lockout is cleared and they can sign in again."
 
 
+class StaffAccountTwoStepResetView(_AccountActionView):
+    """POST /v1/i/me/staff/<id>/account/reset-two-step/ - for a lost phone.
+
+    Clears their authenticator and backup codes; they set up a new one at
+    their next sign-in. On the account-update key, like a change of email,
+    because it changes how the account proves who is signing in. Never the
+    caller's own (403).
+
+    docstring-name: Reset a staff member's two-step sign-in
+    """
+
+    rbac_permission = PERM_ACCOUNT_UPDATE
+    action = "reset_two_step"
+    message = "Two-step sign-in is reset. They will set it up again at their next sign-in."
+
+
 class StaffAccountEmailView(StaffViewMixin, APIView):
     """PATCH /v1/i/me/staff/<id>/account/email/ - change the sign-in address.
 

@@ -19,6 +19,7 @@ from .views.school import (
 )
 from .views.settings import (
     SchoolPayrollScopeView,
+    SchoolTwoStepView,
     SchoolSecuritySettingsView,
     SchoolStaffProfileVisibilityView,
 )
@@ -65,6 +66,11 @@ urlpatterns = [
         "me/settings/security/",
         SchoolSecuritySettingsView.as_view(),
         name="school-settings-security",
+    ),
+    path(
+        "me/settings/two-step/",
+        SchoolTwoStepView.as_view(),
+        name="school-settings-two-step",
     ),
     path(
         "me/settings/payroll-scope/",

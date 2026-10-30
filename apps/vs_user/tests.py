@@ -25,6 +25,7 @@ from core.migration_testing import RewoundSchemaTestCase
 from vs_user.auth_events import AuthEvent
 from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
+from .two_step_testing import without_two_step
 
 
 class PlatformUserCreationTests(TestCase):
@@ -976,6 +977,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
         self.assertFalse(OrgNode.objects.filter(pk=self.team.pk).exists())
 
 
+@without_two_step
 class LoginLockoutOracleTests(TestCase):
     """B13 - wrong-password attempts must never reveal the locked state."""
 
@@ -1039,6 +1041,7 @@ class FailedAttemptAuditTests(TestCase):
         self.assertEqual(attempt.email_entered, user.email)
 
 
+@without_two_step
 class SessionScopedLogoutTests(TestCase):
     """B10/B11 - multi-device session integrity."""
 
@@ -1092,6 +1095,7 @@ class SessionScopedLogoutTests(TestCase):
         self.assertEqual(session_b_before.refresh_jti, session_b_after.refresh_jti)
 
 
+@without_two_step
 class SelfServiceSecurityScopeTests(TestCase):
     """The My Security endpoints expose and revoke only the caller's records."""
 
@@ -1206,6 +1210,7 @@ class SelfServiceSecurityScopeTests(TestCase):
         )
 
 
+@without_two_step
 class EndingEverySessionTests(TestCase):
     """Every flow that ends all of an account's sessions ends its LoginSession rows.
 
@@ -1300,6 +1305,7 @@ class EndingEverySessionTests(TestCase):
 # WP-B1 - school branding in auth payloads (A.1)
 # =============================================================================
 
+@without_two_step
 class SchoolBrandingPayloadTests(TestCase):
     """The login / me payloads carry a nested `school` object for school users.
 
@@ -2715,6 +2721,7 @@ class TenantDisplayBlockTests(TestCase):
 # Per-tenant email, Phase 1 - sign-in resolves the tenant instead of guessing it
 # =============================================================================
 
+@without_two_step
 class SignInTenantScopeTests(TestCase):
     """The tenant is resolved BEFORE the account is looked up.
 
@@ -3015,6 +3022,7 @@ class PasswordResetTenantScopeTests(TestCase):
         self.assertFalse(self._resets().exists())
 
 
+@without_two_step
 class BarcodePreviewPrivacyTests(TestCase):
     """The public preview reveals identity only for an active random card key."""
 

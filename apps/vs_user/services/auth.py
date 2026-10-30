@@ -183,7 +183,63 @@ class LoginService:
                 'detail': 'This app is not available for your account. Use the main sign-in page.',
             })
 
-        # 6. Success path - atomic: session + token + user update must all commit or all roll back.
+        # 6. Two-step sign-in. A correct password from someone who must give a
+        # code opens a challenge and signs nobody in; the second step finishes
+        # through _complete below. See services.two_step.
+        from . import two_step
+
+        if two_step.required_for(authed):
+            record_attempt(
+                email_entered=email,
+                user=authed, tenant=authed.tenant,
+                result=AuthAttempt.Result.BLOCKED, failure_code='TWO_STEP_PENDING',
+                request=request,
+            )
+            raise ValueError(two_step.open_challenge(authed, device=device, email_entered=email))
+
+        return LoginService._complete(
+            authed, request=request, device=device, email_entered=email,
+            policy=policy, browser_policy=browser_policy,
+        )
+
+    @staticmethod
+    def finish_two_step(passed, request=None) -> dict:
+        """Sign in a person whose code was right, after the checks the password passed.
+
+        Minutes may have passed since the password: the account may have been
+        suspended or locked, or lost its app, in between, so each is asked again.
+        """
+        from .device_sessions import device_session_policy
+
+        authed = passed.user
+        authed.refresh_from_db()
+        lockout = AccountLockout.objects.filter(user=authed).first()
+        if lockout and lockout.is_locked_now():
+            raise ValueError({
+                'code':   'ACCOUNT_LOCKED',
+                'detail': 'Your account is locked. Please contact your administrator or reset your password.',
+            })
+        status_error = LoginService._check_status(authed)
+        if status_error:
+            raise ValueError(status_error)
+        policy = device_session_policy(authed)
+        if passed.device and policy is None:
+            raise ValueError({
+                'code':   'DEVICE_SESSION_NOT_OFFERED',
+                'detail': 'This app is not available for your account. Use the main sign-in page.',
+            })
+        browser_policy = policy if policy and policy.sends_browser_sign_in_to_app else None
+        return LoginService._complete(
+            authed, request=request, device=passed.device, email_entered=passed.email_entered,
+            policy=policy, browser_policy=browser_policy,
+            two_step_method=passed.method,
+        )
+
+    @staticmethod
+    def _complete(authed, *, request, device, email_entered, policy, browser_policy, two_step_method=None) -> dict:
+        """Issue the session and answer the sign-in: the password's last step, or the code's."""
+        email = email_entered
+        # Success path - atomic: session + token + user update must all commit or all roll back.
         with transaction.atomic():
             lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
             if lockout:
@@ -227,7 +283,10 @@ class LoginService:
             actor=authed, subject=authed, tenant=authed.tenant,
             event=AuthEvent.LOGIN_SUCCESS,
             request=request,
-            metadata={'session_id': session.id},
+            metadata={
+                'session_id': session.id,
+                **({'two_step': two_step_method} if two_step_method else {}),
+            },
         )
 
         from vs_rbac.evaluator import get_effective_permissions
@@ -329,7 +388,7 @@ class LoginService:
         })
 
     @staticmethod
-    def _handle_failed_attempt(user, tenant, email_entered, request):
+    def _handle_failed_attempt(user, tenant, email_entered, request, failure_code='INVALID_CREDENTIALS'):
         """Count one failed sign-in, lock at the threshold, and record the attempt.
 
         The lockout update is wrapped in its own atomic block so the counter
@@ -403,6 +462,6 @@ class LoginService:
         record_attempt(
             email_entered=email_entered or ((user.email or '') if user else ''),
             user=user, tenant=tenant,
-            result=AuthAttempt.Result.FAIL, failure_code='INVALID_CREDENTIALS',
+            result=AuthAttempt.Result.FAIL, failure_code=failure_code,
             request=request,
         )

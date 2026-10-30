@@ -45,6 +45,7 @@ from .services.capabilities import (
 )
 from .services.audit_exports import execute_configuration_audit_export
 from .services.resolution import resolve_value, set_value
+from vs_user.two_step_testing import without_two_step
 
 
 class ConfigurationResolutionTests(TestCase):
@@ -530,6 +531,7 @@ class ConfigurationBranchEntitlementTests(TestCase):
             self.assertEqual(resolved, branch)
 
 
+@without_two_step
 class PlatformSettingsAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -1008,6 +1010,7 @@ class RuntimeSettingsAPITests(TestCase):
         )
 
 
+@without_two_step
 class EntitlementManagementAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()

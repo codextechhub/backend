@@ -307,6 +307,9 @@ REST_FRAMEWORK = {
         "password_change": "5/minute",
         # The emailed reset link, opened and then confirmed, by IP.
         "password_reset_link": "20/minute",
+        # The second step of a sign-in, and renewing backup codes. A challenge
+        # also dies after five wrong codes; this bounds the address.
+        "two_step": "10/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
         # Public pay-an-invoice page, keyed by IP. A whole school's parents can

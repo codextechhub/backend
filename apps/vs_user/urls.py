@@ -14,6 +14,14 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from .views.jobs import MyTasksSummaryView, MyTasksView
+from .views.two_step import (
+    MyTwoStepRecoveryCodesView,
+    MyTwoStepView,
+    TwoStepSetUpConfirmView,
+    TwoStepSetUpView,
+    TwoStepVerifyView,
+    UserTwoStepResetView,
+)
 from .views import (
     # Auth
     LoginView,
@@ -90,6 +98,12 @@ urlpatterns = [
     path('auth/device/refresh/',                DeviceRefreshView.as_view(),        name='auth-device-refresh'),
     path('auth/device/sign-out/',               DeviceSignOutView.as_view(),        name='auth-device-sign-out'),
     path('auth/device/hand-over/',              DeviceHandOverView.as_view(),       name='auth-device-hand-over'),
+    # Two-step sign-in: the second step of a sign-in, and a person's own codes.
+    path('auth/two-step/verify/',               TwoStepVerifyView.as_view(),        name='auth-two-step-verify'),
+    path('auth/two-step/set-up/',               TwoStepSetUpView.as_view(),         name='auth-two-step-set-up'),
+    path('auth/two-step/set-up/confirm/',       TwoStepSetUpConfirmView.as_view(),  name='auth-two-step-set-up-confirm'),
+    path('auth/me/two-step/',                   MyTwoStepView.as_view(),            name='auth-me-two-step'),
+    path('auth/me/two-step/recovery-codes/',    MyTwoStepRecoveryCodesView.as_view(), name='auth-me-two-step-recovery-codes'),
     path('auth/me/',                            CurrentUserView.as_view(),          name='auth-me'),
     path('me/tasks/',                           MyTasksView.as_view(),              name='me-tasks'),
     path('me/tasks/summary/',                   MyTasksSummaryView.as_view(),       name='me-tasks-summary'),
@@ -136,6 +150,7 @@ urlpatterns = [
     path('<int:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
     path('<int:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
     path('<int:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    path('<int:user_id>/two-step/reset/', UserTwoStepResetView.as_view(),  name='user-two-step-reset'),
     path('password-resets/',              PasswordResetListView.as_view(),  name='password-reset-list'),
     path('password-resets/<int:pk>/revoke/', RevokePasswordResetView.as_view(), name='password-reset-revoke'),
 

@@ -1136,6 +1136,78 @@ def lockout_in_force(prefix: str = '') -> Q:
 
 
 # =============================================================================
+# Two-step sign-in
+# One authenticator per person, the backup codes that stand in for it, and the
+# short-lived step between a correct password and a correct code. The rules
+# are in services.two_step.
+# =============================================================================
+
+class TwoStepAuthenticator(TimeStampedModel):
+    """The secret a person's authenticator app shares with the server.
+
+    ``confirmed_at`` is empty while it is being set up: the secret has been
+    shown as a QR code but no code from it has been typed back yet, so it
+    proves nothing and is never asked for. ``last_step`` is the 30-second step
+    of the last code accepted, so the same code cannot be used twice.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='two_step_authenticator',
+    )
+    secret       = models.CharField(max_length=64)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_step    = models.BigIntegerField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f'TwoStepAuthenticator<{self.user_id}:{"on" if self.confirmed_at else "setting up"}>'
+
+
+class TwoStepRecoveryCode(TimeStampedModel):
+    """One backup code, kept only as a digest, good for one sign-in."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='two_step_recovery_codes',
+    )
+    code_hash = models.CharField(max_length=64)
+    used_at   = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['user', 'code_hash'])]
+
+
+class TwoStepChallenge(TimeStampedModel):
+    """A correct password waiting for its code.
+
+    Nothing that signs a person in exists yet: no token, no cookie, no session.
+    The client holds the raw challenge, the row holds its digest, and the
+    second step trades the challenge and a code for the sign-in. ``device``
+    is fixed here so the second step cannot change what kind of session the
+    password was offered.
+    """
+
+    class Purpose(models.TextChoices):
+        VERIFY = 'VERIFY', 'Enter a code'
+        SET_UP = 'SET_UP', 'Set up an authenticator'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='two_step_challenges',
+    )
+    token_hash    = models.CharField(max_length=64, unique=True)
+    purpose       = models.CharField(max_length=8, choices=Purpose.choices)
+    device        = models.BooleanField(default=False)
+    email_entered = models.CharField(max_length=254, blank=True, default='')
+    expires_at    = models.DateTimeField()
+    attempts      = models.PositiveSmallIntegerField(default=0)
+    used_at       = models.DateTimeField(null=True, blank=True)
+
+
+# =============================================================================
 # PasswordResetRequest
 # =============================================================================
 

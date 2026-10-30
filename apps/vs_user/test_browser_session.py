@@ -6,6 +6,7 @@ from rest_framework.test import APIClient
 
 from .models import LoginSession
 from .tests import make_cx_user
+from .two_step_testing import without_two_step
 
 #: The origins these tests speak from, declared here rather than borrowed from
 #: whichever settings module happens to be loaded.
@@ -37,6 +38,7 @@ HARDENED_COOKIE = {
 }
 
 
+@without_two_step
 @override_settings(
     AUTH_BROWSER_ALLOWED_ORIGINS=BROWSER_ORIGINS,
     AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES=BROWSER_ORIGIN_REGEXES,

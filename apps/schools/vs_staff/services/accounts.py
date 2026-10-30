@@ -75,6 +75,24 @@ def unlock(staff, *, actor, request=None):
     return _call(UserStatusService.unlock, staff.user, actor, request)
 
 
+def reset_two_step(staff, *, actor, request=None):
+    """Clear an authenticator and its backup codes, for somebody who lost their phone.
+
+    They set it up again the next time they sign in. Never your own: a person
+    who could clear their own second step with only a signed-in session would
+    make it no second step at all.
+    """
+    if is_self(actor, staff):
+        raise CannotActOnSelf(
+            "You cannot reset your own two-step sign-in. Ask another administrator "
+            "to do it.",
+        )
+
+    from vs_user.services import two_step
+
+    return two_step.reset(staff.user, actor=actor, request=request)
+
+
 def change_email(staff, new_email, *, actor, request=None, note=""):
     """Change the address an account signs in with.
 

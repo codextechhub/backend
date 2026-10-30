@@ -33,3 +33,10 @@ class AuthEvent(models.TextChoices):
     PASSWORD_CHANGED         = 'PASSWORD_CHANGED',         'Password Changed'
     EMAIL_CHANGED            = 'EMAIL_CHANGED',            'Email Changed'
     CARD_LOGIN_ROTATED       = 'CARD_LOGIN_ROTATED',       'Card Login Rotated'
+    # Two-step sign-in (services.two_step). Filed under CUSTOM in the audit
+    # trail, like the card rotation; the name here is what readers filter on.
+    TWO_STEP_SET_UP                 = 'TWO_STEP_SET_UP',                 'Two-Step Sign-In Set Up'
+    TWO_STEP_FAILED                 = 'TWO_STEP_FAILED',                 'Two-Step Code Refused'
+    TWO_STEP_RECOVERY_CODE_USED     = 'TWO_STEP_RECOVERY_CODE_USED',     'Backup Code Used'
+    TWO_STEP_RECOVERY_CODES_RENEWED = 'TWO_STEP_RECOVERY_CODES_RENEWED', 'Backup Codes Renewed'
+    TWO_STEP_RESET                  = 'TWO_STEP_RESET',                  'Two-Step Sign-In Reset'

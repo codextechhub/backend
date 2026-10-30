@@ -57,6 +57,7 @@ from .services.capabilities import (
     set_override,
 )
 from .services.depth import UNLIMITED, depth_allows, resolved_depth
+from vs_user.two_step_testing import without_two_step
 
 
 class DepthCatalogueShapeTests(TestCase):
@@ -371,6 +372,7 @@ class DepthAgainstOtherGatesTests(_DepthFixture):
         )
 
 
+@without_two_step
 class AnEntitlementWriteReportsWhatItLeftStandingTests(TestCase):
     """A write that shallows a module names the role it could not settle.
 

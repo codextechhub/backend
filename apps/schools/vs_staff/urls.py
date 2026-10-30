@@ -39,6 +39,7 @@ from .views.lifecycle import (
     StaffAccountEmailView,
     StaffAccountReactivateView,
     StaffAccountSuspendView,
+    StaffAccountTwoStepResetView,
     StaffAccountUnlockView,
     StaffHistoryView,
     StaffInvitationRevokeView,
@@ -191,6 +192,10 @@ urlpatterns = [
     path(
         "<int:pk>/account/unlock/", StaffAccountUnlockView.as_view(),
         name="staff-account-unlock",
+    ),
+    path(
+        "<int:pk>/account/reset-two-step/", StaffAccountTwoStepResetView.as_view(),
+        name="staff-account-reset-two-step",
     ),
     path(
         "<int:pk>/account/email/", StaffAccountEmailView.as_view(),
