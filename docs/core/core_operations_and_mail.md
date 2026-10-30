@@ -127,6 +127,11 @@ send_email(subject=…, plain_message=…, html_message=None,
 - A message carrying a one-time link (invitation, password reset, account
   closure, a supplier's quote link) is **never copied**, whatever the lists
   hold: `deliver_email_notification` drops the copy when it puts the token in.
+  Staging alone may set `EMAIL_COPY_ONE_TIME_LINKS=true` to copy them too, so
+  an invitation can be followed end to end from the monitoring inbox; a server
+  holding live Paystack keys refuses to start with it (`settings.staging`).
+- Which deployment copies what is set per service in Render: staging copies
+  every list to the monitoring inbox, production sets none of them.
 - `html_message` is optional: with it the message is multipart, without it
   plain-text only.
 

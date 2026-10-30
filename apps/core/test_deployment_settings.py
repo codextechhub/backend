@@ -267,6 +267,19 @@ class DeployedAddressTests(SimpleTestCase):
                 self.assertIn("PAYSTACK_KEY_MODE", outcome["message"])
                 self.assertIn("live or test", outcome["message"])
 
+    def test_copying_sign_in_links_is_refused_on_a_live_server(self):
+        """Staging may copy an invitation to its monitoring inbox; production never."""
+        live = self._resolve(
+            **_STAGING_ADDRESSES, PAYSTACK_KEY_MODE="live", EMAIL_COPY_ONE_TIME_LINKS="true",
+        )
+        self.assertEqual(live.get("error"), "ImproperlyConfigured", live)
+        self.assertIn("EMAIL_COPY_ONE_TIME_LINKS", live["message"])
+
+        staging = self._resolve(
+            **_STAGING_ADDRESSES, PAYSTACK_KEY_MODE="test", EMAIL_COPY_ONE_TIME_LINKS="true",
+        )
+        self.assertNotIn("error", staging, staging)
+
     def test_a_test_server_refuses_a_live_paystack_key(self):
         outcome = self._resolve(
             **_STAGING_ADDRESSES,

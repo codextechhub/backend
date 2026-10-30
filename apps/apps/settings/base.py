@@ -82,7 +82,9 @@ hold: an invitation, a password reset, an account closure link, a supplier's
 quote link. Its token is put in only as it is sent
 (``vs_notifications.tasks.deliver_email_notification``), and a copy would let
 whoever reads the monitoring mailbox use it. Test those flows with a test
-inbox of your own.
+inbox of your own, or on staging set ``EMAIL_COPY_ONE_TIME_LINKS``,
+which copies them there too and which a server with live Paystack keys
+refuses to start with.
 
 Base URLs, and why none of them derives from another
 ----------------------------------------------------
@@ -661,6 +663,11 @@ PROCUREMENT_VENDOR_EMAIL_BCC = _addresses(
 FINANCE_CUSTOMER_EMAIL_BCC = _addresses(
     "FINANCE_CUSTOMER_EMAIL_BCC", "FINANCE_CUSTOMER_EMAIL_CC",
 )
+# Staging only: copy messages carrying a one-time link too, so an invitation or
+# a reset can be followed end to end from the monitoring inbox. Off unless set,
+# and a server holding live Paystack keys refuses to start with it on
+# (settings.staging), so production can never copy a working link.
+EMAIL_COPY_ONE_TIME_LINKS = config("EMAIL_COPY_ONE_TIME_LINKS", default=False, cast=bool)
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
 # The window a book's owner bills by (a school's academic term), for "This term"

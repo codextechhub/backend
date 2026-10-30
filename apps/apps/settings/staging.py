@@ -32,6 +32,13 @@ HEALTH_SSL_DOMAIN = deployment_host("HEALTH_SSL_DOMAIN")
 # kind. See paystack_keys.
 PAYSTACK_KEY_MODE = require_matching_paystack_keys()
 
+# Copying a working sign-in link is for staging's testing only (see base).
+if EMAIL_COPY_ONE_TIME_LINKS and PAYSTACK_KEY_MODE == "live":
+    raise ImproperlyConfigured(
+        "EMAIL_COPY_ONE_TIME_LINKS copies working sign-in links; it is for "
+        "staging only and cannot be set on a server with live Paystack keys.",
+    )
+
 # Every tenant is served from its own subdomain of the school app's host, so
 # the wildcard follows that host rather than naming one deployment's domain.
 _school_app = urlsplit(SCHOOL_APP_BASE_URL)

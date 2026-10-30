@@ -11,6 +11,7 @@ trackers (e.g. vs_user invitation status) can react. The record's internal
 import logging
 
 from celery import shared_task
+from django.conf import settings
 from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
@@ -124,8 +125,9 @@ def deliver_email_notification(
 
     # A message whose token is put in here carries a one-time link (an
     # invitation, a reset, a closure, a supplier's quote link): never copied,
-    # whatever the monitoring lists hold. See the settings module's docstring.
-    if any(marker for marker in (replacements or {})):
+    # whatever the monitoring lists hold, unless staging asks for it. See the
+    # settings module's docstring.
+    if any(marker for marker in (replacements or {})) and not settings.EMAIL_COPY_ONE_TIME_LINKS:
         bcc = []
     for marker, value in (replacements or {}).items():
         if not marker:

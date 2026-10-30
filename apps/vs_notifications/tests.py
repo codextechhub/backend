@@ -738,6 +738,18 @@ class DeliveryTaskTests(_NotifFixture):
         self.assertIn("iv_secret", mail.outbox[0].body)
         self.assertEqual(mail.outbox[0].bcc, [])
 
+    @override_settings(EMAIL_BCC=["monitor@codexng.com"], EMAIL_COPY_ONE_TIME_LINKS=True)
+    def test_staging_may_ask_for_one_time_links_to_be_copied(self):
+        """Staging follows an invitation end to end from its monitoring inbox."""
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        notif.body = "Set your password: https://school.test/activate/__TOKEN__/"
+        notif.save(update_fields=["body"])
+
+        deliver_email_notification(str(notif.id), replacements={"__TOKEN__": "iv_secret"})
+
+        self.assertEqual(mail.outbox[0].bcc, ["monitor@codexng.com"])
+
     def test_metadata_attachment_is_loaded_from_storage(self):
         from .tasks import deliver_email_notification
         storage_name = default_storage.save(
