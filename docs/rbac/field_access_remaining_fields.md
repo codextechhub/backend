@@ -1118,9 +1118,9 @@ is deliberately unswitched: it is the catalogue, not the school's choice.
 
 `finance.payment` exists as a permission resource only (view, create, allocate,
 reverse, email). The module docstring of `vs_finance/field_access.py` says an
-ordinary receipt keeps the switches of `finance.payment`; no such switches are
-registered, so the same receipt is switched when it arrives as a payer payment
-(`finance.payer_payment`) and open on `GET /finance/payments/`.
+ordinary receipt keeps the switches of `finance.payment`; the receipt switches are
+registered, so the receipt is guarded both as an ordinary payment and when it
+arrives through a payer payment (`finance.payer_payment`).
 
 Routes: `customers/<pk>/receipt/` (`finance.payment.create`), `payments/` (list),
 `payments/summary/`, `payments/<pk>/`, `payments/<pk>/receipt/` (printed, system
@@ -1129,8 +1129,8 @@ surface), `payments/<pk>/allocate/` (`.allocate`), `payments/<pk>/void/`
 are already registered under `finance.interbranch` and `finance.payer_payment`.
 Other creators of a receipt row (payer payment shares, forwarded held receipts,
 credit transfers, gateway settlement) are system-raised and need no write
-assertion. `PaymentSerializer` carries no `FieldAccessMixin`, and
-`PaymentDetailView` passes no request. Create body: `amount`, `payment_date`,
+assertion. `PaymentSerializer` applies Field Access, and
+`PaymentDetailView` passes the request. Create body: `amount`, `payment_date`,
 `method`, `deposit_account`, `reference`, `narration`, `auto_allocate`,
 `allocation_strategy`. List filters `?method=`, `?customer=`, `?search=` and
 `?status=` must be refused when the field they select on is unreadable.
@@ -1142,20 +1142,20 @@ Frontend: `FinPro/src/pages/finance/receivables/receipts-allocation-tab.tsx`,
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `id`, `journal_id` as a link target | ids | Transport | none | - | - | - | - | no switch: transport |
 | `document_number`, `customer_id`, `customer_code`, `customer_name`, `branch_id`, `branch_name` (absent from the payload today) | receipt number, customer and branch identity | Computed or stored | create (customer from the URL) | - | - | - | - | no switch: owner decision |
-| `payment_date` | receipt date | Stored | create | `finance.payment.payment_date` | Receipt date | RW | open | recorded |
-| `method` | payment method | Stored | create | `finance.payment.method` | Payment method | RW | open | recorded |
-| `amount`, `amount_naira` | amount received; also printed for the payer | Stored | create | `finance.payment.amount` | Amount | RW | open (follows `payer_payment.amount`, which is not sensitive) | recorded |
-| `allocated_amount`, `allocation_status`, detail `allocations[]` (`invoice`, `debit_note`, `amount`) | applied to bills | Computed | allocate action; `auto_allocate` on create | `finance.payment.allocated_amount` | Applied to bills | RO | open; applying a receipt stays a business action behind `finance.payment.allocate` | recorded |
-| `unallocated_amount`, `credit_remaining` | credit still held | Computed | none | `finance.payment.credit_remaining` | Credit still held | RO | open | recorded |
-| `refunded_amount`, `transferred_amount` | paid back or moved on | Computed | refund and credit-transfer side effects | `finance.payment.refunded_amount` | Paid back or moved on | RO | open | recorded |
-| `deposit_account_code`, `deposit_account_name` | bank account the money was deposited to | Stored | create `deposit_account` | `finance.payment.deposit_account` | Deposit account | RW | open (Q-C4) | recorded |
-| `reference` | reference | Stored | create | `finance.payment.reference` | Reference | RW | open | recorded |
-| `narration` | narration | Stored | create | `finance.payment.narration` | Narration | RW | open | recorded |
-| `journal_id`, detail `gl_postings[]` | ledger link and ledger lines | Computed | none | `finance.payment.journal` | Journal | RO | open; `gl_postings` shown only if `amount` and `deposit_account` are readable | recorded |
-| `status` | state | Computed | void | `finance.payment.status` | Status | RO | open | recorded |
-| summary `today`, `week`, `unallocated`, `refunded`, `status_counts` | list-screen totals | Computed | none | `finance.payment.summary_totals` | Receipt totals | RO | open; each total is hidden with the field it sums | recorded |
+| `payment_date` | receipt date | Stored | create | `finance.payment.payment_date` | Receipt date | RW | open | registered |
+| `method` | payment method | Stored | create | `finance.payment.method` | Payment method | RW | open | registered |
+| `amount`, `amount_naira` | amount received; also printed for the payer | Stored | create | `finance.payment.amount` | Amount | RW | open (follows `payer_payment.amount`, which is not sensitive) | registered |
+| `allocated_amount`, `allocation_status`, detail `allocations[]` (`invoice`, `debit_note`, `amount`) | applied to bills | Computed | allocate action; `auto_allocate` on create | `finance.payment.allocated_amount` | Applied to bills | RO | open; applying a receipt stays a business action behind `finance.payment.allocate` | registered |
+| `unallocated_amount`, `credit_remaining` | credit still held | Computed | none | `finance.payment.credit_remaining` | Credit still held | RO | open | registered |
+| `refunded_amount`, `transferred_amount` | paid back or moved on | Computed | refund and credit-transfer side effects | `finance.payment.refunded_amount` | Paid back or moved on | RO | open | registered |
+| `deposit_account_code`, `deposit_account_name` | bank account the money was deposited to | Stored | create `deposit_account` | `finance.payment.deposit_account` | Deposit account | RW | open (Q-C4) | registered |
+| `reference` | reference | Stored | create | `finance.payment.reference` | Reference | RW | open | registered |
+| `narration` | narration | Stored | create | `finance.payment.narration` | Narration | RW | open | registered |
+| `journal_id`, detail `gl_postings[]` | ledger link and ledger lines | Computed | none | `finance.payment.journal` | Journal | RO | open; `gl_postings` shown only if `amount` and `deposit_account` are readable | registered |
+| `status` | state | Computed | void | `finance.payment.status` | Status | RO | open | registered |
+| summary `today`, `week`, `unallocated`, `refunded`, `status_counts` | list-screen totals | Computed | none | `finance.payment.summary_totals` | Receipt totals | RO | open; each total is hidden with the field it sums | registered |
 | detail `open_invoices[]`, `open_debit_notes[]` | the customer's open documents | Computed | none | `finance.customer.open_invoices`, `finance.customer.open_debit_notes` | as registered | RO | follow the customer switches (leak E-L2) | registered |
-| create response `payment`, `allocated`, `unallocated` and message | created receipt | Computed | none | `finance.payment.allocated_amount` | Applied to bills | RO | rendered through a read-only serializer | recorded |
+| create response `payment`, `allocated`, `unallocated` and message | created receipt | Computed | none | `finance.payment.allocated_amount` | Applied to bills | RO | rendered through a read-only serializer | registered |
 | create body `auto_allocate`, `allocation_strategy` | behaviour, decides `allocated_amount` | Transport | create, allocate | - | - | - | - | no switch: transport |
 | email `note` | free text typed into the receipt email | Stored | email | - | - | - | - | no switch: transport |
 | printed receipt `customer_balance_after`, per-bill `invoice_balance_after`; receipt email body | addressed to the payer | Computed | none | - | - | - | unfiltered by decision; declared system surface | no switch: owner decision |
@@ -1163,7 +1163,7 @@ Frontend: `FinPro/src/pages/finance/receivables/receipts-allocation-tab.tsx`,
 ### 7.2 Petty cash fund and vouchers
 
 `finance.pettycash_return` is registered (the count and the cash banked back). The
-fund and the voucher are not. The fund gets its own switches under
+fund and voucher switches are registered. The fund gets its own switches under
 `finance.pettycash`; the return's `new_float_amount` ("Float after") stays a
 separate switch.
 
@@ -1172,11 +1172,11 @@ Routes: `petty-cash-funds/` (GET `.view`, POST `.create`), `petty-cash-funds/<pk
 (`.replenish`), `reduce/` and `close/` (asserted under `pettycash_return`),
 `reopen/` (`.reopen`), `petty-cash-status/` (`.view`, `?threshold_bps`),
 `petty-cash-vouchers/` (`finance.pettycashvoucher.view`, `.create`, `.post`).
-Serializers: `PettyCashFundSerializer` (no mixin, no request in context),
+Serializers: `PettyCashFundSerializer` (with Field Access and request context),
 `PettyCashVoucherSerializer`, `PettyCashVoucherLineSerializer`. Frontend:
 `FinPro/src/pages/finance/expenses/petty-cash-tab.tsx`,
 `petty-cash-return-drawers.tsx`, `FinPro/src/pages/finance/dashboard-spend.tsx`.
-Writes with no `assert_writable` today: fund create, fund PATCH, establish,
+Writes guarded by `assert_writable`: fund create, fund PATCH, establish,
 replenish, reopen (`float_amount`), voucher create; fund list filter
 `?is_active=`.
 
@@ -1186,28 +1186,28 @@ replenish, reopen (`float_amount`), voucher create; fund list filter
 | fund `name`, status row `gl_code`, voucher `document_number` | fund and voucher identity | Stored | create, PATCH `name` | - | - | - | - | no switch: identifier |
 | fund `branch_id`, create `branch` | fund's branch | Stored, create only | create | - | - | - | - | no switch: owner decision |
 | fund `currency` | tenant-wide currency, not a business choice | Stored | create | - | - | - | - | no switch: transport |
-| fund `gl_account`, `gl_account_id` | petty cash ledger account | Stored, create only | create | `finance.pettycash.gl_account` | Petty cash ledger account | RW (open on create) | open | recorded |
-| fund `custodian_id`, `custodian_name`, `custodian_label`, `custodian_is_exited` | person holding the tin | Stored | create, PATCH `custodian`, `custodian_name` | `finance.pettycash.custodian` | Custodian | RW | open; a staff name already printed on screens | recorded |
-| fund `float_amount`, `float_amount_naira`, status row `float_amount` | float (imprest) | Stored | create, PATCH, reopen `float_amount` | `finance.pettycash.float_amount` | Float (imprest) | RW | open (Q-E12) | recorded |
-| fund `current_balance`, `current_balance_naira`, status row `current_balance` | cash on hand | Computed | establish, replenish, voucher, return (side effects) | `finance.pettycash.cash_on_hand` | Cash on hand | RO | open (Q-E12); the stricter of this and the return's `book_balance` wins | recorded |
-| fund `shortfall`, status rows `shortfall`, `needs_replenish` | amount to top up | Computed | none | `finance.pettycash.shortfall` | To replenish | RO | open; shown only if float and cash on hand are readable | recorded |
-| fund `last_replenished_at`, status row `last_replenished_at` | last top-up | Computed | establish, replenish | `finance.pettycash.last_replenished_at` | Last topped up | RO | open | recorded |
-| fund `is_active` | active flag | Stored | create, PATCH | `finance.pettycash.is_active` | Active | RW | open | recorded |
-| fund `state` | active, inactive or closed | Computed | close | `finance.pettycash.state` | Fund status | RO | open | recorded |
-| fund `closed_on`, `closed_by_id`, `closed_by_name`, `closed_by_is_exited` | who closed it and when | Computed | close | `finance.pettycash.closed` | Closed on and by | RO | open | recorded |
-| detail `spent_this_week` | spending this week | Computed | none | `finance.pettycash.spent_this_week` | Spent this week | RO | open | recorded |
-| detail `register[]` (`date`, `description`, `category`, `in`, `out`, `balance`) | movement register; `category` is the expense account name | Computed | none | `finance.pettycash.movement_register` | Movement register | RO | open; hidden with `cash_on_hand` | recorded |
+| fund `gl_account`, `gl_account_id` | petty cash ledger account | Stored, create only | create | `finance.pettycash.gl_account` | Petty cash ledger account | RW (open on create) | open | registered |
+| fund `custodian_id`, `custodian_name`, `custodian_label`, `custodian_is_exited` | person holding the tin | Stored | create, PATCH `custodian`, `custodian_name` | `finance.pettycash.custodian` | Custodian | RW | open; a staff name already printed on screens | registered |
+| fund `float_amount`, `float_amount_naira`, status row `float_amount` | float (imprest) | Stored | create, PATCH, reopen `float_amount` | `finance.pettycash.float_amount` | Float (imprest) | RW | open (Q-E12) | registered |
+| fund `current_balance`, `current_balance_naira`, status row `current_balance` | cash on hand | Computed | establish, replenish, voucher, return (side effects) | `finance.pettycash.cash_on_hand` | Cash on hand | RO | open (Q-E12); the stricter of this and the return's `book_balance` wins | registered |
+| fund `shortfall`, status rows `shortfall`, `needs_replenish` | amount to top up | Computed | none | `finance.pettycash.shortfall` | To replenish | RO | open; shown only if float and cash on hand are readable | registered |
+| fund `last_replenished_at`, status row `last_replenished_at` | last top-up | Computed | establish, replenish | `finance.pettycash.last_replenished_at` | Last topped up | RO | open | registered |
+| fund `is_active` | active flag | Stored | create, PATCH | `finance.pettycash.is_active` | Active | RW | open | registered |
+| fund `state` | active, inactive or closed | Computed | close | `finance.pettycash.state` | Fund status | RO | open | registered |
+| fund `closed_on`, `closed_by_id`, `closed_by_name`, `closed_by_is_exited` | who closed it and when | Computed | close | `finance.pettycash.closed` | Closed on and by | RO | open | registered |
+| detail `spent_this_week` | spending this week | Computed | none | `finance.pettycash.spent_this_week` | Spent this week | RO | open | registered |
+| detail `register[]` (`date`, `description`, `category`, `in`, `out`, `balance`) | movement register; `category` is the expense account name | Computed | none | `finance.pettycash.movement_register` | Movement register | RO | open; hidden with `cash_on_hand` | registered |
 | establish and replenish bodies `bank_account`, `amount`, `date` | inputs of a transaction | Transport | establish, replenish | - | - | - | gated by `finance.pettycash.establish` and `.replenish` (Q-E5) | no switch: transport |
 | reopen body `reason` | audited free text | Transport | reopen | - | - | - | - | no switch: transport |
-| voucher `status` | state | Computed | post, cancel | `finance.pettycashvoucher.status` | Status | RO | open | recorded |
-| voucher `voucher_date` | voucher date | Stored | create | `finance.pettycashvoucher.voucher_date` | Voucher date | RW | open | recorded |
-| voucher `payee` | who was paid, a third party's name | Stored | create | `finance.pettycashvoucher.payee` | Paid to | RW | open (Q-E4) | recorded |
-| voucher `spent_by_id` | person who spent | Stored | create | `finance.pettycashvoucher.spent_by` | Spent by | RW | open | recorded |
-| voucher `narration`, `reference` | free text | Stored | create | `finance.pettycashvoucher.narration`, `finance.pettycashvoucher.reference` | Narration, Reference | RW | open | recorded |
-| voucher `lines[]` (`description`, `expense_account`, `quantity`, `unit_price`, `tax_code`, `cost_center`) | what was bought | Stored | create | `finance.pettycashvoucher.lines` | Voucher lines | RW | open | recorded |
-| voucher `subtotal`, `tax_total`, `total`, `total_naira`, line `net_amount`, `tax_amount`, `line_total` | amounts | Computed | none | `finance.pettycashvoucher.totals` | Voucher totals | RO | open | recorded |
-| voucher `expense_account` (first line's code and name, "+N") | category summary | Computed | none | `finance.pettycashvoucher.category` | Category | RO | open | recorded |
-| voucher `journal_id` | ledger link | Computed | none | `finance.pettycashvoucher.journal` | Journal | RO | open | recorded |
+| voucher `status` | state | Computed | post, cancel | `finance.pettycashvoucher.status` | Status | RO | open | registered |
+| voucher `voucher_date` | voucher date | Stored | create | `finance.pettycashvoucher.voucher_date` | Voucher date | RW | open | registered |
+| voucher `payee` | who was paid, a third party's name | Stored | create | `finance.pettycashvoucher.payee` | Paid to | RW | open (Q-E4) | registered |
+| voucher `spent_by_id` | person who spent | Stored | create | `finance.pettycashvoucher.spent_by` | Spent by | RW | open | registered |
+| voucher `narration`, `reference` | free text | Stored | create | `finance.pettycashvoucher.narration`, `finance.pettycashvoucher.reference` | Narration, Reference | RW | open | registered |
+| voucher `lines[]` (`description`, `expense_account`, `quantity`, `unit_price`, `tax_code`, `cost_center`) | what was bought | Stored | create | `finance.pettycashvoucher.lines` | Voucher lines | RW | open | registered |
+| voucher `subtotal`, `tax_total`, `total`, `total_naira`, line `net_amount`, `tax_amount`, `line_total` | amounts | Computed | none | `finance.pettycashvoucher.totals` | Voucher totals | RO | open | registered |
+| voucher `expense_account` (first line's code and name, "+N") | category summary | Computed | none | `finance.pettycashvoucher.category` | Category | RO | open | registered |
+| voucher `journal_id` | ledger link | Computed | none | `finance.pettycashvoucher.journal` | Journal | RO | open | registered |
 | return `previous_float_amount`, `book_balance` | restate the fund's float and cash on hand | Computed | none | `finance.pettycash_return.previous_float_amount`, `finance.pettycash_return.book_balance` | as registered | RO | stricter wins with the fund switches | registered |
 | return `fund_id`, `fund_name` | the fund a return belongs to | Stored label | none | - | - | - | - | no switch: identifier (a name is a label, like a bank account's name; the earlier `finance.pettycash_return.fund` switch is removed) |
 
@@ -1219,7 +1219,7 @@ defaults hold CodeX's own letterhead and the defaults for new schools
 fallback). No bank, tax identification or invoice-footer setting exists for the
 issuer: the pay-to bank on a CodeX invoice is the platform ledger entity's
 collection `BankAccount`, governed by `finance.bankaccount`, and the printed
-footers are static text. Nothing is registered. Route:
+footers are static text. These fields are registered. Route:
 `/config/platform-settings/` (`PlatformSettingsView`, platform tenant only,
 `config.value.view` and `config.value.update`). Alternate paths that write or
 read the same rows: `POST /config/values/`, `DELETE /config/values/<key>/`,
@@ -1231,19 +1231,19 @@ integration and provider keys but not these. Frontend:
 | Response fields | What it is | Kind | Write paths | Switch | Label | Access | Open or sensitive | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `profile.name` | issuer name | Stored | PATCH; `/config/values/` | - | - | - | - | no switch: identifier |
-| `profile.tagline` | letterhead tagline | Stored | PATCH; `/config/values/`, reset | `platform.profile.tagline` | Tagline | RW | open (printed on every CodeX invoice and receipt) | recorded |
-| `profile.address` | issuer address | Stored | PATCH; `/config/values/`, reset | `platform.profile.address` | Address | RW | open | recorded |
-| `profile.email` | issuer email | Stored | PATCH; `/config/values/`, reset | `platform.profile.email` | Email | RW | open | recorded |
-| `profile.phone` | issuer phone | Stored | PATCH; `/config/values/`, reset | `platform.profile.phone` | Phone | RW | open | recorded |
-| `profile.website` | issuer website | Stored | PATCH; `/config/values/`, reset | `platform.profile.website` | Website | RW | open | recorded |
-| `profile.logo_url` | issuer logo | Stored | PATCH; `/config/values/`, reset | `platform.profile.logo_url` | Logo | RW | open (also the brand mark of every product email) | recorded |
-| `onboarding.ownership_type` | default ownership type for new schools | Stored | PATCH; `/config/values/` | `platform.profile.default_ownership_type` | Default ownership type | RW | open | recorded |
-| `onboarding.term_structure` | default term structure | Stored | PATCH; `/config/values/` | `platform.profile.default_term_structure` | Default term structure | RW | open | recorded |
-| `onboarding.currency` | default billing currency of new schools | Stored | PATCH; `/config/values/` | `platform.profile.default_currency` | Default currency | RW | open | recorded |
-| `onboarding.branch_country` | default branch country | Stored | PATCH; `/config/values/` | `platform.profile.default_branch_country` | Default branch country | RW | open | recorded |
+| `profile.tagline` | letterhead tagline | Stored | PATCH; `/config/values/`, reset | `platform.profile.tagline` | Tagline | RW | open (printed on every CodeX invoice and receipt) | registered |
+| `profile.address` | issuer address | Stored | PATCH; `/config/values/`, reset | `platform.profile.address` | Address | RW | open | registered |
+| `profile.email` | issuer email | Stored | PATCH; `/config/values/`, reset | `platform.profile.email` | Email | RW | open | registered |
+| `profile.phone` | issuer phone | Stored | PATCH; `/config/values/`, reset | `platform.profile.phone` | Phone | RW | open | registered |
+| `profile.website` | issuer website | Stored | PATCH; `/config/values/`, reset | `platform.profile.website` | Website | RW | open | registered |
+| `profile.logo_url` | issuer logo | Stored | PATCH; `/config/values/`, reset | `platform.profile.logo_url` | Logo | RW | open (also the brand mark of every product email) | registered |
+| `onboarding.ownership_type` | default ownership type for new schools | Stored | PATCH; `/config/values/` | `platform.profile.default_ownership_type` | Default ownership type | RW | open | registered |
+| `onboarding.term_structure` | default term structure | Stored | PATCH; `/config/values/` | `platform.profile.default_term_structure` | Default term structure | RW | open | registered |
+| `onboarding.currency` | default billing currency of new schools | Stored | PATCH; `/config/values/` | `platform.profile.default_currency` | Default currency | RW | open | registered |
+| `onboarding.branch_country` | default branch country | Stored | PATCH; `/config/values/` | `platform.profile.default_branch_country` | Default branch country | RW | open | registered |
 | `sources.profile.*`, `sources.onboarding.*`, `options.*`, `reason` | provenance, choices, audit text | Computed | none; PATCH | - | - | - | each source drops with its value | no switch: transport |
-| entitlement `starts_at`, `ends_at` (`/config/entitlements/`, `bulk-schedule/`, school plan uplift) | window of a capability grant; `ends_at` repeats the subscription expiry | Stored | `EntitlementListSetView` POST, bulk schedule | `platform.entitlements.window` | Subscription window | RW | open; the stricter of this and `platform.schools.subscription_expires_at` wins | recorded |
-| entitlement calendar entries (`tenant_slug`, `tenant_name`, `starts_at`, `ends_at`, `status`, `warning`, `days_until_expiry`), `summary` (`expired`, `expiring_7`, `expiring_30`, `expiring_90_days`, `scheduled`) | renewal calendar | Computed | none | `platform.entitlements.calendar` | Subscription expiry | RO | open; a row shows only to a role who may read the school's expiry | recorded |
+| entitlement `starts_at`, `ends_at` (`/config/entitlements/`, `bulk-schedule/`, school plan uplift) | window of a capability grant; `ends_at` repeats the subscription expiry | Stored | `EntitlementListSetView` POST, bulk schedule | `platform.entitlements.window` | Subscription window | RW | open; the stricter of this and `platform.schools.subscription_expires_at` wins | registered |
+| entitlement calendar entries (`tenant_slug`, `tenant_name`, `starts_at`, `ends_at`, `status`, `warning`, `days_until_expiry`), `summary` (`expired`, `expiring_7`, `expiring_30`, `expiring_90_days`, `scheduled`) | renewal calendar | Computed | none | `platform.entitlements.calendar` | Subscription expiry | RO | open; a row shows only to a role who may read the school's expiry | registered |
 
 The other keys of a capability grant (`state`, `source`, `capability`,
 `updated_by`) carry grant state, not the subscription date, and are outside this
@@ -1590,22 +1590,15 @@ change, because they carry money. Settled: they are `finance.settings` fields
 
 ### 8.6 Area E: receipts, petty cash, issuer, audit and approvals
 
-**Q-E4. Do petty cash voucher payee and spent-by ship open or sensitive?** Ikeja
-Branch records "Paid to Mama Tunde, market woman, N4,500 for chalk". Open: every
-finance role reads who was paid. Sensitive: only a role that was switched on reads
-the payee, because it is a third party's name typed by a user. The audit left the
-fields open; the rows ship them open.
+**Q-E4. Decided: voucher payee and spent-by start open.** Ikeja
+Branch records "Paid to Mama Tunde, market woman, N4,500 for chalk". Every finance role that may view the voucher can read who was paid and who spent it until the school closes either Read switch.
 
-**Q-E5. Are the establish and replenish amounts writes of "Cash on hand"?** Lekki's
+**Q-E5. Decided: establish and replenish amounts are action inputs.** Lekki's
 custodian may replenish the tin with N50,000 but must not see the bank balance it
-came from. Action inputs gated by `finance.pettycash.establish` and `.replenish`:
-she tops up and never needs to read the balance. Writes of the read-only Cash on
-hand: nobody could ever top up a tin. Recommendation: action inputs.
+came from. The amounts are gated by `finance.pettycash.establish` and `.replenish`; Cash on hand remains read-only.
 
-**Q-E12. Do a petty cash fund's float and cash on hand ship open or sensitive?**
-Greenfield's front-desk tin holds N150,000. Open (the convention of the return
-resource): the secretary who runs it and a new auditor both see it. Sensitive: the
-auditor sees nothing until the school switches it on. Recommendation: open.
+**Q-E12. Decided: float and cash on hand start open with separate switches.**
+Greenfield's front-desk tin holds N150,000. The secretary and auditor see both figures until the school closes either Read switch.
 
 ---
 
@@ -1726,16 +1719,16 @@ for these screens (D-L10).
 
 | ID | Leak | Status |
 | --- | --- | --- |
-| E-L1 | `finance.payment` is registered nowhere, though the `finance.payer_payment` docstring says an ordinary receipt keeps its switches; the same receipt is switched through a payer payment and open on `GET /finance/payments/`. The docstring is corrected with the registration. | recorded |
+| E-L1 | An ordinary receipt needed its own switches beside the payer-payment switches. | registered: receipt serializer and both user entry points follow `finance.payment` switches |
 | E-L2 | `PaymentDetailView` serves `open_invoices` and `open_debit_notes` under `finance.payment.view`; they are the registered `finance.customer.open_invoices` and `open_debit_notes`. | fixed: `vs_finance.tests_receivables_restating_paths.ReceiptOpenItemsAccessTests` |
-| E-L3 | `PaymentSummaryView` totals (`today`, `week`, `unallocated`, `refunded`, `status_counts`) are sums of unregistered receipt fields. | recorded |
+| E-L3 | `PaymentSummaryView` totals (`today`, `week`, `unallocated`, `refunded`, `status_counts`) are sums of unregistered receipt fields. | fixed: summary totals follow the registered receipt fields and the totals switch |
 | E-L4 | The printed receipt prints `customer_balance_after` and `invoice_balance_after`; these are system surfaces by decision and are added to `SYSTEM_SURFACES`. | recorded |
 | E-L5 | `RefundAvailabilityView` and the `ARAdjustmentListView` rows restate customer credit (the registered `finance.customer.balance`) and refund amounts. | fixed: `vs_finance.tests_receivables_restating_paths.CustomerCreditAccessTests` (availability and the adjustments credit total); the rows carry the refund and write-off amounts, which are the recorded `finance.refund` and `finance.writeoff` fields, not a customer balance |
-| E-L6 | The petty cash fund has no switches, and fund create, fund PATCH, establish, replenish, reopen and voucher create have no `assert_writable`. | recorded |
+| E-L6 | The petty cash fund has no switches, and fund create, fund PATCH, establish, replenish, reopen and voucher create have no `assert_writable`. | fixed: fund and voucher fields are registered, with write checks on create, update and reopen; top-up amounts remain action inputs |
 | E-L7 | `PettyCashStatusView` and `fund_status` are not narrowed by branch: a branch-bound bursar reads other branches' float and cash on hand. | fixed: `vs_finance.tests_petty_cash_status_reach.PettyCashStatusReachTests` |
-| E-L8 | Fund detail `register[]` and `spent_this_week` restate cash on hand with no switch. | recorded |
-| E-L9 | The dashboard petty cash card and its "floats running low" attention item restate fund float and balance and hide only on `finance.dashboard.petty_cash`. | recorded |
-| E-L10 | The CodeX issuer profile has no registration; `POST /config/values/`, `DELETE /config/values/<key>/` and `effective-values/` write and read the same keys. | recorded |
+| E-L8 | Fund detail `register[]` and `spent_this_week` restate cash on hand with no switch. | fixed: fund detail register and weekly spending follow their own switches; the register also requires Cash on hand |
+| E-L9 | The dashboard petty cash card and its "floats running low" attention item restate fund float and balance and hide only on `finance.dashboard.petty_cash`. | fixed: the spending dashboard fund figures and low-float signal follow the fund switches |
+| E-L10 | The CodeX issuer profile has no registration; `POST /config/values/`, `DELETE /config/values/<key>/` and `effective-values/` write and read the same keys. | fixed: platform profile fields are registered and guarded on curated and generic value routes |
 | E-L11 | Issuer identity has two sources (printed documents use `platform.profile.name`; email subjects, payslips and credit-note emails use the ledger entity name). | recorded |
 | E-L12 | Entitlement `starts_at` and `ends_at` (list, calendar, bulk schedule, uplift) restate the subscription expiry guarded by `platform.schools.subscription_expires_at`. | fixed for the entitlement list, the grant and schedule answers and the renewal calendar: `vs_config.tests_entitlement_access`; the uplift window on the school plan screen: `schools.vs_schools.tests_plan_uplift_window_access` (a plan-written uplift, `source` `PACKAGE`, follows the subscription start and expiry switches; a hand-written one is open) |
 | E-L13 | CodeX's customer record copies a school's email, phone and address on every school save: two switch families for one value (stricter wins). | exempt: the CodeX customer record is read through the CodeX books' own `finance.customer` switches, and the copy from the school is a system write |
@@ -1760,7 +1753,7 @@ for these screens (D-L10).
 | E-L32 | Finance approval summaries (bank transaction, transfer, petty cash return, inter-branch, provision) copy amounts, accounts, counted cash and branch splits into the unfilterable summary and unmarked details. | fixed: `vs_finance.tests_approval_field_access`, `vs_workflow.tests.test_summary_access` |
 | E-L33 | `school.hire` and `school.leave` approval cards copy name, job title, email, staff id, hire date and leave kind into title and summary, ignoring the `school.teachers` switches (the name and job title in the title are labels and always show, Q-E9, answered in 8.1; the other values follow the switches). | fixed: `schools.vs_staff.tests.test_approval_field_access` (the registered `school.teachers` fields other than name and job title are gated; a leave card now restates `school.leave` fields, so its type, dates, days, reason and over-allowance figure each follow their switch, and its subtitle names no type). Who filed a request, when, and who last changed it carry no `school.leave` switch and are recorded as an open product question |
 | E-L34 | Workflow notification subjects and in-app text are built from the stored title and subtitle: staff name and job title (hire), name and "Leave request" (leave; the type of leave is a marked field and not part of the subtitle), platform user name or email (labels, Q-E9, answered in 8.1). | no change: names are labels |
-| E-L35 | Export datasets without `access=`: `platform.schools` exports `address` and `registration_id` (registered under `school.profile`; the export follows platform keys, Q-E13, answered in 8.1); `finance.customer_receipts`, `finance.gl_postings` and `procurement.purchase_orders.payment_terms` have no registered source yet and are recorded. | exempt: CodeX staff follow platform keys, not tenant switches |
+| E-L35 | Export datasets without `access=`: `platform.schools` exports `address` and `registration_id` (registered under `school.profile`; the export follows platform keys, Q-E13, answered in 8.1); `finance.customer_receipts`, `finance.gl_postings` and `procurement.purchase_orders.payment_terms` have no registered source yet and are recorded. | fixed for customer receipts: export columns and filters follow `finance.payment` switches; other listed sources retain their recorded status |
 | E-L36 | Settings search offers hidden `finance.settings.*` fields as hits (`Place` has no Field Access key). | belongs to the search feature another session is building |
 | E-L37 | Console overview signals `unallocated_credit`, `overdue_invoices` and `fiscal_runway` count across the whole tenant with no branch narrowing. | fixed: `vs_admin_console.tests_overview_access.OverviewFinanceSignalAccessTests` |
 | E-L38 | Service-level refusals raised without a request name amounts and balances ("holds N, more than a float of N"; "Refund of N exceeds C001's credit"). | recorded |

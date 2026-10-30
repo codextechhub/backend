@@ -16,7 +16,7 @@ from __future__ import annotations
 from vs_workflow.services.approval_filter import filter_by_approval_param, filter_by_stored_status
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.field_enforcement import assert_writable
+from vs_rbac.field_enforcement import assert_writable, can_read
 from vs_rbac.scoping import WholeTenantWriteMixin, transaction_branch_q
 
 from core.response import success_response
@@ -87,6 +87,42 @@ def _resolve_user(ref, field, entity):
     return user
 
 
+def _fund_data(request, fund):
+    """Render a fund with the caller's field decisions."""
+    return PettyCashFundSerializer(fund, context={"request": request}).data
+
+
+def _voucher_data(request, voucher):
+    """Render a voucher with the caller's field decisions."""
+    return PettyCashVoucherSerializer(voucher, context={"request": request}).data
+
+
+def _status_row(request, row):
+    """Keep a cash figure out of the status row when its fund switch closes."""
+    data = {key: row[key] for key in ("fund_id", "name")}
+    if readable(request, "finance.pettycash", "gl_account"):
+        data["gl_code"] = row["gl_code"]
+    float_open = readable(request, "finance.pettycash", "float_amount")
+    cash_open = readable(request, "finance.pettycash", "cash_on_hand")
+    if float_open:
+        data["float_amount"] = {
+            "kobo": row["float_amount"], "naira": format_naira(row["float_amount"]),
+        }
+    if cash_open:
+        data["current_balance"] = {
+            "kobo": row["current_balance"], "naira": format_naira(row["current_balance"]),
+        }
+    if float_open and cash_open and readable(request, "finance.pettycash", "shortfall"):
+        data["shortfall"] = {
+            "kobo": row["shortfall"], "naira": format_naira(row["shortfall"]),
+        }
+        data["needs_replenish"] = row["needs_replenish"]
+    if readable(request, "finance.pettycash", "last_replenished_at"):
+        value = row["last_replenished_at"]
+        data["last_replenished_at"] = str(value) if value else None
+    return data
+
+
 # Group endpoint behavior for Petty Cash Fund List Create View.
 class PettyCashFundListCreateView(_FinanceBase):
     """GET (list) / POST (create) petty-cash funds for an entity.
@@ -103,6 +139,9 @@ class PettyCashFundListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
+        refuse_hidden_filters(request, "finance.pettycash", {
+            "is_active": ("is_active", "Active"),
+        })
         qs = PettyCashFund.objects.filter(
             transaction_branch_q(request), entity=entity,
         ).select_related("gl_account", "custodian", "closed_by")
@@ -110,13 +149,18 @@ class PettyCashFundListCreateView(_FinanceBase):
             qs = qs.filter(is_active=active == "true")
         return success_response(
             "Petty cash funds retrieved.",
-            data=PettyCashFundSerializer(qs.order_by("name"), many=True).data,
+            data=PettyCashFundSerializer(qs.order_by("name"), many=True,
+                                         context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.pettycash", submitted(
+            body, "gl_account", "custodian", "custodian_name", "float_amount",
+            "is_active",
+        ), aliases={"custodian_name": "custodian"})
         if not body.get("name"):
             raise ValidationError({"name": "A fund name is required."})
         fund = PettyCashFund.objects.create(
@@ -132,7 +176,7 @@ class PettyCashFundListCreateView(_FinanceBase):
         )
         return success_response(
             "Petty cash fund created.",
-            data=PettyCashFundSerializer(fund).data, status=201,
+            data=_fund_data(request, fund), status=201,
         )
 
 
@@ -247,9 +291,12 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
         spent_week = sum(
             v.total for v in PettyCashVoucher.objects.filter(
                 fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))
-        data = PettyCashFundSerializer(fund).data
-        data["spent_this_week"] = int(spent_week)
-        data["register"] = self._register(fund)
+        data = _fund_data(request, fund)
+        if can_read(request, "finance.pettycash.spent_this_week"):
+            data["spent_this_week"] = int(spent_week)
+        if (can_read(request, "finance.pettycash.movement_register")
+                and can_read(request, "finance.pettycash.cash_on_hand")):
+            data["register"] = self._register(fund)
         return success_response("Petty cash fund retrieved.", data=data)
 
     # Handle PATCH requests for this endpoint.
@@ -265,6 +312,14 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
 
         entity, fund = self._fund(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.pettycash", submitted(
+            body, "custodian", "custodian_name", "float_amount", "is_active",
+        ), aliases={"custodian_name": "custodian"}, current={
+            "custodian": fund.custodian_id,
+            "custodian_name": fund.custodian_name,
+            "float_amount": fund.float_amount,
+            "is_active": fund.is_active,
+        })
         changes = {}
         if "name" in body:
             changes["name"] = body["name"]
@@ -279,7 +334,7 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
             changes["is_active"] = _bool(body["is_active"])
         fund = change_fund_details(fund, actor_user=request.user, **changes)
         return success_response(
-            "Petty cash fund updated.", data=PettyCashFundSerializer(fund).data,
+            "Petty cash fund updated.", data=_fund_data(request, fund),
         )
 
 
@@ -310,7 +365,7 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
         fund.refresh_from_db()
         return success_response(
             f"Established cash into petty cash '{fund.name}'.",
-            data=PettyCashFundSerializer(fund).data,
+            data=_fund_data(request, fund),
         )
 
 
@@ -341,7 +396,7 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
         fund.refresh_from_db()
         return success_response(
             f"Replenished petty cash '{fund.name}'.",
-            data=PettyCashFundSerializer(fund).data,
+            data=_fund_data(request, fund),
         )
 
 
@@ -458,7 +513,7 @@ class _PettyCashReturnRaiseBase(_PettyCashFundActionBase):
         return success_response(
             message=f"Petty cash return posted as {ret.document_number}.",
             data=_return_data(request, ret)
-            | {"fund": PettyCashFundSerializer(fund).data},
+            | {"fund": _fund_data(request, fund)},
             status=201,
         )
 
@@ -527,6 +582,9 @@ class PettyCashFundReopenView(_PettyCashFundActionBase):
 
         entity, fund = self._fund(request, pk)
         body = request.data or {}
+        assert_writable(request, "finance.pettycash", submitted(
+            body, "float_amount",
+        ), current={"float_amount": fund.float_amount})
         float_amount = (
             _money(body.get("float_amount"), "float_amount")
             if body.get("float_amount") not in (None, "") else None
@@ -537,7 +595,7 @@ class PettyCashFundReopenView(_PettyCashFundActionBase):
         )
         return success_response(
             f"Petty cash fund '{fund.name}' reopened.",
-            data=PettyCashFundSerializer(fund).data,
+            data=_fund_data(request, fund),
         )
 
 
@@ -793,16 +851,7 @@ class PettyCashStatusView(_FinanceBase):
             "Petty cash status retrieved.",
             data={
                 "entity": entity.code,
-                "rows": [
-                    {
-                        **r,
-                        "float_amount": {"kobo": r["float_amount"], "naira": format_naira(r["float_amount"])},
-                        "current_balance": {"kobo": r["current_balance"], "naira": format_naira(r["current_balance"])},
-                        "shortfall": {"kobo": r["shortfall"], "naira": format_naira(r["shortfall"])},
-                        "last_replenished_at": str(r["last_replenished_at"]) if r["last_replenished_at"] else None,
-                    }
-                    for r in rows
-                ],
+                "rows": [_status_row(request, row) for row in rows],
             },
         )
 
@@ -826,6 +875,9 @@ class PettyCashVoucherListCreateView(_FinanceBase):
         qs = PettyCashVoucher.objects.filter(
             transaction_branch_q(request), entity=entity,
         ).prefetch_related("lines__expense_account")
+        refuse_hidden_filters(request, "finance.pettycashvoucher", {
+            "status": ("status", "Status"),
+        })
         if (fund := request.query_params.get("fund")):
             qs = qs.filter(fund_id=fund)
         if (status_val := request.query_params.get("status")):
@@ -840,6 +892,10 @@ class PettyCashVoucherListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
+        assert_writable(request, "finance.pettycashvoucher", submitted(
+            body, "voucher_date", "payee", "spent_by", "narration",
+            "reference", "lines",
+        ))
         lines = _require_lines(body)
         fund_ref = body.get("fund")
         if fund_ref in (None, ""):
@@ -887,7 +943,7 @@ class PettyCashVoucherListCreateView(_FinanceBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} created.",
-            data=PettyCashVoucherSerializer(voucher).data, status=201,
+            data=_voucher_data(request, voucher), status=201,
         )
 
 
@@ -914,7 +970,7 @@ class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
         _, voucher = self._voucher(request, pk)
         return success_response(
             "Petty cash voucher retrieved.",
-            data=PettyCashVoucherSerializer(voucher).data,
+            data=_voucher_data(request, voucher),
         )
 
 
@@ -932,7 +988,7 @@ class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} posted.",
-            data=PettyCashVoucherSerializer(voucher).data,
+            data=_voucher_data(request, voucher),
         )
 
 
@@ -953,7 +1009,7 @@ class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} voided.",
-            data=PettyCashVoucherSerializer(voucher).data,
+            data=_voucher_data(request, voucher),
         )
 
 
@@ -975,5 +1031,5 @@ class PettyCashVoucherCancelView(_PettyCashVoucherActionBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} cancelled.",
-            data=PettyCashVoucherSerializer(voucher).data,
+            data=_voucher_data(request, voucher),
         )

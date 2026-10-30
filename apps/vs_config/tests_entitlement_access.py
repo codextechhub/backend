@@ -44,6 +44,7 @@ class _EntitlementAccess(TestCase):
     @classmethod
     def setUpTestData(cls):
         install_declared_fields("platform.schools")
+        install_declared_fields("platform.entitlements")
         cls.corona = make_school(slug="window-corona")
         cls.sunrise = make_school(slug="window-sunrise")
         cls.plan = Capability.objects.create(
@@ -70,6 +71,8 @@ class _EntitlementAccess(TestCase):
         cls.no_expiry = cls.operator("no-expiry", EXPIRES)
         cls.no_start = cls.operator("no-start", STARTS)
         cls.no_dates = cls.operator("no-dates", STARTS, EXPIRES)
+        cls.no_window = cls.operator("no-window", "platform.entitlements.window")
+        cls.no_calendar = cls.operator("no-calendar", "platform.entitlements.calendar")
 
     @classmethod
     def operator(cls, label, *closed):
@@ -100,6 +103,26 @@ class _EntitlementAccess(TestCase):
 
 
 class EntitlementListAccessTests(_EntitlementAccess):
+
+    def test_hidden_window_removes_both_dates_from_manual_and_plan_grants(self):
+        rows = self.listed(self.no_window)
+        for key in ("window-plan", "window-trial"):
+            self.assertNotIn("starts_at", rows[key])
+            self.assertNotIn("ends_at", rows[key])
+
+    def test_window_write_is_refused_when_closed(self):
+        response = self.api(self.no_window).post(
+            f"/v1/config/entitlements/?tenant={self.corona.slug}",
+            {
+                "capability": "window-plan", "state": GRANTED, "source": MANUAL,
+                "starts_at": timezone.now().isoformat(),
+            }, format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_hidden_calendar_is_refused(self):
+        response = self.api(self.no_calendar).get("/v1/config/entitlements/calendar/")
+        self.assertEqual(response.status_code, 403, response.data)
 
     def test_an_open_role_reads_every_window(self):
         rows = self.listed(self.open)

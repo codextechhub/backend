@@ -1297,8 +1297,10 @@ class WriteOffRequestSerializer(FieldAccessMixin, ApprovalGatedMixin, ApprovalSt
         return format_naira(obj.amount)
 
 
-class PaymentSerializer(serializers.ModelSerializer):
+class PaymentSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A customer receipt + its allocation state (for Receipts & Allocation)."""
+
+    field_resource = "finance.payment"
 
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
@@ -1999,7 +2001,7 @@ def _exited(serializer, user_id):
     return person_is_exited(serializer.context, user_id)
 
 
-class PettyCashFundSerializer(serializers.ModelSerializer):
+class PettyCashFundSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """A petty cash fund. Each person on it carries a name and an exit flag.
 
     ``custodian_label`` names the custodian (a user's name, or the free-text
@@ -2008,6 +2010,8 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
     employment, and ``None`` when nobody is named.
     """
 
+    field_resource = "finance.pettycash"
+    field_access_detail = True
     person_fields = ("custodian", "closed_by")
 
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
@@ -2062,7 +2066,10 @@ class PettyCashFundSerializer(serializers.ModelSerializer):
         return format_naira(obj.current_balance)
 
 
-class PettyCashVoucherLineSerializer(serializers.ModelSerializer):
+class PettyCashVoucherLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.pettycashvoucher"
+    field_aliases = {"expense_account": "lines"}
+
     expense_account = serializers.CharField(source="expense_account.code", read_only=True)
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -2077,7 +2084,9 @@ class PettyCashVoucherLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class PettyCashVoucherSerializer(serializers.ModelSerializer):
+class PettyCashVoucherSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.pettycashvoucher"
+    field_access_detail = True
     lines = PettyCashVoucherLineSerializer(many=True, read_only=True)
     total_naira = serializers.SerializerMethodField()
     expense_account = serializers.SerializerMethodField()
@@ -2158,6 +2167,22 @@ class PettyCashReturnSerializer(FieldAccessMixin, ApprovalStateMixin, serializer
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        removed = set()
+        if not can_read(request, "finance.pettycash.float_amount"):
+            data.pop("previous_float_amount", None)
+            removed.add("previous_float_amount")
+        if not can_read(request, "finance.pettycash.cash_on_hand"):
+            data.pop("book_balance", None)
+            removed.add("book_balance")
+        if removed and "_read_only_fields" in data:
+            data["_read_only_fields"] = [
+                name for name in data["_read_only_fields"] if name not in removed
+            ]
+        return data
 
     def get_counted_by_name(self, obj):
         return _person_name(obj.counted_by) if obj.counted_by_id else None

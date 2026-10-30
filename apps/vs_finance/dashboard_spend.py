@@ -441,8 +441,9 @@ def expense_claims(entity, window, as_of, sets, scope=UNNARROWED) -> dict:
     }
 
 
-def petty_cash(entity, scope=UNNARROWED) -> dict | None:
+def petty_cash(entity, scope=UNNARROWED, request=None) -> dict | None:
     """Each float's cash on hand against what it is topped up to."""
+    from vs_rbac.field_enforcement import can_read
     from .banking_settings import resolve_finance_banking_settings
     from .models import PettyCashFund
 
@@ -453,14 +454,19 @@ def petty_cash(entity, scope=UNNARROWED) -> dict | None:
     if not funds:
         return None
     threshold = resolve_finance_banking_settings(entity).petty_cash_low_balance_threshold_bps
+    show_float = can_read(request, "finance.pettycash.float_amount")
+    show_cash = can_read(request, "finance.pettycash.cash_on_hand")
+    show_low = show_float and show_cash and can_read(request, "finance.pettycash.shortfall")
+    show_topup = can_read(request, "finance.pettycash.last_replenished_at")
     return {
         "threshold_pct": round(threshold / 100),
         "funds": [
             {
                 "id": f.id, "name": f.name, "branch": f.branch.name if f.branch_id else None,
-                "balance": _m(f.current_balance), "float": _m(f.float_amount),
-                "low": f.float_amount > 0 and f.current_balance * 10000 < f.float_amount * threshold,
-                "last_topped_up": f.last_replenished_at.isoformat() if f.last_replenished_at else None,
+                **({"balance": _m(f.current_balance)} if show_cash else {}),
+                **({"float": _m(f.float_amount)} if show_float else {}),
+                **({"low": f.float_amount > 0 and f.current_balance * 10000 < f.float_amount * threshold} if show_low else {}),
+                **({"last_topped_up": f.last_replenished_at.isoformat() if f.last_replenished_at else None} if show_topup else {}),
             }
             for f in funds
         ],
@@ -615,7 +621,7 @@ def spend_view(entity, *, reader, window=None, period=None, user=None) -> dict:
             if reader.can("finance.expenseclaim.view") and show("expense_claims") else None
         ),
         "petty_cash": (
-            petty_cash(entity, scope) if reader.can("finance.pettycash.view") and show("petty_cash") else None
+            petty_cash(entity, scope, reader.request) if reader.can("finance.pettycash.view") and show("petty_cash") else None
         ),
         "tax_owed": tax_owed(entity, as_of) if tax and show("tax_owed") else None,
         "tax_calendar": tax_calendar(entity, as_of) if tax and show("tax_calendar") else None,

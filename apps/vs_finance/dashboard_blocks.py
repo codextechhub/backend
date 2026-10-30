@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from django.db.models import Count, F, Min, Q, Sum
 from django.db.models.functions import Abs
 
+from vs_rbac.field_enforcement import can_read
 from vs_rbac.scoping import UNNARROWED
 
 from .billing_periods import current_billing_period
@@ -522,7 +523,9 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": agg["plans"], "amount": _m(agg["owed"]),
             })
 
-    if reader.can("finance.payment.view") and reader.shows("credit_held"):
+    if (reader.can("finance.payment.view") and reader.shows("credit_held")
+            and can_read(reader.request, "finance.payment.amount")
+            and can_read(reader.request, "finance.payment.credit_remaining")):
         agg = scope.filter(Payment.objects.filter(
             entity=entity, status=DocumentStatus.POSTED,
         )).filter(amount__gt=F("allocated_amount")).aggregate(
@@ -536,7 +539,10 @@ def attention(entity, as_of, reader, user, *, banks: list[dict] | None) -> list[
                 "count": agg["n"], "amount": _m(agg["amount"]),
             })
 
-    if reader.can("finance.pettycash.view") and reader.shows("petty_cash"):
+    if (reader.can("finance.pettycash.view") and reader.shows("petty_cash")
+            and can_read(reader.request, "finance.pettycash.float_amount")
+            and can_read(reader.request, "finance.pettycash.cash_on_hand")
+            and can_read(reader.request, "finance.pettycash.shortfall")):
         from .banking_settings import resolve_finance_banking_settings
 
         threshold = resolve_finance_banking_settings(entity).petty_cash_low_balance_threshold_bps

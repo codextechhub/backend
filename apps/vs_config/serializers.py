@@ -4,6 +4,7 @@ from uuid import UUID
 
 from django.utils import timezone
 from rest_framework import serializers
+from vs_rbac.field_enforcement import FieldAccessMixin
 
 from . import labels
 from .constants import VALID_SCOPES
@@ -316,7 +317,8 @@ class CapabilitySerializer(serializers.ModelSerializer):
         return data
 
 
-class CapabilityEntitlementSerializer(serializers.ModelSerializer):
+class CapabilityEntitlementSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "platform.entitlements"
     capability_key = serializers.CharField(source="capability.key", read_only=True)
     state_label = serializers.SerializerMethodField()
     source_label = serializers.SerializerMethodField()

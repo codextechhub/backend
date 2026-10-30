@@ -1400,3 +1400,68 @@ class ExpenseClaimDeepPayloadTests(DeepPayloadChecks, TestCase):
             ]
         return samples
 
+
+class ReceiptAndPettyCashDeepPayloadTests(DeepPayloadChecks, TestCase):
+    """Receipt, fund and voucher fields close in single and multi-branch schools."""
+
+    resources = frozenset({
+        "finance.payment", "finance.pettycash", "finance.pettycashvoucher",
+    })
+    covers = frozenset({
+        _SURFACE + "PaymentSerializer",
+        _SURFACE + "PettyCashFundSerializer",
+        _SURFACE + "PettyCashVoucherSerializer",
+        _SURFACE + "PettyCashVoucherLineSerializer",
+    })
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_finance.models import Payment, PettyCashVoucher, PettyCashVoucherLine
+        from vs_finance.tests_branch_scope import _FinanceBranchFixture
+
+        seed_currencies()
+        cls.samples_by_tenant = []
+        for slug, code, multi in (
+            ("deep-receipts", "DEEPREC", True),
+            ("deep-receipts-solo", "DEEPRECS", False),
+        ):
+            school = make_school(slug=slug, name=slug, status="ACTIVE")
+            branch = make_branch(school, name="Ikeja Branch" if multi else "Main Branch")
+            if multi:
+                make_branch(school, name="Lekki Branch", is_main=False)
+            books = _FinanceBranchFixture.build_books(code, school.tenant)
+            customer = _FinanceBranchFixture.customer(books, f"{code}-C", branch)
+            account = Account.objects.get(entity=books, code="1100")
+            payment = Payment.objects.create(
+                entity=books, branch=branch, customer=customer,
+                payment_date=datetime.date(2026, 1, 10), amount=125_000,
+                deposit_account=account, reference="REC-DEEP", narration="Lab fees",
+            )
+            fund = PettyCashFund.objects.create(
+                entity=books, branch=branch, name="Front desk",
+                gl_account=Account.objects.get(entity=books, code="1110"),
+                float_amount=150_000,
+            )
+            voucher = PettyCashVoucher.objects.create(
+                entity=books, branch=branch, fund=fund,
+                voucher_date=datetime.date(2026, 1, 10), payee="Mama Tunde",
+                narration="Chalk", reference="PET-DEEP",
+            )
+            line = PettyCashVoucherLine.objects.create(
+                voucher=voucher, line_no=1, description="Chalk",
+                expense_account=Account.objects.get(entity=books, code="5300"),
+                quantity=1, unit_price=4_500,
+            )
+            cls.samples_by_tenant.append((school.tenant, payment, fund, voucher, line))
+
+    def samples(self):
+        rows = []
+        for tenant, payment, fund, voucher, line in self.samples_by_tenant:
+            rows.extend((
+                Sample(_SURFACE + "PaymentSerializer", payment, tenant=tenant),
+                Sample(_SURFACE + "PettyCashFundSerializer", fund, tenant=tenant),
+                Sample(_SURFACE + "PettyCashVoucherSerializer", voucher, tenant=tenant),
+                Sample(_SURFACE + "PettyCashVoucherLineSerializer", line, tenant=tenant),
+            ))
+        return rows
+

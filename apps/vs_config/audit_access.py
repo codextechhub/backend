@@ -99,5 +99,8 @@ def visible_snapshots(event, can_read: Callable[[str], bool], keys: dict) -> tup
                 shown.pop("starts_at", None)
             if not can_read(EXPIRES_KEY):
                 shown.pop("ends_at", None)
+        if event.target_type == "CapabilityEntitlement" and not can_read("platform.entitlements.window"):
+            shown.pop("starts_at", None)
+            shown.pop("ends_at", None)
         snapshots.append(shown)
     return snapshots[0], snapshots[1]

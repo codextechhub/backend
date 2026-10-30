@@ -47,7 +47,6 @@ def record_configuration_event(
         action=action,
         target_type=event.target_type,
         target_id=event.target_id,
-        detail={"before": before or {}, "after": after or {}, **(metadata or {})},
         branch=branch,
         # Carried from the local row, which resolves it from the branch when the
         # caller named only that. Null here means the platform default layer.
@@ -62,35 +61,20 @@ def write_audit_log(
     action: str,
     target_type: str,
     target_id: str,
-    detail: dict = None,
     branch=None,
     tenant=None,
 ) -> None:
-    """
-    Dispatch a platform-level audit log entry to Module 5.
+    """Mirror a configuration change without copying its before and after values.
 
-    Parameters
-    ----------
-    actor       : UserAccount - the user performing the action
-    action      : str         - human-readable action label, e.g. 'config.key.created'
-    target_type : str         - the type of object being acted on
-    target_id   : str         - string representation of the target's primary key
-    detail      : dict        - optional payload with before/after values or extra context
-    branch      : Branch      - optional; set for branch-scoped changes
-    tenant      : Tenant      - optional; the customer the change belongs to. Left
-                  out it is derived from ``branch``, and failing that inherited
-                  from the request by ``emit_audit_event``. None all the way down
-                  means a platform-default change, which is a real answer here.
-
-    Design note:
-    The import of vs_audit's emit_audit_event is inside the function body to avoid
-    circular imports at module load time. vs_config is a low-level module that
-    vs_audit may itself depend on for config lookups.
+    The local configuration event keeps the value history. The central trail
+    identifies the action and target, while a branch supplies its owning tenant
+    when the caller did not name one. Importing the audit service here avoids a
+    module-load cycle between configuration and audit.
     """
     try:
         from vs_audit.services import emit_audit_event
 
-        metadata = dict(detail or {})
+        metadata = {}
         # Preserve the config action inside the shared audit payload for downstream filters.
         metadata["config_action"] = action
         if branch is not None:

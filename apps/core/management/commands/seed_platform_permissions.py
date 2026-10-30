@@ -24,6 +24,8 @@ from django.db import transaction
 _NORMAL, _SENSITIVE, _CRITICAL = "NORMAL", "SENSITIVE", "CRITICAL"
 
 PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
+    ("profile", "Platform issuer and onboarding field switches", []),
+    ("entitlements", "Platform entitlement field switches", []),
     (
         "permissions",
         "Global permission registry inspection",

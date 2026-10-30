@@ -10,6 +10,7 @@ the stored event is never changed.
 """
 import csv
 import io
+from unittest import mock
 
 from vs_config import audit_access
 from vs_config.models import ConfigurationAuditEvent, ConfigurationDefinition
@@ -197,8 +198,8 @@ class RegistrationTests(_AuditAccess):
         self.assertIn("value", shown[1])
 
     def test_no_binding_costs_no_query(self):
-        audit_access._SETTING_FIELDS.pop(BOUND)
         event = ConfigurationAuditEvent.objects.first()
-        with self.assertNumQueries(0):
-            self.assertEqual(audit_access.setting_keys([event]), {})
+        with mock.patch.dict(audit_access._SETTING_FIELDS, {}, clear=True):
+            with self.assertNumQueries(0):
+                self.assertEqual(audit_access.setting_keys([event]), {})
 

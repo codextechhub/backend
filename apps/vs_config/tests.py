@@ -11,6 +11,11 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from vs_rbac.tests.helpers import (
+    install_declared_fields,
+    make_platform_assignment,
+    make_platform_role,
+    make_platform_role_permission,
+    set_field_access,
     make_assignment,
     make_branch,
     make_permission,
@@ -529,6 +534,62 @@ class ConfigurationBranchEntitlementTests(TestCase):
         for branch in (self.ikeja, self.lekki):
             _, resolved = self._scope_for(branch)
             self.assertEqual(resolved, branch)
+
+
+class PlatformProfileFieldAccessTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        install_declared_fields("platform.profile")
+        cls.user = make_vision_user(email="profile-switch@codex.test")
+        cls.role = make_platform_role(name="Profile Switch")
+        for key in ("config.value.view", "config.value.update", "config.export.create", "config.audit.view"):
+            make_platform_role_permission(cls.role, make_permission(key))
+        make_platform_assignment(cls.user, cls.role)
+        set_field_access(cls.role, "platform.profile.tagline", read=False, write=False)
+        set_field_access(cls.role, "platform.profile.default_currency", read=False, write=False)
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_curated_and_generic_reads_hide_closed_values(self):
+        curated = self.client.get("/v1/config/platform-settings/")
+        self.assertEqual(curated.status_code, 200, curated.data)
+        self.assertNotIn("tagline", curated.data["data"]["profile"])
+        self.assertNotIn("currency", curated.data["data"]["onboarding"])
+        effective = self.client.get("/v1/config/effective-values/platform.profile.tagline/")
+        self.assertEqual(effective.status_code, 403, effective.data)
+        exported = self.client.get("/v1/config/export/")
+        self.assertEqual(exported.status_code, 200, exported.data)
+        keys = {row["key"] for row in exported.data["data"]["values"]}
+        self.assertNotIn("platform.profile.tagline", keys)
+        self.assertNotIn("platform.onboarding.default_currency", keys)
+
+    def test_curated_and_generic_writes_refuse_closed_values(self):
+        curated = self.client.patch(
+            "/v1/config/platform-settings/", {"onboarding": {"currency": "USD"}},
+            format="json",
+        )
+        self.assertEqual(curated.status_code, 403, curated.data)
+        generic = self.client.post(
+            "/v1/config/values/", {"key": "platform.profile.tagline", "value": "Closed"},
+            format="json",
+        )
+        self.assertEqual(generic.status_code, 403, generic.data)
+
+    def test_audit_history_hides_the_value_and_the_central_mirror_has_no_copy(self):
+        from vs_audit.models import AuditEvent
+
+        definition = ConfigurationDefinition.objects.get(key="platform.profile.tagline")
+        set_value(definition=definition, value="Private tagline", actor=self.user)
+        local = self.client.get("/v1/config/audit-events/")
+        self.assertEqual(local.status_code, 200, local.data)
+        events = [row for row in local.data["data"] if row["action"] == "config.value.updated"]
+        self.assertTrue(events)
+        self.assertNotIn("value", events[0]["after_data"])
+        mirrored = AuditEvent.objects.filter(entity_type="ConfigurationValue").latest("event_at")
+        self.assertNotIn("before", mirrored.metadata)
+        self.assertNotIn("after", mirrored.metadata)
 
 
 @without_two_step

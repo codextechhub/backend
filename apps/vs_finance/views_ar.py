@@ -867,6 +867,10 @@ class CustomerReceiptView(_FinanceBase):
         entity = resolve_entity(request)
         customer = _resolve_customer(request, entity, pk)
         body = request.data or {}
+        assert_writable(request, "finance.payment", submitted(
+            body, "amount", "payment_date", "method", "deposit_account",
+            "reference", "narration",
+        ))
         amount = _money(body.get("amount"), "amount")
         if amount <= 0:
             raise ValidationError({"amount": "A positive amount is required."})
@@ -893,14 +897,14 @@ class CustomerReceiptView(_FinanceBase):
                          body.get("allocation_strategy"),
                          default=policy.default_receipt_allocation_strategy,
                      ))
+        data = {"id": payment.id, "payment": payment.document_number}
+        if can_read(request, "finance.payment.allocated_amount"):
+            data["allocated"] = payment.allocated_amount
+        if can_read(request, "finance.payment.credit_remaining"):
+            data["unallocated"] = payment.credit_remaining
         return success_response(
             f"Receipt {payment.document_number} recorded for {customer.code}.",
-            data={
-                "id": payment.id,
-                "payment": payment.document_number,
-                "allocated": payment.allocated_amount,
-                "unallocated": payment.credit_remaining,
-            },
+            data=data,
             status=201,
         )
 
@@ -980,6 +984,11 @@ class PaymentListView(_FinanceBase):
         from .receivables import receipt_allocation_rules
         from .models import Payment
 
+        refuse_hidden_filters(request, "finance.payment", {
+            "method": ("method", "Payment method"),
+            "search": ("reference", "Reference"),
+            "status": ("allocated_amount", "Applied to bills"),
+        })
         entity = resolve_entity(request)
         qs = (Payment.objects.filter(
             transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
@@ -995,7 +1004,8 @@ class PaymentListView(_FinanceBase):
 
         # The allocation word each row shows (receivables.receipt_allocation_rules).
         qs = filter_by_word(qs, request.query_params.get("status"), receipt_allocation_rules())
-        return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
+        return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer,
+                         self, context={"request": request})
 
 
 # Group endpoint behavior for Payment Summary View.
@@ -1022,6 +1032,10 @@ class PaymentSummaryView(_FinanceBase):
 
         from .list_scope import narrow_finance_document_list
 
+        refuse_hidden_filters(request, "finance.payment", {
+            "method": ("method", "Payment method"),
+            "search": ("reference", "Reference"),
+        })
         entity = resolve_entity(request)
         qs = narrow_finance_document_list(Payment.objects.filter(
             transaction_branch_q(request), entity=entity, status=DocumentStatus.POSTED,
@@ -1062,19 +1076,26 @@ class PaymentSummaryView(_FinanceBase):
             partial_c=Count("id", filter=Q(
                 allocated_amount__gt=0, allocated_amount__lt=F("amount")) & ~fully_refunded),
         )
-        return success_response("Receipts summary retrieved.", data={
-            "count": agg["count"],
-            "today": _money_obj(agg["today"]),
-            "week": _money_obj(agg["week"]),
-            "unallocated": _money_obj(agg["unallocated"]),
-            "refunded": _money_obj(agg["refunded"]),
-            "status_counts": {
+        data = {"count": agg["count"]}
+        if can_read(request, "finance.payment.summary_totals"):
+            if (can_read(request, "finance.payment.amount")
+                    and can_read(request, "finance.payment.payment_date")):
+                data["today"] = _money_obj(agg["today"])
+                data["week"] = _money_obj(agg["week"])
+            if can_read(request, "finance.payment.credit_remaining"):
+                data["unallocated"] = _money_obj(agg["unallocated"])
+            if can_read(request, "finance.payment.refunded_amount"):
+                data["refunded"] = _money_obj(agg["refunded"])
+            if (can_read(request, "finance.payment.allocated_amount")
+                    and can_read(request, "finance.payment.status")
+                    and can_read(request, "finance.payment.refunded_amount")):
+                data["status_counts"] = {
                 "ALLOCATED": agg["allocated_c"],
                 "PARTIAL": agg["partial_c"],
                 "UNALLOCATED": agg["unallocated_c"],
                 "REFUNDED": agg["refunded_c"],
-            },
-        })
+                }
+        return success_response("Receipts summary retrieved.", data=data)
 
 
 # Group endpoint behavior for Payment Detail View.
@@ -1145,11 +1166,12 @@ class PaymentDetailView(_FinanceBase):
                     "account_code": gl.account.code, "account_name": gl.account.name,
                     "debit": _money_obj(gl.debit), "credit": _money_obj(gl.credit),
                 })
-        data = {
-            "payment": PaymentSerializer(p).data,
-            "allocations": allocations,
-            "gl_postings": gl_postings,
-        }
+        data = {"payment": PaymentSerializer(p, context={"request": request}).data}
+        if can_read(request, "finance.payment.allocated_amount"):
+            data["allocations"] = allocations
+        if all(can_read(request, f"finance.payment.{name}") for name in
+               ("journal", "amount", "deposit_account")):
+            data["gl_postings"] = gl_postings
         if can_read(request, "finance.customer.open_invoices"):
             data["open_invoices"] = open_invoices
         if can_read(request, "finance.customer.open_debit_notes"):
@@ -1231,7 +1253,7 @@ class PaymentAllocateView(_FinanceBase):
         p.refresh_from_db()
         return success_response(
             f"Receipt {p.document_number} allocated.",
-            data=PaymentSerializer(p).data,
+            data=PaymentSerializer(p, context={"request": request}).data,
         )
 
 
@@ -1256,7 +1278,7 @@ class PaymentVoidView(_FinanceBase):
         payment.refresh_from_db()
         return success_response(
             f"Receipt {payment.document_number} voided.",
-            data=PaymentSerializer(payment).data,
+            data=PaymentSerializer(payment, context={"request": request}).data,
         )
 
 
@@ -3440,6 +3462,9 @@ class InvoicePayView(_FinanceBase):
             raise ValidationError({"invoice": "Only a posted invoice can be paid."})
 
         body = request.data or {}
+        assert_writable(request, "finance.payment", submitted(
+            body, "amount", "payment_date", "method", "deposit_account", "reference", "narration",
+        ), creating=True)
         amount = _money(body.get("amount"), "amount")
         if amount <= 0:
             raise ValidationError({"amount": "A positive amount is required."})
@@ -3465,7 +3490,7 @@ class InvoicePayView(_FinanceBase):
         invoice.refresh_from_db()
         return success_response(
             f"Receipt {payment.document_number} recorded against {invoice.document_number}.",
-            data=InvoiceSerializer(invoice).data, status=201,
+            data=InvoiceSerializer(invoice, context={"request": request}).data, status=201,
         )
 
 

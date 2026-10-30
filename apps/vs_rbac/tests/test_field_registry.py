@@ -88,9 +88,12 @@ EXPECTED_RESOURCES = {
     ("finance", "payer_link"),
     ("finance", "payer_payment"),
     ("finance", "payrollrun"),
+    ("finance", "payment"),
     ("finance", "paymentplan"),
     ("finance", "period"),
+    ("finance", "pettycash"),
     ("finance", "pettycash_return"),
+    ("finance", "pettycashvoucher"),
     ("finance", "provision"),
     ("finance", "report"),
     ("finance", "refund"),
@@ -117,6 +120,8 @@ EXPECTED_RESOURCES = {
     ("payments", "terminal_payment"),
     ("payments", "virtual_account"),
     ("platform", "staff_profile"),
+    ("platform", "profile"),
+    ("platform", "entitlements"),
     ("platform", "schools"),
     ("platform", "team"),
     ("procurement", "vendor"),
@@ -161,7 +166,10 @@ ENDPOINT_GUARDED_RESOURCES = {
     ("finance", "dashboard"): "finance.report.view",
     ("finance", "payer_link"): "finance.customer.view",
     ("finance", "payer_payment"): "finance.payment.view",
+    ("finance", "payment"): "finance.payment.view",
+    ("finance", "pettycash"): "finance.pettycash.view",
     ("finance", "pettycash_return"): "finance.pettycash.view",
+    ("finance", "pettycashvoucher"): "finance.pettycashvoucher.view",
     ("procurement", "vendor_contact"): "procurement.vendor.view",
     ("procurement", "approval"): "procurement.approval.view",
     ("procurement", "dashboard"): "procurement.analytics.view",
@@ -170,11 +178,29 @@ ENDPOINT_GUARDED_RESOURCES = {
     ("school", "profile"): "school.profile.view",
     ("school", "settings"): "school.settings.view",
     ("school", "teachers"): "school.teachers.view",
+    ("platform", "profile"): "config.value.view",
+    ("platform", "entitlements"): "config.entitlement.view",
 }
 
 #: Serializers that can write a registered name without carrying a rule for it,
 #: each with the reason that is safe. Every entry must still match a real hit.
 WRITE_PATH_ALLOWLIST = {
+    **{
+        ("vs_config.serializers.PlatformProfileSettingsSerializer", name):
+            "The platform settings view checks the submitted profile fields."
+        for name in ("tagline", "address", "email", "phone", "website", "logo_url")
+    },
+    **{
+        ("vs_config.serializers.SchoolOnboardingSettingsSerializer", name):
+            "The platform settings view checks the submitted onboarding defaults."
+        for name in ("ownership_type", "term_structure", "currency", "branch_country")
+    },
+    **{
+        (f"vs_config.serializers.{serializer}", name):
+            "The entitlement view checks window writes after serializer validation."
+        for serializer in ("SetEntitlementSerializer", "BulkSetEntitlementSerializer")
+        for name in ("starts_at", "ends_at")
+    },
     **{
         ("vs_finance.serializers.DirectEntryLineSerializer", name):
             "The direct journal view checks the enclosing lines switch before posting."
@@ -405,6 +431,7 @@ NESTING_ONLY_SURFACES = {
 
 # Named guards on hand-built response surfaces.
 HAND_BUILT_SURFACES = {
+    "vs_config.views.PlatformSettingsView": "_visible_platform_payload(",
     "schools.vs_academics.views.settings.AcademicRulesView": "settings_body(",
     "schools.vs_calendar.views.settings.CalendarRulesView": "settings_body(",
     "schools.vs_students.views.records.EnrolmentRulesView": "settings_body(",
@@ -428,6 +455,10 @@ HAND_BUILT_SURFACES = {
 
 # Switches whose response is built outside their resource's serializers.
 VIRTUAL_FIELD_KEYS = {
+    "platform.entitlements.calendar",
+    "finance.payment.summary_totals",
+    "finance.pettycash.spent_this_week",
+    "finance.pettycash.movement_register",
     "school.teachers.leave_group",
     "finance.report.ap_reconciliation",
     "procurement.catalog_item.price_history",
@@ -892,6 +923,8 @@ class EveryWritePathIsKnownTests(SimpleTestCase):
 DEEP_PAYLOAD_MODULES = ("tests_field_access_deep_payload", "tests.test_field_access_deep_payload")
 
 FOCUSED_PAYLOAD_MODULES = {
+    "platform.entitlements": "vs_config.tests_entitlement_access",
+    "platform.profile": "vs_config.tests",
     "school.settings": "schools.vs_schools.tests_settings_endpoints",
     "procurement.catalog_item": "vs_procurement.tests_master_field_access",
     "procurement.category": "vs_procurement.tests_category_field_access",
@@ -1172,6 +1205,7 @@ class RegistryScopeMatchesTheGuardingKeyTests(TestCase):
             "seed_actions",
             "seed_school_permissions",
             "seed_platform_permissions",
+            "seed_config_permissions",
             "seed_import_permissions",
             "seed_finance_permissions",
             "seed_procurement_permissions",

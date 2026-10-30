@@ -28,6 +28,8 @@ EXPIRES_KEY = "platform.schools.subscription_expires_at"
 
 def window_readable(request, source: str) -> tuple[bool, bool]:
     """Whether the caller may read ``(starts_at, ends_at)`` of a grant from *source*."""
+    if not can_read(request, "platform.entitlements.window"):
+        return False, False
     if source != CapabilityEntitlement.Source.PACKAGE:
         return True, True
     return can_read(request, STARTS_KEY), can_read(request, EXPIRES_KEY)

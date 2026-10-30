@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
-from vs_rbac.field_enforcement import can_read
+from vs_rbac.field_enforcement import assert_writable, can_read
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, IsTenantStaff
 from vs_rbac.plan_grants import unsettled_roles_note
 
@@ -99,6 +99,40 @@ from vs_tenants.models import Tenant
 
 
 logger = logging.getLogger(__name__)
+
+
+def _platform_field_name(key):
+    if key in PROFILE_FIELDS.values():
+        field = next(name for name, value in PROFILE_FIELDS.items() if value == key)
+        return field if field != "name" else None
+    if key in ONBOARDING_FIELDS.values():
+        return next(name for name, value in ONBOARDING_FIELDS.items() if value == key)
+    return None
+
+
+def _platform_value_visible(request, key):
+    field = _platform_field_name(key)
+    if field is None:
+        return True
+    name = field if key in PROFILE_FIELDS.values() else f"default_{field}"
+    return can_read(request, f"platform.profile.{name}")
+
+
+def _platform_value_writable(request, keys):
+    names = [
+        name if key in PROFILE_FIELDS.values() else f"default_{name}"
+        for key in keys if (name := _platform_field_name(key))
+    ]
+    assert_writable(request, "platform.profile", names)
+
+
+def _visible_platform_payload(request, payload):
+    for section, fields in (("profile", PROFILE_FIELDS), ("onboarding", ONBOARDING_FIELDS)):
+        for name, key in fields.items():
+            if not _platform_value_visible(request, key):
+                payload[section].pop(name, None)
+                payload["sources"][section].pop(name, None)
+    return payload
 
 
 # Base API view that binds RBAC permissions and platform-only method guards.
@@ -212,6 +246,9 @@ class DefinitionListCreateView(ConfigAPIView):
     # Return the configuration catalogue, hiding archived definitions by default.
     def get(self, request):
         qs = ConfigurationDefinition.objects.all()
+        hidden = [key for key in ALL_FIELDS.values() if not _platform_value_visible(request, key)]
+        if hidden:
+            qs = qs.exclude(key__in=hidden)
         if request.query_params.get("include_inactive") != "true":
             # Archived definitions stay queryable only for explicit administrative review.
             qs = qs.filter(is_active=True)
@@ -248,6 +285,8 @@ class DefinitionDetailView(ConfigAPIView):
 
     # Return the definition metadata used by administrators.
     def get(self, request, key):
+        if not _platform_value_visible(request, key):
+            raise PermissionDenied("This configuration definition is hidden.")
         obj = self.get_object(key)
         return success_response(
             "Configuration definition retrieved.",
@@ -257,6 +296,8 @@ class DefinitionDetailView(ConfigAPIView):
     # Update definition metadata atomically with its audit event.
     @transaction.atomic
     def patch(self, request, key):
+        if not _platform_value_visible(request, key):
+            raise PermissionDenied("This configuration definition is hidden.")
         obj = self.get_object(key)
         protected_fields = {
             "key", "value_type", "default_value", "validation_rules",
@@ -318,6 +359,9 @@ class ValueListSetView(ConfigAPIView):
             qs = qs.filter(tenant=tenant, branch__isnull=True)
         else:
             qs = qs.filter(tenant__isnull=True, branch__isnull=True)
+        hidden = [key for key in ALL_FIELDS.values() if not _platform_value_visible(request, key)]
+        if hidden:
+            qs = qs.exclude(definition__key__in=hidden)
         return self.paginate(request, qs.order_by("definition__key"), ConfigurationValueSerializer)
 
     # Save one or many values under one resolved scope and transaction.
@@ -344,6 +388,7 @@ class ValueListSetView(ConfigAPIView):
                     "dedicated update permission and must be changed from their own section."
                 )
             })
+        _platform_value_writable(request, (item.validated_data["key"] for item in serializers))
         tenant, branch = resolve_request_scope(request)
         rows = []
         # All submitted keys are written to the same resolved tenant scope.
@@ -360,10 +405,13 @@ class ValueListSetView(ConfigAPIView):
                 branch=branch,
                 reason=serializer.validated_data["reason"],
             ))
-        data = ConfigurationValueSerializer(rows, many=True).data
+        data = [
+            item for item in ConfigurationValueSerializer(rows, many=True).data
+            if _platform_value_visible(request, item["key"])
+        ]
         return success_response(
             "Configuration values saved." if is_bulk else "Configuration value saved.",
-            data if is_bulk else data[0],
+            data if is_bulk else (data[0] if data else {"key": rows[0].definition.key}),
             status=status.HTTP_201_CREATED,
         )
 
@@ -383,6 +431,7 @@ class ValueResetView(ConfigAPIView):
                     "payment provider section."
                 )
             })
+        _platform_value_writable(request, (key,))
         definition = get_object_or_404(ConfigurationDefinition, key=key, is_active=True)
         tenant, branch = resolve_request_scope(request)
         cleared = clear_value(
@@ -400,7 +449,7 @@ class ValueResetView(ConfigAPIView):
             {
                 "key": key,
                 "cleared": cleared,
-                "effective_value": value,
+                **({"effective_value": value} if _platform_value_visible(request, key) else {}),
                 "source": source.scope_key if source else "default",
                 "source_label": config_labels.value_source_label(source),
             },
@@ -432,7 +481,7 @@ class PlatformSettingsView(ConfigAPIView):
         return data
 
     def get(self, request):
-        return success_response("Platform settings retrieved.", self.payload())
+        return success_response("Platform settings retrieved.", _visible_platform_payload(request, self.payload()))
 
     @transaction.atomic
     def patch(self, request):
@@ -450,6 +499,7 @@ class PlatformSettingsView(ConfigAPIView):
                 for field, value in serializer.validated_data.get("onboarding", {}).items()
             },
         }
+        _platform_value_writable(request, submitted)
         definitions = {
             item.key: item
             for item in ConfigurationDefinition.objects.filter(
@@ -476,7 +526,7 @@ class PlatformSettingsView(ConfigAPIView):
                     reason=reason,
                 )
 
-        return success_response("Platform settings saved.", self.payload())
+        return success_response("Platform settings saved.", _visible_platform_payload(request, self.payload()))
 
 
 # Runtime authentication controls, guarded by dedicated special-config permissions.
@@ -588,6 +638,8 @@ class EffectiveValueView(ConfigAPIView):
 
     # Compute effective values instead of returning only physically stored rows.
     def get(self, request, key=None):
+        if key and not _platform_value_visible(request, key):
+            raise PermissionDenied("This configuration value is hidden.")
         tenant, branch = resolve_request_scope(request)
         definitions = ConfigurationDefinition.objects.filter(is_active=True)
         if key:
@@ -596,6 +648,8 @@ class EffectiveValueView(ConfigAPIView):
                 raise NotFound("Configuration definition not found.")
         data = []
         for definition in definitions:
+            if not _platform_value_visible(request, definition.key):
+                continue
             value, source = resolve_value(definition, tenant=tenant, branch=branch)
             if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
                 # Effective reads should reveal that a secret exists, never the reference value.
@@ -721,6 +775,9 @@ class EntitlementListSetView(ConfigAPIView):
         """
         serializer = SetEntitlementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        assert_writable(request, "platform.entitlements", {
+            key: value for key, value in request.data.items() if key in {"starts_at", "ends_at"}
+        })
         capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
         tenant, _ = resolve_request_scope(request)
         unsettled = []
@@ -790,6 +847,8 @@ class EntitlementCalendarView(ConfigAPIView):
     CALENDAR_LIMIT = 500
 
     def get(self, request):
+        if not can_read(request, "platform.entitlements.calendar"):
+            raise PermissionDenied("Subscription expiry is hidden.")
         tenant, _ = resolve_request_scope(request)
         all_tenants = request.query_params.get("all_tenants") == "true"
         is_platform_actor = (
@@ -895,6 +954,9 @@ class EntitlementBulkScheduleView(ConfigAPIView):
     def post(self, request):
         serializer = BulkSetEntitlementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        assert_writable(request, "platform.entitlements", {
+            key: value for key, value in request.data.items() if key in {"starts_at", "ends_at"}
+        })
         items = serializer.validated_data["items"]
         capability_keys = {item["capability"] for item in items}
         tenant_slugs = {item.get("tenant", "") for item in items if item.get("tenant")}
@@ -1321,6 +1383,8 @@ class ConfigExportView(ConfigAPIView):
         definitions = ConfigurationDefinition.objects.filter(is_active=True)
         values = []
         for definition in definitions:
+            if not _platform_value_visible(request, definition.key):
+                continue
             value, source = resolve_value(definition, tenant=tenant, branch=branch)
             if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
                 # Export follows the same redaction rule as effective reads.

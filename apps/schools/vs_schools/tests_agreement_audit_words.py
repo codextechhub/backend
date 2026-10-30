@@ -1,12 +1,10 @@
-"""The trail repeats a school's agreement only to readers of the fields it holds.
+"""Historical agreement snapshots obey the reader's field decisions.
 
-The agreement CodeX makes with a school reaches the audit trail through the
-capability changes that apply it: a subscription's start and expiry and the
-depth a plan reaches are the old and new state of an entitlement, an uplift is
-a depth grant of its own, and removing either is filed under the module. Each
-state is a nested dictionary in the row's metadata, so a reader without the
-matching ``platform.schools`` switch gets the row with those values cut and
-everything else (the state, the source, which action it was) left in place.
+The central configuration mirror carries action and target only. Older rows
+can contain before and after snapshots of a subscription's start, expiry and
+plan depth. Their nested metadata is filtered on read. These tests attach the
+authoritative local snapshots to an in-memory central row to exercise that
+legacy reader path without storing a new value-bearing central event.
 
 Bright Star has two branches and an uplift on Finance; Sunrise has one. The
 school's own audit officer holds no CodeX switch at all, so an agreement is
@@ -22,7 +20,7 @@ from rest_framework.test import APIRequestFactory
 from vs_audit import protected_words
 from vs_audit.models import AuditEvent
 from vs_audit.serializers import AuditEventDetailSerializer
-from vs_config.models import Capability, CapabilityEntitlement
+from vs_config.models import Capability, CapabilityEntitlement, ConfigurationAuditEvent
 from vs_config.services.capabilities import (
     clear_depth_grant,
     clear_entitlement,
@@ -118,6 +116,18 @@ class _Fixture(TestCase):
         make_assignment(cls.bright, cls.officer, role, branch=None)
 
     def render(self, event, user):
+        if "before" not in event.metadata and "after" not in event.metadata:
+            local = ConfigurationAuditEvent.objects.filter(
+                action=event.metadata["config_action"],
+                target_type=event.entity_type,
+                target_id=event.entity_id,
+                tenant=event.tenant,
+            ).latest("created_at")
+            event.metadata = {
+                **event.metadata,
+                "before": local.before_data,
+                "after": local.after_data,
+            }
         request = APIRequestFactory().get("/")
         request.user = user
         request.tenant = user.tenant
@@ -174,7 +184,7 @@ class EntitlementEventTests(_Fixture):
         event = self.event()
         self.render(event, self.officer)
         event.refresh_from_db()
-        self.assertIn("ends_at", event.metadata["after"])
+        self.assertNotIn("after", event.metadata)
 
 
 class UpliftEventTests(_Fixture):
@@ -266,6 +276,18 @@ class WhatIsNotAgreementTests(_Fixture):
             self.assertNotIn(str(RATE + 1), blob)
 
     def test_every_agreement_rule_is_a_valid_query(self):
+        from vs_audit.services import emit_audit_event
+
+        emit_audit_event(
+            module_key="CONFIG", action_type="CONFIG_CHANGED",
+            entity_type="CapabilityEntitlement", entity_id=str(self.finance.pk),
+            tenant=self.bright.tenant,
+            metadata={
+                "config_action": "config.entitlement.updated",
+                "before": {},
+                "after": {"starts_at": self.ends.isoformat()},
+            },
+        )
         rules = [
             rule for name, rule in protected_words._RULES.items()
             if name.startswith("schools.agreement.")
