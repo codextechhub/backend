@@ -1336,7 +1336,7 @@ registered field closed to an approver is still read in the card.
 | `finance.doubtful_debt_provision` | Aged to, Allowance required, Change to the allowance | Narration; table By branch (Required, Held, Change) | `finance.provision` | recorded |
 | `finance.refund` | Date, Customer, Amount | Method, Reference, Narration, Payment account | `finance.refund` (recorded) | recorded |
 | `finance.write_off`, `finance.concession`, `finance.credit_note`, `finance.customer_credit_transfer`, `finance.journal` | amounts, customer codes | reasons, narrations, lines | unregistered | recorded |
-| `finance.expense_claim` | Claimant (marked with `finance.expenseclaim.claimant`); Date, Total | Purpose, Narration, Subtotal, Tax, claim items | `finance.expenseclaim` (claimant only) | registered for the claimant; recorded for the rest |
+| `finance.expense_claim` | Claimant, Date, Total | Purpose, Narration, Subtotal, Tax, claim items | `finance.expenseclaim` | registered; every field and line-table column carries its source switch |
 | `procurement.requisition`, `.purchase_order`, `.vendor_invoice`, `.vendor_payment`, `.vendor_credit_note` | Amount, Vendor | prices, payment terms, WHT, net payment, bill total and balance | unregistered (vendor name is an identifier) | recorded |
 | `payments.payout_batch` | Items, Total | Provider, Source account; Beneficiaries table with markers on `beneficiary` and `account` | `payments.payout` (the model to copy) | registered |
 | `school.leave` | title is the staff name; subtitle is "Leave request"; Type (marked `school.leave.leave_type`), Dates (`school.leave.dates`), Over allowance (`school.leave.balance`) | Days (`school.leave.days`), Resumption date (`school.leave.dates`), Job title (a label, unmarked), Reason (`school.leave.note`), Over allowance by (`school.leave.balance`) | `school.leave` | registered |
@@ -1352,21 +1352,32 @@ pass the request into `summary_for_reader`, mark every registered figure in the
 finance handlers (about forty entries) and in `school.hire` and `school.leave`,
 and keep titles to a document number and kind, except that a person's name or job title in a title is a label and always shows (Q-E9, answered in 8.1).
 
-### 7.5a Expense claims (`finance.expenseclaim`, claimant registered)
+### 7.5a Expense claims (`finance.expenseclaim`)
 
 The claimant is picked from the staff list (`claimant`, an account id in the
 entity's own tenant) or typed for somebody not on it (`claimant_name` alone).
-Both are one fact, so they share one switch. Every other claim field is still
-unregistered and open.
+Both are one fact, so they share one switch. The owner chose one Lines switch
+for line description, expense account, quantity, tax code and cost centre,
+separate from Amounts and Receipt. Receipt evidence starts sensitive because
+an uploaded taxi receipt can show a person's contact or payment details.
 
 | Response field(s) | What it is | Kind | Write paths | Switch | Label | RO/RW | Default | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `claimant_id`, `claimant_name`; body key `claimant` (write alias); export `claimant_name`, `claimant_email`; approval card Claimant; spending dashboard `claims.oldest[].claimant`; list search `q` on the claimant | who the claim reimburses | Stored | create (`assert_writable`, not open on create) | `finance.expenseclaim.claimant` | Claimant | RW | open | registered |
-| `title`, `narration`, `claim_date`, totals, `lines[]`, `payment_status` | the rest of the claim | Stored and computed | create | - | - | - | - | recorded |
+| `claim_date`, approval Date, export Claim date, dashboard `oldest[].days` | claim date | Stored | create | `finance.expenseclaim.claim_date` | Claim date | RW | open | registered |
+| `title`, approval Purpose, export Purpose, dashboard `oldest[].title` | purpose | Stored | create | `finance.expenseclaim.title` | Purpose | RW | open | registered |
+| `narration`, approval Narration, export Narration, dashboard title fallback | narration | Stored | create | `finance.expenseclaim.narration` | Narration | RW | open | registered |
+| `lines[]` coordinates and descriptions, approval item and quantity | what was bought | Stored | create | `finance.expenseclaim.lines` | Claim lines | RW | open | registered |
+| line `unit_price`, `net_amount`, `tax_amount`, `line_total`; claim `subtotal`, `tax_total`, `total`, `total_naira`, `amount_paid`, `balance_due`; approval and dashboard amounts; export amount columns | the claim's monetary figures | Stored and computed | create line `unit_price` | `finance.expenseclaim.amounts` | Claim amounts | RW for unit price, RO for derived values | open | registered |
+| line `receipt_name`, `receipt_url`; upload `file` | supporting receipt evidence | Stored | receipt POST and DELETE | `finance.expenseclaim.receipt` | Claim receipts | RW | sensitive | registered |
+| `status`, `approval_state`, `approval_returned`, `approval_required` | claim and approval state | Server-owned | actions | `finance.expenseclaim.status` | Status | RO | open | registered |
+| `payment_status` | reimbursement state | Server-owned | settle | `finance.expenseclaim.payment_status` | Reimbursement status | RO | open; display-status filters and open count need both status switches | registered |
+| `journal_id`, export journal number | ledger link | Server-owned | post | `finance.expenseclaim.journal` | Journal | RO | open | registered |
+| export and detail `reimbursement_account`, `created_at` | liability account and creation time | Server-owned | post | `finance.expenseclaim.reimbursement_account`, `.created_at` | Reimbursement account, Created on | RO | open | registered |
 
 Tests: `vs_finance.tests_expense_claim_claimant` (hidden, read-only and
-writable on the list, detail, search, create, `/me` map, approval card and
-dashboard; the export link), `ExpenseClaimDeepPayloadTests` in
+writable on the list, detail, summary, search, create, receipt upload, `/me`
+map, approval card and dashboard; export links), `ExpenseClaimDeepPayloadTests` in
 `vs_finance.tests_field_access_deep_payload`. Screen:
 `FinPro/src/pages/finance/expenses/claimant-field.tsx`.
 
@@ -1375,6 +1386,7 @@ dashboard; the export link), `ExpenseClaimDeepPayloadTests` in
 | Path | What it restates | Status |
 | --- | --- | --- |
 | Export `finance.customer_receipts` and the receipts quick export | receipt number, customer name, date, amount, allocated, refunded, status, method, reference, deposit account code, narration; only `finance.payment.view` gates it | recorded: every column needs `access="finance.payment.<name>"` the day the resource registers |
+| Export `finance.expense_claims` and the claims quick export | claim date, purpose, status, reimbursement status, amounts, liability account, journal and claimant | registered: each business column and its filter follows `finance.expenseclaim` |
 | Export `finance.gl_postings` | per-line account, debit, credit, description; rebuilds statements, bank movement, petty cash, payroll and deposits | recorded: no field key exists for a ledger line |
 | Export `platform.schools` | `address`, `registration_id` (marked sensitive, no `access=`), `website`, `motto` | exempt: the columns follow the platform key of the export, not `school.profile` switches (Q-E13, answered in 8.1) |
 | Export `procurement.purchase_orders` | `payment_terms` | recorded |
@@ -1600,6 +1612,13 @@ came from. The amounts are gated by `finance.pettycash.establish` and `.replenis
 **Q-E12. Decided: float and cash on hand start open with separate switches.**
 Greenfield's front-desk tin holds N150,000. The secretary and auditor see both figures until the school closes either Read switch.
 
+**Expense claims. Decided: grouped lines, separate amounts and receipts.** Ada
+claims N24,000 for transport at Bright Star School and attaches a taxi receipt.
+One Lines switch covers the description, expense account, quantity, tax code
+and cost centre. Amounts have their own switch. The receipt has its own Read
+and Write switch and starts sensitive because the file may show Ada's phone or
+payment details.
+
 ---
 
 ## 9. Leaks found
@@ -1817,10 +1836,10 @@ one area, so the total is two lower than the sum of the areas.
 | A. Budgets and financial statements | 0 | 25 | 3 | 3 | 3 |
 | B. Receivables, ledger and banking documents | 0 | 119 | 3 | 17 | 12 |
 | C. Procurement | 0 | 230 | 4 | 13 | 10 |
-| D. School settings and finance settings | 36 | 72 | 0 | 8 | 2 |
-| E. Receipts, petty cash, issuer, entitlements | 45 | 3 | 3 | 8 | 3 |
+| D. School settings and finance settings | 0 | 108 | 0 | 8 | 2 |
+| E. Receipts, petty cash, issuer, entitlements, claims | 0 | 59 | 3 | 8 | 3 |
 | F. Messages (registered with the feature) | 0 | 8 | 1 | 1 | 2 |
-| Total | 78 | 457 | 14 | 50 | 32 |
+| Total | 0 | 549 | 14 | 50 | 32 |
 
 Where the new switches sit:
 
@@ -1841,7 +1860,8 @@ Where the new switches sit:
 * Area D: `school.settings` 71, `school.teachers.leave_group` 1,
   `finance.settings` 36.
 * Area E: `finance.payment` 12, `finance.pettycash` 11,
-  `finance.pettycashvoucher` 10, `platform.profile` 10, `platform.entitlements` 2.
+  `finance.pettycashvoucher` 10, `platform.profile` 10, `platform.entitlements` 2,
+  `finance.expenseclaim` 11 beyond its existing claimant switch.
 * Area F: none recorded. `school.messages` registers 9 switches with the feature
   (`body`, `title`, `participants`, `recipients`, `child`, `reply_mode`, `sent_at`,
   `read_status`, and `read_receipts` from 22 October 2026), counted under the
@@ -1849,7 +1869,8 @@ Where the new switches sit:
 
 Sensitive by owner decision: `finance.budget.amount` (Q-A4),
 `finance.customer.source_id` and `finance.bankaccount.statement_balance`
-(Q-B4). Sensitive by
+(Q-B4), and `finance.expenseclaim.receipt` (the owner chose a closed default for
+uploaded evidence). Sensitive by
 recommendation: `procurement.rfq.budget_estimate`,
 `procurement.vendor_assessment.notes`, the six security settings and
 `school.settings.starting_role`. Everything else ships open, subject to the decisions in section 8.

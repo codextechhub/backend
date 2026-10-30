@@ -32,7 +32,13 @@ RESOURCE = "finance.dashboard"
 _COPIED_FIELDS = {
     ("bank_accounts",): (("bank_name", "finance.bankaccount.bank_name"),),
     ("reconciliation",): (("bank_name", "finance.bankaccount.bank_name"),),
-    ("claims", "oldest"): (("claimant", "finance.expenseclaim.claimant"),),
+    ("claims", "oldest"): (
+        ("claimant", "finance.expenseclaim.claimant"),
+        ("title", "finance.expenseclaim.title"),
+        ("title", "finance.expenseclaim.narration"),
+        ("days", "finance.expenseclaim.claim_date"),
+        ("amount", "finance.expenseclaim.amounts"),
+    ),
 }
 
 

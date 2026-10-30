@@ -185,6 +185,8 @@ ENDPOINT_GUARDED_RESOURCES = {
 #: Serializers that can write a registered name without carrying a rule for it,
 #: each with the reason that is safe. Every entry must still match a real hit.
 WRITE_PATH_ALLOWLIST = {
+    ("vs_finance.serializers.JournalSummarySerializer", "total"):
+        "A journal's total is unrelated to an expense claim's amount switch.",
     **{
         ("vs_config.serializers.PlatformProfileSettingsSerializer", name):
             "The platform settings view checks the submitted profile fields."
@@ -503,6 +505,9 @@ VIRTUAL_FIELD_KEYS = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "finance.expenseclaim.receipt": (
+        "A claim receipt may show personal contact or payment details, so evidence starts closed."
+    ),
     "school.settings.starting_role": "The default role gives new staff permissions, so it starts closed.",
     "school.settings.failed_login_threshold": "The login guess limit starts closed.",
     "school.settings.account_lock_minutes": "The account lock duration starts closed.",

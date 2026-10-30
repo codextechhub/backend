@@ -17,7 +17,7 @@ from vs_workflow.services.approval_filter import (
 )
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
-from vs_rbac.field_enforcement import assert_writable, readable_lookups
+from vs_rbac.field_enforcement import assert_writable, can_read, readable_lookups
 from vs_rbac.scoping import transaction_branch_q
 
 from core.response import success_response
@@ -128,8 +128,20 @@ class ExpenseClaimListCreateView(_FinanceBase):
         ).prefetch_related("lines")
         qs = filter_by_stored_status(qs, request.query_params.get("status"))
         if (pay := request.query_params.get("payment_status")):
+            if not can_read(request, f"{CLAIM_FIELDS}.payment_status"):
+                from vs_rbac.field_enforcement import FieldReadDenied
+                raise FieldReadDenied(["payment_status"])
             qs = qs.filter(payment_status=pay)
+        if request.query_params.get("status") and not can_read(request, f"{CLAIM_FIELDS}.status"):
+            from vs_rbac.field_enforcement import FieldReadDenied
+            raise FieldReadDenied(["status"])
         # The words the list shows a claim as (vs_finance.expenses.CLAIM_DISPLAY_WORDS).
+        if request.query_params.get("display_status") and not all((
+            can_read(request, f"{CLAIM_FIELDS}.status"),
+            can_read(request, f"{CLAIM_FIELDS}.payment_status"),
+        )):
+            from vs_rbac.field_enforcement import FieldReadDenied
+            raise FieldReadDenied(["status"])
         qs = filter_by_status_word(
             qs, request.query_params.get("display_status"), claim_display_rules(),
             param="display_status",
@@ -139,7 +151,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
             # A claimant the caller may not read is not searched either.
             lookups = readable_lookups(request, CLAIM_FIELDS, {
                 "claimant_name__icontains": "claimant_name",
-                "title__icontains": None,
+                "title__icontains": "title",
                 "document_number__icontains": None,
             })
             match = Q(pk__in=[])
@@ -161,6 +173,13 @@ class ExpenseClaimListCreateView(_FinanceBase):
         body = request.data or {}
         claimant, claimant_name = _claimant(request, entity, body)
         lines = _require_lines(body)
+        assert_writable(
+            request, CLAIM_FIELDS,
+            {key: body[key] for key in ("claim_date", "title", "narration", "lines")
+             if key in body}, creating=True,
+        )
+        if any("unit_price" in line for line in lines):
+            assert_writable(request, CLAIM_FIELDS, {"unit_price": 1}, creating=True)
         claim = ExpenseClaim.objects.create(
             entity=entity,
             branch=_transaction_branch(request, entity, body),
@@ -354,6 +373,7 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
         from core.uploads import validate_upload
 
         claim, line = self._line(request, pk, line_id)
+        assert_writable(request, CLAIM_FIELDS, {"file": 1})
         upload = request.FILES.get("file")
         if upload is None:
             raise ValidationError({"file": "A receipt file is required."})
@@ -375,6 +395,7 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
     @transaction.atomic
     def delete(self, request, pk, line_id):
         claim, line = self._line(request, pk, line_id)
+        assert_writable(request, CLAIM_FIELDS, {"file": 1})
         if line.receipt:
             line.receipt.delete(save=True)
         claim.refresh_from_db()
@@ -486,13 +507,26 @@ class ExpenseClaimSummaryView(_FinanceBase):
             sent_back=Count("id", filter=returned_condition(ExpenseClaim)),
         )
         avg = agg["live_total"] // agg["live_count"] if agg["live_count"] else 0
+        amounts_visible = can_read(request, f"{CLAIM_FIELDS}.amounts")
+        status_visible = can_read(request, f"{CLAIM_FIELDS}.status")
+        payment_status_visible = can_read(request, f"{CLAIM_FIELDS}.payment_status")
+        summary = {
+            "open": agg["open"],
+            "month_total": agg["month_total"],
+            "avg": avg,
+            "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
+            "sent_back": agg["sent_back"],
+        }
+        if not amounts_visible:
+            for key in ("month_total", "avg", "awaiting"):
+                summary.pop(key)
+        if not status_visible or not payment_status_visible:
+            summary.pop("awaiting", None)
+        if not status_visible or not payment_status_visible:
+            summary.pop("open")
+        if not status_visible:
+            summary.pop("sent_back")
         return success_response(
             "Expense claim summary retrieved.",
-            data={
-                "open": agg["open"],
-                "month_total": agg["month_total"],
-                "avg": avg,
-                "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
-                "sent_back": agg["sent_back"],
-            },
+            data=summary,
         )

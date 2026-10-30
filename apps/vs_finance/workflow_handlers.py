@@ -1380,9 +1380,9 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
             "title": document.document_number or str(document.pk),
             "subtitle": "Expense claim",
             "fields": summary_fields([
-                ("Date", document.claim_date.isoformat()),
+                ("Date", document.claim_date.isoformat(), _key("expenseclaim", "claim_date")),
                 ("Claimant", document.claimant_name or "-", _key("expenseclaim", "claimant")),
-                ("Total", format_naira(document.total)),
+                ("Total", format_naira(document.total), _key("expenseclaim", "amounts")),
             ]),
             "link": _console_document_id_link("/finance/expenses/claims", document),
         }
@@ -1391,17 +1391,19 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
         lines = document.lines.select_related("expense_account", "tax_code")
         return document_details(
             fields_section("Claim details", [
-                ("Purpose", document.title),
-                ("Narration", document.narration),
-                ("Subtotal", format_naira(document.subtotal)),
-                ("Tax", format_naira(document.tax_total)),
+                ("Purpose", document.title, _key("expenseclaim", "title")),
+                ("Narration", document.narration, _key("expenseclaim", "narration")),
+                ("Subtotal", format_naira(document.subtotal), _key("expenseclaim", "amounts")),
+                ("Tax", format_naira(document.tax_total), _key("expenseclaim", "amounts")),
             ]),
             table_section(
                 "Claim items",
                 [
-                    ("item", "Item"), ("quantity", "Quantity"),
-                    ("unit_price", "Unit price"), ("tax", "Tax"),
-                    ("total", "Total"),
+                    ("item", "Item", _key("expenseclaim", "lines")),
+                    ("quantity", "Quantity", _key("expenseclaim", "lines")),
+                    ("unit_price", "Unit price", _key("expenseclaim", "amounts")),
+                    ("tax", "Tax", _key("expenseclaim", "amounts")),
+                    ("total", "Total", _key("expenseclaim", "amounts")),
                 ],
                 [
                     {

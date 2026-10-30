@@ -172,7 +172,8 @@ keys of their own. The endpoints that reach them are guarded by
 ``finance.pettycash.view`` (returns), and ``seed_finance_permissions`` mints the
 resources.
 
-``finance.expenseclaim`` carries one switch so far, the claimant, open to every
+``finance.expenseclaim`` carries separate decisions for claim details, lines,
+amounts and receipt evidence.
 role until a school closes it. Who a claim reimburses is one fact however it is
 recorded: a member of staff picked from the staff list (``claimant_id``, with
 their name copied into ``claimant_name``) or a name typed for somebody who is
@@ -1641,14 +1642,39 @@ def register():
     register_fields(
         "finance",
         "expenseclaim",
-        surfaces=("vs_finance.serializers.ExpenseClaimSerializer",),
+        surfaces=("vs_finance.serializers.ExpenseClaimSerializer",
+                  "vs_finance.serializers.ExpenseClaimLineSerializer"),
         fields=(
             FieldSpec("claimant", "Claimant", group="Claim", scope=_TENANT, sort_order=10,
                       description="Who the claim reimburses: a member of staff from the "
                                   "staff list, or a name typed for somebody not on it.",
                       api_names=("claimant_id", "claimant_name")),
+            FieldSpec("claim_date", "Claim date", group="Claim", scope=_TENANT, sort_order=20),
+            FieldSpec("title", "Purpose", group="Claim", scope=_TENANT, sort_order=30),
+            FieldSpec("narration", "Narration", group="Claim", scope=_TENANT, sort_order=40),
+            FieldSpec("lines", "Claim lines", group="Claim", scope=_TENANT, sort_order=50),
+            FieldSpec("amounts", "Claim amounts", group="Amounts", scope=_TENANT,
+                      sort_order=60, api_names=("amounts", "subtotal", "tax_total", "total",
+                                                "total_naira", "amount_paid", "balance_due",
+                                                "unit_price", "net_amount", "tax_amount",
+                                                "line_total")),
+            FieldSpec("receipt", "Claim receipts", group="Evidence", scope=_TENANT,
+                      sort_order=70, sensitive=True,
+                      api_names=("receipt", "receipt_name", "receipt_url")),
+            FieldSpec("status", "Status", group="Outcome", scope=_TENANT,
+                      sort_order=80, writable=False,
+                      api_names=("status", "approval_state", "approval_returned",
+                                 "approval_required")),
+            FieldSpec("payment_status", "Reimbursement status", group="Outcome",
+                      scope=_TENANT, sort_order=90, writable=False),
+            FieldSpec("journal", "Journal", group="Outcome", scope=_TENANT,
+                      sort_order=100, writable=False, api_names=("journal", "journal_id")),
+            FieldSpec("reimbursement_account", "Reimbursement account",
+                      group="Outcome", scope=_TENANT, sort_order=110, writable=False),
+            FieldSpec("created_at", "Created on", group="Outcome", scope=_TENANT,
+                      sort_order=120, writable=False),
         ),
-        write_aliases={"claimant": "claimant"},
+        write_aliases={"claimant": "claimant", "file": "receipt"},
     )
     register_fields(
         "finance",

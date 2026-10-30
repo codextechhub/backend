@@ -1354,7 +1354,8 @@ class ExpenseClaimDeepPayloadTests(DeepPayloadChecks, TestCase):
     """A claim for a member of staff in a school with several branches, and a typed one in a school with one."""
 
     resources = frozenset({"finance.expenseclaim"})
-    covers = frozenset({_SURFACE + "ExpenseClaimSerializer"})
+    covers = frozenset({_SURFACE + "ExpenseClaimSerializer",
+                        _SURFACE + "ExpenseClaimLineSerializer"})
 
     @classmethod
     def setUpTestData(cls):
@@ -1397,6 +1398,7 @@ class ExpenseClaimDeepPayloadTests(DeepPayloadChecks, TestCase):
             samples += [
                 Sample(_SURFACE + "ExpenseClaimSerializer", claim, tenant=tenant),
                 Sample(_SURFACE + "ExpenseClaimSerializer", [claim], many=True, tenant=tenant),
+                Sample(_SURFACE + "ExpenseClaimLineSerializer", claim.lines.first(), tenant=tenant),
             ]
         return samples
 

@@ -1895,7 +1895,15 @@ class BankAccountDetailSerializer(BankAccountSerializer):
 # Expense claims                                                              #
 # --------------------------------------------------------------------------- #
 
-class ExpenseClaimLineSerializer(serializers.ModelSerializer):
+class ExpenseClaimLineSerializer(FieldAccessMixin, serializers.ModelSerializer):
+    field_resource = "finance.expenseclaim"
+    field_aliases = {
+        "line_no": "lines", "description": "lines", "expense_account": "lines",
+        "quantity": "lines", "tax_code": "lines", "cost_center": "lines",
+        "unit_price": "amounts", "net_amount": "amounts",
+        "tax_amount": "amounts", "line_total": "amounts",
+        "receipt_name": "receipt", "receipt_url": "receipt",
+    }
     expense_account = serializers.CharField(source="expense_account.code", read_only=True)
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
@@ -1937,11 +1945,19 @@ class ExpenseClaimSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.M
     field_resource = "finance.expenseclaim"
     field_access_detail = True
     field_write_aliases = True
+    field_aliases = {
+        "subtotal": "amounts", "tax_total": "amounts", "total": "amounts",
+        "total_naira": "amounts", "amount_paid": "amounts", "balance_due": "amounts",
+        "journal_id": "journal",
+    }
 
     lines = ExpenseClaimLineSerializer(many=True, read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     approval_required = serializers.SerializerMethodField()
+    reimbursement_account = serializers.CharField(
+        source="reimbursement_account.code", read_only=True, default=None,
+    )
 
     class Meta:
         model = ExpenseClaim
@@ -1949,7 +1965,8 @@ class ExpenseClaimSerializer(FieldAccessMixin, ApprovalStateMixin, serializers.M
             "id", "document_number", "branch_id", "claimant_id", "claimant_name", "claim_date",
             "title", "narration", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
-            "amount_paid", "balance_due", "journal_id", "approval_required", "lines",
+            "amount_paid", "balance_due", "journal_id", "reimbursement_account",
+            "created_at", "approval_required", "lines",
             "approval_state", "approval_returned",
         ]
 

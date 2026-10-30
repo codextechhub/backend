@@ -231,24 +231,27 @@ class ClaimantFieldAccessTests(_ClaimantFixture):
 
         self.assertEqual({(r["claimant_id"], r["claimant_name"]) for r in rows},
                          {(self.tolu.pk, "Tolu Fashola"), (None, "Mrs Okafor")})
-        self.assertEqual(set(detail["_read_only_fields"]),
-                         {"claimant", "claimant_id", "claimant_name"})
+        self.assertTrue({"claimant", "claimant_id", "claimant_name"}.issubset(
+            detail["_read_only_fields"]
+        ))
 
-    def test_writable_nothing_is_greyed(self):
+    def test_writable_claimant_is_not_greyed(self):
         detail = self.get(self.ngozi, f"expense-claims/{self.tolus.pk}/")
 
-        self.assertEqual(detail["_read_only_fields"], [])
+        self.assertNotIn("claimant", detail["_read_only_fields"])
         self.assertEqual(detail["claimant_name"], "Tolu Fashola")
 
     def test_the_form_map_lists_the_claimant_and_the_body_key_it_follows(self):
         hidden = field_access_payload(self.hidden, self.tenant)[CLAIM]
         read_only = field_access_payload(self.read_only, self.tenant)[CLAIM]
 
-        self.assertEqual(hidden["hidden"], ["claimant_id", "claimant_name"])
-        self.assertEqual(hidden["read_only"], ["claimant"])
-        self.assertEqual(read_only["hidden"], [])
-        self.assertEqual(read_only["read_only"], ["claimant", "claimant_id", "claimant_name"])
-        self.assertNotIn(CLAIM, field_access_payload(self.ngozi, self.tenant))
+        self.assertEqual(hidden["hidden"], ["claimant_id", "claimant_name",
+                                             "receipt", "receipt_name", "receipt_url"])
+        self.assertIn("claimant", hidden["read_only"])
+        self.assertEqual(read_only["hidden"], ["receipt", "receipt_name", "receipt_url"])
+        self.assertTrue({"claimant", "claimant_id", "claimant_name"}.issubset(
+            read_only["read_only"]))
+        self.assertIn("receipt_name", field_access_payload(self.ngozi, self.tenant)[CLAIM]["hidden"])
 
     def _request(self, user):
         request = APIRequestFactory().get("/")
@@ -300,6 +303,94 @@ class ClaimantExportTests(SimpleTestCase):
         self.assertEqual(dataset.column_access("claimant_name"), CLAIMANT)
         self.assertEqual(dataset.column_access("claimant__email"), CLAIMANT)
         self.assertEqual(dataset.column_access(search.paths[1]), CLAIMANT)
+
+
+class ExpenseClaimFieldsTests(_ClaimantFixture):
+    """Claim details and evidence keep their switches across reads and writes."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.claim = cls.typed_claim(cls.books, "Tolu Fashola", claimant=cls.tolu)
+        cls.reader = cls.grant(
+            cls.user_for(cls.tenant, "claim-fields@corona.test"), *KEYS,
+            tenant=cls.tenant, role_key="claim-fields",
+        )
+        cls.role = TenantRoleTemplate.objects.get(tenant=cls.tenant, key="claim-fields")
+
+    def api(self):
+        return TenantAPIClient(user=self.reader)
+
+    def test_amounts_leave_list_detail_and_summary(self):
+        set_field_access(self.role, f"{CLAIM}.amounts", read=False, write=False)
+        listed = self.api().get(self.url("expense-claims/"))
+        detail = self.api().get(self.url(f"expense-claims/{self.claim.pk}/"))
+        summary = self.api().get(self.url("expense-claims/summary/"))
+
+        self.assertEqual(listed.status_code, 200, listed.data)
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(summary.status_code, 200, summary.data)
+        for row in (listed.data["data"][0], detail.data["data"]):
+            for key in ("subtotal", "tax_total", "total", "total_naira",
+                        "amount_paid", "balance_due"):
+                self.assertNotIn(key, row)
+            self.assertNotIn("unit_price", row["lines"][0])
+            self.assertNotIn("line_total", row["lines"][0])
+        for key in ("month_total", "avg", "awaiting"):
+            self.assertNotIn(key, summary.data["data"])
+
+    def test_closed_amounts_refuse_claim_creation(self):
+        set_field_access(self.role, f"{CLAIM}.amounts", read=True, write=False)
+        response = self.api().post(self.url("expense-claims/"), {
+            "branch": self.ikeja.pk, "claimant_name": "Mrs Okafor",
+            "claim_date": "2026-01-10", "title": "Taxi",
+            "lines": [_line()],
+        }, format="json")
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(ExpenseClaim.objects.filter(entity=self.books).count(), 1)
+
+    def test_hidden_reimbursement_status_leaves_no_status_based_summary(self):
+        set_field_access(self.role, f"{CLAIM}.payment_status", read=False)
+        response = self.api().get(self.url("expense-claims/summary/"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("open", response.data["data"])
+        self.assertNotIn("awaiting", response.data["data"])
+        self.assertIn("month_total", response.data["data"])
+
+    def test_receipt_is_hidden_by_default_and_upload_requires_write(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        detail = self.api().get(self.url(f"expense-claims/{self.claim.pk}/"))
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertNotIn("receipt_url", detail.data["data"]["lines"][0])
+        line = self.claim.lines.first()
+        response = self.api().post(
+            self.url(f"expense-claims/{self.claim.pk}/lines/{line.pk}/receipt/"),
+            {"file": SimpleUploadedFile("taxi.pdf", b"%PDF-1.4\n", content_type="application/pdf")},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        line.refresh_from_db()
+        self.assertFalse(line.receipt)
+
+    def test_approval_card_and_export_columns_follow_claim_switches(self):
+        from vs_exports.catalogue import get_dataset
+        from vs_workflow.handlers import get_handler
+        from vs_workflow.presentation import summary_for_reader
+
+        set_field_access(self.role, f"{CLAIM}.amounts", read=False, write=False)
+        request = APIRequestFactory().get("/")
+        request.user = self.reader
+        request.tenant = self.tenant
+        summary = summary_for_reader(
+            get_handler("finance.expense_claim").summary(self.claim), self.tenant,
+            request=request,
+        )
+        self.assertNotIn("Total", [item["label"] for item in summary["fields"]])
+        dataset = get_dataset("finance.expense_claims")
+        self.assertEqual(dataset.column_access("total"), f"{CLAIM}.amounts")
+        self.assertEqual(dataset.column_access("title"), f"{CLAIM}.title")
 
 
 class ClaimantMigrationTests(RewoundSchemaTestCase):
