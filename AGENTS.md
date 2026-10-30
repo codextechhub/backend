@@ -4,42 +4,80 @@
 
 **This repo is a multi-domain platform, not a schools application.** The engine
 apps - `vs_finance`, `vs_procurement`, `vs_payments`, `vs_rbac`, `vs_workflow`,
-`vs_notifications`, `vs_audit`, `core` - are deliberately **domain-neutral**.
-They know about entities, customers, invoices, vendors, roles and approvals;
-they know nothing about schools. `vs_health` (Health) is already a second domain
-standing on the same foundation, and there will be more.
+`vs_notifications`, `vs_audit`, `core` - are deliberately **domain-neutral**. They
+know about entities, customers, invoices, vendors, roles and approvals; they know
+nothing about schools. `vs_health` (Health) is already a second domain standing on
+the same foundation, and there will be more.
 
 **XVS is the first product built on that platform** - the schools product.
-Corona Secondary School is simply its first tenant.
 
-Two rules follow, and they are separate.
+Two rules follow, and they are separate:
 
-**1. Keep the engines domain-neutral.** School concepts - students, guardians,
-classes, terms, sessions - live in the school apps (`apps/schools/`) and reach
-the engines through the FAL, which lives under `apps/schools/` and not in
-`core/`, because it is school-specific by design. If you find yourself adding a
-`student` or `term` field to a generic app, stop: that leak is exactly what the
-FAL exists to prevent.
+1. **Keep the engines domain-neutral.** School concepts - students, guardians,
+   classes, terms, sessions - live in the school apps (`apps/schools/`) and reach
+   the engines through the FAL (which lives under `apps/schools/`, not in `core/`:
+   it is school-specific by design). Never leak school vocabulary into
+   `vs_finance` and friends. That leak is precisely what the FAL exists to
+   prevent; if you find yourself adding a `student` or `term` field to a generic
+   app, stop.
+   **The engines must not import `vs_schools`** (or anything under
+   `apps/schools/`). The site primitive is `vs_tenants.Branch`, owned directly by
+   `Tenant`: reach it as `row.branch` or `tenant.branches`, never as
+   `branch.school.tenant`. If an engine needs a school-only fact, it belongs
+   behind the FAL, not behind an import.
 
-**The engines must not import `vs_schools`**, or anything else under
-`apps/schools/`. The site primitive is `vs_tenants.Branch`, owned directly by
-`Tenant`: reach it as `row.branch` or `tenant.branches`, never as
-`branch.school.tenant`. `Branch` has no `school` column. If an engine needs a
-school-only fact, it belongs behind the FAL, not behind an import.
+   **The word "school" belongs to `apps/schools/`.** Outside that folder, say
+   **tenant**: in parameter names, serializer fields, constants, variables and
+   JSON body keys alike. `LoginService.login(..., tenant=...)`, never
+   `school=...`, because `vs_user` is an engine app. Prose may still mention a
+   school where it explains where a value comes from ("the tenant slug the
+   frontend takes from the school's subdomain") - the ban is on identifiers, not
+   on explanations.
 
-**2. Build for every school, not the first one.** Nothing may be special-cased
-to one tenant's arrangement. If a feature only works because of how the first
-school happens to be set up, it is not finished. The section below on branches
-is the most common instance of this.
+2. **Within XVS, build for every school, not the first one.** XVS is multi-tenant;
+   Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
+   Nothing may be special-cased to one tenant's arrangement - if a feature only
+   works because of how the first school happens to be set up, it isn't finished.
 
-## Holistic problem solving
+   **Every school has at least one branch.** A school is created with a main
+   branch and can never have none, so every user, document and record can always
+   be given one. Do not write code that handles a branchless school; that shape
+   does not exist.
 
-When the user asks for a problem to be fixed, trace it to its root cause and
-fix the shared source of the failure where practical. Review adjacent flows,
-callers, and equivalent modules for the same failure mode; do not stop at a
-one-off patch that only hides the reported symptom. Keep the work within the
-requested scope, preserve established behaviour, and add regression coverage
-at the lowest shared boundary so future instances are prevented.
+   **A school with exactly one branch still needs the dimension to recede.** One
+   branch is the common case, and a switcher with a single entry, a column that
+   repeats the same value on every row, or a filter with one option are all noise.
+   Where a school has one branch, the control is absent, not disabled. Where it
+   has several, branch appears wherever it changes meaning.
+
+   **A null branch means "every branch" on a shared record, and "not yet given a
+   branch" on a transaction. It never means "no branches exist".**
+   - Shared records and configuration keep null as a first-class value meaning
+     every branch: a customer, a vendor, a fee structure, the chart of accounts,
+     a catalogue item, a cost centre, academic structure, role grants, workflow
+     templates and groups, notification settings and `vs_config` values. They are
+     read inclusively (`vs_rbac.scoping.branch_q`).
+   - There is no school-wide transaction. Every document (invoice, receipt,
+     credit note, refund, journal, payroll run, requisition, order, vendor bill,
+     vendor payment) and every container of a branch's money or stock (bank
+     account, petty-cash fund, store) names one real branch. Raise one with
+     `raised_transaction_branch`, which never answers null: every tenant owns a
+     branch, the platform tenant included, so a tenant with none is a data
+     fault that `vs_rbac.scoping.only_branch_id_or_several` raises as
+     `BranchlessTenantError`; continue one with `inherited_branch_id`,
+     which refuses sources from two branches. Read them with
+     `transaction_branch_q` / `transaction_branch_scope`: a branch-bound reader
+     sees only their own branches' transactions, and a transaction still carrying
+     a null branch is visible only to a whole-school reader. A document is paid
+     only from its own branch's bank account, and settles only documents of its
+     own branch. A central payroll run covers every branch's staff, so it names
+     no branch itself: it posts one journal per branch, each naming its branch
+     and paid from that branch's bank account.
+   - At a school with one branch, a transaction not yet given a branch is that
+     branch's (`same_transaction_branch`), so the dimension recedes there.
+
+   Test more than one shape of school - a single-branch test proves nothing about
+   a multi-branch one.
 
 ## Verification follows the current change
 
@@ -100,43 +138,6 @@ the fields added, changed or reviewed. If there is no impact, say
 `Field Access impact: none` and give the reason. Documentation-only and Git-only
 requests do not require this statement.
 
-## The word "school" belongs to the schools folder
-
-School concepts - students, guardians, classes, terms, sessions - live in
-`apps/schools/`. Outside that folder, say **tenant**.
-
-This covers naming, not just models: parameter names, serializer fields,
-constants, local variables and JSON body keys. `LoginService.login(..., tenant=...)`,
-never `school=...`, because `vs_user` is an engine app and the engines must stay
-domain-neutral.
-
-Prose may still mention a school where it explains where a value comes from -
-"the tenant slug the frontend takes from the school's subdomain" is good
-documentation. The rule bans school vocabulary in identifiers, not in
-explanations.
-
-## Every school has at least one branch
-
-XVS is multi-tenant. Corona Secondary School is simply the first tenant, and
-nothing may be special-cased to one tenant's arrangement.
-
-**A school is created with a main branch and can never have none**, so every user,
-document and record can always be given one. Do not write code that handles a
-branchless school; that shape does not exist.
-
-**A school with exactly one branch still needs the dimension to recede.** One
-branch is the common case, and a switcher with a single entry, a column repeating
-the same value on every row, or a filter with one option are all noise. Where a
-school has one branch the control is absent, not disabled. Where it has several,
-branch appears wherever it changes meaning.
-
-**A null branch means "shared across the school", never "no branches exist".**
-That is a deliberate, first-class value - see academic structure and procurement
-documents - and it keeps that meaning however many branches a school has.
-
-Test more than one shape of school. A single-branch test proves nothing about a
-multi-branch one.
-
 ## Testing strategy
 
 A test run exists to answer a question about the change in front of you. Run
@@ -171,8 +172,9 @@ helpers (`core/test_utils.py`, `vs_rbac/tests/helpers.py`,
 `schools/core/fal/testing.py`, the `tests/base.py` modules). Even there, run
 the targeted tests first and escalate only once they pass.
 
-Documentation-only changes need no test run. Read-only and git-only requests
-never trigger one (see **Verification follows the current change**).
+Documentation-only changes need no test run, and neither do read-only or
+git-only requests (inspect, explain, stage, commit, push): run tests for them
+only when asked.
 
 ### Say what you ran
 
@@ -326,7 +328,7 @@ without naming *what* makes it so.
 4. **What tests do we need before we ship it?**
    - Security-critical first: permission-denied (403) and cross-tenant isolation.
    - Then happy path + every filter/branch + the empty-list response shape
-     (`success_response` coerces `[]` → `{}`).
+     (`success_response` keeps `[]` a list; only an absent payload becomes `{}`).
    - Name the tests; if you added some, say which cases are still uncovered.
 
 Finish with a one-line **verdict**: ship / fix-first, and the single most
@@ -345,17 +347,16 @@ an empty heading is worse than no heading, and never pad a section to fill it ou
   produced.
 - **What you decided** - decisions taken and locked, one line each. Only if
   decisions were actually made.
-- **What was fixed** - resolved defects, written in the past tense. Include only
-  when knowing the original cause is useful and it has not already been explained.
-- **What still needs attention** - only defects, risks, or incomplete work that
-  remain after the task. Omit this section entirely when nothing remains.
+- **What we found wrong in the code** - real defects and gaps, grouped under short
+  themes once there are more than about four. **Only if there are findings** - if
+  nothing is wrong, leave this out entirely rather than writing "nothing found".
 - **Where to go next** - the order of the next steps, and which of them are
   unblocked right now.
 
 That list is closed. Do not invent a heading for something that does not fit one
 of them: put it under the heading it belongs to, and if it belongs under none of
-them, leave it out of the breakdown entirely. A section the user did not ask for
-is one they must decode before they can tell whether it needs them.
+them, leave it out of the breakdown entirely. A section I did not ask for is one
+I have to decode before I can tell whether it needs me.
 
 How to write it:
 
@@ -373,19 +374,19 @@ How to write it:
 
 ## Asking, suggesting and disputing: use a real example
 
-When you need a decision from the user, **ask the question directly**. Do not bury
-it in a paragraph, do not quietly answer it yourself and move on, and do not hand
-over a list of considerations in place of the question.
+When you need a decision from me, **ask the question directly**. Do not bury it in
+a paragraph, do not quietly answer it yourself and move on, and do not hand me a
+list of considerations in place of the question.
 
-Then **show the consequence with a real example** - named people, a named school,
-a specific sequence of events. The example is what makes a choice obvious, so it
-is not decoration and it is not optional.
+Then **show me the consequence with a real example** - named people, a named
+school, a specific sequence of events. The example is what makes a choice
+obvious, so it is not decoration and it is not optional.
 
 This applies equally to three things:
 
-- **questions** - what needs deciding;
-- **suggestions** - something you think should be done;
-- **disputes** - something you think is wrong, including a decision already taken.
+- **questions** - what you need me to decide;
+- **suggestions** - something you think we should do;
+- **disputes** - something you think is wrong, including something I decided.
 
 Write the example the way it would actually happen:
 
@@ -402,7 +403,7 @@ Not:
 
 The second one is true and nobody can act on it. Abstractions hide the size of a
 thing in both directions - they make a small risk sound alarming and a serious one
-sound routine. A concrete case is the only way it can be weighed.
+sound routine. A concrete case is the only way I can weigh it.
 
 Keep it short. One example, the shortest one that still shows the consequence.
 Where a choice has two sides, show the bad case **and** the good case, not only
@@ -420,6 +421,25 @@ explicitly - never `git add -A`; commit to main, don't push; one sequential
 agent when fixes share constants.py/migrations; run the test suite yourself
 after agent work). Template: `docs/finance/_report_template.md`. Status and
 next slices live at the top of the playbook.
+
+## Fixing problems: root cause, not symptom
+
+When I ask you to fix a problem, treat the reported issue as one *instance* of
+a potentially wider defect - fix it holistically:
+
+1. **Trace it to its source.** Ask why the bug exists - a wrong assumption, a
+   missing invariant, a fragile pattern - not just where it surfaced.
+2. **Fix the class, not the case.** If the same root cause can bite elsewhere
+   (other views, serializers, services, callers of the same helper), fix it at
+   the choke point they all share, or sweep the other occurrences in the same
+   change.
+3. **Name the root.** In the summary/commit, state the underlying cause and
+   where else it applied, so the fix is reviewable as a class-fix, not a patch.
+
+A fix that only silences the reported symptom while the source remains is not
+done - that includes suppressing errors, special-casing one caller, or adding
+a guard where the real problem is upstream. The goal is that future problems
+from the same source never happen.
 
 ## Comments: short inline, the story in the docstring
 
@@ -556,7 +576,55 @@ MRD and affected existing FRDs were checked and why no version change was needed
 8. Use the document creation and render workflow for `.docx` files. Render every
    page and correct clipping, stale version labels, split headings, orphaned
    notes, broken tables, stale contents, and inconsistent page numbers before
-   presenting the documents.
+   presenting the documents. See **Checking a revision** below for how.
+
+### Checking a revision
+
+Two checks, two tools, and neither of them is Microsoft Word. Opening a
+document in Word stops for a file-access grant and sometimes fails to open at
+all, and nothing in this workflow needs it.
+
+**Pages: LibreOffice, headless.** It lays a document out the way Word does
+closely enough to catch every fault in step 8, and it runs with no window and no
+prompt. **Only with the documents' own fonts installed**: the MRD and most FRDs
+are set in Aptos Narrow and some FRDs in Calibri and Consolas. Without them
+LibreOffice substitutes Arial Narrow, every line changes width, and the page
+breaks it shows are not Word's (the MRD came out at 45 pages instead of 48).
+They are installed for this Mac's user from Word's own bundle,
+`/Applications/Microsoft Word.app/Contents/Resources/DFonts`; on another machine,
+copy them from there to `~/Library/Fonts` first, and check with `pdffonts` that
+the PDF names Aptos rather than a substitute. With them, MRD v2.93, M03 v1.18.1
+and M12 v2.12 render to exactly Word's page counts, and M07 v1.19 one page
+shorter, where its long change-log table breaks differently: a difference in
+where a long table breaks is not a fault, a clipped or split row is.
+
+Work on the file where the generator wrote it, send the output outside the repo,
+and give it a profile of its own so it never touches a desktop session:
+
+```bash
+soffice --headless --norestore \
+  -env:UserInstallation=file:///tmp/xvs-lo-profile \
+  --convert-to pdf --outdir /tmp/xvs-render <file>.docx
+pdftoppm -jpeg -r 60 /tmp/xvs-render/<file>.pdf /tmp/xvs-render/page
+```
+
+Look at every page, then at full size wherever a table, a heading or a new
+requirement was added. `soffice` is `/Applications/LibreOffice.app/Contents/MacOS/soffice`,
+linked onto the PATH. Schema-check each new file against the version it
+supersedes as well, with the docx skill's `validate.py --original`.
+
+**Content: the console's Documents screen.** Sign in to console-fe as the local
+platform operator (`create_superuser`) and open Documents: every MRD and FRD
+version on disk is listed and opens in an in-browser reader, which is the
+quickest way to read wording, tables and version labels, and the place to send
+the user to review. Three limits:
+
+- It is a preview. Fonts and page breaks are its own, so layout judgements come
+  from the LibreOffice render, never from this.
+- It is read-only by design. A correction goes into the `tools/` patch script
+  and the document is regenerated, never edited anywhere else.
+- The library is scanned once per backend process. Restart `runserver` after
+  generating a version, or the new file is not listed.
 
 ### Version selection
 
@@ -577,7 +645,8 @@ MRD and affected existing FRDs were checked and why no version change was needed
 ### Review and commit gate
 
 Generate revised MRD and FRD versions after implementation and verification,
-then give the user the code summary and new documents for review. Do not stage or
+then give the user the code summary and new documents for review, naming the
+versions to open on the console's Documents screen. Do not stage or
 commit the implementation or generated documents until the user approves them,
 unless the user explicitly waives this review gate. After approval, stage only
 the intended files, never use `git add -A`, and never include Office lock files,
@@ -640,4 +709,4 @@ The rules that follow from it:
   supplies through `AppLogo` and `LoadingMark`, so each app shows its own brand
   on the shared screens.
 
-In this repository the brand reaches users through email: a school tenant's emails carry the XVS logo (`schools/core/fal/notification_branding.py`), and everything else signs as CodeX.
+In this repository the brand reaches users through email: a school tenant's emails carry the XVS logo and come from the school's own name ("Lagoon View Academy", at the platform's sending address, whoever triggered the email) (`schools/core/fal/notification_branding.py`), and everything else signs as CodeX.
