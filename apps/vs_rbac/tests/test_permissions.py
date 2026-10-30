@@ -367,6 +367,31 @@ class HasRBACPermissionTests(TestCase):
 
         self.assertTrue(self.perm_class.has_permission(request, view))
 
+    def test_a_view_that_names_no_key_refuses_everyone_but_the_super_admin(self):
+        """A key forgotten on a new route closes it rather than opening it."""
+        from types import SimpleNamespace
+
+        user = make_staff_user(self.branch)
+        role = make_role(self.school, name="Viewer")
+        make_role_permission(role, self.perm_view)
+        make_assignment(self.school, user, role)
+        request = self._make_request(user, tenant=self.school.tenant)
+
+        with self.assertLogs("vs_rbac.permissions", level="ERROR") as logged:
+            allowed = self.perm_class.has_permission(request, SimpleNamespace())
+
+        self.assertFalse(allowed)
+        self.assertIn("names no rbac_permission", logged.output[0])
+
+    def test_a_view_open_on_purpose_says_why_and_lets_everyone_signed_in_through(self):
+        from types import SimpleNamespace
+
+        user = make_staff_user(self.branch)
+        request = self._make_request(user, tenant=self.school.tenant)
+        view = SimpleNamespace(rbac_open_reason="Every member of staff reads the rules.")
+
+        self.assertTrue(self.perm_class.has_permission(request, view))
+
     def test_denied_none_of_multiple_permissions(self):
         user = make_staff_user(self.branch)
         # User has no roles

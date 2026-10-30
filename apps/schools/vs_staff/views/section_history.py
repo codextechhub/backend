@@ -25,6 +25,10 @@ class StaffSectionHistoryView(StaffViewMixin, APIView):
 
     profile_group = GROUP_CONTACT
     pending_tenant_surface = True
+    rbac_open_reason = (
+        "A person reads their own sections' history; admit_profile_read decides "
+        "everyone else, by the section's own read key and the profile policy."
+    )
 
     def get(self, request, pk):
         section = request.query_params.get("section", "")

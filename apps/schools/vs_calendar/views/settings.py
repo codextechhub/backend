@@ -47,6 +47,8 @@ class CalendarRulesView(CalendarViewMixin, APIView):
 
     pagination_class = None
 
+    rbac_open_reason = "Every member of staff reads the calendar rules their screens follow; changing them needs PERM_SETTINGS_UPDATE."
+
     def get_permissions(self):
         self.rbac_permission = (
             None if self.request.method in ("GET", "HEAD", "OPTIONS")

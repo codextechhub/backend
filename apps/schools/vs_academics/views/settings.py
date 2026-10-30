@@ -37,6 +37,8 @@ class AcademicRulesView(AcademicsViewMixin, APIView):
     docstring-name: Academic structure settings
     """
 
+    rbac_open_reason = "Every member of staff reads the academic rules their screens follow; changing them needs PERM_SETTINGS_UPDATE."
+
     def get_permissions(self):
         self.rbac_permission = (
             None if self.request.method in ("GET", "HEAD", "OPTIONS")

@@ -112,6 +112,14 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         "eligible_assignees": TicketPermission.ASSIGN,
     }
 
+    # Filing a ticket and working your own need no key: who sees which ticket
+    # is the queryset's question (visibility.visible_tickets_qs). Only the
+    # triage actions above name one.
+    rbac_open_reason = (
+        "Anyone signed in files a ticket and works the ones they can see; "
+        "visibility.visible_tickets_qs decides which."
+    )
+
     @property
     def rbac_permission(self):
         return self.RBAC_ACTION_KEYS.get(self.action)
@@ -426,6 +434,7 @@ class TicketDashboardView(APIView):
     """
 
     permission_classes = TICKET_PERMISSIONS
+    rbac_open_reason = "It counts only the tickets the caller's own list shows."
     pending_tenant_surface = True
 
     def get(self, request):

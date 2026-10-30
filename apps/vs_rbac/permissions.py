@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
@@ -12,6 +14,8 @@ from .evaluator import (
     has_all_permissions,
     is_tenant_staff,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Read the DRF request user through one helper so permission classes stay consistent.
@@ -343,6 +347,12 @@ class HasRBACPermission(BasePermission):
 
     If both rbac_permission and rbac_group_permission are set, both conditions must be met.
 
+    A view that names neither is refused. One that is meant to be open to
+    everyone signed in (who may still be narrowed by the view itself) says so
+    with ``rbac_open_reason``, a sentence a reviewer can check::
+
+            rbac_open_reason = "Every member of staff reads the school's rules."
+
     The tenant context is read from ``request.rbac_tenant`` / ``request.tenant``
     (set by ``TenantJWTAuthentication`` from the ``?tenant=`` assertion).
 
@@ -375,6 +385,18 @@ class HasRBACPermission(BasePermission):
 
         rbac_perms = getattr(view, "rbac_permission", None)
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
+
+        # A view that names no key refuses, unless it says why it needs none
+        # (``rbac_open_reason``): a key forgotten on a new route must close
+        # it, not open it to everyone signed in.
+        if not rbac_perms and not rbac_group_perms:
+            if getattr(view, "rbac_open_reason", None):
+                return True
+            logger.error(
+                "%s names no rbac_permission and no rbac_open_reason; refused.",
+                view.__class__.__name__,
+            )
+            return False
 
         passed = True  # Both direct-key and group-key checks must remain satisfied.
         tenant = (

@@ -135,7 +135,7 @@ The permission classes and the attributes a view declares:
 | `IsAuthenticatedAndActive` | - | Blocks `SUSPENDED` / `LOCKED` / `DEACTIVATED`, then defers to `TenantSurfaceAllowed` |
 | `IsVisionStaff` | - | Caller's tenant kind is `PLATFORM` |
 | `IsVisionSuperAdmin` | - | `is_vision_super_admin(request.user)` |
-| `HasRBACPermission` | `rbac_permission`, `rbac_group_permission` | Direct keys are **any-of**; group keys are **all-of**; both must pass when both are set |
+| `HasRBACPermission` | `rbac_permission`, `rbac_group_permission`, `rbac_open_reason` | Direct keys are **any-of**; group keys are **all-of**; both must pass when both are set. A view naming neither is **refused** (and logged) unless it carries `rbac_open_reason`, a sentence saying why everyone signed in may pass; `vs_rbac/tests/test_every_route_names_a_key.py` walks every route and method and fails on one that names nothing |
 | `HasAnyModuleAccess` | `rbac_modules` | Any key whose module prefix matches |
 | `ReadOnly` | - | `request.method in SAFE_METHODS` |
 
