@@ -197,10 +197,12 @@ on this account instead returns `403 ACCOUNT_LOCKED`, flips `user.status` to
 
 ## 8. Gotchas / known limitations
 
-- **Two-step sign-in covers the student and parent apps' device sign-in too.**
-  A member of staff who is also a parent is offered a parent-app session that
-  carries their staff permissions, so the gate cannot skip it. Until those
-  apps can take a code, such a person cannot sign in to them.
+- **Two-step sign-in covers the parent app's device sign-in too.** A member
+  of staff who is also a parent is offered a parent-app session that carries
+  their staff permissions, so the gate cannot skip it. The parent app takes
+  the code or a backup code, and sends someone not yet set up to the staff
+  sign-in to set up there. A pupil holds no administrator or money permission,
+  so the student app is never asked.
 - **The authenticator secret is stored as the app holds it**, as Django's own
   one-time-password packages do. Backup codes and challenges are digests.
 
