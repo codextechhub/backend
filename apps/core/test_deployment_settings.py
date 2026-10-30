@@ -245,9 +245,12 @@ class DeployedAddressTests(SimpleTestCase):
             ["HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP"],
         )
         middleware = resolved["MIDDLEWARE"]
-        self.assertEqual(middleware[0], "core.client_ip.ClientIPMiddleware")
+        # The liveness answer reads no address, so the client IP is still
+        # decided before anything that does.
+        self.assertEqual(middleware[0], "vs_health.liveness.LivenessMiddleware")
+        self.assertEqual(middleware[1], "core.client_ip.ClientIPMiddleware")
         self.assertEqual(
-            middleware[1:3],
+            middleware[2:4],
             ["corsheaders.middleware.CorsMiddleware",
              "whitenoise.middleware.WhiteNoiseMiddleware"],
         )

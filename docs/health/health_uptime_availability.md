@@ -13,6 +13,21 @@ Routes covered by this slice, mounted at `/v1/health/` (`apps/urls.py:39`):
 Request metrics and the golden signals are `health_signal_collection`; alerts
 and incidents are `health_incidents_alerts`; queues are `health_queues_jobs`.
 
+**The one public route, `/v1/health/live/`** (`vs_health/liveness.py`), is
+for Render's health check and an outside uptime monitor, not for the console.
+It needs no sign-in and answers 200 `{"status": "ok", "database": "ok",
+"cache": "ok"}` when the database answers `SELECT 1`, and 503 when it does not.
+Redis is reported (`ok`, `unavailable`, or `not used`) but never makes it a
+503, because the platform serves on without Redis (`core.cache`). It is
+answered by `LivenessMiddleware`, first in `MIDDLEWARE`, so Render's probe
+(its own host name, plain HTTP) meets neither `ALLOWED_HOSTS` (a 400 would
+read as a dead instance and hold every deploy back) nor the HTTPS redirect (a
+301 would read as healthy whatever the database says), and so a probe every
+few seconds stays out of the request metrics. `GET` and `HEAD` only; the body
+names nothing about the platform. Set it as each web service's Health Check
+Path only once the running build has the route, or Render will keep that
+deploy from going live.
+
 ---
 
 ## 1. What it is (and what it is NOT)

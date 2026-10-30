@@ -32,6 +32,10 @@ services:
     plan: starter
     buildCommand: "./build.sh"
     startCommand: "cd apps && gunicorn apps.wsgi:application"
+    # Public, answered before host checks and redirects; 503 when the database
+    # does not answer (vs_health.liveness). A service created by hand sets the
+    # same path under Settings, Health Check Path.
+    healthCheckPath: /v1/health/live/
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: apps.settings.staging

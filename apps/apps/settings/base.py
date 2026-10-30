@@ -466,7 +466,10 @@ INSTALLED_APPS = [
 CLIENT_IP_HEADERS: tuple[str, ...] = ()
 
 MIDDLEWARE = [
-    # First, so nothing reads REMOTE_ADDR before it is decided.
+    # Before everything: Render's health check and the uptime monitor must be
+    # answered whatever host or scheme they arrive on (vs_health.liveness).
+    "vs_health.liveness.LivenessMiddleware",
+    # First of the rest, so nothing reads REMOTE_ADDR before it is decided.
     "core.client_ip.ClientIPMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",

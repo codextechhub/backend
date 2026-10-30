@@ -92,6 +92,21 @@ MUST SAY:
 - MRD Needs Attention: the audit trail still names erased people (it refuses
   changes by trigger).
 
+### D135. A public liveness route for Render's health check and the uptime monitor (PENDING, 2026-10-30)
+MODULES: M30 system health and monitoring, MRD (deployment readiness).
+MUST SAY:
+- GET or HEAD /v1/health/live/ needs no sign-in and answers 200
+  {"status": "ok", "database": "ok", "cache": "ok"} when the database answers,
+  503 when it does not. Redis is reported (ok, unavailable, not used) but never
+  makes it a 503: the platform serves on without Redis. The body names nothing
+  about the platform.
+- It is answered by vs_health.liveness.LivenessMiddleware, first in the stack,
+  so a probe on any host name or over plain HTTP is answered rather than
+  refused by ALLOWED_HOSTS or redirected to HTTPS, and probes stay out of the
+  request metrics. Every other /v1/health/ route still needs a platform operator.
+- render.yaml sets it as the web service's healthCheckPath; a service made by
+  hand sets it under Settings, Health Check Path, once its build has the route.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.

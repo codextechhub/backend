@@ -109,8 +109,11 @@ class GetClientIPTests(SimpleTestCase):
 
 
 class WiringTests(SimpleTestCase):
-    def test_the_middleware_runs_first(self):
-        self.assertEqual(settings.MIDDLEWARE[0], "core.client_ip.ClientIPMiddleware")
+    def test_the_middleware_runs_before_anything_that_reads_an_address(self):
+        # Only the liveness answer runs earlier, and it reads no address.
+        self.assertEqual(settings.MIDDLEWARE[:2], [
+            "vs_health.liveness.LivenessMiddleware", "core.client_ip.ClientIPMiddleware",
+        ])
 
     def test_throttles_trust_no_forwarding_proxy(self):
         """``NUM_PROXIES = 0`` is what makes DRF key throttles on REMOTE_ADDR."""
