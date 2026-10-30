@@ -192,7 +192,8 @@ app.conf.beat_schedule = {
     },
     # Nightly: personal records past the periods the privacy policy promises
     # (sign-in history, notifications, handled webhooks, quiet conversations,
-    # closed tickets). Every period is in core.pruning.SCHEDULE. Idempotent, and
+    # closed tickets), and pupils, parents and staff erased 6 years after they
+    # leave. Every period is in core.pruning.SCHEDULE. Idempotent, and
     # batched, so a missed night only leaves the rows one day longer.
     "core-prune-past-retention": {
         "task": "core.prune_past_retention",

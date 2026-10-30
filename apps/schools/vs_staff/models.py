@@ -158,6 +158,9 @@ class StaffProfile(_Owned):
     #: The last working day, set by the RESIGNED and TERMINATED transitions and
     #: by nothing else.
     exit_date = models.DateField(null=True, blank=True)
+    #: When this person's personal details were erased, 6 years after they
+    #: left (``schools.vs_staff.erasure``). Null while they are kept.
+    erased_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     middle_name = models.CharField(max_length=100, blank=True, default="")
     date_of_birth = models.DateField(null=True, blank=True)

@@ -28,6 +28,13 @@ class VsUserConfig(AppConfig):
 
         register_field_access()
 
+        # A CodeX staff record holds its account until it is erased.
+        from django.apps import apps as django_apps
+
+        from .erasure import register_account_holder
+
+        register_account_holder(lambda: django_apps.get_model("vs_user", "PlatformStaffProfile"))
+
         # The account and CX staff rows a profile can be read as at an
         # earlier date.
         from .history import register as register_history

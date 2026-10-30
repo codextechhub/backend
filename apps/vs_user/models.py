@@ -1472,6 +1472,9 @@ class PlatformStaffProfile(TimeStampedModel):
     )
     date_joined       = models.DateField(null=True, blank=True)
     date_exited       = models.DateField(null=True, blank=True)
+    #: When this person's personal details were erased, 6 years after they
+    #: exited (``vs_user.erasure``). Null while they are kept.
+    erased_at         = models.DateTimeField(null=True, blank=True, editable=False)
 
     # ── Payroll (registered Field Access fields; the role's switches decide) ──
     bank_name      = models.CharField(max_length=120, blank=True, default='')

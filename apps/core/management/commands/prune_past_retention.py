@@ -32,5 +32,9 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"  stopped: {entry['stopped']}"))
                 continue
             for label, rows in entry["rows"].items():
-                self.stdout.write(f"  {verb} {rows} {label.replace('_', ' ')}")
+                label = label.replace("_", " ")
+                if isinstance(rows, dict):  # an erasure: how many went, how many failed
+                    self.stdout.write(f"  erased {rows['erased']} {label}, {rows['failed']} failed")
+                else:
+                    self.stdout.write(f"  {verb} {rows} {label}")
         self.stdout.write("")

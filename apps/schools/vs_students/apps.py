@@ -13,6 +13,14 @@ class VsStudentsConfig(AppConfig):
         from . import export_datasets, field_access, media_policies
         from .services import import_registry
 
+        # A pupil or parent record holds its sign-in until it is erased.
+        from django.apps import apps as django_apps
+
+        from vs_user.erasure import register_account_holder
+
+        register_account_holder(lambda: django_apps.get_model("vs_students", "Student"))
+        register_account_holder(lambda: django_apps.get_model("vs_students", "Guardian"))
+
         # The student fields an administrator may restrict per role.
         field_access.register()
         # The audit rows whose reason that registry's switch governs.

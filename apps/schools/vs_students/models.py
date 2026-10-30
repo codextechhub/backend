@@ -164,6 +164,9 @@ class Student(_Owned):
     #: cleared on leaving it. Nothing acts on it when it passes: a person
     #: decides, and ``offer_expired`` is worked out on every read.
     offer_expires_on = models.DateField(null=True, blank=True)
+    #: When this pupil's personal details were erased, 6 years after leaving
+    #: (``schools.vs_students.erasure``). Null while they are kept.
+    erased_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
@@ -297,6 +300,9 @@ class Guardian(_Owned):
     #: address for; required before that guardian can be given an account.
     email = models.EmailField(blank=True, default="")
     occupation = models.CharField(max_length=100, blank=True, default="")
+    #: When this parent's details were erased, once every child of theirs
+    #: had been (``schools.vs_students.erasure``). Null while they are kept.
+    erased_at = models.DateTimeField(null=True, blank=True, editable=False)
     #: The guardian's own address, which is not always the child's.
     address = models.TextField(blank=True, default="")
     #: A face for the person collecting a child. Always optional: a school

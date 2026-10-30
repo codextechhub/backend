@@ -5,6 +5,10 @@ The privacy policy promises how long each kind of personal record is kept
 period lives in :data:`SCHEDULE`, and one nightly task walks it, deleting what
 has passed its date. A period that changes in the policy changes here, once.
 
+The last entries are erasure rather than deletion: 6 years after a pupil,
+parent or member of staff leaves, their personal details are blanked and the
+records the school keeps stay (:mod:`core.erasure`).
+
 Each entry names the function in its own app that knows which rows have passed
 (only that app knows that a broadcast must outlive its replies, or that a
 webhook still waiting to be booked is never old). The function takes the
@@ -18,8 +22,6 @@ What this does not delete, and why:
 * Record edit history (``vs_history.RecordVersion``). The "as at a date" views
   read the oldest version as the day history began, so pruning it needs a new
   baseline written first.
-* People's own records 6 years after they leave. That is erasure, not pruning,
-  and it must leave the books intact.
 * Anything held by :mod:`core.retention` (the books): a held row refuses the
   delete and the entry is reported as stopped, never forced.
 
@@ -39,6 +41,7 @@ from django.utils.module_loading import import_string
 logger = logging.getLogger(__name__)
 
 BATCH = 1000
+SIX_YEARS = 6 * 365 + 2
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,22 @@ SCHEDULE: tuple[Period, ...] = (
         "support_tickets", 2 * 365,
         "support tickets closed 2 years ago",
         "vs_tickets.pruning.prune_closed_tickets",
+    ),
+    # Six years, leap days included, after a person leaves.
+    Period(
+        "former_pupils_and_parents", SIX_YEARS,
+        "pupils who left 6 years ago, and parents whose last child has been erased",
+        "schools.vs_students.erasure.erase_leavers",
+    ),
+    Period(
+        "former_staff", SIX_YEARS,
+        "school staff who left 6 years ago",
+        "schools.vs_staff.erasure.erase_leavers",
+    ),
+    Period(
+        "former_codex_staff", SIX_YEARS,
+        "CodeX staff who exited 6 years ago",
+        "vs_user.erasure.erase_platform_leavers",
     ),
 )
 

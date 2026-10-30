@@ -13,6 +13,13 @@ class VsStaffConfig(AppConfig):
         # and vs_payments.
         from . import signals, workflow_handlers  # noqa: F401
 
+        # A staff record holds its sign-in until it is erased.
+        from django.apps import apps as django_apps
+
+        from vs_user.erasure import register_account_holder
+
+        register_account_holder(lambda: django_apps.get_model("vs_staff", "StaffProfile"))
+
         # The staff personal details an administrator may restrict per role.
         # Field Access never imports a domain app either; the app declares its
         # own fields.
