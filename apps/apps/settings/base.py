@@ -462,8 +462,6 @@ INSTALLED_APPS = [
 
 # The client address every later reader sees. See core.client_ip.
 CLIENT_IP_HEADERS: tuple[str, ...] = ()
-# The secret the edge adds to every request it passes on; see core.client_ip.
-CLIENT_IP_EDGE_SECRET = ""
 
 MIDDLEWARE = [
     # First, so nothing reads REMOTE_ADDR before it is decided.

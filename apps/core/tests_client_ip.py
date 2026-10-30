@@ -96,51 +96,6 @@ class CloudflareEdgeTests(SimpleTestCase):
         self.assertEqual(get_client_ip(request), "2001:db8::1")
 
 
-@override_settings(CLIENT_IP_HEADERS=CLOUDFLARE, CLIENT_IP_EDGE_SECRET="edge-s3cret")
-class EdgeSecretTests(SimpleTestCase):
-    """Cloudflare's headers count only on a request Cloudflare passed on."""
-
-    def test_a_request_through_the_edge_takes_cloudflares_address(self):
-        request = _through_middleware(
-            REMOTE_ADDR=RENDER_INTERNAL,
-            HTTP_CF_CONNECTING_IP="198.51.100.7",
-            HTTP_X_XVS_EDGE="edge-s3cret",
-        )
-
-        self.assertEqual(get_client_ip(request), "198.51.100.7")
-
-    def test_a_request_to_the_render_address_cannot_choose_its_own(self):
-        """Without the secret, or with a wrong one, every such caller shares Render's address."""
-        for sent in ({}, {"HTTP_X_XVS_EDGE": "a guess"}):
-            with self.subTest(sent=sent):
-                request = _through_middleware(
-                    REMOTE_ADDR=RENDER_INTERNAL, HTTP_CF_CONNECTING_IP="203.0.113.99", **sent,
-                )
-                self.assertEqual(get_client_ip(request), RENDER_INTERNAL)
-
-    def test_the_secret_is_not_left_on_the_request(self):
-        """So no log line or error report carries it."""
-        request = _through_middleware(
-            REMOTE_ADDR=RENDER_INTERNAL,
-            HTTP_CF_CONNECTING_IP="198.51.100.7",
-            HTTP_X_XVS_EDGE="edge-s3cret",
-        )
-
-        self.assertNotIn("HTTP_X_XVS_EDGE", request.META)
-
-
-class EdgeSecretCheckTests(SimpleTestCase):
-    def test_trusting_the_headers_without_the_secret_is_warned(self):
-        from core.checks import check_client_ip_edge_secret
-
-        with override_settings(CLIENT_IP_HEADERS=CLOUDFLARE, CLIENT_IP_EDGE_SECRET=""):
-            self.assertEqual([w.id for w in check_client_ip_edge_secret()], ["core.W003"])
-        with override_settings(CLIENT_IP_HEADERS=CLOUDFLARE, CLIENT_IP_EDGE_SECRET="edge-s3cret"):
-            self.assertEqual(check_client_ip_edge_secret(), [])
-        with override_settings(CLIENT_IP_HEADERS=(), CLIENT_IP_EDGE_SECRET=""):
-            self.assertEqual(check_client_ip_edge_secret(), [])
-
-
 class GetClientIPTests(SimpleTestCase):
     def test_it_reads_remote_addr_and_never_forwarded_for(self):
         request = RequestFactory().get(
