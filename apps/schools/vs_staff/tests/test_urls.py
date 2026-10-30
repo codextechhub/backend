@@ -128,6 +128,8 @@ class SurfaceTests(SimpleTestCase):
         "StaffStatusView", "StaffHistoryView",
         "StaffAccountSuspendView", "StaffAccountReactivateView",
         "StaffAccountUnlockView", "StaffAccountEmailView",
+        # Like unlock: before go-live, CodeX resets a lost phone from the console.
+        "StaffAccountTwoStepResetView",
         "StaffTeachingView", "TeachingAssignmentDetailView",
         "ClassTeacherView", "TeachingCoverageView",
         "StaffLeaveView", "StaffLeavePreviewView", "LeaveDetailView",
