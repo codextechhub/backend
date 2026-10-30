@@ -18,6 +18,80 @@ TWO TRAPS, BOTH ALREADY MET HERE:
 
 LATEST BASES ON 2026-10-28: MRD v2.115, M01 v1.35.1, M02 v1.10, M03 v1.25, M04 v1.43, M05 v1.13.1, M06 v1.12, M07 v1.28, M08 v1.20, M09 v2.19, M10 v1.12, M11 v2.18.1, M12 v2.22, M13 v2.14, M14 v3.8, M15 v1.1, M16 v1.1, M17 v1.15, M18 v1.20, M19 v1.24, M20 v1.13, M21 v1.10, M22 v1.23, M23 v1.21, M24 v1.9, M25 v1.6, M26 v1.12, M27 v1.2, M28 v1.5.1, M30 v1.6.1, M31 v1.11, M32 v1.2. Recheck on the day.
 
+### D133. Personal records are deleted once their retention period is over (34c2c14b, 2026-10-30)
+MODULES: M03 identity (sign-in records), M08 notifications and delivery, M18 payments and collections (webhooks), M31 support tickets, M32 messaging and conversations, MRD (a platform retention capability; the privacy policy's periods).
+MUST SAY:
+- A nightly job, core.prune_past_retention (beat 03:15), deletes personal
+  records past the periods the privacy policy states. Every period is in
+  core.pruning.SCHEDULE; docs/core/core_record_retention.md is the reference.
+  `manage.py prune_past_retention --dry-run` counts a run and deletes nothing.
+- M03: sign-in attempts, sessions not seen for a year, two-step challenges,
+  password-reset and account-closure links (by expiry), web-push browsers and
+  phones not seen for a year go after 1 year; expired refresh tokens go at
+  expiry. The sign-in events in the audit trail are NOT pruned (the trail
+  refuses deletes by trigger).
+- M08: delivered or failed notifications and emails go after 1 year; an email
+  still PENDING stays whatever its age.
+- M18: provider webhooks PROCESSED or IGNORED go after 1 year; a RECEIVED one
+  stays (recovery retries it, the unbooked-money alerts read it).
+- M32: a conversation goes with its messages and participants 3 years after
+  its last message (or after it was opened, if nobody wrote); a broadcast stays
+  while any reply to it is still within its period.
+- M31: a ticket CLOSED 2 years ago goes with its comments, attachments (bytes
+  emptied), subscriptions and change log; a RESOLVED ticket stays.
+- Rows go 1,000 at a time through the ORM, so held records still refuse; one
+  period failing never stops the others.
+- MRD Needs Attention: the audit trail is kept indefinitely (no pruning past
+  6 years until its triggers allow it), record edit history has no general
+  pruning, and there is no school offboarding export-and-delete. The 1, 2 and
+  3 year periods are the privacy draft's proposals awaiting the lawyer.
+
+### D134. Pupils, parents and staff are erased 6 years after they leave (5e156d7d, 2026-10-30)
+Migrations: vs_students 0018_person_erased_at, vs_staff 0017_person_erased_at, vs_user 0021_person_erased_at (one nullable column each); renumber if another of those numbers lands first.
+MODULES: M11 student management (pupils and guardians), M12 staff management, M03 identity (CodeX staff, sign-in accounts), M17/M19 finance (the fees account and staff pay bank account), MRD.
+MUST SAY:
+- Erasure, not deletion, run from the same nightly job: the person's row stays
+  so results, attendance and the books still point at someone, and everything
+  else about them is blanked. Owner decision 2026-10-30: pupils and staff keep
+  their names (results and payslips carry them); a parent's name is replaced.
+- M11 pupils: erased 6 years after the status change that made them WITHDRAWN,
+  GRADUATED, TRANSFERRED or REJECTED (else when the record last changed). Kept:
+  name, admission number, status, branch, birth year (date of birth becomes 1
+  January), results, attendance, enrolments. Gone: gender, nationality, state
+  of origin, address, phone, email, photo, previous school, blood group,
+  allergies, conditions, emergency contact; documents deleted with their files;
+  the reason and destination school on status changes blanked; conversations
+  about the pupil deleted.
+- M11 guardians: erased once every child of theirs has been (6 years after
+  last changed, if linked to no pupil). Name becomes "Former parent"; phone,
+  alternate phone, email, occupation, address and photo go; family
+  conversations deleted; links to their children stay.
+- M12 staff: erased 6 years after exit_date (else the off-roll change, else
+  last change). Kept: name, staff number, job, dates of service, teaching,
+  class and attendance records, leave type and dates. Gone: date of birth,
+  photo; qualifications and documents deleted with their files; reasons and
+  notes on employment changes blanked (the log refuses edits otherwise; this
+  is the one change allowed); leave notes blanked.
+- M03: CodeX staff EXITED are erased 6 years after date_exited: personal
+  details, next of kin and bank details go; name, staff number and job stay.
+  Each erased person's sign-in is closed as "Delete my account" closes it,
+  then its phone, sign-in identifiers and gender are cleared and its email
+  becomes erased-<id>@erased.invalid, unless another un-erased record still
+  holds the account (a former teacher who is a parent there keeps hers).
+- Finance: the pupil's fees account keeps its name and loses its billing
+  email, phone and address; a staff member's pay bank account is cleared
+  (payments made keep their own copy). Invoices, receipts and payslips are
+  untouched.
+- Edit history: the same fields are blanked in every stored copy, which stay,
+  so a list rebuilt for an earlier date still holds everyone; a deleted
+  document or qualification loses its copies. erased_at on Student, Guardian,
+  StaffProfile and PlatformStaffProfile marks who is done (server-owned, in no
+  serializer: Field Access impact none).
+- Each person is erased in their own transaction; a failure is logged,
+  counted, and retried the next night.
+- MRD Needs Attention: the audit trail still names erased people (it refuses
+  changes by trigger).
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
