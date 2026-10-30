@@ -190,6 +190,14 @@ app.conf.beat_schedule = {
         "task": "vs_tickets.prune_guide_analytics",
         "schedule": crontab(hour=3, minute=50),
     },
+    # Nightly: personal records past the periods the privacy policy promises
+    # (sign-in history, notifications, handled webhooks, quiet conversations,
+    # closed tickets). Every period is in core.pruning.SCHEDULE. Idempotent, and
+    # batched, so a missed night only leaves the rows one day longer.
+    "core-prune-past-retention": {
+        "task": "core.prune_past_retention",
+        "schedule": crontab(hour=3, minute=15),
+    },
 
     # --- vs_onboarding (abandoned onboarding, go-live history) ------------
     # Daily: suspend schools PENDING for 90 days, then warn those at 76. Expiry

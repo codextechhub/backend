@@ -41,3 +41,11 @@ def prune_task_diagnostics_task() -> dict:
         expires_at__lt=timezone.now(),
     ).delete()
     return {"pruned": deleted}
+
+
+@shared_task(name="core.prune_past_retention")
+def prune_past_retention_task() -> dict:
+    """Delete the personal records past the periods in ``core.pruning.SCHEDULE``."""
+    from core.pruning import run
+
+    return run()
