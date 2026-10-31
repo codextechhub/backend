@@ -167,6 +167,13 @@ MUST SAY:
   product email brand mark is unchanged. These are local backend changes;
   do not infer deployment or production adoption.
 
+### D141. Bank-account and vendor master changes gain an audit trail (4d7cfb29, 2026-10-31)
+MODULES: M04 roles and permissions, M05 audit and activity logging, M19 finance and accounting, M21 vendor management, MRD.
+MUST SAY:
+- Creating or editing a bank account writes a transactional finance audit row with the registered master values. Selecting a new primary operating or collection account also records the account whose primary flag was cleared.
+- Creating or editing vendor master fields writes a transactional finance audit row with registered contact, tax, banking, category, terms, compliance and accounting values.
+- Audit snapshots are served through the relevant `finance.bankaccount` and `procurement.vendor` Read switches. The sentence names only the account or vendor label, so a reader with a closed switch sees that an edit happened without its protected value. These are local backend changes; do not infer deployment or production adoption.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
