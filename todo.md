@@ -107,6 +107,28 @@ MUST SAY:
 - render.yaml sets it as the web service's healthCheckPath; a service made by
   hand sets it under Settings, Health Check Path, once its build has the route.
 
+### D136. Account phone follows Field Access across account management (0c2a74d4, 2026-10-31)
+MODULES: M03 identity, M04 roles and permissions, M07 workflow approvals, MRD.
+MUST SAY:
+- `platform.team.phone` has separate Read and Write switches at tenant scope,
+  open by default. Account detail and update responses omit the phone when its
+  Read switch is closed, and create and update refuse an unauthorized phone
+  value. A person may still correct their own phone.
+- The CodeX user-creation approval card marks Phone with the same switch, so
+  an approver whose role cannot read it sees no phone on the card.
+- Field Access registration and the working ledger are reconciled with the
+  account, approval and export paths. Do not infer deployment or production
+  adoption from the local tests.
+
+### D137. Console account forms respect the phone switches (0472f520, console-fe, 2026-10-31)
+MODULES: M02 admin console, M03 identity, M04 roles and permissions, MRD.
+MUST SAY:
+- The CodeX account create, draft, edit and detail screens hide or withhold
+  phone when the role lacks its Read or Write switch. A read-only phone is not
+  sent in create, draft or update requests.
+- The backend owns the phone decision in commit 0c2a74d4. The console follows
+  the server's field map and was checked locally; deployment is not asserted.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
