@@ -210,8 +210,9 @@ MUST SAY:
   erased is erased by the nightly run that night; the response names them.
 - Both keys go to the school administrator role by default (export SENSITIVE,
   erase CRITICAL). Both acts are audit entries (PERSONAL_DATA_EXPORTED,
-  PERSONAL_DATA_ERASED with the reason). School-fe has the permission codes;
-  its buttons are not built yet. Whole-school export and deletion is not built.
+  PERSONAL_DATA_ERASED with the reason). School-fe's pupil, guardian and staff
+  profiles carry both actions (02bd13b, school-fe). Whole-school export and
+  deletion is not built.
 
 ## Undone
 

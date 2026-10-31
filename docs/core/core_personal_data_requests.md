@@ -66,8 +66,14 @@ administrator role by default; any other role only if the school grants it.
 permission group. School-fe: `P.EXPORT_PERSONAL_DATA` (102518) and
 `P.ERASE_PERSONAL_DATA` (102531).
 
+## In school-fe
+
+The pupil, guardian and staff profiles carry "Download their data" and "Erase
+their details" (`src/components/people/personal-data-actions.tsx`), each shown
+to a holder of its key. Erase opens a sheet saying what goes and what stays and
+asks for the reason before it runs.
+
 ## Not here yet
 
-- Whole-school export and deletion when a school leaves XVS (the data
-  processing agreement, clause 9): its own checklist item.
-- Buttons in school-fe's pupil, guardian and staff profiles.
+Whole-school export and deletion when a school leaves XVS (the data
+processing agreement, clause 9): its own checklist item.
