@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
+from core.image_fixtures import photo
 from core.media import sign
 from schools.vs_students.constants import DocumentType, Relationship, StudentStatus
 from schools.vs_students.media_policies import _may_read_student_file
@@ -34,7 +35,10 @@ def _upload(client, tenant, student, document_type):
         f"{url}?tenant={tenant.slug}",
         {
             "document_type": document_type,
-            "file": SimpleUploadedFile(name, b"x" * 32, content_type=content_type),
+            "file": (
+                photo(name) if document_type == PHOTO
+                else SimpleUploadedFile(name, b"x" * 32, content_type=content_type)
+            ),
         },
         format="multipart",
     )

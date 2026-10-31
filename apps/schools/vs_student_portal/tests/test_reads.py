@@ -13,6 +13,7 @@ import datetime as dt
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
+from core.image_fixtures import image_bytes
 from core.test_utils import TenantAPIClient
 from schools.vs_attendance.tests.base import NOW, TODAY, school_clock
 from schools.vs_attendance.tests.lesson_base import LessonFixture
@@ -21,12 +22,8 @@ from schools.vs_attendance.tests.lesson_base import publish
 from schools.vs_students.services import portal_access
 from vs_user.models import User
 
-#: A one-pixel PNG, enough for the upload checks.
-PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
-    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01"
-    b"\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+#: A small real PNG: the upload check opens the picture.
+PNG = image_bytes("PNG")
 
 
 class PortalReadsFixture(LessonFixture):

@@ -19,6 +19,7 @@ import json
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
+from core.image_fixtures import photo
 from schools.vs_academics.models import Level, Program, SchoolClass
 from schools.vs_students.constants import DocumentType, StudentStatus
 from schools.vs_students.imports import validate_students_import_batch
@@ -133,9 +134,7 @@ class EnrolmentDocumentSecurityTests(_EnrolFixture):
     def test_a_photograph_is_refused_without_its_write_switch(self):
         """The enrol form cannot attach what the documents route would refuse."""
         response = self.post_form(self.clerk, self.body(), {
-            "document_PASSPORT_PHOTO": SimpleUploadedFile(
-                "face.jpg", b"x" * 16, content_type="image/jpeg",
-            ),
+            "document_PASSPORT_PHOTO": photo("face.jpg"),
         })
         self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(response.data["error"]["code"], "field_write_denied")

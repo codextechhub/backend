@@ -1083,20 +1083,51 @@ class DocumentSerializer(serializers.Serializer):
 #: enough that a directory of fifty faces is not a slow page.
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
-IMAGE_CONTENT_TYPES = frozenset({
-    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
-})
+#: What a photograph may be, by the format Pillow reads in its bytes, and the
+#: extension the stored copy is given to match. HEIC is absent because the
+#: store refuses it (``core.storage.ALLOWED_EXTENSIONS``) and most browsers
+#: cannot draw it.
+IMAGE_FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
+
+#: The ISO brands an iPhone's HEIC or HEIF photo opens with, after ``ftyp``.
+_HEIF_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1")
+
+
+def _image_format(upload):
+    """The format Pillow finds in *upload*'s bytes, or None if it is no picture.
+
+    Opens the file and ``verify()``s it, then rewinds so the caller can still
+    save the bytes. A picture too large to decode safely
+    (``DecompressionBombError``) counts as no picture.
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(upload) as image:
+            found = image.format
+            image.verify()
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
+        found = None
+    finally:
+        upload.seek(0)
+    return found
 
 
 def check_upload(upload, *, field, must_be_image, subject):
-    """Size, and type when the file will be rendered as a picture.
+    """Size, and real image contents when the file will be drawn as a picture.
 
-    One function for both photographs. A file accepted here is drawn in an
+    One function for every photograph. A file accepted here is drawn in an
     ``<img>`` on a list, so a PDF that slips through is a broken picture beside
     a person's name on the directory, the class register and the guardian's
     list of children - and nothing on any of those screens would say why. The
     refusal names what was sent instead, because "invalid file" sends somebody
     trying the same PDF again.
+
+    The picture is judged by its bytes, never by the content type the browser
+    sent, which is whatever the sender says it is. Pillow must open it as a
+    JPEG, PNG or WebP, and the upload is renamed to that format's extension,
+    so the stored copy is served as what it really is: a JPEG named
+    ``face.pdf`` is kept as ``face.jpg``.
 
     Raises ``ValidationError`` keyed on ``field`` so the message lands under
     the input the reader would change.
@@ -1111,14 +1142,31 @@ def check_upload(upload, *, field, must_be_image, subject):
         })
     if not must_be_image:
         return
+    found = _image_format(upload)
+    if found in IMAGE_FORMATS:
+        name = str(getattr(upload, "name", "") or "")
+        stem = name.rsplit(".", 1)[0] if "." in name else name
+        upload.name = f"{stem or 'photo'}.{IMAGE_FORMATS[found]}"
+        return
+
+    head = upload.read(12)
+    upload.seek(0)
     content_type = (getattr(upload, "content_type", "") or "").lower()
-    if content_type not in IMAGE_CONTENT_TYPES:
-        raise serializers.ValidationError({
-            field: (
-                f"{subject} must be an image - JPEG, PNG, WebP or HEIC. This "
-                f"one is a {content_type or 'file of unknown type'}."
-            ),
-        })
+    if head[4:8] == b"ftyp" and head[8:12] in _HEIF_BRANDS:
+        sent = (
+            "This one is a HEIC photo, which most browsers cannot show. Save "
+            "it as a JPEG, then upload the new copy."
+        )
+    elif content_type.startswith("image/") or not content_type:
+        sent = (
+            "This file could not be opened as a picture. Open it and save it "
+            "again as a JPEG, then upload the new copy."
+        )
+    else:
+        sent = f"This one is a {content_type}."
+    raise serializers.ValidationError({
+        field: f"{subject} must be an image - JPEG, PNG or WebP. {sent}",
+    })
 
 
 class DocumentUploadSerializer(serializers.Serializer):

@@ -902,7 +902,13 @@ the passport photograph), and the passport photograph needs the caller's
 | `document_<TYPE>` sent as text with no file | `Attach a file here, or leave the field out.` |
 | any other text field beside `payload` | `Only payload and document files are read from this form. Put this value in the payload.` |
 | a file too large | `That file is 6MB. The limit is 5MB.` |
-| a passport photograph that is not an image | `A passport photograph must be an image - JPEG, PNG, WebP or HEIC. This one is a application/pdf.` |
+| a passport photograph that is not an image | `A passport photograph must be an image - JPEG, PNG or WebP. This one is a application/pdf.` |
+| a file sent as an image that does not open as one | `A passport photograph must be an image - JPEG, PNG or WebP. This file could not be opened as a picture. Open it and save it again as a JPEG, then upload the new copy.` |
+| an iPhone HEIC photo | `A passport photograph must be an image - JPEG, PNG or WebP. This one is a HEIC photo, which most browsers cannot show. Save it as a JPEG, then upload the new copy.` |
+
+A photograph is judged by its bytes, not the type the browser sends: Pillow
+must open it as a JPEG, PNG or WebP, and it is stored under that format's
+extension, so a JPEG named `face.pdf` is kept as `face.jpg`.
 
 A text field beside the payload is refused rather than ignored because
 `as_applicant` sent flat would otherwise be dropped and the child enrolled

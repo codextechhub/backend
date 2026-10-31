@@ -11,6 +11,7 @@ from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from core.image_fixtures import photo
 from core.media import sign
 
 from schools.vs_academics.models import (
@@ -41,6 +42,13 @@ from schools.vs_students.models import (
 from vs_config.clock import branch_today
 
 from .base import StudentsFixture
+
+
+def _file(name, content_type, size=None):
+    """A real picture for an image name; *size* bytes of filler when given, or for anything else."""
+    if size is None and name.rsplit(".", 1)[-1] in ("jpg", "png", "webp"):
+        return photo(name, content_type)
+    return SimpleUploadedFile(name, b"x" * (size or 64), content_type=content_type)
 
 
 class EnrolmentTests(StudentsFixture):
@@ -1334,8 +1342,8 @@ class PassportPhotographTests(StudentsFixture):
         super().setUp()
         self.pupil = self.student(first="Tunde", last="Bello")
 
-    def _upload(self, *, document_type, name, content_type, size=64):
-        upload = SimpleUploadedFile(name, b"x" * size, content_type=content_type)
+    def _upload(self, *, document_type, name, content_type, size=None):
+        upload = _file(name, content_type, size)
         url = reverse("student-documents", kwargs={"pk": self.pupil.pk})
         return self.client_for(self.admin).post(
             f"{url}?tenant={self.tenant.slug}",
@@ -1437,13 +1445,10 @@ class PassportPhotographTests(StudentsFixture):
         """The prefetch, not fifty extra queries on a page of fifty children."""
         for i in range(3):
             other = self.student(first=f"Child{i}", last="Ade")
-            SimpleUploadedFile(f"c{i}.jpg", b"x" * 32, content_type="image/jpeg")
             StudentDocument.objects.create(
                 tenant=self.tenant, student=other,
                 document_type=DocumentType.PASSPORT_PHOTO,
-                file=SimpleUploadedFile(
-                    f"c{i}.jpg", b"x" * 32, content_type="image/jpeg",
-                ),
+                file=photo(f"c{i}.jpg"),
                 uploaded_by=self.admin,
             )
 
@@ -1455,9 +1460,7 @@ class PassportPhotographTests(StudentsFixture):
             StudentDocument.objects.create(
                 tenant=self.tenant, student=other,
                 document_type=DocumentType.PASSPORT_PHOTO,
-                file=SimpleUploadedFile(
-                    f"c{i}.jpg", b"x" * 32, content_type="image/jpeg",
-                ),
+                file=photo(f"c{i}.jpg"),
                 uploaded_by=self.admin,
             )
 
@@ -1480,8 +1483,8 @@ class GuardianPhotographTests(StudentsFixture):
         super().setUp()
         self.parent = self.guardian(name="Mrs. Adaeze Bello")
 
-    def _upload(self, *, name="adaeze.jpg", content_type="image/jpeg", size=64):
-        upload = SimpleUploadedFile(name, b"x" * size, content_type=content_type)
+    def _upload(self, *, name="adaeze.jpg", content_type="image/jpeg", size=None):
+        upload = _file(name, content_type, size)
         url = reverse("guardian-photo", kwargs={"pk": self.parent.pk})
         return self.client_for(self.admin).post(
             f"{url}?tenant={self.tenant.slug}", {"photo": upload},
@@ -1544,7 +1547,7 @@ class GuardianPhotographTests(StudentsFixture):
         url = reverse("guardian-photo", kwargs={"pk": outsider.pk})
         response = self.client_for(self.admin).post(
             f"{url}?tenant={self.tenant.slug}",
-            {"photo": SimpleUploadedFile("x.jpg", b"x" * 8, content_type="image/jpeg")},
+            {"photo": photo("x.jpg")},
             format="multipart",
         )
         self.assertEqual(response.status_code, 404, response.data)
@@ -1573,9 +1576,7 @@ class GuardianPhotoReadPolicyTests(StudentsFixture):
         url = reverse("guardian-photo", kwargs={"pk": self.parent.pk})
         self.client_for(self.admin).post(
             f"{url}?tenant={self.tenant.slug}",
-            {"photo": SimpleUploadedFile(
-                "face.jpg", b"x" * 32, content_type="image/jpeg",
-            )},
+            {"photo": photo("face.jpg")},
             format="multipart",
         )
         self.parent.refresh_from_db()
