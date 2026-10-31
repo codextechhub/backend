@@ -137,6 +137,12 @@ SYSTEM_SURFACES: dict[str, str] = {
         "governs where the school's screens, exports and delivery history show "
         "the address, not what the document itself says."
     ),
+    "vs_finance.documents.receipt_document_context": (
+        "A receipt addressed to the payer records the customer's balance after "
+        "payment and each settled bill's remaining balance. These figures are "
+        "part of the payer's payment record, so the printed and emailed copies "
+        "must agree regardless of which staff member generated the receipt."
+    ),
 }
 
 _MAP_ATTR = "_rbac_field_access_map"

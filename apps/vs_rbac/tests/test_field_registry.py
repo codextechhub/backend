@@ -413,6 +413,9 @@ WRITE_PATH_ALLOWLIST = {
             "state_of_origin",
         )
     },
+    ("vs_user.serializers.UserCreateSerializer", "phone"):
+        "The account create serializer checks platform.team.phone in validate() "
+        "before it creates the user; the response uses UserReadSerializer.",
 }
 
 

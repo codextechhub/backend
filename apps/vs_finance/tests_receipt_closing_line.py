@@ -15,6 +15,7 @@ from django.test import SimpleTestCase, TestCase
 
 from vs_finance.documents import receipt_closing_line, receipt_document_context
 from vs_finance.pdf import _plain_receipt_pdf, receipt_pdf
+from vs_rbac.field_enforcement import SYSTEM_SURFACES
 
 from .tests_document_pdf import _DocumentFixture
 
@@ -27,6 +28,9 @@ HELD = "Thank you - your payment has been received and is held as credit on the 
 
 
 class ReceiptClosingLineTests(SimpleTestCase):
+
+    def test_receipt_balances_are_declared_as_a_system_surface(self):
+        self.assertIn("vs_finance.documents.receipt_document_context", SYSTEM_SURFACES)
 
     def test_money_all_applied(self):
         self.assertEqual(receipt_closing_line(40000, 40000), APPLIED)

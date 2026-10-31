@@ -479,8 +479,16 @@ def receipt_settlement_lines(invoice_numbers, *, received: int, applied: int) ->
 
 # Build printable receipt template context.
 def receipt_document_context(payment) -> dict:
-    """Build the render context for the branded receipt document."""
+    """Build the payer's receipt, including post-payment account balances.
+
+    The balance figures belong to the payer's payment record, so this render
+    is a declared system surface rather than a staff member's field-filtered
+    view. Printed and emailed copies therefore show the same figures.
+    """
     from .constants import PaymentMethod
+    from vs_rbac.field_enforcement import assert_system_surface
+
+    assert_system_surface("vs_finance.documents.receipt_document_context")
 
     entity = payment.entity  # Payment entity drives issuer and bank details.
     allocations = []  # Template-ready settlement rows.

@@ -104,9 +104,9 @@ audit and they answer several of the questions the audit raised.
    note, dunning notice, payslip, purchase order PDF and email, and the public
    pay page are addressed to the payer, vendor or employee, not to the person
    who presses Print or Send. They are declared system surfaces
-   (`SYSTEM_SURFACES` in `vs_finance/documents.py`). The parts of the printed
-   receipt that are not yet declared (`customer_balance_after`, per-bill
-   `invoice_balance_after`) are added to the declaration.
+   (`SYSTEM_SURFACES` in `vs_rbac/field_enforcement.py`). The printed receipt's
+   `customer_balance_after` and per-bill `invoice_balance_after` are covered by
+   the declared `receipt_document_context` surface.
 5. **Unit prices on invoice and credit-note lines have their own switches**
    (`finance.invoice.unit_price`, `finance.creditnote.unit_price`), apart from
    the line set.
@@ -1385,11 +1385,11 @@ map, approval card and dashboard; export links), `ExpenseClaimDeepPayloadTests` 
 
 | Path | What it restates | Status |
 | --- | --- | --- |
-| Export `finance.customer_receipts` and the receipts quick export | receipt number, customer name, date, amount, allocated, refunded, status, method, reference, deposit account code, narration; only `finance.payment.view` gates it | recorded: every column needs `access="finance.payment.<name>"` the day the resource registers |
+| Export `finance.customer_receipts` and the receipts quick export | receipt number, customer name, date, amount, allocated, refunded, status, method, reference, deposit account code, narration | registered: each business column and its filters follow `finance.payment` switches |
 | Export `finance.expense_claims` and the claims quick export | claim date, purpose, status, reimbursement status, amounts, liability account, journal and claimant | registered: each business column and its filter follows `finance.expenseclaim` |
-| Export `finance.gl_postings` | per-line account, debit, credit, description; rebuilds statements, bank movement, petty cash, payroll and deposits | recorded: no field key exists for a ledger line |
+| Export `finance.gl_postings` | per-line account, debit, credit, description; rebuilds statements, bank movement, petty cash, payroll and deposits | registered: line columns follow `finance.journal.lines`; journal header columns and filters follow their own journal switches |
 | Export `platform.schools` | `address`, `registration_id` (marked sensitive, no `access=`), `website`, `motto` | exempt: the columns follow the platform key of the export, not `school.profile` switches (Q-E13, answered in 8.1) |
-| Export `procurement.purchase_orders` | `payment_terms` | recorded |
+| Export `procurement.purchase_orders` | `payment_terms` | registered: the column follows `procurement.purchase_order.payment_terms` |
 | Export `audit.events` and `write_audit_export_file` | `summary`, `entity_label` | the nine rules only |
 | Export `workflow.approvals` | `document_reference` only | clean |
 | Export `payments.collections` | `payer_email`, `payer_name` (sensitive, no `access=`) | recorded: no registered source |
@@ -1659,7 +1659,7 @@ How a status was chosen:
 | A-L13 | Balance sheet cash lines, cash flow opening and closing cash and the trial balance restate the registered bank balances. | resolved by Q-A7: report section switches govern these aggregates |
 | A-L14 | Statements restate aggregate pay (`finance.salary`, `finance.payrollrun`); a cost centre of one person in the analytics slice reads as that person's pay (Q-A7). | resolved by Q-A7: report section switches govern these aggregates |
 | A-L15 | Every report's export (CSV, XLSX or PDF) rebuilds the same figures with no field awareness. | fixed: exports use the filtered report payload |
-| A-L16 | The `finance.gl_postings` dataset (schedulable) rebuilds every statement from raw ledger lines. | pending with the Area B journal-field work; raw ledger lines have their own field boundary |
+| A-L16 | The `finance.gl_postings` dataset (schedulable) rebuilds every statement from raw ledger lines. | fixed: the dataset's line columns follow `finance.journal.lines`, and its journal columns and filters follow their registered source keys |
 | A-L17 | `GET accounts/?with_balance=true` restates the trial balance per account (the bank-ledger part is B-L11). | fixed for trial balance figures: account balances require `finance.report.trial_balance`; B-L11 remains pending |
 | A-L18 | Procurement requisition budget availability returns a plan amount and budget name under `procurement.requisition.view`, and picks the latest approved plan of any branch, not the requester's. | fixed: branch reach and the budget name, amount, actual and variance switches govern the procurement payload |
 | A-L19 | The customer statement `aging` and balances, the dunning summary buckets and the customer list `balance` restate customer balance and aging with no switch check. | fixed: `vs_finance.tests_receivables_restating_paths.CustomerStatementAccessTests`, `DunningSummaryAccessTests`, `CustomerCreditAccessTests.test_the_customer_list_balance_follows_the_balance_switch` |
@@ -1741,7 +1741,7 @@ for these screens (D-L10).
 | E-L1 | An ordinary receipt needed its own switches beside the payer-payment switches. | registered: receipt serializer and both user entry points follow `finance.payment` switches |
 | E-L2 | `PaymentDetailView` serves `open_invoices` and `open_debit_notes` under `finance.payment.view`; they are the registered `finance.customer.open_invoices` and `open_debit_notes`. | fixed: `vs_finance.tests_receivables_restating_paths.ReceiptOpenItemsAccessTests` |
 | E-L3 | `PaymentSummaryView` totals (`today`, `week`, `unallocated`, `refunded`, `status_counts`) are sums of unregistered receipt fields. | fixed: summary totals follow the registered receipt fields and the totals switch |
-| E-L4 | The printed receipt prints `customer_balance_after` and `invoice_balance_after`; these are system surfaces by decision and are added to `SYSTEM_SURFACES`. | recorded |
+| E-L4 | The printed receipt prints `customer_balance_after` and `invoice_balance_after`; these are system surfaces by decision and are added to `SYSTEM_SURFACES`. | fixed: `receipt_document_context` declares the payer-facing exception and `vs_finance.tests_receipt_closing_line.ReceiptClosingLineTests` checks it |
 | E-L5 | `RefundAvailabilityView` and the `ARAdjustmentListView` rows restate customer credit (the registered `finance.customer.balance`) and refund amounts. | fixed: `vs_finance.tests_receivables_restating_paths.CustomerCreditAccessTests` (availability and the adjustments credit total); the rows carry the refund and write-off amounts, which are the recorded `finance.refund` and `finance.writeoff` fields, not a customer balance |
 | E-L6 | The petty cash fund has no switches, and fund create, fund PATCH, establish, replenish, reopen and voucher create have no `assert_writable`. | fixed: fund and voucher fields are registered, with write checks on create, update and reopen; top-up amounts remain action inputs |
 | E-L7 | `PettyCashStatusView` and `fund_status` are not narrowed by branch: a branch-bound bursar reads other branches' float and cash on hand. | fixed: `vs_finance.tests_petty_cash_status_reach.PettyCashStatusReachTests` |
@@ -1797,7 +1797,7 @@ for these screens (D-L10).
 | X-L12 | Adding a member of CodeX staff set `platform.staff_profile` details (name, employee ID, job title, employment type, date joined, date of birth, marital status, nationality, state of origin) with no Write check, on the Add form, the draft save and the CX users spreadsheet alike: only editing an existing profile was judged. The account serializer now judges them for any account created on the platform tenant (`vs_user.serializers.refuse_unwritable_staff_profile_fields`); the name is declared open on create because nobody can be added without one. The CX users preview reports the refusals per row and column. | fixed: `vs_import_data.tests_cx_users_field_access` (`CxImportWriteSwitchTests`, `CxImportPreviewTests`, `CxImportEngineTests`, `CxAddFormTests`) |
 | X-L13 | Reviewed, no leak: the `schools` import is judged by `SchoolCreateSerializer` (`platform.schools`, covered by `schools.vs_schools.tests_platform_schools_field_access`); the `branches` import writes the branch address and email that `school.branches` declares read-only because CodeX sets them when provisioning, and the dataset is platform-only; the `bank_statements` import writes `BankStatementLine` rows, which no registered resource covers (`finance.banktransaction` is the posted bank transaction document); `org_units`, `positions`, `matrix_reports`, `calendar_events`, `academic_structure` and `subjects` write no registered field. | reviewed, no change |
 | X-L14 | The student roll and household-list imports carried their own copy of the import write judge (`import_request`, `write_refusal`, `write_refusal_issue`). | fixed: both read the shared `vs_import_data.field_writes`, which takes an optional `names_set` for a column that fills several fields only in part (a guardian's one-line name); behaviour and messages are unchanged. `vs_import_data.tests_field_writes`, `schools.vs_students.tests.test_import_field_access` |
-| X-L15 | A platform account's phone (`User.phone`) has no switch. It shows on the user list and on the CodeX user-creation approval card (`PLATFORM_USER_CREATION`). Candidate: `platform.team.phone`, Read and Write, in the next wave. | recorded |
+| X-L15 | An account's phone (`User.phone`) was unregistered on account detail, create, update and the CodeX user-creation approval card (`PLATFORM_USER_CREATION`). | fixed: `platform.team.phone` has Read and Write control on those paths; `vs_user.tests_team_phone_access`, `vs_user.tests_field_access_deep_payload` |
 | X-L16 | The `/me` field map listed create-open write aliases only under `read_only`. `opening_date` and `opening_branch` now follow `finance.customer.opening_balance` into `open_on_create`; `receivable_account` remains read-only because its governing field is not open on create. | fixed: `vs_rbac.tests.test_field_enforcement.TheMapAUserIsHandedTests`, `vs_finance.tests_customer_field_access.CustomerWriteTests` |
 | X-L17 | A cancelled purchase order's reason also appears in the delivery's `failure_reason` ("Purchase order cancelled: <reason>"). The reason is unregistered, so the text is open. | recorded: open, the reason is unregistered |
 
@@ -1879,13 +1879,13 @@ recommendation: `procurement.rfq.budget_estimate`,
 
 | Area | Leaks | Fixed | Still to be fixed | Recorded | Exempt | Reviewed or elsewhere |
 | --- | --- | --- | --- | --- | --- | --- |
-| A. Budgets and financial statements | 20 | 8 | 0 | 1 | 11 | 0 |
+| A. Budgets and financial statements | 20 | 9 | 0 | 0 | 11 | 0 |
 | B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
 | C. Procurement | 19 | 18 | 0 | 0 | 1 | 0 |
 | D. School settings | 9 | 8 | 0 | 0 | 1 | 0 |
-| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 25 | 0 | 10 | 3 | 2 |
-| X. Found outside the five areas | 17 | 10 | 0 | 6 | 0 | 1 |
-| Total | 122 | 83 | 0 | 18 | 18 | 3 |
+| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 26 | 0 | 9 | 3 | 2 |
+| X. Found outside the five areas | 17 | 11 | 0 | 5 | 0 | 1 |
+| Total | 122 | 86 | 0 | 15 | 18 | 3 |
 
 Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34
@@ -1896,7 +1896,7 @@ owner decision. Three reviewed paths in area D were clear and are not rows
 
 ### 10.3 Open product questions
 
-3 questions: area A 0, area B 0,
-area C 0, area D 0,
-area E 3 (Q-E4, Q-E5, Q-E12). Q-D1 to Q-D5 are decided in 8.5. Fourteen more (Q-A1 to Q-A7, Q-D6,
+0 questions: area A 0, area B 0,
+area C 0, area D 0, area E 0.
+Q-E4, Q-E5 and Q-E12 are decided in 8.6. Q-D1 to Q-D5 are decided in 8.5. Fourteen more (Q-A1 to Q-A7, Q-D6,
 Q-D7, Q-E9, Q-E10, Q-E11, Q-E13, Q-C4) are answered in 8.1; Q-B4, Q-B5, Q-B8 and Q-B10 are answered in 8.3.

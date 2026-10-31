@@ -35,6 +35,7 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
     covers = frozenset({
         _SURFACE + "UserReadSerializer",
         _SURFACE + "UserListSerializer",
+        _SURFACE + "UserUpdateSerializer",
         _SURFACE + "PlatformStaffProfileSerializer",
         _SURFACE + "PlatformStaffProfileListSerializer",
         _SURFACE + "PlatformStaffProfileBriefSerializer",
@@ -97,6 +98,7 @@ class AccountDeepPayloadTests(DeepPayloadChecks, TestCase):
             samples += [
                 Sample(_SURFACE + "UserReadSerializer", account, tenant=tenant),
                 Sample(_SURFACE + "UserListSerializer", [account], many=True, tenant=tenant),
+                Sample(_SURFACE + "UserUpdateSerializer", account, tenant=tenant),
                 Sample(_SURFACE + "AccountClosureRequestSerializer", [closure], many=True,
                        tenant=tenant),
                 Sample(_SURFACE + "AccountClosureRequestSerializer", closure, tenant=tenant),

@@ -18,11 +18,11 @@ import carry as the record is created, and each is judged by its Write switch
 (``UserCreateSerializer``); the name is open on create, because nobody can be
 added without one.
 
-``platform.team`` holds account security and invitation facts about another
-user. Reaching the account at all is ``platform.team.view``, which a school's
-own administrators hold too; which of these facts they see is the switch. The
-server records every one of them (sign-in, password change, invitation), so
-none is writable.
+``platform.team`` holds an account's phone beside its server-owned security and
+invitation facts. Reaching the account at all is ``platform.team.view``, which
+a tenant's own administrators hold too. Phone may be corrected by an account
+administrator, so it has separate Read and Write control; the server-owned
+facts can only be read.
 
 ``school.account_closures`` holds the facts of a person's request to close
 their own account, as a reviewer reads them. The server sets all of them, so
@@ -107,8 +107,11 @@ def register():
         surfaces=(
             "vs_user.serializers.UserReadSerializer",
             "vs_user.serializers.UserListSerializer",
+            "vs_user.serializers.UserUpdateSerializer",
         ),
         fields=(
+            FieldSpec("phone", "Phone", group="Contact", scope=_TENANT,
+                      sort_order=10),
             FieldSpec("password_changed_at", "Password last changed",
                       group="Account security", sensitive=True, writable=False,
                       scope=_TENANT, sort_order=10),

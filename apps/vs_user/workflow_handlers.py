@@ -33,7 +33,7 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
     def get_document_details(self, document) -> dict:
         return document_details(fields_section("User details", [
             ("Email", getattr(document, "email", "") or "-"),
-            ("Phone", getattr(document, "phone", "") or "-"),
+            ("Phone", getattr(document, "phone", "") or "-", "platform.team.phone"),
         ]))
 
     def validate_document(self, document, requested_by) -> None:

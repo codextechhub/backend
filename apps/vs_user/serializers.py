@@ -418,6 +418,14 @@ class UserCreateSerializer(serializers.Serializer):
         else:
             target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
 
+        if 'phone' in self.initial_data:
+            from vs_rbac.field_enforcement import assert_writable
+
+            assert_writable(
+                self.context['request'], 'platform.team', {'phone': attrs['phone']},
+                creating=True,
+            )
+
         # A caller may name the platform tenant as the target without being on
         # it - the CX-user import handler does exactly that. Ask the resolved
         # tenant, not the actor, from here on.
@@ -570,7 +578,7 @@ class UserCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class UserUpdateSerializer(serializers.ModelSerializer):
+class UserUpdateSerializer(FieldAccessMixin, serializers.ModelSerializer):
     """The profile fields an administrator corrects on an account.
 
     The role is absent (it changes through the role change request workflow)
@@ -583,6 +591,9 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     is not a change. An account outside the platform tenant, and a person
     editing their own, are not governed by those switches.
     """
+
+    field_resource = 'platform.team'
+    owner_rule = staticmethod(_is_own_account)
 
     class Meta:
         model  = User
@@ -606,6 +617,11 @@ class UserUpdateSerializer(serializers.ModelSerializer):
                 if name in ('first_name', 'last_name') and value != getattr(account, name)
             }
             assert_writable(request, 'platform.staff_profile', changed)
+        if account is not None and not _is_own_account(account, reader) and 'phone' in attrs:
+            assert_writable(
+                request, 'platform.team', {'phone': attrs['phone']},
+                current={'phone': account.phone},
+            )
         return attrs
 
 
