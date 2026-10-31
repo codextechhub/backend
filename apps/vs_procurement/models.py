@@ -34,6 +34,8 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models.functions import Lower
 
+from core.encryption import LAST_FOUR
+from core.fields import EncryptedTextField
 from vs_finance.constants import DocType, InvoicePaymentStatus, PaymentMethod
 from vs_finance.models import FinanceDocument, TimeStampedModel
 from vs_finance.money import MoneyField, format_naira
@@ -274,7 +276,7 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
         max_length=20, blank=True, default="",
         help_text="Provider bank code used for verified electronic disbursements.",
     )
-    bank_account_number = models.CharField(max_length=32, blank=True, default="")
+    bank_account_number = EncryptedTextField(max_length=32, blank=True, default="", audit=LAST_FOUR)
     bank_account_name = models.CharField(max_length=160, blank=True, default="")
 
     payable_account = models.ForeignKey(

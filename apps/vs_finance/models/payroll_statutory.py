@@ -22,6 +22,9 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator
 from django.db import models
 
+from core.encryption import LAST_FOUR
+from core.fields import EncryptedTextField
+
 from ..constants import (
     PayeMethod,
     PayrollPaymentRoute,
@@ -348,7 +351,7 @@ class StaffBankAccount(TimeStampedModel):
     )
     bank_code = models.CharField(max_length=20, blank=True, default="")
     bank_name = models.CharField(max_length=120, blank=True, default="")
-    account_number = models.CharField(max_length=20, blank=True, default="")
+    account_number = EncryptedTextField(max_length=20, blank=True, default="", audit=LAST_FOUR)
     resolved_account_name = models.CharField(max_length=200, blank=True, default="")
     verification_state = models.CharField(
         max_length=20, choices=StaffBankState.choices, default=StaffBankState.UNVERIFIED,

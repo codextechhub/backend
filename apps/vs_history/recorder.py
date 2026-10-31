@@ -15,7 +15,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.utils import timezone
 
-from .registry import TrackedModel, snapshot, spec_for
+from .registry import TrackedModel, opened, snapshot, spec_for
 
 _CONNECTED: set[type] = set()
 
@@ -56,13 +56,14 @@ def record(instance, *, deleted: bool = False, baseline: bool = False):
         .values("data", "is_deleted")
         .first()
     )
+    plain = opened(spec, data)
     if last is not None:
         if deleted and last["is_deleted"]:
             return None
-        if not deleted and not last["is_deleted"] and last["data"] == data:
+        if not deleted and not last["is_deleted"] and opened(spec, last["data"]) == plain:
             return None
-    previous = {} if last is None or last["is_deleted"] else last["data"]
-    changed = sorted(name for name in data if name not in previous or previous[name] != data[name])
+    previous = {} if last is None or last["is_deleted"] else opened(spec, last["data"])
+    changed = sorted(name for name in plain if name not in previous or previous[name] != plain[name])
     return RecordVersion.objects.create(
         tenant_id=_tenant_id(instance),
         record_type=spec.record_type,

@@ -90,7 +90,9 @@ def export_beneficiary_annotations(readable) -> dict:
     other line it is the stored value. A sort on the column ranks the cut value,
     never the hidden one. ``readable=None`` judges nobody and keeps every value.
     """
-    from django.db.models import CharField, F
+    from django.db.models import F
+
+    from .models import PayoutInstruction
 
     out = {}
     for name, vendor_key in VENDOR_BANK_FIELDS.items():
@@ -98,8 +100,10 @@ def export_beneficiary_annotations(readable) -> dict:
         if readable is None or readable(vendor_key):
             out[column] = F(name)
         else:
+            # The column's own field type, so an encrypted value is decrypted.
             out[column] = Case(
                 When(vendor_source_type=VENDOR_SOURCE_TYPE, then=Value("")),
-                default=F(name), output_field=CharField(),
+                default=F(name),
+                output_field=PayoutInstruction._meta.get_field(name).__class__(),
             )
     return out

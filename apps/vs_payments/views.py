@@ -26,6 +26,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from core.encryption import decrypt
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.money import format_naira
@@ -1322,6 +1323,9 @@ class MovementsView(APIView):
             if row["kind"] in ("payout", "settlement"):  # A collection's party is its customer.
                 for name in hidden[bool(vendor_backed)]:  # Absent, not masked: a marker is itself an answer.
                     row.pop(name, None)
+            if row.get("beneficiary_account"):
+                # Read through a union, so the column's own decryption never ran.
+                row["beneficiary_account"] = decrypt(row["beneficiary_account"])
             row["gross_amount"] = row["amount"]  # The record's own figure.
             row["amount"] = row.pop("sent_amount")  # What moved, net of any WHT.
             row["amount_naira"] = format_naira(row["amount"])  # Add a display amount.

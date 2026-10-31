@@ -151,15 +151,16 @@ class VendorValueFieldTests(_VendorAccessFixture):
         vendor = Vendor.objects.get(entity=self.multi.entity, code="AUDIT")
         created = FinanceAuditLog.objects.get(
             action=FinanceAuditAction.VENDOR_CREATED, target_id=str(vendor.pk))
-        self.assertEqual(created.after["bank_account_number"], "1234567890")
+        # The trail keeps the last four, never the whole number (core.encryption.withhold).
+        self.assertEqual(created.after["bank_account_number"], "****7890")
         response = self.call(self.officer_user, f"vendors/{vendor.pk}/", "patch", {
             "bank_account_number": "9999999999", "tax_id": "TIN-UPDATED",
         })
         self.assertEqual(response.status_code, 200, response.data)
         updated = FinanceAuditLog.objects.get(
             action=FinanceAuditAction.VENDOR_UPDATED, target_id=str(vendor.pk))
-        self.assertEqual(updated.before["bank_account_number"], "1234567890")
-        self.assertEqual(updated.after["bank_account_number"], "9999999999")
+        self.assertEqual(updated.before["bank_account_number"], "****7890")
+        self.assertEqual(updated.after["bank_account_number"], "****9999")
         from vs_finance.serializers import FinanceAuditLogSerializer
         self.switch(self.officer_role, self.vendor_keys, {"bank_account_number": "hidden"})
         shown = FinanceAuditLogSerializer(

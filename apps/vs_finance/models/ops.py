@@ -8,6 +8,9 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from core.encryption import LAST_FOUR
+from core.fields import EncryptedTextField
+
 from ..constants import (
     AssetCategory,
     AssetStatus,
@@ -1532,8 +1535,8 @@ class PayrollLine(TimeStampedModel):
         "PensionFundAdministrator", on_delete=models.PROTECT, related_name="payroll_lines",
         null=True, blank=True,
     )
-    tax_id = models.CharField(max_length=32, blank=True, default="")
-    pension_pin = models.CharField(max_length=32, blank=True, default="")
+    tax_id = EncryptedTextField(max_length=32, blank=True, default="", audit=LAST_FOUR)
+    pension_pin = EncryptedTextField(max_length=32, blank=True, default="", audit=LAST_FOUR)
     components = models.JSONField(
         default=list, blank=True,
         help_text="Payslip breakdown snapshot copied from the salary structure at "
@@ -1867,15 +1870,17 @@ class EmployeeSalary(TimeStampedModel):
         null=True, blank=True,
         help_text="State of residence, where PAYE is remitted. Empty: the branch's state.",
     )
-    tax_id = models.CharField(
+    tax_id = EncryptedTextField(
         max_length=32, blank=True, default="", help_text="Tax identification number.",
+        audit=LAST_FOUR,
     )
     pfa = models.ForeignKey(
         "PensionFundAdministrator", on_delete=models.PROTECT, related_name="members",
         null=True, blank=True,
     )
-    pension_pin = models.CharField(
+    pension_pin = EncryptedTextField(
         max_length=32, blank=True, default="", help_text="Retirement savings account PIN.",
+        audit=LAST_FOUR,
     )
     annual_rent = MoneyField(help_text="Annual rent the person pays, for rent relief, in kobo.")
     paye_override = MoneyField(

@@ -668,6 +668,16 @@ FINANCE_CUSTOMER_EMAIL_BCC = _addresses(
 # and a server holding live Paystack keys refuses to start with it on
 # (settings.staging), so production can never copy a working link.
 EMAIL_COPY_ONE_TIME_LINKS = config("EMAIL_COPY_ONE_TIME_LINKS", default=False, cast=bool)
+# Fernet keys for the encrypted columns (core.encryption), comma separated: the
+# first encrypts, all decrypt. Unset, the public development key is used, which
+# a deployed server refuses (settings.staging).
+FIELD_ENCRYPTION_KEYS = [
+    key.strip()
+    for key in config(
+        "FIELD_ENCRYPTION_KEYS", default="eHZzLWRldmVsb3BtZW50LWtleS1ub3QtYS1zZWNyZXQ=",
+    ).split(",")
+    if key.strip()
+]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
 # The window a book's owner bills by (a school's academic term), for "This term"

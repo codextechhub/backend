@@ -39,6 +39,32 @@ if EMAIL_COPY_ONE_TIME_LINKS and PAYSTACK_KEY_MODE == "live":
         "staging only and cannot be set on a server with live Paystack keys.",
     )
 
+# The encrypted columns need a key of this server's own, kept outside the
+# repository and backed up: data encrypted with a lost key is lost.
+def _field_key_problem(keys) -> str:
+    from cryptography.fernet import Fernet
+
+    from core.encryption import DEV_KEY
+
+    if not keys:
+        return "FIELD_ENCRYPTION_KEYS is not set."
+    if DEV_KEY in keys:
+        return "FIELD_ENCRYPTION_KEYS holds the public development key."
+    for key in keys:
+        try:
+            Fernet(key.encode())
+        except ValueError:
+            return "FIELD_ENCRYPTION_KEYS holds a value that is not a Fernet key."
+    return ""
+
+
+if _field_key_problem(FIELD_ENCRYPTION_KEYS):
+    raise ImproperlyConfigured(
+        f"{_field_key_problem(FIELD_ENCRYPTION_KEYS)} Generate one with "
+        "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" "
+        "and set it on the web service and the worker alike.",
+    )
+
 # Every tenant is served from its own subdomain of the school app's host, so
 # the wildcard follows that host rather than naming one deployment's domain.
 _school_app = urlsplit(SCHOOL_APP_BASE_URL)

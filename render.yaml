@@ -72,6 +72,12 @@ services:
       # or when PAYSTACK_SECRET_KEY / PAYSTACK_PUBLIC_KEY are the other kind.
       - key: PAYSTACK_KEY_MODE
         sync: false
+      # The key for the encrypted columns (core.encryption). No default; the
+      # service refuses to start without one of its own. Generate it with
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # and keep a copy outside Render: data sealed with a lost key is lost.
+      - key: FIELD_ENCRYPTION_KEYS
+        sync: false
 
   - type: worker
     name: xvs-worker
@@ -112,6 +118,9 @@ services:
         sync: false
       # Same value as the web service: the worker places the Paystack calls.
       - key: PAYSTACK_KEY_MODE
+        sync: false
+      # Same value as the web service: the worker reads encrypted columns too.
+      - key: FIELD_ENCRYPTION_KEYS
         sync: false
 
   - type: keyvalue

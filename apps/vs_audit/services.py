@@ -267,6 +267,14 @@ def emit_audit_event(
                 if isinstance(payload, dict) else payload
                 for payload in (before_data, diff_data, metadata)
             )
+            # An encrypted column's value never lands in the trail whole
+            # (core.encryption.withhold): a medical value is withheld, an
+            # account number keeps its last four.
+            from core.encryption import withhold
+
+            before_data, diff_data, metadata = (
+                withhold(payload) for payload in (before_data, diff_data, metadata)
+            )
 
             event = AuditEvent.objects.create(
                 module_key=module_key,

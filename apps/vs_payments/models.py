@@ -17,6 +17,8 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from core.encryption import LAST_FOUR
+from core.fields import EncryptedTextField
 from vs_finance.models import MoneyField, TimeStampedModel
 from vs_finance.money import format_naira
 
@@ -455,7 +457,7 @@ class PayoutInstruction(TimeStampedModel):
         related_name="payout_instructions", null=True, blank=True,
     )
     beneficiary_name = models.CharField(max_length=200)
-    beneficiary_account_number = models.CharField(max_length=20)
+    beneficiary_account_number = EncryptedTextField(max_length=20, audit=LAST_FOUR)
     beneficiary_bank_code = models.CharField(max_length=20, blank=True, default="")
     recipient_code = models.CharField(
         max_length=128, blank=True, default="",

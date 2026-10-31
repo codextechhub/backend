@@ -463,7 +463,8 @@ class AuditTrailFieldAccessTests(_ReachFixture):
         rows = {row["action"]: row for row in self.trail(self.open_user)}
 
         self.assertEqual(rows["SALARY_CREATED"]["after"]["gross_amount"], 123_456 * N)
-        self.assertEqual(rows["SALARY_CREATED"]["after"]["tax_id"], "TIN-ADA")
+        # A tax ID keeps only its last four in the trail (core.encryption.withhold).
+        self.assertEqual(rows["SALARY_CREATED"]["after"]["tax_id"], "****-ADA")
         self.assertEqual(rows["PAYE_OVERRIDE_CHANGED"]["after"]["paye_override"], 5_555 * N)
         self.assertEqual(rows["PAYROLL_DEDUCTION_CHANGED"]["after"]["amount"], 3_333 * N)
 

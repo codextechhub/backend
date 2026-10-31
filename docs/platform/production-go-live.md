@@ -107,6 +107,7 @@ Per service (not in the group), because they differ per deployment:
 | `HEALTH_PROBE_BASE_URL` | `https://api.codexng.com` |
 | `HEALTH_SSL_DOMAIN` | `api.codexng.com` |
 | `PAYSTACK_KEY_MODE` | `live` |
+| `FIELD_ENCRYPTION_KEYS` | a Fernet key of production's own (see below) |
 | `CELERY_EAGER` | `false` |
 | `REDIS_URL` | the Key Value internal connection string |
 
@@ -114,6 +115,17 @@ The service refuses to start if any base URL is missing. It also refuses to
 start without `PAYSTACK_KEY_MODE` (`live` or `test`), or when a Paystack key
 set in the env group is the other kind: `live` takes only `sk_live_` and
 `pk_live_` keys. Set it on the worker as well as the web service.
+
+`FIELD_ENCRYPTION_KEYS` encrypts a pupil's blood group, allergies and
+conditions, staff tax IDs and pension PINs, and the bank account numbers money
+is paid into (`apps/core/encryption.py`). Generate one per environment with
+`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`,
+set the same value on the web service and the worker, and keep a copy in the
+company password manager: data encrypted with a lost key cannot be read again.
+The service refuses to start without a key, with the public development key,
+or with a value that is not a Fernet key. To rotate, put the new key first and
+the old one after it, comma separated, deploy, run
+`python manage.py reencrypt_fields`, then remove the old key.
 
 In the env group:
 

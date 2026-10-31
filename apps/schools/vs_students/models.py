@@ -28,6 +28,7 @@ from django.db.models import F, Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from core.fields import EncryptedTextField
 from vs_history.queryset import VersionedManager
 from vs_rbac.managers import TenantAwareManager
 
@@ -127,9 +128,11 @@ class Student(_Owned):
     # school turns the switch on. The emergency contact deliberately is not,
     # because a contact only an administrator can read is useless in the
     # emergency it exists for. None of the five is ever in a list serializer.
-    blood_group = models.CharField(max_length=4, blank=True, default="")
-    allergies = models.CharField(max_length=200, blank=True, default="")
-    conditions = models.CharField(max_length=200, blank=True, default="")
+    # Stored encrypted (core.encryption), as a child's health is the most
+    # sensitive thing the school holds about them.
+    blood_group = EncryptedTextField(max_length=4, blank=True, default="")
+    allergies = EncryptedTextField(max_length=200, blank=True, default="")
+    conditions = EncryptedTextField(max_length=200, blank=True, default="")
     emergency_contact_name = models.CharField(max_length=150, blank=True, default="")
     emergency_contact_phone = models.CharField(max_length=32, blank=True, default="")
 

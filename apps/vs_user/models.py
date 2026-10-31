@@ -25,6 +25,8 @@ from django.db.models import Q, Max
 from django.db.models.functions import Lower
 from django.utils import timezone
 
+from core.encryption import LAST_FOUR
+from core.fields import EncryptedTextField
 from vs_history.queryset import VersionedManager, VersionedQuerySetMixin
 from vs_tenants.models import Branch, Tenant
 from vs_rbac.managers import TenantAwareManager
@@ -1479,7 +1481,7 @@ class PlatformStaffProfile(TimeStampedModel):
     # ── Payroll (registered Field Access fields; the role's switches decide) ──
     bank_name      = models.CharField(max_length=120, blank=True, default='')
     account_name   = models.CharField(max_length=200, blank=True, default='')
-    account_number = models.CharField(max_length=20,  blank=True, default='')
+    account_number = EncryptedTextField(max_length=20, blank=True, default='', audit=LAST_FOUR)
 
     #: Declared so its update() keeps the record history; see vs_history.queryset.
     objects = VersionedManager()

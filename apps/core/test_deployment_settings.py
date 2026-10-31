@@ -69,6 +69,8 @@ _BASE_ENV = {
     "PAYSTACK_SECRET_KEY": "",
     "PAYSTACK_PUBLIC_KEY": "",
     "REDIS_URL": "redis://redis.staging.example.com:6379/0",
+    # A key made for this test alone; it encrypts nothing anywhere.
+    "FIELD_ENCRYPTION_KEYS": "Rp4F_HyU-RvOU3Uxh9PMcbjO2_dkMSAt3qkC_1Fteis=",
 }
 
 #: The addresses under test, cleared from the inherited environment so the run
@@ -312,3 +314,17 @@ class DeployedAddressTests(SimpleTestCase):
                 )
 
                 self.assertNotIn("error", outcome, outcome)
+
+    def test_a_deployment_refuses_a_missing_development_or_malformed_field_key(self):
+        """Encrypted columns need a key of the server's own; a lost one is lost data."""
+        from core.encryption import DEV_KEY
+
+        for value, says in (
+            ("", "is not set"),
+            (DEV_KEY, "public development key"),
+            ("not-a-key", "not a Fernet key"),
+        ):
+            with self.subTest(value=value):
+                outcome = self._resolve(**_STAGING_ADDRESSES, FIELD_ENCRYPTION_KEYS=value)
+                self.assertEqual(outcome.get("error"), "ImproperlyConfigured", outcome)
+                self.assertIn(says, outcome["message"])

@@ -225,6 +225,8 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     as the real person, and the impersonated person lands in ``effective_user``,
     so the trail can say "done by <real> for <impersonated>".
     """
+    from core.encryption import withhold
+
     from .models import FinanceAuditLog
     from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
 
@@ -247,9 +249,10 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
         target_id=str(target_id),
         document_number=document_number,
         message=message,
-        before=before or {},
-        after=after or {},
-        metadata=metadata or {},
+        # An encrypted column's value is never kept whole (core.encryption).
+        before=withhold(before or {}),
+        after=withhold(after or {}),
+        metadata=withhold(metadata or {}),
         branch_id=entry_branch_id(target, branch),
     )
 

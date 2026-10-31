@@ -394,13 +394,14 @@ class BankAccountWriteTests(_BankAccountFieldAccess):
         bank = BankAccount.objects.get(name="Audit Bank", entity=self.books)
         created = FinanceAuditLog.objects.get(
             action=FinanceAuditAction.BANK_ACCOUNT_CREATED, target_id=str(bank.pk))
-        self.assertEqual(created.after["account_number"], "1234567890")
+        # The trail keeps the last four, never the whole number (core.encryption.withhold).
+        self.assertEqual(created.after["account_number"], "****7890")
         response = self.patch(self.open, {"account_number": "9999999999"}, bank=bank)
         self.assertEqual(response.status_code, 200, response.data)
         updated = FinanceAuditLog.objects.get(
             action=FinanceAuditAction.BANK_ACCOUNT_UPDATED, target_id=str(bank.pk))
-        self.assertEqual(updated.before["account_number"], "1234567890")
-        self.assertEqual(updated.after["account_number"], "9999999999")
+        self.assertEqual(updated.before["account_number"], "****7890")
+        self.assertEqual(updated.after["account_number"], "****9999")
 
     def test_primary_account_demotion_has_its_own_audit_row(self):
         BankAccount.objects.filter(pk=self.ikeja_bank.pk).update(is_primary=True)

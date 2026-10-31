@@ -53,6 +53,15 @@ class TrackedModel:
     concrete_fields: tuple[models.Field, ...] = field(default=(), compare=False)
 
     @property
+    def sealed_names(self) -> frozenset[str]:
+        """Tracked columns stored encrypted, whose versions keep them encrypted too."""
+        from core.fields import EncryptedTextField
+
+        return frozenset(
+            f.attname for f in self.concrete_fields if isinstance(f, EncryptedTextField)
+        )
+
+    @property
     def tracked_names(self) -> frozenset[str]:
         """Every name a write may use for a tracked field, attname included."""
         names = set(self.fields) | set(self.m2m)
@@ -191,17 +200,34 @@ def snapshot(spec: TrackedModel, instance) -> dict:
 
     Many-to-many values are read through the prefetch cache when one is
     present, so a baseline over a prefetched queryset costs no query per row.
+    An encrypted column (``spec.sealed_names``) is stored encrypted, so the
+    history is no plainer than the row; compare two versions with
+    :func:`opened`, since the same text encrypts differently each time.
     """
+    from core.encryption import encrypt
+
     data = {
         model_field.attname: _to_json(model_field.value_from_object(instance))
         for model_field in spec.concrete_fields
     }
+    for name in spec.sealed_names:
+        data[name] = encrypt(data.get(name))
     for name in spec.m2m:
         manager = getattr(instance, name)
         cached = getattr(instance, "_prefetched_objects_cache", {}).get(name)
         rows = cached if cached is not None else manager.all()
         data[name] = sorted(_to_json(row.pk) for row in rows)
     return data
+
+
+def opened(spec: TrackedModel, data: dict) -> dict:
+    """*data* with its encrypted columns decrypted, for comparing two versions."""
+    from core.encryption import decrypt
+
+    if not spec.sealed_names:
+        return data
+    return {name: decrypt(value) if name in spec.sealed_names else value
+            for name, value in data.items()}
 
 
 def rebuild(spec: TrackedModel, record_id, data: dict):
