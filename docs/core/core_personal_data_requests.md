@@ -12,7 +12,7 @@ decisions of 31 Oct 2026.
 |---|---|
 | `GET /v1/students/<id>/personal-data/` | `school.personal_data.export` |
 | `GET /v1/guardians/<id>/personal-data/` | `school.personal_data.export` |
-| `GET /v1/staff/<id>/personal-data/` | `school.personal_data.export` |
+| `GET /v1/i/me/staff/<id>/personal-data/` | `school.personal_data.export` |
 
 One JSON file (`personal-data-<kind>-<id>.json`), `format: xvs.personal-data.v1`,
 grouped into sections, the person's own record first:
@@ -46,7 +46,7 @@ one that no section covers and no `not_exported` entry explains
 |---|---|---|
 | `POST /v1/students/<id>/erase/` | `school.personal_data.erase` | a pupil who has left (withdrawn, graduated, transferred or rejected) |
 | `POST /v1/guardians/<id>/erase/` | `school.personal_data.erase` | a guardian with no child still at the school |
-| `POST /v1/staff/<id>/erase/` | `school.personal_data.erase` | someone off the roll (resigned or terminated) |
+| `POST /v1/i/me/staff/<id>/erase/` | `school.personal_data.erase` | someone off the roll (resigned or terminated) |
 
 Body: `{"reason": "..."}`, required: whose request it is and when it came in.
 It runs exactly the erasure the nightly job runs 6 years after someone leaves

@@ -1,8 +1,8 @@
 """A member of staff's data request: a copy of their data, or erasing it.
 
-* ``GET /v1/staff/<id>/personal-data/`` downloads everything held about them
+* ``GET /v1/i/me/staff/<id>/personal-data/`` downloads everything held about them
   as one JSON file (``core.personal_data``). ``school.personal_data.export``.
-* ``POST /v1/staff/<id>/erase/`` erases someone off the roll now instead of 6
+* ``POST /v1/i/me/staff/<id>/erase/`` erases someone off the roll now instead of 6
   years after they left, exactly as the nightly erasure would
   (``schools.vs_staff.erasure``): their name, service, teaching records and
   payslips stay. ``school.personal_data.erase``, and a ``reason`` saying whose
@@ -24,7 +24,7 @@ from .base import StaffViewMixin
 
 
 class StaffPersonalDataView(StaffViewMixin, APIView):
-    """GET /v1/staff/<id>/personal-data/
+    """GET /v1/i/me/staff/<id>/personal-data/
 
     docstring-name: A staff member's personal data copy
     """
@@ -39,7 +39,7 @@ class StaffPersonalDataView(StaffViewMixin, APIView):
 
 
 class StaffEraseView(StaffViewMixin, APIView):
-    """POST /v1/staff/<id>/erase/  body: {"reason": "..."}
+    """POST /v1/i/me/staff/<id>/erase/  body: {"reason": "..."}
 
     docstring-name: Erase a staff member who has left
     """

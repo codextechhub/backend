@@ -198,13 +198,13 @@ MUST SAY:
 MODULES: M11 student management (pupils and guardians), M12 staff management, M04 roles and permissions, M05 audit and activity logging, MRD (privacy and legal readiness).
 MUST SAY:
 - GET /v1/students/<id>/personal-data/, /v1/guardians/<id>/personal-data/ and
-  /v1/staff/<id>/personal-data/ download one JSON file (xvs.personal-data.v1)
+  /v1/i/me/staff/<id>/personal-data/ download one JSON file (xvs.personal-data.v1)
   of everything held about the person, grouped by area: record, family links,
   classes, attendance, results, messages, fees or pay, documents listed by
   name, and the sign-in account without its secrets. Field Access does not
   narrow it; the key school.personal_data.export is the gate.
 - POST /v1/students/<id>/erase/, /v1/guardians/<id>/erase/ and
-  /v1/staff/<id>/erase/ run the 6-year erasure at once, with a required reason,
+  /v1/i/me/staff/<id>/erase/ run the 6-year erasure at once, with a required reason,
   for a pupil who has left, a guardian with no child still at the school, or
   staff off the roll (school.personal_data.erase). A parent whose last child is
   erased is erased by the nightly run that night; the response names them.
