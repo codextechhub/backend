@@ -151,6 +151,9 @@ class AuditActionType(models.TextChoices):
     CONFIG_CHANGED = "CONFIG_CHANGED", "Configuration Changed"
     FINANCIAL_TRANSACTION = "FINANCIAL_TRANSACTION", "Financial Transaction"
     PROCUREMENT_ACTION = "PROCUREMENT_ACTION", "Procurement Action"
+    # A person's data request (core.personal_data).
+    PERSONAL_DATA_EXPORTED = "PERSONAL_DATA_EXPORTED", "Personal Data Copy Downloaded"
+    PERSONAL_DATA_ERASED = "PERSONAL_DATA_ERASED", "Personal Data Erased on Request"
     EXPORT_REQUESTED = "EXPORT_REQUESTED", "Export Requested"
     EXPORT_COMPLETED = "EXPORT_COMPLETED", "Export Completed"
     EXPORT_FAILED = "EXPORT_FAILED", "Export Failed"

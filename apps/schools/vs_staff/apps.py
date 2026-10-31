@@ -8,6 +8,11 @@ class VsStaffConfig(AppConfig):
     verbose_name = "Staff Management"
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         # The workflow engine never imports a domain app; the domain app
         # registers its handler. Same direction as vs_finance, vs_procurement
         # and vs_payments.

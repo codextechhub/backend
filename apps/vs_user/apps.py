@@ -6,6 +6,11 @@ class VsUserConfig(AppConfig):
     name = "vs_user"
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         import vs_user.workflow_handlers  # noqa: F401 - registers PLATFORM_USER_CREATION handler
         import vs_user.receivers  # noqa: F401 - invitation email delivery tracking
 

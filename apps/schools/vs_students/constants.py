@@ -21,6 +21,9 @@ PERM_SUSPEND = "school.students.suspend"
 PERM_REACTIVATE = "school.students.reactivate"
 PERM_IMPORT = "school.students.import"
 PERM_EXPORT = "school.students.export"
+#: A person's data request (core.personal_data): a copy, or erasing one who left.
+PERM_PERSONAL_DATA_EXPORT = "school.personal_data.export"
+PERM_PERSONAL_DATA_ERASE = "school.personal_data.erase"
 
 #: Promotion is a bulk act on the whole roll. It has its own permission,
 #: the key that also transfers one child between branches, so the two could

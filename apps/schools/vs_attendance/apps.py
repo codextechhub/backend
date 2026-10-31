@@ -10,6 +10,11 @@ class VsAttendanceConfig(AppConfig):
     label = "vs_attendance"
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         # The register's fields that an administrator may restrict per role.
         from . import field_access
 

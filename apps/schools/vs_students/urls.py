@@ -10,6 +10,12 @@ rather than being matched as a student id.
 """
 from django.urls import path
 
+from .views.personal_data import (
+    GuardianEraseView,
+    GuardianPersonalDataView,
+    StudentEraseView,
+    StudentPersonalDataView,
+)
 from .views.portal_rules import PortalRulesView
 from .views import (
     AdmissionPolicyView,
@@ -122,6 +128,11 @@ student_patterns = [
     path("<int:pk>/reject/", RejectApplicantView.as_view(), name="student-reject"),
     path("<int:pk>/stage/", StageMoveView.as_view(), name="student-stage"),
     path("<int:pk>/withdraw/", WithdrawStudentView.as_view(), name="student-withdraw"),
+    path(
+        "<int:pk>/personal-data/", StudentPersonalDataView.as_view(),
+        name="student-personal-data",
+    ),
+    path("<int:pk>/erase/", StudentEraseView.as_view(), name="student-erase"),
     path("<int:pk>/suspend/", SuspendStudentView.as_view(), name="student-suspend"),
     path(
         "<int:pk>/reactivate/", ReactivateStudentView.as_view(),
@@ -190,6 +201,11 @@ guardian_patterns = [
         name="guardian-students",
     ),
     path("<int:pk>/photo/", GuardianPhotoView.as_view(), name="guardian-photo"),
+    path(
+        "<int:pk>/personal-data/", GuardianPersonalDataView.as_view(),
+        name="guardian-personal-data",
+    ),
+    path("<int:pk>/erase/", GuardianEraseView.as_view(), name="guardian-erase"),
     path(
         "<int:pk>/portal-access/", GuardianPortalAccessView.as_view(),
         name="guardian-portal-access",

@@ -114,6 +114,11 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "promote",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # A person's data request (core.personal_data): a copy of everything held
+    # about one pupil, guardian or member of staff, and erasing one who has left
+    # without waiting 6 years. School administrators only, until a school grants more.
+    ("school", "personal_data", "export",      _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "personal_data", "erase",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     # Moving a pupil to another branch carries their fee account and open
     # balance into the other branch's books. Both administrator roles hold it,
     # and the move itself needs a reach covering both branches, so a branch

@@ -32,6 +32,9 @@ PERM_ASSIGN = "school.teachers.assign"
 #: tables point at and that school-fe checks by name; a key minted new is free
 #: to say what it means.
 PERM_IMPORT = "school.staff.import"
+#: A person's data request (core.personal_data): a copy, or erasing one who left.
+PERM_PERSONAL_DATA_EXPORT = "school.personal_data.export"
+PERM_PERSONAL_DATA_ERASE = "school.personal_data.erase"
 
 #: Qualifications, certificates and documents. Separate from the register keys
 #: because reading a staff directory and reading somebody's certificates are

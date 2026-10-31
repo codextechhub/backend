@@ -142,6 +142,8 @@ class SurfaceTests(SimpleTestCase):
         "OrganogramSummaryView",
         # Serves the finance, payroll and approval pickers, none of which opens before go-live.
         "StaffNamesView",
+        # A data request is answered by a live school; onboarding holds no one to ask.
+        "StaffPersonalDataView", "StaffEraseView",
     }
 
     def _views(self):

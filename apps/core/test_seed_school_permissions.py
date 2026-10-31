@@ -95,7 +95,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         })
 
     def test_total_key_count(self):
-        """The school and academics modules register exactly 113 keys.
+        """The school and academics modules register exactly 115 keys.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -142,7 +142,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         """
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            113,
+            115,
         )
 
     def test_field_access_view_is_open_and_update_is_restricted(self):
@@ -253,7 +253,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         )
 
     def test_school_admin_gets_all_keys(self):
-        """A school admin holds every school and academics key (113), every
+        """A school admin holds every school and academics key (115), every
         attendance key but ``attendance.register.mark`` (10), which is the class
         teacher's own-class key and is superseded for an administrator by
         ``attendance.register.mark_any``, and fourteen gradebook keys: everything
@@ -262,7 +262,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         ``gradebook.sheet.enter_any``, which no role holds by default.
         """
         keys = self._defaults("school_admin")
-        self.assertEqual(len(keys), 137)
+        self.assertEqual(len(keys), 139)
         self.assertEqual(
             {k for k in keys if k.startswith("gradebook.")},
             {"gradebook.hub.view", "gradebook.sheet.view", "gradebook.sheet.remind",
@@ -498,7 +498,7 @@ class SeedSchoolBackfillTests(TestCase):
         # school_admin defaults are every school and academics key, every
         # attendance key but the class teacher's own-class mark, and fourteen
         # gradebook keys.
-        self.assertEqual(len(keys), 137)
+        self.assertEqual(len(keys), 139)
         self.assertIn("attendance.register.mark_any", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)

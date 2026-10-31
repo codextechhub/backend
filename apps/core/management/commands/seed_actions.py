@@ -33,6 +33,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("create",     "Create a new record."),
     ("update",     "Modify an existing record's fields."),
     ("delete",     "Permanently remove a record (hard-delete or irreversible soft-delete)."),
+    ("erase",      "Remove a person's personal details, keeping the records the law requires."),
 
     # ── Approval & lifecycle ──────────────────────────────────────────────────
     ("approve",    "Ratify or authorise a submitted record (scores, invoices, leave requests, etc.)."),

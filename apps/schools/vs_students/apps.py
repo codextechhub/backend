@@ -8,6 +8,11 @@ class VsStudentsConfig(AppConfig):
     verbose_name = "Student Management"
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         # The Export Centre never imports a domain app; the domain app
         # registers itself. Same shape as vs_schools and vs_academics.
         from . import export_datasets, field_access, media_policies

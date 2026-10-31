@@ -10,6 +10,11 @@ class VsGradebookConfig(AppConfig):
     label = "vs_gradebook"
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         # The fields an administrator may restrict per role.
         from . import field_access
 

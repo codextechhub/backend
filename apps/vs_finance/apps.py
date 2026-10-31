@@ -8,6 +8,11 @@ class VsFinanceConfig(AppConfig):
     verbose_name = "Finance"  # Human-readable app name in Django admin.
 
     def ready(self):
+        # Its sections of a person's data copy (core.personal_data).
+        from .personal_data import register_sections as register_personal_data
+
+        register_personal_data()
+
         # Publish this app's datasets to the Export Centre. Registration lives
         # here, not in vs_exports, so the engine never imports a domain app.
         from .export_datasets import register_datasets

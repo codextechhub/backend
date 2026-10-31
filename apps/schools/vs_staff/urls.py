@@ -46,6 +46,7 @@ from .views.lifecycle import (
     StaffResendInvitationView,
     StaffStatusView,
 )
+from .views.personal_data import StaffEraseView, StaffPersonalDataView
 from .views.posting import StaffBulkPostingView, StaffBulkRoleView, StaffRosterView
 from .views.records import (
     DocumentDetailView,
@@ -163,6 +164,11 @@ urlpatterns = [
     path("", StaffListCreateView.as_view(), name="staff-list"),
     path("<int:pk>/", StaffDetailView.as_view(), name="staff-detail"),
     path("<int:pk>/status/", StaffStatusView.as_view(), name="staff-status"),
+    path(
+        "<int:pk>/personal-data/", StaffPersonalDataView.as_view(),
+        name="staff-personal-data",
+    ),
+    path("<int:pk>/erase/", StaffEraseView.as_view(), name="staff-erase"),
     path("<int:pk>/history/", StaffHistoryView.as_view(), name="staff-history"),
     path("<int:pk>/section-history/", StaffSectionHistoryView.as_view(), name="staff-section-history"),
     path("<int:pk>/roles/", StaffRolesView.as_view(), name="staff-roles"),
