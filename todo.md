@@ -129,6 +129,19 @@ MUST SAY:
 - The backend owns the phone decision in commit 0c2a74d4. The console follows
   the server's field map and was checked locally; deployment is not asserted.
 
+### D139. A photograph must really be a picture (584e3240, 2026-10-31)
+MODULES: M10 students and guardians, M11 student portal, M12 parent portal, MRD.
+MUST SAY:
+- Every photograph upload (a pupil's passport photograph on the documents
+  route or the enrol form, a guardian's photograph, and the photographs pupils
+  and parents set in their own apps) is opened with Pillow. Only a real JPEG,
+  PNG or WebP is accepted; the content type the browser sends is not trusted.
+- The stored copy takes the extension of the format found, so a JPEG named
+  face.pdf is stored and served as face.jpg.
+- HEIC is no longer listed as accepted. It used to pass the check and then fail
+  as a server error, because storage never accepted it; it is now a 400 asking
+  for a JPEG. A file that will not open as a picture gets a 400 saying so.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
