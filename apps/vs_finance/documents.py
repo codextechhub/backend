@@ -86,6 +86,9 @@ def issuer_name(entity) -> str:
     the platform's configured name, or the ledger entity's), without the pay-to
     bank or logo lookups, for a screen that names the payee and no more.
     """
+    from vs_rbac.field_enforcement import assert_system_surface
+
+    assert_system_surface("vs_finance.documents.issuer_name")
     school = getattr(entity.tenant, "school_profile", None)
     if school is not None:
         return school.name

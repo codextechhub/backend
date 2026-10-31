@@ -1399,9 +1399,10 @@ map, approval card and dashboard; export links), `ExpenseClaimDeepPayloadTests` 
 | Console overview signals (`vs_admin_console/overview.py`) | `fiscal_runway`, `overdue_invoices.count`, `unallocated_credit.count`, `vendor_invoices_unpaid.count` | counts across the whole tenant with no branch narrowing |
 | Month and fiscal-year close refusals | failed check names | clean: named only if readable |
 
-The issuer identity has two sources: the printed document uses
-`platform.profile.name`, while email subjects, payslips and credit-note emails
-use the ledger entity name, and the email brand name is the fixed word "CodeX".
+The printed document, finance email subjects, payslips, credit-note emails and
+purchase-order email subjects use the same issuer name: the school's name, the
+configured `platform.profile.name` for platform books, or the ledger entity
+name otherwise. The email brand mark is the separate product identity "CodeX".
 A CodeX customer record copies the school's email, phone and address on every
 school save (`platform_customer.py`), so the same value sits under
 `finance.customer.billing_*` and `platform.schools.billing_*`; the stricter wins.
@@ -1748,7 +1749,7 @@ for these screens (D-L10).
 | E-L8 | Fund detail `register[]` and `spent_this_week` restate cash on hand with no switch. | fixed: fund detail register and weekly spending follow their own switches; the register also requires Cash on hand |
 | E-L9 | The dashboard petty cash card and its "floats running low" attention item restate fund float and balance and hide only on `finance.dashboard.petty_cash`. | fixed: the spending dashboard fund figures and low-float signal follow the fund switches |
 | E-L10 | The CodeX issuer profile has no registration; `POST /config/values/`, `DELETE /config/values/<key>/` and `effective-values/` write and read the same keys. | fixed: platform profile fields are registered and guarded on curated and generic value routes |
-| E-L11 | Issuer identity has two sources (printed documents use `platform.profile.name`; email subjects, payslips and credit-note emails use the ledger entity name). | recorded |
+| E-L11 | Issuer identity had two sources: printed documents used `platform.profile.name`, while platform finance emails, payslips and credit-note emails fell back to the ledger entity name. | fixed: all use `vs_finance.documents.issuer_name`, including purchase-order email subjects; `vs_finance.tests_issuer_identity`, `vs_procurement.tests_issuer_identity` |
 | E-L12 | Entitlement `starts_at` and `ends_at` (list, calendar, bulk schedule, uplift) restate the subscription expiry guarded by `platform.schools.subscription_expires_at`. | fixed for the entitlement list, the grant and schedule answers and the renewal calendar: `vs_config.tests_entitlement_access`; the uplift window on the school plan screen: `schools.vs_schools.tests_plan_uplift_window_access` (a plan-written uplift, `source` `PACKAGE`, follows the subscription start and expiry switches; a hand-written one is open) |
 | E-L13 | CodeX's customer record copies a school's email, phone and address on every school save: two switch families for one value (stricter wins). | exempt: the CodeX customer record is read through the CodeX books' own `finance.customer` switches, and the copy from the school is a system write |
 | E-L14 | The central audit mirror sends the finance `message` as `summary` and every metadata argument as `metadata`, with no Field Access (Q-E10 and Q-E11, answered in 8.1). | fixed: the mirror writes who, what, which document, branch and time and nothing else; rows already written are rebuilt on read (the finance trail's own old rows too: see E-L26), `vs_finance.tests_audit_figures.CentralMirrorTests`, `vs_audit.tests_protected_words_values.RecordOnlyTests` |
@@ -1883,9 +1884,9 @@ recommendation: `procurement.rfq.budget_estimate`,
 | B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
 | C. Procurement | 19 | 18 | 0 | 0 | 1 | 0 |
 | D. School settings | 9 | 8 | 0 | 0 | 1 | 0 |
-| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 26 | 0 | 9 | 3 | 2 |
+| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 27 | 0 | 8 | 3 | 2 |
 | X. Found outside the five areas | 17 | 11 | 0 | 5 | 0 | 1 |
-| Total | 122 | 86 | 0 | 15 | 18 | 3 |
+| Total | 122 | 87 | 0 | 14 | 18 | 3 |
 
 Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34

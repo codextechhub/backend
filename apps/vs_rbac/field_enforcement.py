@@ -104,6 +104,12 @@ READ_DENIED_MESSAGE = "You do not have permission to read this field."
 #: path is listed here with the reason, so "what is rendered unfiltered" is one
 #: list rather than a search through the code.
 SYSTEM_SURFACES: dict[str, str] = {
+    "vs_finance.documents.issuer_name": (
+        "The issuer name on a customer or vendor document, its email, and a "
+        "payslip belongs to the outside recipient's record. It follows the "
+        "tenant's configured issuer identity, so a staff member's Field Access "
+        "cannot make a subject or document name differ from the sent copy."
+    ),
     "vs_finance.documents._issuer_block": (
         "The pay-to block of an invoice, receipt or statement. It shows the "
         "issuing tenant's own collection account to the customer who has to "

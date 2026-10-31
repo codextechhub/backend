@@ -41,6 +41,7 @@ from .constants import (
     FinanceDeliverySource,
     FinanceDeliveryStatus,
 )
+from .documents import issuer_name
 from .exceptions import FinanceError
 from .models import FinanceDocumentDelivery
 from .pay_links import invoice_pay_url
@@ -156,8 +157,8 @@ def _clean_note(value) -> str:
 
 
 def _issuer_name(entity) -> str:
-    school = getattr(entity.tenant, "school_profile", None)
-    return school.name if school is not None else entity.name
+    """Use the same issuer name on email as the customer-facing document."""
+    return issuer_name(entity)
 
 
 def _subject(document_type, entity, document_number) -> str:

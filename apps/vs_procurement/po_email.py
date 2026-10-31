@@ -22,7 +22,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from vs_config.display import format_date
 from vs_finance.audit import record
 from vs_finance.constants import DocumentStatus, FinanceAuditAction, FinanceAuditStatus
-from vs_finance.documents import _issuer_block
+from vs_finance.documents import _issuer_block, issuer_name
 from vs_notifications.notify import UnregisteredRecipient, send_notification
 from vs_notifications.models import Notification, NotificationStatus
 from vs_rbac.field_enforcement import can_read
@@ -104,7 +104,7 @@ def resolve_recipients(po: PurchaseOrder) -> list[str]:
 
 
 def _subject(po):
-    return f"Purchase order {po.document_number} from {po.entity.name}"
+    return f"Purchase order {po.document_number} from {issuer_name(po.entity)}"
 
 
 def _user_name(user):

@@ -28,6 +28,7 @@ import logging
 from vs_config.display import format_date
 
 from .constants import CreditNoteKind
+from .documents import issuer_name as document_issuer_name
 from .money import to_naira
 
 logger = logging.getLogger(__name__)  # Module logger for notification failures.
@@ -148,7 +149,7 @@ def notify_credit_note_issued(note, *, actor_user=None):
         previous_net = current_net - note.total if is_debit else current_net + note.total
         previous_label, previous_amount = _account_position(previous_net)
         current_label, current_amount = _account_position(current_net)
-        issuer_name = school.name if school else note.entity.name
+        issuer_name = document_issuer_name(note.entity)
         related_invoice = note.invoice.document_number if note.invoice_id else "Standalone account adjustment"
         event_key = "billing.debit_note_issued" if is_debit else "billing.credit_note_issued"
         context = {
