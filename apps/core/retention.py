@@ -26,9 +26,13 @@ How it works:
   :mod:`core.binding`) close its URL but keep its bytes
   (:func:`retire_files`).
 
-What this does not cover is SQL that bypasses the ORM. The ledger's own proof
-against that is the sealed figures of each closed period (``vs_finance.seals``),
-and the audit trails are refused at the database by triggers.
+SQL that bypasses the ORM is not seen here. For the books, the database
+refuses it too: a finance or procurement document past draft, and the lines of
+a journal or invoice past draft, cannot be deleted, and a posted document
+cannot go back to draft (triggers in ``vs_finance`` 0078 and
+``vs_procurement`` 0049). The sealed figures of each closed period
+(``vs_finance.seals``) prove the rest, and the audit trails are refused at the
+database by triggers.
 """
 from __future__ import annotations
 

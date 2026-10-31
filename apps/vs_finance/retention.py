@@ -28,8 +28,12 @@ approval, a cancellation), and a draft is only somebody's unfinished work.
 The lines, payslips, issued copies and filed evidence that make up a kept
 document are kept with it. :func:`register_policies` declares them all to
 :mod:`core.retention`, which refuses every ORM deletion of a kept row and
-keeps the bytes of every file filed against one. The audit trails are not
-here: they are append-only for ever, enforced by database triggers.
+keeps the bytes of every file filed against one. The database backs the
+documents and their journal and invoice lines with triggers that refuse the
+same deletes from raw SQL (``migrations/0078_kept_documents_refuse_delete``);
+those know no period, so books past their retention still need a deliberate
+switch to remove. The audit trails are not here: they are append-only for
+ever, enforced by database triggers.
 """
 from __future__ import annotations
 

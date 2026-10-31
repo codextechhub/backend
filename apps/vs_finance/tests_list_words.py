@@ -211,6 +211,12 @@ class ConcessionSummaryTests(_WordsFixture):
 class ReceivableWordsTests(_WordsFixture):
 
     def invoice(self, *, status="POSTED", paid="UNPAID", due=D(2099, 1, 1)):
+        if status == "DRAFT":
+            # Never posted: the database refuses a posted invoice going back to draft.
+            return Invoice.objects.create(
+                entity=self.books, customer=self.tunde, branch=self.ikeja,
+                invoice_date=D(2026, 1, 10), due_date=due,
+            ).pk
         invoice = self.posted_invoice(self.tunde, self.ikeja, amount=10_000)
         Invoice.objects.filter(pk=invoice.pk).update(status=status, payment_status=paid, due_date=due)
         return invoice.pk
