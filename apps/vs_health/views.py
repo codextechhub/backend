@@ -8,8 +8,11 @@ Two flavours:
 
 This is a platform/SRE tool: reads require ``platform.health.view`` and writes
 require a concrete ``platform.health.create`` or ``platform.health.update`` key.
-Tenant Health reads cross-tenant aggregates,
-so it is intentionally gated by the platform permission only.
+Tenant Health reads cross-tenant aggregates, so every route also asks
+:class:`~vs_admin_console.permissions.IsPlatformActor`: the caller's own tenant
+must be the platform. The keys are platform-scoped, which already keeps them out
+of a school's roles; the second check means a key mislabelled as tenant-holdable
+still cannot show one school every other school's numbers.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin
 from core.response import success_response, error_response
 from core.tenant_filters import requested_tenant
+from vs_admin_console.permissions import IsPlatformActor
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
@@ -47,7 +51,7 @@ from .serializers import (
     TaskRowSerializer,
 )
 
-PERMS = [IsAuthenticatedAndActive & HasRBACPermission]
+PERMS = [IsAuthenticatedAndActive & IsPlatformActor & HasRBACPermission]
 
 
 # Base permission mixin for read-only platform health analytics.

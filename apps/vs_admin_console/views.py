@@ -15,6 +15,7 @@ from .models import (
     ImpersonationSession,
 )
 from .overview import console_overview
+from .permissions import IsPlatformActor
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_rbac.models import TenantUserRoleAssignment
 from .serializers import (
@@ -470,9 +471,12 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
       - latest ImportJobLog
       - suspension state from School model
 
+    Platform staff only (``IsPlatformActor``) as well as the key: its rows
+    describe every school on the platform.
+
     docstring-name: Admin dashboard
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & IsPlatformActor & HasRBACPermission]
     rbac_permission = "platform.dashboard.view"
     serializer_class = SchoolDashboardItemSerializer
 

@@ -406,11 +406,11 @@ platform-wide.
 `BackgroundJob` **does** have one, and `TaskListView` deliberately does not
 scope by it: `BackgroundJob.objects.select_related("tenant").all()`
 (`views.py:242`) returns every tenant's jobs, and the `tenant` column on the
-table is the point of the screen. The only thing keeping that safe is that
+table is the point of the screen. Two things keep that safe:
 `platform.health.view` is `PermissionScope.PLATFORM` (`seed.py:71`) and
-therefore cannot be attached to a school role
-(`vs_rbac/models.py:91-110`). That boundary is declared correctly here, which is
-not true of every cross-tenant screen on this platform.
+therefore cannot be attached to a school role (`vs_rbac/models.py`), and every
+health route also asks `IsPlatformActor`, so the caller's own tenant must be
+the platform even if the key were ever mislabelled.
 
 Worth contrasting with the console's own task monitor, which shows the same
 underlying rows: that one is gated on Django's `is_staff` flag - a flag every CX

@@ -8,6 +8,8 @@ from vs_finance.models import LedgerEntity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_tenants.models import Tenant
 
+from .permissions import IsPlatformActor
+
 
 class FinanceEntityInventoryView(APIView):
     """
@@ -33,12 +35,15 @@ class FinanceEntityInventoryView(APIView):
     are broken" and "they were never provisioned", which look identical from a
     school's side.
 
-    Permission: platform.schools.view
+    Permission: platform.schools.view, held by a platform-tenant caller
+    (``IsPlatformActor``). The key is platform-scoped, so no school role can
+    carry it; the tenant check means a mislabelled key still could not open the
+    roll-call to a school.
 
     docstring-name: Finance entity inventory
     """
 
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & IsPlatformActor & HasRBACPermission]
     rbac_permission = "platform.schools.view"
 
     def get(self, request):

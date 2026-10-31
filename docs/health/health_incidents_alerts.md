@@ -542,9 +542,12 @@ and cannot change one.
 **There is no tenant dimension in this slice at all.** No model here has a
 tenant column, no queryset is filtered by tenant, and `?tenant=` - mandatory
 though it is - is used for nothing. That is correct: an incident is a fact about
-the platform, not about a customer. The boundary is entirely carried by the
-PLATFORM scope on the two keys, which `assert_tenant_may_hold`
-(`vs_rbac/models.py:91-110`) enforces at every grant path.
+the platform, not about a customer. Two checks carry the boundary: the PLATFORM
+scope on the two keys, which `assert_tenant_may_hold` (`vs_rbac/models.py`)
+enforces at every grant path, and `IsPlatformActor` on every route here, which
+refuses any caller whose own tenant is not the platform. The second means a key
+mislabelled as tenant-holdable still opens nothing to a school
+(`vs_admin_console/tests_platform_boundary.py`).
 
 Two consequences:
 
