@@ -194,6 +194,25 @@ MUST SAY:
   the web service and the worker and refuses to start without it. Do not infer
   that staging or production have the key, or have run the migrations.
 
+### D143. A school can give a person a copy of their data, or erase them once they have left (248d408d, 2026-10-31)
+MODULES: M11 student management (pupils and guardians), M12 staff management, M04 roles and permissions, M05 audit and activity logging, MRD (privacy and legal readiness).
+MUST SAY:
+- GET /v1/students/<id>/personal-data/, /v1/guardians/<id>/personal-data/ and
+  /v1/staff/<id>/personal-data/ download one JSON file (xvs.personal-data.v1)
+  of everything held about the person, grouped by area: record, family links,
+  classes, attendance, results, messages, fees or pay, documents listed by
+  name, and the sign-in account without its secrets. Field Access does not
+  narrow it; the key school.personal_data.export is the gate.
+- POST /v1/students/<id>/erase/, /v1/guardians/<id>/erase/ and
+  /v1/staff/<id>/erase/ run the 6-year erasure at once, with a required reason,
+  for a pupil who has left, a guardian with no child still at the school, or
+  staff off the roll (school.personal_data.erase). A parent whose last child is
+  erased is erased by the nightly run that night; the response names them.
+- Both keys go to the school administrator role by default (export SENSITIVE,
+  erase CRITICAL). Both acts are audit entries (PERSONAL_DATA_EXPORTED,
+  PERSONAL_DATA_ERASED with the reason). School-fe has the permission codes;
+  its buttons are not built yet. Whole-school export and deletion is not built.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
