@@ -155,6 +155,18 @@ MUST SAY:
   as a server error, because storage never accepted it; it is now a 400 asking
   for a JPEG. A file that will not open as a picture gets a 400 saying so.
 
+### D140. Customer-facing documents and messages name one issuer (f7c21ad1, 2026-10-31)
+MODULES: M04 roles and permissions, M08 notifications and delivery, M19 finance and accounting, M22 procurement and requisitions, MRD.
+MUST SAY:
+- The shared issuer-name resolver supplies finance document email subjects,
+  credit and debit note messages, payslips, and purchase-order email subjects.
+  For platform books it uses the configured CodeX issuer name, matching the
+  printed document; a school uses its own name, and another tenant falls back
+  to the ledger entity name.
+- The issuer name is a declared recipient-facing system surface. The separate
+  product email brand mark is unchanged. These are local backend changes;
+  do not infer deployment or production adoption.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
