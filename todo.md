@@ -174,6 +174,26 @@ MUST SAY:
 - Creating or editing vendor master fields writes a transactional finance audit row with registered contact, tax, banking, category, terms, compliance and accounting values.
 - Audit snapshots are served through the relevant `finance.bankaccount` and `procurement.vendor` Read switches. The sentence names only the account or vendor label, so a reader with a closed switch sees that an edit happened without its protected value. These are local backend changes; do not infer deployment or production adoption.
 
+### D142. Medical notes, tax IDs, pension PINs and pay bank numbers are stored encrypted (629c692b, 2026-10-31)
+MODULES: M11 student management (pupils and guardians), M03 identity (CodeX staff profiles), M19 finance and accounting (payroll, staff pay accounts), M21 vendor management, M18 payments and collections (payouts), M05 audit and activity logging, MRD (security, deployment readiness).
+MUST SAY:
+- A pupil's blood group, allergies and conditions; a staff member's tax ID and
+  pension PIN, on the salary record and on each payroll line; and the account
+  numbers money is paid into (staff pay accounts, CodeX staff profiles,
+  vendors, payout instructions) are encrypted in the database and in the
+  record history, and read back as plain text by everyone allowed to read
+  them. Field Access decides who reads them, exactly as before.
+- Audit entries no longer hold these values whole: a medical value is shown as
+  [withheld], and an account number, tax ID or pension PIN as its last four
+  characters (****1234). This narrows D141: a bank-account or vendor master
+  change still shows that the number changed and to which ending, never the
+  whole number. A school's own bank account number is shortened the same way
+  in audit entries, though its column is not encrypted.
+- None of these columns can be searched or filtered on its value.
+- A deployed server needs FIELD_ENCRYPTION_KEYS (a Fernet key of its own) on
+  the web service and the worker and refuses to start without it. Do not infer
+  that staging or production have the key, or have run the migrations.
+
 ## Undone
 
 Two items. Each says what is wrong, how to fix it, and what is stopping it.
