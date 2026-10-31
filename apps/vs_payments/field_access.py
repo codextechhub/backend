@@ -1,6 +1,7 @@
 """Payment gateway fields an administrator may restrict per role.
 
-A collection's origin is set once, when a desk starts it. A refund through the
+A collection's origin and payer contact are set once, when a desk starts it. The
+payer's email and name are sensitive on staff reads and exports. A refund through the
 provider's original payment is named once, when it is tied to the refund; the
 rest of it is the provider's word and ours, and nothing can write it.
 
@@ -54,6 +55,12 @@ def register():
             FieldSpec("origin", "Collection origin", group="Collection",
                       description="Whether a branch desk started the collection.",
                       writable=True, open_on_create=True, scope=_TENANT, sort_order=10),
+            FieldSpec("payer_email", "Payer's email", group="Payer", sensitive=True,
+                      scope=_TENANT, sort_order=20, open_on_create=True,
+                      read_by=("finance_admin",)),
+            FieldSpec("payer_name", "Payer's name", group="Payer", sensitive=True,
+                      scope=_TENANT, sort_order=30, open_on_create=True,
+                      read_by=("finance_admin",)),
         ),
     )
     register_fields(

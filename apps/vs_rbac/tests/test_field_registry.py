@@ -508,6 +508,8 @@ VIRTUAL_FIELD_KEYS = {
 #: alternative is a check that cannot tell a deliberate closure from a
 #: declaration that forgot the conversion it belonged to.
 SENSITIVE_BEYOND_THE_CONVERSION = {
+    "payments.collection.payer_email": "A payer's contact address starts closed on staff screens and exports.",
+    "payments.collection.payer_name": "A payer's name starts closed on staff screens and exports.",
     "finance.expenseclaim.receipt": (
         "A claim receipt may show personal contact or payment details, so evidence starts closed."
     ),

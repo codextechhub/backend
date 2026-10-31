@@ -329,6 +329,9 @@ class CollectionListCreateView(APIView):
         origin = body.get("origin") or CollectionOrigin.STANDARD
         if "origin" in body:
             assert_writable(request, "payments.collection", {"origin": origin}, creating=True)
+        payer_inputs = {key: body[key] for key in ("payer_email", "payer_name") if key in body}
+        if payer_inputs:
+            assert_writable(request, "payments.collection", payer_inputs, creating=True)
 
         invoice = _entity_obj(request, entity, Invoice, body.get("invoice"), "invoice")
         customer = _collection_payer(request, entity, body.get("customer"), invoice)
@@ -1148,6 +1151,7 @@ MOVEMENT_GROUPS = {
 MOVEMENT_DIRECTIONS = ("in", "out", "transfer")
 _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
+    "source_channel",
     "amount", "status", "narration", "provider_reference", "confirmed_at",
     "email", "account_code", "account_name", "beneficiary_account",
     "sent_amount", "wht_amount", "vendor_payout",
@@ -1191,7 +1195,8 @@ def _movement_querysets(reach, *, provider=None, group=None):
     cv = cols.annotate(
         kind=Value("collection", output_field=CharField()), gateway_id=F("id"),
         direction=Value("in", output_field=CharField()),
-        party=Coalesce(F("customer__name"), F("payer_name"), Value(""), output_field=CharField()),
+        party=Coalesce(F("customer__name"), Value(""), output_field=CharField()),
+        source_channel=F("channel"),
         email=F("payer_email"),
         account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
@@ -1201,6 +1206,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
     pv = pos.annotate(
         kind=Case(settling, default=Value("payout"), output_field=CharField()),
         gateway_id=F("id"),
+        source_channel=Value("", output_field=CharField()),
         direction=Case(settling_direction, default=Value("out"), output_field=CharField()),
         party=F("beneficiary_name"),
         email=Value("", output_field=CharField()),
@@ -1212,6 +1218,7 @@ def _movement_querysets(reach, *, provider=None, group=None):
     ).values(*_MOVEMENT_COLS)
     hv = held.annotate(
         kind=Value("settlement", output_field=CharField()), gateway_id=F("id"),
+        source_channel=Value("", output_field=CharField()),
         reference=Coalesce(F("batch__reference"), Value(""), output_field=CharField()),
         direction=Value("transfer", output_field=CharField()),
         party=Value("Settled by the platform", output_field=CharField()),
@@ -1306,6 +1313,12 @@ class MovementsView(APIView):
         for m in page:  # Convert each result row into a serializable mapping.
             row = dict(m)  # Coerce the projected row into a plain dict.
             vendor_backed = row.pop("vendor_payout")  # Routing only; never part of the feed.
+            source_channel = row.pop("source_channel")
+            if row["kind"] == "collection":
+                if (not can_read(request, "payments.collection.payer_email") or
+                    (source_channel == "TERMINAL" and
+                     not can_read(request, "payments.terminal_payment.payer_email"))):
+                    row.pop("email", None)
             if row["kind"] in ("payout", "settlement"):  # A collection's party is its customer.
                 for name in hidden[bool(vendor_backed)]:  # Absent, not masked: a marker is itself an answer.
                     row.pop(name, None)

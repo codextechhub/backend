@@ -19,6 +19,8 @@ from vs_finance.models import Account, InvoiceLine
 from vs_finance.receivables import post_invoice
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+from vs_exports import engine
+from vs_exports.catalogue import ScopeContext, get_dataset
 
 from .constants import CollectionOrigin, CollectionStatus
 from .models import CollectionIntent
@@ -76,6 +78,89 @@ class DeskCollectionTests(_CustodyFixture):
         invoice.refresh_from_db()
         self.assertEqual(intent.payment.branch_id, self.lekki.pk)
         self.assertEqual(invoice.balance_due, 0)
+
+    def test_payer_fields_close_on_staff_reads_and_exports_until_granted(self):
+        install_declared_fields("payments.collection")
+        install_declared_fields("payments.terminal_payment")
+        invoice = self.posted_invoice(self.books, self.adeyemi, self.lekki)
+        user = self.user_for(self.tenant, "payer-fields@corona.test")
+        self.grant(user, "payments.collection.create", "payments.collection.view",
+                   "payments.report.view", "exports.sensitive_field.export",
+                   tenant=self.tenant, role_key="payer-fields", branch=self.lekki)
+        client = TenantAPIClient(user=user)
+        role = TenantRoleTemplate.objects.get(tenant=self.tenant, key="payer-fields")
+        created = self.start(client, self.books, invoice,
+                             payer_email="ada@example.test", payer_name="Ada Okeye")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertNotIn("payer_email", created.data["data"])
+        self.assertNotIn("payer_name", created.data["data"])
+        feed = client.get(f"/v1/payments/movements/?direction=in&entity={self.books.code}")
+        self.assertEqual(feed.status_code, 200, feed.data)
+        self.assertNotIn("email", feed.data["data"][0])
+
+        dataset = get_dataset("payments.collections")
+        fields, omissions = engine.resolve_columns(
+            user, dataset, ["payer_email", "payer_name"], self.tenant,
+        )
+        self.assertEqual([field.id for field in fields], ["reference"])
+        self.assertEqual(len(omissions), 1)
+        self.assertEqual(set(omissions[0].items), {"Payer email", "Payer name"})
+
+        set_field_access(role, "payments.collection.payer_email",
+                         "payments.collection.payer_name", read=True, write=False)
+        user = type(user).objects.get(pk=user.pk)
+        detail = client.get(
+            f"/v1/payments/collections/{created.data['data']['id']}/?entity={self.books.code}"
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["data"]["payer_email"], "ada@example.test")
+        self.assertEqual(detail.data["data"]["payer_name"], "Ada Okeye")
+        feed = client.get(f"/v1/payments/movements/?direction=in&entity={self.books.code}")
+        self.assertEqual(feed.data["data"][0]["email"], "ada@example.test")
+        fields, omissions = engine.resolve_columns(
+            user, dataset, ["payer_email", "payer_name"], self.tenant,
+        )
+        self.assertEqual({field.id for field in fields},
+                         {"reference", "payer_email", "payer_name"})
+        self.assertEqual(omissions, [])
+
+        terminal = CollectionIntent.objects.create(
+            entity=self.books, branch=self.lekki, customer=self.adeyemi,
+            currency=self.books.base_currency, provider="PAYSTACK", channel="TERMINAL",
+            reference="TERMINAL-PAYER-1", amount=10_000,
+            payer_email="terminal@example.test", payer_name="Terminal Payer",
+        )
+        scope = ScopeContext(tenant=self.tenant, entity=self.books, user=user)
+        rows = {row["reference"]: row for row in dataset.base(scope).values(
+            "reference", "export_payer_email", "export_payer_name",
+        )}
+        self.assertEqual(rows[terminal.reference]["export_payer_email"], "")
+        self.assertEqual(rows[terminal.reference]["export_payer_name"], "")
+        terminal_detail = client.get(
+            f"/v1/payments/collections/{terminal.pk}/?entity={self.books.code}"
+        )
+        self.assertEqual(terminal_detail.status_code, 200, terminal_detail.data)
+        self.assertNotIn("payer_email", terminal_detail.data["data"])
+        self.assertNotIn("payer_name", terminal_detail.data["data"])
+        feed = client.get(f"/v1/payments/movements/?direction=in&entity={self.books.code}")
+        by_ref = {row["reference"]: row for row in feed.data["data"]}
+        self.assertNotIn("email", by_ref[terminal.reference])
+        set_field_access(role, "payments.terminal_payment.payer_email",
+                         "payments.terminal_payment.sender_name", read=True, write=False)
+        user = type(user).objects.get(pk=user.pk)
+        scope = ScopeContext(tenant=self.tenant, entity=self.books, user=user)
+        rows = {row["reference"]: row for row in dataset.base(scope).values(
+            "reference", "export_payer_email", "export_payer_name",
+        )}
+        self.assertEqual(rows[terminal.reference]["export_payer_email"], "terminal@example.test")
+        self.assertEqual(rows[terminal.reference]["export_payer_name"], "Terminal Payer")
+        terminal_detail = client.get(
+            f"/v1/payments/collections/{terminal.pk}/?entity={self.books.code}"
+        )
+        self.assertEqual(terminal_detail.data["data"]["payer_email"], "terminal@example.test")
+        feed = client.get(f"/v1/payments/movements/?direction=in&entity={self.books.code}")
+        by_ref = {row["reference"]: row for row in feed.data["data"]}
+        self.assertEqual(by_ref[terminal.reference]["email"], "terminal@example.test")
 
     def test_at_a_one_branch_school_the_desk_collection_books_to_its_branch(self):
         invoice = self.posted_invoice(self.solo_books, self.solo_parent, self.solo_main)

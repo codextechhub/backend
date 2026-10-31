@@ -32,8 +32,8 @@ class CollectionIntentSerializer(FieldAccessMixin, serializers.ModelSerializer):
     ``authorization_url``), what a desk screen draws as a code and a payer opens
     on their phone; ``id`` is what the screen polls
     (``GET /payments/collections/<id>/?verify=1``) until ``status`` reads
-    ``SUCCEEDED``. ``origin`` is the one switched field: it says whether a branch
-    desk started the collection.
+    ``SUCCEEDED``. ``origin`` says whether a branch desk started the collection.
+    Payer email and name have their own sensitive switches, including on export.
     """
 
     field_resource = "payments.collection"

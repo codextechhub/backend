@@ -1392,7 +1392,7 @@ map, approval card and dashboard; export links), `ExpenseClaimDeepPayloadTests` 
 | Export `procurement.purchase_orders` | `payment_terms` | registered: the column follows `procurement.purchase_order.payment_terms` |
 | Export `audit.events` and `write_audit_export_file` | `summary`, `entity_label` | the nine rules only |
 | Export `workflow.approvals` | `document_reference` only | clean |
-| Export `payments.collections` | `payer_email`, `payer_name` (sensitive, no `access=`) | recorded: no registered source |
+| Export `payments.collections` | `payer_email`, `payer_name` | fixed: both sensitive columns follow `payments.collection` switches; terminal rows also require their `payments.terminal_payment` source switches |
 | Document emails: invoice, receipt, statement, credit and debit note, dunning, payslips | amounts, running balance, issuer identity | system surface by decision |
 | Settings search (`vs_finance/search_places.py`) | label of every finance setting, including the seven registered `finance.settings` fields (for example "Doubtful-debt age bands") | `Place` carries a permission key but no Field Access key |
 | People search | student, guardian, staff hits | clean: rendered through the registered hit serializers |

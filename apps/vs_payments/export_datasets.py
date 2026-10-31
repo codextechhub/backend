@@ -42,7 +42,25 @@ def _reach(scope):
 
 # Gateway collections in the entity and within the exporting caller's branches.
 def _collections(scope):
-    return _reach(scope).collections()
+    """Collections with terminal payer details limited by both source switches."""
+    from django.db.models import Case, CharField, F, Value, When
+    from vs_exports.engine import readable_fields
+
+    user = getattr(scope, "user", None)
+    readable = readable_fields(user, scope.tenant) if user is not None else None
+
+    def source(name, terminal_key):
+        if readable is None or readable(terminal_key):
+            return F(name)
+        return Case(
+            When(channel="TERMINAL", then=Value("")), default=F(name),
+            output_field=CharField(),
+        )
+
+    return _reach(scope).collections().annotate(
+        export_payer_email=source("payer_email", "payments.terminal_payment.payer_email"),
+        export_payer_name=source("payer_name", "payments.terminal_payment.sender_name"),
+    )
 
 
 # Payout instructions in the entity and within the exporting caller's branches.
@@ -101,8 +119,10 @@ def register_datasets():
             Field("created_at", "Created", "Record", KIND_DATETIME),
             Field("confirmed_at", "Confirmed", "Record", KIND_DATETIME),
             Field("payer_email", "Payer email", "Payer", KIND_TEXT, sensitive=True,
+                  source="export_payer_email", access="payments.collection.payer_email",
                   description="Restricted: personal contact data."),
             Field("payer_name", "Payer name", "Payer", KIND_TEXT, sensitive=True,
+                  source="export_payer_name", access="payments.collection.payer_name",
                   description="Restricted: personal data supplied at checkout."),
         ),
         filters=(
