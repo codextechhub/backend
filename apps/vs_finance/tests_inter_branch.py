@@ -55,6 +55,7 @@ from .models import (
     BankAccount,
     CreditNote,
     CreditNoteLine,
+    Customer,
     FinanceAuditLog,
     FiscalPeriod,
     FiscalYear,
@@ -902,6 +903,41 @@ class ReceivableMoveTests(_InterBranchFixture):
         self.assertEqual(refused.status_code, 403, refused.data)
         self.assertEqual(moved.status_code, 201, moved.data)
         self.assertEqual(moved.data["data"]["amount"], 170_000)
+
+    def test_a_closed_account_keeps_its_balance_at_the_branch_that_billed_it(self):
+        Customer.objects.filter(pk=self.tunde.pk).update(is_active=False)
+        body = {"customer": "TUNDE", "from_branch": self.ikeja.pk, "to_branch": self.lekki.pk,
+                "move_date": "2026-01-15"}
+
+        refused = self.client_for(None).post(
+            self.url("inter-branch-transfers/receivable-moves/"), body, format="json")
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("account is closed", str(refused.data))
+        self.first.refresh_from_db()
+        self.assertEqual(self.first.branch_id, self.ikeja.pk)
+        self.assertFalse(InterBranchTransfer.objects.filter(entity=self.books).exists())
+
+    def test_a_role_that_cannot_see_the_active_flag_is_not_told_the_account_is_closed(self):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_rbac.tests.helpers import install_declared_fields, set_field_access
+
+        Customer.objects.filter(pk=self.tunde.pk).update(is_active=False)
+        keys = install_declared_fields("finance.customer", "finance.interbranch")
+        user = self.user_for(self.tenant, "ib-no-active-flag@corona.test")
+        self.grant(user, *TRANSFER_KEYS, tenant=self.tenant, role_key="ib-no-active-flag", branch=None)
+        role = TenantRoleTemplate.objects.get(tenant=self.tenant, key="ib-no-active-flag")
+        set_field_access(role, *keys, read=True, write=True)
+        set_field_access(role, "finance.customer.is_active", read=False, write=False)
+        body = {"customer": "TUNDE", "from_branch": self.ikeja.pk, "to_branch": self.lekki.pk,
+                "move_date": "2026-01-15"}
+
+        refused = TenantAPIClient(user=user).post(
+            self.url("inter-branch-transfers/receivable-moves/"), body, format="json")
+
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertIn("cannot be moved", str(refused.data))
+        self.assertNotIn("closed", str(refused.data))
 
 
 class WholeBalanceMoveTests(_InterBranchFixture):
