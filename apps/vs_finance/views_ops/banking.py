@@ -213,10 +213,10 @@ class BankAccountListCreateView(_FinanceBase):
         currency = _resolve_currency(body.get("currency"))
         branch = _transaction_branch(request, entity, body)
         with transaction.atomic():
-            if is_primary_collection:  # At most one pay-to account per branch.
-                BankAccount.objects.filter(
+            if is_primary_collection:
+                _demote_bank_accounts(BankAccount.objects.filter(
                     entity=entity, branch=branch, is_primary_collection=True,
-                ).update(is_primary_collection=False)
+                ), "is_primary_collection", request)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
                 branch=branch,
@@ -228,9 +228,17 @@ class BankAccountListCreateView(_FinanceBase):
                 is_primary=is_primary,
                 is_primary_collection=is_primary_collection,
             )
-            if is_primary:  # at most one primary per entity
-                BankAccount.objects.filter(entity=entity, is_primary=True).exclude(
-                    pk=bank.pk).update(is_primary=False)
+            if is_primary:
+                _demote_bank_accounts(
+                    BankAccount.objects.filter(entity=entity, is_primary=True).exclude(pk=bank.pk),
+                    "is_primary", request,
+                )
+            record(
+                entity=entity, action=FinanceAuditAction.BANK_ACCOUNT_CREATED,
+                actor_user=request.user, target=bank,
+                message=f"Bank account '{bank.name}' created.",
+                after=_bank_audit_snapshot(bank),
+            )
         return success_response(
             f"Bank account '{name}' created.",
             data=BankAccountSerializer(bank, context={"request": request}).data,
@@ -246,6 +254,36 @@ _BANK_BODY_KEYS = (
     "bank_name", "account_number", "gl_account", "currency", "is_active",
     "is_primary", "is_primary_collection",
 )
+
+
+def _bank_audit_snapshot(bank):
+    """Capture the registered master values before or after an account write."""
+    return {
+        "name": bank.name,
+        "bank_name": bank.bank_name,
+        "account_number": bank.account_number,
+        "gl_account": bank.gl_account_id,
+        "currency": bank.currency_id,
+        "is_active": bank.is_active,
+        "is_primary": bank.is_primary,
+        "is_primary_collection": bank.is_primary_collection,
+    }
+
+
+def _demote_bank_accounts(queryset, field, request):
+    """Record each account changed by a primary-account selection."""
+    for previous in queryset.select_for_update():
+        before = _bank_audit_snapshot(previous)
+        setattr(previous, field, False)
+        previous.save(update_fields=[field])
+        record(
+            entity=previous.entity, action=FinanceAuditAction.BANK_ACCOUNT_UPDATED,
+            actor_user=request.user, target=previous,
+            message=f"Bank account '{previous.name}' updated.",
+            before=before, after=_bank_audit_snapshot(previous),
+        )
+
+
 _TRANSACTION = "finance.banktransaction"
 _TRANSFER = "finance.banktransfer"
 
@@ -601,8 +639,10 @@ class BankAccountDetailView(_FinanceBase):
             request, _BANK_ACCOUNT, values, current=current)
 
     # Handle PATCH requests for this endpoint.
+    @transaction.atomic
     def patch(self, request, pk):
         bank = self._bank(request, pk)
+        before = _bank_audit_snapshot(bank)
         body = request.data or {}
         currency = _resolve_currency(body.get("currency")) if "currency" in body else None
         self._assert_changes_writable(request, bank, body, currency)
@@ -620,24 +660,32 @@ class BankAccountDetailView(_FinanceBase):
         if "is_primary" in body:
             make_primary = _bool(body.get("is_primary"), default=bank.is_primary)
             bank.is_primary = make_primary
-            if make_primary:  # at most one primary per entity
-                BankAccount.objects.filter(entity=bank.entity, is_primary=True).exclude(
-                    pk=bank.pk).update(is_primary=False)
+            if make_primary:
+                _demote_bank_accounts(
+                    BankAccount.objects.filter(entity=bank.entity, is_primary=True).exclude(pk=bank.pk),
+                    "is_primary", request,
+                )
         if "is_primary_collection" in body:
             make_primary_collection = _bool(
                 body.get("is_primary_collection"), default=bank.is_primary_collection)
             bank.is_primary_collection = make_primary_collection
-            if make_primary_collection:  # At most one pay-to account per branch.
-                with transaction.atomic():
-                    BankAccount.objects.filter(
+            if make_primary_collection:
+                _demote_bank_accounts(BankAccount.objects.filter(
                         entity=bank.entity, branch_id=bank.branch_id,
                         is_primary_collection=True).exclude(
-                        pk=bank.pk).update(is_primary_collection=False)
-                    bank.save()
+                        pk=bank.pk), "is_primary_collection", request)
+                bank.save()
             else:
                 bank.save()
         else:
             bank.save()
+        if before != _bank_audit_snapshot(bank):
+            record(
+                entity=bank.entity, action=FinanceAuditAction.BANK_ACCOUNT_UPDATED,
+                actor_user=request.user, target=bank,
+                message=f"Bank account '{bank.name}' updated.",
+                before=before, after=_bank_audit_snapshot(bank),
+            )
         return success_response(
             f"Bank account '{bank.name}' updated.",
             data=BankAccountSerializer(bank, context={"request": request}).data)

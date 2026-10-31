@@ -3181,6 +3181,7 @@ AUDIT_SNAPSHOT_FIELDS = {
     "Account": "finance.account",
     "CostCenter": "finance.costcenter",
     "BankAccount": "finance.bankaccount",
+    "Vendor": "procurement.vendor",
     "BankTransaction": "finance.banktransaction",
     "BankTransfer": "finance.banktransfer",
     "DeferredIncomeRelease": "finance.deferredincome",

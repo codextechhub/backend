@@ -728,6 +728,10 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
+    BANK_ACCOUNT_CREATED = "BANK_ACCOUNT_CREATED", "Bank account created"
+    BANK_ACCOUNT_UPDATED = "BANK_ACCOUNT_UPDATED", "Bank account updated"
+    VENDOR_CREATED = "VENDOR_CREATED", "Vendor created"
+    VENDOR_UPDATED = "VENDOR_UPDATED", "Vendor updated"
     FINANCE_SETTINGS_UPDATED = "FINANCE_SETTINGS_UPDATED", "Finance settings updated"
     FINANCE_DOCUMENT_SETTINGS_UPDATED = (
         "FIN_DOCUMENT_SETTINGS_UPDATED", "Finance document settings updated"

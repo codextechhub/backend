@@ -1769,7 +1769,7 @@ for these screens (D-L10).
 | E-L28 | Staff employment status moves store `reason`, `effective_date` and `last_working_day` in central metadata with no rule for `school.teachers.employment_status` and `exit_date`. | fixed: `schools.vs_staff.tests.test_field_access_settings_leaks.EmploymentMoveAuditTests`, `vs_audit.tests_protected_words_values.MetadataValueTests` |
 | E-L29 | The plan agreement fields of `platform.schools` (agreed price, minimum billable students, package plan, subscription dates, notes, uplift) have no protected-word rule. | fixed: `schools.vs_schools.tests_agreement_audit_words` (entitlement, uplift, withdrawn-grant and not-agreement cases) |
 | E-L30 | `/config/audit-events/` serves raw before and after of every configuration value (same as D-L2). | fixed: see D-L2, `vs_config.tests_audit_access.SnapshotAccessTests` |
-| E-L31 | Audit gap: creating or editing a bank account (account number included) and a vendor (bank details, tax id, email) writes no audit row, so there is nothing to protect. | recorded |
+| E-L31 | Audit gap: creating or editing a bank account (account number included) and a vendor (bank details, tax id, email) writes no audit row, so there is nothing to protect. | fixed: bank-account and vendor create/update write transactional finance audit snapshots; primary-account demotions receive their own rows; the audit serializer filters bank and vendor values through their registered Field Access switches. `vs_finance.tests_bank_account_field_access`, `vs_procurement.tests_vendor_field_access` |
 | E-L32 | Finance approval summaries (bank transaction, transfer, petty cash return, inter-branch, provision) copy amounts, accounts, counted cash and branch splits into the unfilterable summary and unmarked details. | fixed: `vs_finance.tests_approval_field_access`, `vs_workflow.tests.test_summary_access` |
 | E-L33 | `school.hire` and `school.leave` approval cards copy name, job title, email, staff id, hire date and leave kind into title and summary, ignoring the `school.teachers` switches (the name and job title in the title are labels and always show, Q-E9, answered in 8.1; the other values follow the switches). | fixed: `schools.vs_staff.tests.test_approval_field_access` (the registered `school.teachers` fields other than name and job title are gated; a leave card now restates `school.leave` fields, so its type, dates, days, reason and over-allowance figure each follow their switch, and its subtitle names no type). Who filed a request, when, and who last changed it carry no `school.leave` switch and are recorded as an open product question |
 | E-L34 | Workflow notification subjects and in-app text are built from the stored title and subtitle: staff name and job title (hire), name and "Leave request" (leave; the type of leave is a marked field and not part of the subtitle), platform user name or email (labels, Q-E9, answered in 8.1). | no change: names are labels |
@@ -1884,9 +1884,9 @@ recommendation: `procurement.rfq.budget_estimate`,
 | B. Receivables, ledger and banking documents | 17 | 14 | 0 | 1 | 2 | 0 |
 | C. Procurement | 19 | 18 | 0 | 0 | 1 | 0 |
 | D. School settings | 9 | 8 | 0 | 0 | 1 | 0 |
-| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 27 | 0 | 8 | 3 | 2 |
+| E. Receipts, petty cash, issuer, audit, approvals, exports | 40 | 28 | 0 | 7 | 3 | 2 |
 | X. Found outside the five areas | 17 | 11 | 0 | 5 | 0 | 1 |
-| Total | 122 | 87 | 0 | 14 | 18 | 3 |
+| Total | 122 | 88 | 0 | 13 | 18 | 3 |
 
 Area A's eleven exemptions follow
 the owner's aggregate and branch decisions. "Reviewed or elsewhere" is E-L34

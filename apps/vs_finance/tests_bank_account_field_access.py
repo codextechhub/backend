@@ -16,7 +16,8 @@ import datetime
 import itertools
 
 from core.test_utils import TenantAPIClient
-from vs_finance.models import BankAccount, BankReconciliation, BankStatementLine
+from vs_finance.models import BankAccount, BankReconciliation, BankStatementLine, FinanceAuditLog
+from vs_finance.constants import FinanceAuditAction
 from vs_rbac.field_enforcement import field_access_payload
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.tests.helpers import install_declared_fields, set_field_access
@@ -386,6 +387,39 @@ class BankAccountWriteTests(_BankAccountFieldAccess):
             self.open, name="Full", bank_name="Access Bank", account_number="1234567890")
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["data"]["bank_name"], "Access Bank")
+
+    def test_create_and_update_record_account_number_in_the_audit_snapshot(self):
+        response = self.create(self.open, name="Audit Bank", account_number="1234567890")
+        self.assertEqual(response.status_code, 201, response.data)
+        bank = BankAccount.objects.get(name="Audit Bank", entity=self.books)
+        created = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.BANK_ACCOUNT_CREATED, target_id=str(bank.pk))
+        self.assertEqual(created.after["account_number"], "1234567890")
+        response = self.patch(self.open, {"account_number": "9999999999"}, bank=bank)
+        self.assertEqual(response.status_code, 200, response.data)
+        updated = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.BANK_ACCOUNT_UPDATED, target_id=str(bank.pk))
+        self.assertEqual(updated.before["account_number"], "1234567890")
+        self.assertEqual(updated.after["account_number"], "9999999999")
+
+    def test_primary_account_demotion_has_its_own_audit_row(self):
+        BankAccount.objects.filter(pk=self.ikeja_bank.pk).update(is_primary=True)
+        response = self.create(self.open, name="New Primary", is_primary=True)
+        self.assertEqual(response.status_code, 201, response.data)
+        demotion = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.BANK_ACCOUNT_UPDATED,
+            target_id=str(self.ikeja_bank.pk),
+        )
+        self.assertTrue(demotion.before["is_primary"])
+        self.assertFalse(demotion.after["is_primary"])
+
+    def test_account_number_in_new_audit_row_follows_read_switch(self):
+        self.create(self.open, name="Hidden Number", account_number="1234567890")
+        reader = self.staff(self.tenant, hide=("account_number",))
+        response = self.api(reader).get(
+            f"/v1/finance/audit-logs/?entity={self.books.code}&action=BANK_ACCOUNT_CREATED")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("account_number", response.data["data"][0]["after"])
 
     # -- tenants ---------------------------------------------------------------- #
 

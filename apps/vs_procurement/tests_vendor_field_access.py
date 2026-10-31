@@ -138,6 +138,37 @@ class _VendorAccessFixture(_BranchTenantsFixture, TestCase):
 class VendorValueFieldTests(_VendorAccessFixture):
     """Category, payment terms, KYC status, risk and hold each have their own switches."""
 
+    def test_create_and_update_audit_vendor_sensitive_values(self):
+        from vs_finance.constants import FinanceAuditAction
+        from vs_finance.models import FinanceAuditLog
+
+        self.open_everything()
+        response = self.call(self.officer_user, "vendors/", "post", {
+            "code": "AUDIT", "name": "Audit Supplier", "email": "accounts@audit.example",
+            "tax_id": "TIN-AUDIT", "bank_account_number": "1234567890",
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        vendor = Vendor.objects.get(entity=self.multi.entity, code="AUDIT")
+        created = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.VENDOR_CREATED, target_id=str(vendor.pk))
+        self.assertEqual(created.after["bank_account_number"], "1234567890")
+        response = self.call(self.officer_user, f"vendors/{vendor.pk}/", "patch", {
+            "bank_account_number": "9999999999", "tax_id": "TIN-UPDATED",
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        updated = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.VENDOR_UPDATED, target_id=str(vendor.pk))
+        self.assertEqual(updated.before["bank_account_number"], "1234567890")
+        self.assertEqual(updated.after["bank_account_number"], "9999999999")
+        from vs_finance.serializers import FinanceAuditLogSerializer
+        self.switch(self.officer_role, self.vendor_keys, {"bank_account_number": "hidden"})
+        shown = FinanceAuditLogSerializer(
+            updated, context={"request": TenantAPIClient(user=self.officer_user).get(
+                f"/v1/procurement/vendors/{vendor.pk}/?entity={self.multi.entity.code}"
+            ).wsgi_request}).data
+        self.assertNotIn("bank_account_number", shown["before"])
+        self.assertNotIn("bank_account_number", shown["after"])
+
     def test_each_value_is_hidden_on_its_own_from_the_detail_and_the_list(self):
         """Hiding risk from the storekeeper leaves the category and terms in place."""
         for hidden, (names, _body) in OPEN_VALUES.items():

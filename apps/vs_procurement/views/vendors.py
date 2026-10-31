@@ -36,7 +36,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
-from vs_finance.constants import AccountType, DocumentStatus
+from vs_finance.constants import AccountType, DocumentStatus, FinanceAuditAction
+from vs_finance.audit import record
 from vs_rbac.field_enforcement import (
     FieldWriteDenied,
     assert_writable,
@@ -103,6 +104,24 @@ _CONTACT_FLAGS = {
     "is_active": True,
 }
 _CONTACT_FIELDS = _CONTACT_DETAILS + tuple(_CONTACT_FLAGS)
+
+
+def _vendor_audit_snapshot(vendor):
+    """Capture registered vendor values without exposing them in the audit sentence."""
+    fields = (
+        "email", "phone", "address", "tax_id", "bank_name", "bank_code",
+        "bank_account_number", "bank_account_name", "payment_terms", "kyc_status",
+        "risk", "on_hold", "is_active",
+    )
+    snapshot = {field: getattr(vendor, field) for field in fields}
+    snapshot["name"] = vendor.name
+    snapshot.update({
+        "category": vendor.category_id,
+        "payable_account": vendor.payable_account_id,
+        "default_expense_account": vendor.default_expense_account_id,
+        "default_wht_tax_code": vendor.default_wht_tax_code_id,
+    })
+    return snapshot
 
 
 def _normalise_code(value):
@@ -762,6 +781,11 @@ class VendorListCreateView(_ProcBase):
                 vendor=vendor, name=vendor.name, email=vendor.email,
                 is_primary=True, receives_rfqs=True, receives_purchase_orders=True,
             )
+        record(
+            entity=entity, action=FinanceAuditAction.VENDOR_CREATED,
+            actor_user=request.user, target=vendor,
+            message=f"Vendor '{vendor.name}' created.", after=_vendor_audit_snapshot(vendor),
+        )
         return success_response(
             "Vendor created.", data=VendorSerializer(vendor, context={"request": request}).data, status=201,
         )
@@ -856,6 +880,7 @@ class VendorDetailView(_ProcBase):
         # narrower authority and are rejected before the vendor row is mutated.
         _require_vendor_verification_access(request, body)
         vendor = self._get(entity, pk, lock=True)
+        before = _vendor_audit_snapshot(vendor)
         previous_email = vendor.email
 
         if "code" in body and _normalise_code(body.get("code")) != vendor.code:
@@ -928,6 +953,13 @@ class VendorDetailView(_ProcBase):
                         "receives_purchase_orders": True,
                     },
                 )
+        after = _vendor_audit_snapshot(vendor)
+        if before != after:
+            record(
+                entity=entity, action=FinanceAuditAction.VENDOR_UPDATED,
+                actor_user=request.user, target=vendor,
+                message=f"Vendor '{vendor.name}' updated.", before=before, after=after,
+            )
         return success_response(
             "Vendor updated.", data=VendorSerializer(vendor, context={"request": request}).data,
         )
