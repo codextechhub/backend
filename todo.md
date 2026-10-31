@@ -130,7 +130,7 @@ MUST SAY:
   the server's field map and was checked locally; deployment is not asserted.
 
 ### D139. A photograph must really be a picture (584e3240, 2026-10-31)
-MODULES: M10 students and guardians, M11 student portal, M12 parent portal, MRD.
+MODULES: M11 student management (pupils and guardians), M27 student portal, M28 parent portal, MRD.
 MUST SAY:
 - Every photograph upload (a pupil's passport photograph on the documents
   route or the enrol form, a guardian's photograph, and the photographs pupils
