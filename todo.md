@@ -129,6 +129,19 @@ MUST SAY:
 - The backend owns the phone decision in commit 0c2a74d4. The console follows
   the server's field map and was checked locally; deployment is not asserted.
 
+### D138. Gateway collection payer fields follow Field Access (4437c170, 2026-10-31)
+MODULES: M04 roles and permissions, M18 payments and collections, M26 reporting and exports, MRD.
+MUST SAY:
+- `payments.collection.payer_email` and `payer_name` are separate sensitive
+  Read and Write fields at tenant scope. They are open during collection creation,
+  and Finance Admin receives Read by default. Staff collection responses and
+  the movement feed withhold hidden payer details.
+- The collections export checks each payer column's collection switch. A
+  terminal collection also checks the terminal payment source switch before
+  placing its payer details in an export or the movement feed.
+- These are local backend changes. Do not infer frontend delivery, deployment
+  or production adoption.
+
 ### D139. A photograph must really be a picture (584e3240, 2026-10-31)
 MODULES: M11 student management (pupils and guardians), M27 student portal, M28 parent portal, MRD.
 MUST SAY:
