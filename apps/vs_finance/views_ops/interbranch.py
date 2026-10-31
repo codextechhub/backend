@@ -754,6 +754,14 @@ class InterBranchReceivableMoveView(_FinanceBase):
     branches' books and another branch's lists, so only a caller who reaches
     the whole tenant may do it.
 
+    A closed account (``is_active`` false, as for a withdrawn pupil) is refused:
+    its debt belongs to the branch that billed it, and moving it would show that
+    branch recovering money it has not collected. The refusal is here rather
+    than in the service because a pupil changing branch and a fee run re-filing
+    accounts call the service for the child's own move, which is a different act.
+    A caller who may not read ``finance.customer.is_active`` is refused without
+    being told the account is closed.
+
     docstring-name: Move a customer's open balance to another branch
     """
 
@@ -775,6 +783,13 @@ class InterBranchReceivableMoveView(_FinanceBase):
         customer = find_by_code_or_id(qs, ref, code=str.upper)
         if customer is None:
             raise NotFound(f"No customer matches '{ref}' for this entity.")
+        if not customer.is_active:
+            if not can_read(request, "finance.customer.is_active"):
+                raise ValidationError({"customer": "This customer's balance cannot be moved."})
+            raise ValidationError({"customer": (
+                f"{customer.name}'s account is closed, so its balance stays with the branch "
+                f"that billed it. Reopen the account first if the child is coming back."
+            )})
         with transaction.atomic():
             moved = transfer_open_receivables(
                 customer, _branch(entity, body.get("from_branch"), "from_branch"),
